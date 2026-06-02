@@ -1,0 +1,16 @@
+[package]
+name = "retro-render"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu = { workspace = true }
+cosmic-text = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+bytemuck = { workspace = true }
+bitflags = { workspace = true }
+image = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }

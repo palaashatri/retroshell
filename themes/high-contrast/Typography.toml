@@ -1,0 +1,24 @@
+[system]
+font = "SF Pro Text"
+size = 16
+weight = 400
+
+[heading]
+font = "SF Pro Text"
+size = 18
+weight = 600
+
+[title]
+font = "SF Pro Text"
+size = 24
+weight = 700
+
+[mono]
+font = "SF Mono"
+size = 14
+weight = 400
+
+[small]
+font = "SF Pro Text"
+size = 14
+weight = 400

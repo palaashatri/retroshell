@@ -1,0 +1,14 @@
+name = "Graphite"
+version = "1.0"
+author = "RetroShell"
+description = "Graphite theme with gray accent colors"
+is_dark = false
+accent = "#666666"
+
+[typography]
+system_font = "SF Pro Text"
+monospace_font = "SF Mono"
+size_small = 11
+size_body = 13
+size_title = 15
+size_large = 20

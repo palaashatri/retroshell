@@ -1,0 +1,13 @@
+[package]
+name = "retro-sdk"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+retro-kit = { path = "../retro-kit" }
+retro-bus = { path = "../retro-bus" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+tracing = { workspace = true }

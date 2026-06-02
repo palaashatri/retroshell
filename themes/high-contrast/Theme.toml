@@ -1,0 +1,14 @@
+name = "High Contrast"
+version = "1.0"
+author = "RetroShell"
+description = "High contrast accessibility theme"
+is_dark = false
+accent = "#000000"
+
+[typography]
+system_font = "SF Pro Text"
+monospace_font = "SF Mono"
+size_small = 14
+size_body = 16
+size_title = 18
+size_large = 24
