@@ -1,6 +1,7 @@
 use retro_bus::RetroBus;
 use retro_kit::menu::{Menu, MenuItem};
 use retro_kit::window::Window;
+use retro_kit::Widget;
 
 pub struct Application {
     pub name: String,
@@ -41,8 +42,12 @@ impl Application {
         tracing::info!("Application '{}' started", self.name);
 
         let event_loop = retro_render::event_loop::RetroEventLoop::new();
+        let main_window = self.main_window.take();
+
         struct AppHandler {
             name: String,
+            window: Option<Window>,
+            modifiers: winit::keyboard::ModifiersState,
         }
         impl retro_render::event_loop::RetroAppHandler for AppHandler {
             fn init(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
@@ -54,14 +59,61 @@ impl Application {
                 event_loop: &winit::event_loop::ActiveEventLoop,
                 event: winit::event::WindowEvent,
             ) {
-                if event == winit::event::WindowEvent::CloseRequested {
-                    event_loop.exit();
+                match event {
+                    winit::event::WindowEvent::CloseRequested => {
+                        event_loop.exit();
+                    }
+                    winit::event::WindowEvent::ModifiersChanged(new_mods) => {
+                        self.modifiers = new_mods.state();
+                    }
+                    winit::event::WindowEvent::KeyboardInput { event: key_event, .. }
+                        if key_event.state == winit::event::ElementState::Pressed =>
+                    {
+                        let mut handled = false;
+                        if let winit::keyboard::PhysicalKey::Code(phys_key) = key_event.physical_key {
+                            if let Some(rkey) = winit_to_retro_key(phys_key) {
+                                let retro_modifiers = retro_kit::event::Modifiers {
+                                    shift: self.modifiers.shift_key(),
+                                    control: self.modifiers.control_key(),
+                                    alt: self.modifiers.alt_key(),
+                                    meta: self.modifiers.super_key(),
+                                };
+                                let retro_event = retro_kit::Event::KeyDown {
+                                    key: rkey,
+                                    modifiers: retro_modifiers,
+                                };
+                                if let Some(ref mut win) = self.window {
+                                    if let retro_kit::EventResult::Handled = win.handle_event(&retro_event) {
+                                        handled = true;
+                                    }
+                                }
+                            }
+                        }
+                        if !handled {
+                            if let Some(ref text) = key_event.text {
+                                for character in text.chars() {
+                                    let retro_event = retro_kit::Event::Char { character };
+                                    if let Some(ref mut win) = self.window {
+                                        let _ = win.handle_event(&retro_event);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+                if let Some(ref mut win) = self.window {
+                    win.update();
                 }
             }
         }
 
         let mut handler = AppHandler {
             name: self.name.clone(),
+            window: main_window,
+            modifiers: winit::keyboard::ModifiersState::default(),
         };
         let _ = event_loop.run(&mut handler);
     }

@@ -23,6 +23,7 @@ impl RetroEventLoop {
 pub trait RetroAppHandler {
     fn init(&mut self, event_loop: &ActiveEventLoop);
     fn handle_window_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent);
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {}
 }
 
 struct AppHandlerWrapper<'a, H: RetroAppHandler> {
@@ -41,6 +42,10 @@ impl<'a, H: RetroAppHandler> ApplicationHandler for AppHandlerWrapper<'a, H> {
         event: WindowEvent,
     ) {
         self.handler.handle_window_event(event_loop, event);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.handler.about_to_wait(event_loop);
     }
 }
 

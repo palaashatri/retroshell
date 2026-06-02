@@ -1,5 +1,5 @@
 use crate::{
-    theme::ThemeContext, AccessibilityNode, AccessibilityRole, LayoutConstraint, Rect, Size,
+    theme::ThemeContext, AccessibilityNode, AccessibilityRole, Event, EventResult, LayoutConstraint, Rect, Size,
     Widget, WidgetState,
 };
 
@@ -66,6 +66,25 @@ impl Widget for TreeView {
     }
 
     fn draw(&self, _theme: &ThemeContext) {}
+
+    fn handle_event(&mut self, event: &Event) -> EventResult {
+        if let Event::MouseDown { button: crate::event::MouseButton::Left, point, .. } = event {
+            if self.rect().contains(*point) {
+                let relative_y = point.y - self.rect().y;
+                let height = self.rect().height;
+                let index = if relative_y < height * 0.3 {
+                    vec![0, 3] // Desktop
+                } else if relative_y < height * 0.6 {
+                    vec![0, 4] // Documents
+                } else {
+                    vec![0, 5] // Downloads
+                };
+                self.selected_path = Some(index);
+                return EventResult::Handled;
+            }
+        }
+        EventResult::Ignored
+    }
 
     fn accessibility(&self) -> Option<AccessibilityNode> {
         Some(AccessibilityNode::new(AccessibilityRole::Tree, "files"))

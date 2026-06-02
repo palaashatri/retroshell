@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::terminal::Terminal;
 use vte::{Params, Perform};
 

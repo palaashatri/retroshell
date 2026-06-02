@@ -83,6 +83,22 @@ impl Widget for IconView {
                 }
                 EventResult::Ignored
             }
+            Event::MouseDown { button: crate::event::MouseButton::Left, point, .. } => {
+                let mut hit = false;
+                for item in &mut self.items {
+                    if item.rect.contains(*point) {
+                        item.selected = true;
+                        hit = true;
+                    } else {
+                        item.selected = false;
+                    }
+                }
+                if hit {
+                    EventResult::Handled
+                } else {
+                    EventResult::Ignored
+                }
+            }
             _ => EventResult::Ignored,
         }
     }

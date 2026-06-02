@@ -94,6 +94,11 @@ pub trait Widget: Send {
     fn handle_event(&mut self, _event: &Event) -> EventResult {
         EventResult::Ignored
     }
+    fn update(&mut self) {
+        for child in self.children_mut() {
+            child.update();
+        }
+    }
     fn accessibility(&self) -> Option<AccessibilityNode> {
         None
     }

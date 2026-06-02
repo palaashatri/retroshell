@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::vt_parser::VtHandler;
 use retro_kit::theme::ThemeContext;
 use retro_kit::Color;
@@ -7,8 +5,10 @@ use retro_kit::{
     AccessibilityNode, AccessibilityRole, Event, EventResult, LayoutConstraint, Rect, Size, Widget,
     WidgetState,
 };
+use retro_kit::event::KeyCode;
 use std::any::Any;
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct Cell {
     pub c: char,
@@ -47,6 +47,8 @@ pub struct Terminal {
     pub current_italic: bool,
     pub current_underline: bool,
     parser: vte::Parser,
+    pub pty: Option<crate::pty::Pty>,
+    pub rx: Option<std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Vec<u8>>>>>,
 }
 
 impl Terminal {
@@ -66,6 +68,8 @@ impl Terminal {
             current_italic: false,
             current_underline: false,
             parser: vte::Parser::new(),
+            pty: None,
+            rx: None,
         }
     }
 
@@ -81,6 +85,9 @@ impl Terminal {
         self.rows = rows;
         self.cursor_x = self.cursor_x.min(cols - 1);
         self.cursor_y = self.cursor_y.min(rows - 1);
+        if let Some(ref pty) = self.pty {
+            let _ = pty.resize(cols as u16, rows as u16);
+        }
     }
 
     pub fn print_char(&mut self, c: char) {
@@ -147,8 +154,122 @@ impl Widget for Terminal {
 
     fn draw(&self, _theme: &ThemeContext) {}
 
-    fn handle_event(&mut self, _event: &Event) -> EventResult {
-        EventResult::Ignored
+    fn handle_event(&mut self, event: &Event) -> EventResult {
+        match event {
+            Event::KeyDown { key, modifiers } => {
+                if let Some(ref mut pty) = self.pty {
+                    let mut bytes = vec![];
+                    if modifiers.control {
+                        if let Some(byte) = match key {
+                            KeyCode::A => Some(b'\x01'),
+                            KeyCode::B => Some(b'\x02'),
+                            KeyCode::C => Some(b'\x03'),
+                            KeyCode::D => Some(b'\x04'),
+                            KeyCode::E => Some(b'\x05'),
+                            KeyCode::F => Some(b'\x06'),
+                            KeyCode::G => Some(b'\x07'),
+                            KeyCode::H => Some(b'\x08'),
+                            KeyCode::I => Some(b'\x09'),
+                            KeyCode::J => Some(b'\x0a'),
+                            KeyCode::K => Some(b'\x0b'),
+                            KeyCode::L => Some(b'\x0c'),
+                            KeyCode::M => Some(b'\x0d'),
+                            KeyCode::N => Some(b'\x0e'),
+                            KeyCode::O => Some(b'\x0f'),
+                            KeyCode::P => Some(b'\x10'),
+                            KeyCode::Q => Some(b'\x11'),
+                            KeyCode::R => Some(b'\x12'),
+                            KeyCode::S => Some(b'\x13'),
+                            KeyCode::T => Some(b'\x14'),
+                            KeyCode::U => Some(b'\x15'),
+                            KeyCode::V => Some(b'\x16'),
+                            KeyCode::W => Some(b'\x17'),
+                            KeyCode::X => Some(b'\x18'),
+                            KeyCode::Y => Some(b'\x19'),
+                            KeyCode::Z => Some(b'\x1a'),
+                            _ => None,
+                        } {
+                            bytes.push(byte);
+                        }
+                    } else {
+                        match key {
+                            KeyCode::Backspace => {
+                                bytes.push(0x7f);
+                            }
+                            KeyCode::Enter => {
+                                bytes.push(b'\r');
+                            }
+                            KeyCode::Tab => {
+                                bytes.push(b'\t');
+                            }
+                            KeyCode::Escape => {
+                                bytes.push(0x1b);
+                            }
+                            KeyCode::ArrowUp => {
+                                bytes.extend_from_slice(b"\x1b[A");
+                            }
+                            KeyCode::ArrowDown => {
+                                bytes.extend_from_slice(b"\x1b[B");
+                            }
+                            KeyCode::ArrowRight => {
+                                bytes.extend_from_slice(b"\x1b[C");
+                            }
+                            KeyCode::ArrowLeft => {
+                                bytes.extend_from_slice(b"\x1b[D");
+                            }
+                            KeyCode::Home => {
+                                bytes.extend_from_slice(b"\x1b[H");
+                            }
+                            KeyCode::End => {
+                                bytes.extend_from_slice(b"\x1b[F");
+                            }
+                            KeyCode::Insert => {
+                                bytes.extend_from_slice(b"\x1b[2~");
+                            }
+                            KeyCode::Delete => {
+                                bytes.extend_from_slice(b"\x1b[3~");
+                            }
+                            KeyCode::PageUp => {
+                                bytes.extend_from_slice(b"\x1b[5~");
+                            }
+                            KeyCode::PageDown => {
+                                bytes.extend_from_slice(b"\x1b[6~");
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if !bytes.is_empty() {
+                        let _ = pty.write(&bytes);
+                        return EventResult::Handled;
+                    }
+                }
+                EventResult::Ignored
+            }
+            Event::Char { character } => {
+                if let Some(ref mut pty) = self.pty {
+                    let mut buf = [0u8; 4];
+                    let s = character.encode_utf8(&mut buf);
+                    let _ = pty.write(s.as_bytes());
+                    return EventResult::Handled;
+                }
+                EventResult::Ignored
+            }
+            _ => EventResult::Ignored,
+        }
+    }
+
+    fn update(&mut self) {
+        let rx = self.rx.clone();
+        if let Some(rx) = rx {
+            if let Ok(rx_lock) = rx.try_lock() {
+                while let Ok(bytes) = rx_lock.try_recv() {
+                    for b in bytes {
+                        self.write_byte(b);
+                    }
+                }
+            }
+        }
     }
 
     fn accessibility(&self) -> Option<AccessibilityNode> {

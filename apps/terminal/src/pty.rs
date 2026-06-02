@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use nix::pty::{openpty, Winsize};
 use nix::unistd::{dup2, execve, fork, setsid, ForkResult, Pid};
 use std::ffi::CString;
@@ -12,6 +10,12 @@ pub struct Pty {
 }
 
 impl Pty {
+    pub fn try_clone(&self) -> std::io::Result<Self> {
+        Ok(Self {
+            master_file: self.master_file.try_clone()?,
+        })
+    }
+
     pub fn new(cols: u16, rows: u16) -> Result<(Self, Pid), String> {
         let ws = Winsize {
             ws_row: rows,

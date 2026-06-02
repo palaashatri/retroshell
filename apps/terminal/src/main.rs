@@ -127,7 +127,8 @@ fn main() {
         tracing::error!("Failed to open initial tab: {}", e);
     }
 
-    let window = Window::new("Terminal");
+    let mut window = Window::new("Terminal");
+    window.set_content(Box::new(tab_manager));
     app.set_main_window(window);
     app.run();
 }

@@ -1,9 +1,8 @@
-#![allow(dead_code)]
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FileInfo {
     pub name: String,
@@ -13,6 +12,7 @@ pub struct FileInfo {
     pub modified: Option<SystemTime>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FileEntry {
     pub name: String,
@@ -42,6 +42,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::rename(src, dst)
 }
@@ -71,6 +72,7 @@ pub fn delete_file(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn rename_file(path: &Path, new_name: &str) -> std::io::Result<()> {
     let mut new_path = path.to_path_buf();
     new_path.set_file_name(new_name);
@@ -97,6 +99,7 @@ pub fn create_directory(path: &Path) -> std::io::Result<()> {
     fs::create_dir_all(path)
 }
 
+#[allow(dead_code)]
 pub fn get_file_info(path: &Path) -> std::io::Result<FileInfo> {
     let metadata = fs::metadata(path)?;
     Ok(FileInfo {
