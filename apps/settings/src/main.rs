@@ -1,10 +1,10 @@
-use retro_sdk::{Application, build_menu};
-use retro_kit::window::Window;
-use retro_kit::tree_view::{TreeView, TreeNode};
-use retro_kit::label::Label;
 use retro_kit::button::Button;
+use retro_kit::label::Label;
 use retro_kit::layout::Layout;
-use retro_kit::split_view::{SplitView, SplitDirection};
+use retro_kit::split_view::{SplitDirection, SplitView};
+use retro_kit::tree_view::{TreeNode, TreeView};
+use retro_kit::window::Window;
+use retro_sdk::{build_menu, Application};
 
 fn main() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -28,7 +28,13 @@ fn main() {
     let mut help_menu = build_menu("Help");
     help_menu.add_action("Settings Help");
 
-    app.set_menus(vec![file_menu, edit_menu, view_menu, window_menu, help_menu]);
+    app.set_menus(vec![
+        file_menu,
+        edit_menu,
+        view_menu,
+        window_menu,
+        help_menu,
+    ]);
 
     let mut categories = TreeView::new();
     categories.roots = vec![

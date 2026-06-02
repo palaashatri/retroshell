@@ -1,4 +1,4 @@
-use crate::{ServiceId, BusError, Result, BusMessage};
+use crate::{BusError, BusMessage, Result, ServiceId};
 use std::collections::HashMap;
 
 pub type ServiceHandler = Box<dyn Fn(BusMessage) -> Result<Option<BusMessage>> + Send + Sync>;
@@ -13,17 +13,28 @@ pub struct ServiceRegistry {
     services: HashMap<ServiceId, ServiceRegistration>,
 }
 
+impl Default for ServiceRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ServiceRegistry {
     pub fn new() -> Self {
-        Self { services: HashMap::new() }
+        Self {
+            services: HashMap::new(),
+        }
     }
 
     pub fn register(&mut self, id: ServiceId, name: &str, handler: ServiceHandler) {
-        self.services.insert(id.clone(), ServiceRegistration {
-            id,
-            name: name.to_string(),
-            handler,
-        });
+        self.services.insert(
+            id.clone(),
+            ServiceRegistration {
+                id,
+                name: name.to_string(),
+                handler,
+            },
+        );
     }
 
     pub fn unregister(&mut self, id: &str) {

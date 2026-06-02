@@ -14,7 +14,10 @@ fn main() {
 
     tracing::info!("RetroShell initialized successfully");
     tracing::info!("Theme: {}", shell.theme_manager.read().current);
-    tracing::info!("Applications found: {}", shell.launch_services.read().bundles.len());
+    tracing::info!(
+        "Applications found: {}",
+        shell.launch_services.read().bundles.len()
+    );
     tracing::info!("Workspaces: {}", shell.workspace_manager.read().total);
 
     if let Err(e) = shell.run() {

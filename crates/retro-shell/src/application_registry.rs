@@ -13,19 +13,30 @@ pub struct RunningApp {
     pub launch_time: std::time::Instant,
 }
 
+impl Default for ApplicationRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ApplicationRegistry {
     pub fn new() -> Self {
-        Self { apps: HashMap::new() }
+        Self {
+            apps: HashMap::new(),
+        }
     }
 
     pub fn register(&mut self, bundle_id: &str) {
-        self.apps.insert(bundle_id.to_string(), RunningApp {
-            bundle_id: bundle_id.to_string(),
-            pid: None,
-            windows: vec![],
-            focused: false,
-            launch_time: std::time::Instant::now(),
-        });
+        self.apps.insert(
+            bundle_id.to_string(),
+            RunningApp {
+                bundle_id: bundle_id.to_string(),
+                pid: None,
+                windows: vec![],
+                focused: false,
+                launch_time: std::time::Instant::now(),
+            },
+        );
     }
 
     pub fn unregister(&mut self, bundle_id: &str) {

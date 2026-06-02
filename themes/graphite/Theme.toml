@@ -1,4 +1,5 @@
 name = "Graphite"
+identifier = "com.retro.theme.graphite"
 version = "1.0"
 author = "RetroShell"
 description = "Graphite theme with gray accent colors"

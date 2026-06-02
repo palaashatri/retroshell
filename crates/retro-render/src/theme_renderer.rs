@@ -1,4 +1,4 @@
-use wgpu::{Device, RenderPipeline, BindGroupLayout};
+use wgpu::{BindGroupLayout, Device, RenderPipeline};
 
 pub struct ThemeRenderer {
     pub pipeline: RenderPipeline,
@@ -9,7 +9,9 @@ impl ThemeRenderer {
     pub fn new(device: &Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("theme shader"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!("../shaders/theme.wgsl"))),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(include_str!(
+                "../shaders/theme.wgsl"
+            ))),
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -57,6 +59,9 @@ impl ThemeRenderer {
             cache: None,
         });
 
-        Self { pipeline, bind_group_layout }
+        Self {
+            pipeline,
+            bind_group_layout,
+        }
     }
 }

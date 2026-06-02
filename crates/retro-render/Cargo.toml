@@ -14,3 +14,4 @@ bitflags = { workspace = true }
 image = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
+winit = "0.30"

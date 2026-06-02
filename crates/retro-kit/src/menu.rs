@@ -76,7 +76,10 @@ pub struct Menu {
 
 impl Menu {
     pub fn new<S: Into<String>>(title: S) -> Self {
-        Self { title: title.into(), items: vec![] }
+        Self {
+            title: title.into(),
+            items: vec![],
+        }
     }
 
     pub fn add(&mut self, item: MenuItem) {

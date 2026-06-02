@@ -1,6 +1,6 @@
 use crate::{
-    Widget, WidgetState, Rect, Size, LayoutConstraint,
-    AccessibilityNode, AccessibilityRole, theme::ThemeContext, Button,
+    theme::ThemeContext, AccessibilityNode, AccessibilityRole, Button, LayoutConstraint, Rect,
+    Size, Widget, WidgetState,
 };
 
 pub struct Dialog {
@@ -26,23 +26,39 @@ impl Dialog {
 }
 
 impl Widget for Dialog {
-    fn widget_state(&self) -> &WidgetState { &self.state }
-    fn widget_state_mut(&mut self) -> &mut WidgetState { &mut self.state }
+    fn widget_state(&self) -> &WidgetState {
+        &self.state
+    }
+    fn widget_state_mut(&mut self) -> &mut WidgetState {
+        &mut self.state
+    }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
         let width = 400.0;
         let height = 150.0;
         let size = constraint.clamp(Size::new(width, height));
-        self.set_rect(Rect::new(self.rect().x, self.rect().y, size.width, size.height));
+        self.set_rect(Rect::new(
+            self.rect().x,
+            self.rect().y,
+            size.width,
+            size.height,
+        ));
         size
     }
 
     fn draw(&self, _theme: &ThemeContext) {}
 
     fn accessibility(&self) -> Option<AccessibilityNode> {
-        Some(AccessibilityNode::new(AccessibilityRole::Dialog, &self.title))
+        Some(AccessibilityNode::new(
+            AccessibilityRole::Dialog,
+            &self.title,
+        ))
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }

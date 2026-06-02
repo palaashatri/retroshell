@@ -49,7 +49,11 @@ pub struct ThemeValue {
 
 impl ThemeValue {
     pub fn new(color: Color) -> Self {
-        Self { color, dark: None, hdr: None }
+        Self {
+            color,
+            dark: None,
+            hdr: None,
+        }
     }
 
     pub fn with_dark(mut self, dark: Color) -> Self {
@@ -59,7 +63,11 @@ impl ThemeValue {
 
     pub fn resolve(&self, is_dark: bool, is_hdr: bool) -> Color {
         if is_hdr {
-            self.hdr.unwrap_or(if is_dark { self.dark.unwrap_or(self.color) } else { self.color })
+            self.hdr.unwrap_or(if is_dark {
+                self.dark.unwrap_or(self.color)
+            } else {
+                self.color
+            })
         } else if is_dark {
             self.dark.unwrap_or(self.color)
         } else {
@@ -77,7 +85,8 @@ pub struct ThemePalette {
 
 impl ThemePalette {
     pub fn get(&self, token: ThemeToken) -> Color {
-        self.tokens.get(&token)
+        self.tokens
+            .get(&token)
             .map(|v| v.resolve(self.is_dark, false))
             .unwrap_or(Color::BLACK)
     }
@@ -91,7 +100,11 @@ pub struct ThemeContext {
 
 impl ThemeContext {
     pub fn new(palette: ThemePalette) -> Self {
-        Self { current: palette, scale: 1.0, is_hdr: false }
+        Self {
+            current: palette,
+            scale: 1.0,
+            is_hdr: false,
+        }
     }
 
     pub fn color(&self, token: ThemeToken) -> Color {

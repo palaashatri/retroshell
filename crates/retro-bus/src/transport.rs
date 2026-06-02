@@ -14,9 +14,18 @@ pub struct LocalTransport {
     messages: Vec<BusMessage>,
 }
 
+impl Default for LocalTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LocalTransport {
     pub fn new() -> Self {
-        Self { connected: false, messages: vec![] }
+        Self {
+            connected: false,
+            messages: vec![],
+        }
     }
 }
 
@@ -51,6 +60,12 @@ pub mod dbus_transport {
 
     pub struct DBusTransport {
         connected: bool,
+    }
+
+    impl Default for DBusTransport {
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     impl DBusTransport {

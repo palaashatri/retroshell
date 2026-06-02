@@ -1,4 +1,5 @@
 name = "OLED Graphite"
+identifier = "com.retro.theme.oled-graphite"
 version = "1.0"
 author = "RetroShell"
 description = "True black OLED-optimized dark theme"

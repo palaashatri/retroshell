@@ -1,4 +1,5 @@
 name = "High Contrast"
+identifier = "com.retro.theme.high-contrast"
 version = "1.0"
 author = "RetroShell"
 description = "High contrast accessibility theme"

@@ -1,6 +1,6 @@
-use retro_kit::window::Window;
-use retro_kit::menu::{Menu, MenuItem};
 use retro_bus::RetroBus;
+use retro_kit::menu::{Menu, MenuItem};
+use retro_kit::window::Window;
 
 pub struct Application {
     pub name: String,
@@ -39,6 +39,31 @@ impl Application {
     pub fn run(&mut self) {
         self.running = true;
         tracing::info!("Application '{}' started", self.name);
+
+        let event_loop = retro_render::event_loop::RetroEventLoop::new();
+        struct AppHandler {
+            name: String,
+        }
+        impl retro_render::event_loop::RetroAppHandler for AppHandler {
+            fn init(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+                let attrs = winit::window::Window::default_attributes().with_title(&self.name);
+                let _window = event_loop.create_window(attrs).unwrap();
+            }
+            fn handle_window_event(
+                &mut self,
+                event_loop: &winit::event_loop::ActiveEventLoop,
+                event: winit::event::WindowEvent,
+            ) {
+                if event == winit::event::WindowEvent::CloseRequested {
+                    event_loop.exit();
+                }
+            }
+        }
+
+        let mut handler = AppHandler {
+            name: self.name.clone(),
+        };
+        let _ = event_loop.run(&mut handler);
     }
 
     pub fn quit(&mut self) {
@@ -66,4 +91,94 @@ pub fn menu_item(label: &str, action: &str) -> MenuItem {
 
 pub fn separator() -> MenuItem {
     MenuItem::separator()
+}
+
+pub fn winit_to_retro_key(key: winit::keyboard::KeyCode) -> Option<retro_kit::event::KeyCode> {
+    use retro_kit::event::KeyCode as RKey;
+    use winit::keyboard::KeyCode as WKey;
+    match key {
+        WKey::KeyA => Some(RKey::A),
+        WKey::KeyB => Some(RKey::B),
+        WKey::KeyC => Some(RKey::C),
+        WKey::KeyD => Some(RKey::D),
+        WKey::KeyE => Some(RKey::E),
+        WKey::KeyF => Some(RKey::F),
+        WKey::KeyG => Some(RKey::G),
+        WKey::KeyH => Some(RKey::H),
+        WKey::KeyI => Some(RKey::I),
+        WKey::KeyJ => Some(RKey::J),
+        WKey::KeyK => Some(RKey::K),
+        WKey::KeyL => Some(RKey::L),
+        WKey::KeyM => Some(RKey::M),
+        WKey::KeyN => Some(RKey::N),
+        WKey::KeyO => Some(RKey::O),
+        WKey::KeyP => Some(RKey::P),
+        WKey::KeyQ => Some(RKey::Q),
+        WKey::KeyR => Some(RKey::R),
+        WKey::KeyS => Some(RKey::S),
+        WKey::KeyT => Some(RKey::T),
+        WKey::KeyU => Some(RKey::U),
+        WKey::KeyV => Some(RKey::V),
+        WKey::KeyW => Some(RKey::W),
+        WKey::KeyX => Some(RKey::X),
+        WKey::KeyY => Some(RKey::Y),
+        WKey::KeyZ => Some(RKey::Z),
+        WKey::Digit0 => Some(RKey::Key0),
+        WKey::Digit1 => Some(RKey::Key1),
+        WKey::Digit2 => Some(RKey::Key2),
+        WKey::Digit3 => Some(RKey::Key3),
+        WKey::Digit4 => Some(RKey::Key4),
+        WKey::Digit5 => Some(RKey::Key5),
+        WKey::Digit6 => Some(RKey::Key6),
+        WKey::Digit7 => Some(RKey::Key7),
+        WKey::Digit8 => Some(RKey::Key8),
+        WKey::Digit9 => Some(RKey::Key9),
+        WKey::F1 => Some(RKey::F1),
+        WKey::F2 => Some(RKey::F2),
+        WKey::F3 => Some(RKey::F3),
+        WKey::F4 => Some(RKey::F4),
+        WKey::F5 => Some(RKey::F5),
+        WKey::F6 => Some(RKey::F6),
+        WKey::F7 => Some(RKey::F7),
+        WKey::F8 => Some(RKey::F8),
+        WKey::F9 => Some(RKey::F9),
+        WKey::F10 => Some(RKey::F10),
+        WKey::F11 => Some(RKey::F11),
+        WKey::F12 => Some(RKey::F12),
+        WKey::Escape => Some(RKey::Escape),
+        WKey::Tab => Some(RKey::Tab),
+        WKey::CapsLock => Some(RKey::CapsLock),
+        WKey::ShiftLeft => Some(RKey::ShiftLeft),
+        WKey::ShiftRight => Some(RKey::ShiftRight),
+        WKey::ControlLeft => Some(RKey::ControlLeft),
+        WKey::ControlRight => Some(RKey::ControlRight),
+        WKey::AltLeft => Some(RKey::AltLeft),
+        WKey::AltRight => Some(RKey::AltRight),
+        WKey::Space => Some(RKey::Space),
+        WKey::Enter => Some(RKey::Enter),
+        WKey::Backspace => Some(RKey::Backspace),
+        WKey::Delete => Some(RKey::Delete),
+        WKey::Insert => Some(RKey::Insert),
+        WKey::Home => Some(RKey::Home),
+        WKey::End => Some(RKey::End),
+        WKey::PageUp => Some(RKey::PageUp),
+        WKey::PageDown => Some(RKey::PageDown),
+        WKey::ArrowUp => Some(RKey::ArrowUp),
+        WKey::ArrowDown => Some(RKey::ArrowDown),
+        WKey::ArrowLeft => Some(RKey::ArrowLeft),
+        WKey::ArrowRight => Some(RKey::ArrowRight),
+        WKey::SuperLeft => Some(RKey::MetaLeft),
+        WKey::SuperRight => Some(RKey::MetaRight),
+        WKey::Minus => Some(RKey::Minus),
+        WKey::Equal => Some(RKey::Equals),
+        WKey::BracketLeft => Some(RKey::LeftBracket),
+        WKey::BracketRight => Some(RKey::RightBracket),
+        WKey::Backslash => Some(RKey::Backslash),
+        WKey::Semicolon => Some(RKey::Semicolon),
+        WKey::Quote => Some(RKey::Quote),
+        WKey::Comma => Some(RKey::Comma),
+        WKey::Period => Some(RKey::Period),
+        WKey::Slash => Some(RKey::Slash),
+        _ => None,
+    }
 }

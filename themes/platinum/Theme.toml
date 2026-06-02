@@ -1,4 +1,5 @@
 name = "Platinum"
+identifier = "com.retro.theme.platinum"
 version = "1.0"
 author = "RetroShell"
 description = "Classic Platinum theme inspired by Mac OS 8/9"

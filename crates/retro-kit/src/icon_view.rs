@@ -1,7 +1,6 @@
 use crate::{
-    Widget, WidgetState, Rect, Size, Event, EventResult,
-    LayoutConstraint, AccessibilityNode,
-    theme::ThemeContext,
+    theme::ThemeContext, AccessibilityNode, Event, EventResult, LayoutConstraint, Rect, Size,
+    Widget, WidgetState,
 };
 
 #[derive(Debug, Clone)]
@@ -20,6 +19,12 @@ pub struct IconView {
     pub on_double_click: Option<Box<dyn FnMut(usize) + Send>>,
 }
 
+impl Default for IconView {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IconView {
     pub fn new() -> Self {
         Self {
@@ -33,8 +38,12 @@ impl IconView {
 }
 
 impl Widget for IconView {
-    fn widget_state(&self) -> &WidgetState { &self.state }
-    fn widget_state_mut(&mut self) -> &mut WidgetState { &mut self.state }
+    fn widget_state(&self) -> &WidgetState {
+        &self.state
+    }
+    fn widget_state_mut(&mut self) -> &mut WidgetState {
+        &mut self.state
+    }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
         let width = constraint.max_width.min(400.0);
@@ -82,6 +91,10 @@ impl Widget for IconView {
         None
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }

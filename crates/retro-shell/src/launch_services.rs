@@ -24,6 +24,12 @@ pub struct LaunchServices {
     pub search_paths: Vec<String>,
 }
 
+impl Default for LaunchServices {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LaunchServices {
     pub fn new() -> Self {
         let mut services = Self {
@@ -48,11 +54,14 @@ impl LaunchServices {
             ("pdf", "com.retro.textedit"),
         ];
         for (ext, app) in defaults {
-            self.associations.insert(ext.to_string(), FileAssociation {
-                extension: ext.to_string(),
-                default_app: app.to_string(),
-                user_override: None,
-            });
+            self.associations.insert(
+                ext.to_string(),
+                FileAssociation {
+                    extension: ext.to_string(),
+                    default_app: app.to_string(),
+                    user_override: None,
+                },
+            );
         }
     }
 
@@ -64,10 +73,30 @@ impl LaunchServices {
         // Scan /Applications and /User/Applications directories
         // For now, register built-in apps
         let builtins = vec![
-            ("com.retro.finder", "Finder", "0.1.0", "/Applications/Finder.app"),
-            ("com.retro.settings", "Settings", "0.1.0", "/Applications/Settings.app"),
-            ("com.retro.textedit", "TextEdit", "0.1.0", "/Applications/TextEdit.app"),
-            ("com.retro.terminal", "Terminal", "0.1.0", "/Applications/Terminal.app"),
+            (
+                "com.retro.finder",
+                "Finder",
+                "0.1.0",
+                "/Applications/Finder.app",
+            ),
+            (
+                "com.retro.settings",
+                "Settings",
+                "0.1.0",
+                "/Applications/Settings.app",
+            ),
+            (
+                "com.retro.textedit",
+                "TextEdit",
+                "0.1.0",
+                "/Applications/TextEdit.app",
+            ),
+            (
+                "com.retro.terminal",
+                "Terminal",
+                "0.1.0",
+                "/Applications/Terminal.app",
+            ),
         ];
         for (id, name, version, path) in builtins {
             self.register_bundle(AppBundle {
@@ -87,7 +116,8 @@ impl LaunchServices {
     }
 
     pub fn app_for_extension(&self, extension: &str) -> Option<&str> {
-        self.associations.get(extension)
+        self.associations
+            .get(extension)
             .map(|a| a.user_override.as_ref().unwrap_or(&a.default_app))
             .map(|s| s.as_str())
     }

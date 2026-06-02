@@ -1,10 +1,12 @@
-use retro_sdk::{Application, build_menu};
-use retro_kit::window::Window;
-use retro_kit::icon_view::IconView;
-use retro_kit::split_view::{SplitView, SplitDirection};
-use retro_kit::tree_view::{TreeView, TreeNode};
-use retro_kit::layout::Layout;
 use retro_kit::event::{KeyCode, Modifiers};
+use retro_kit::icon_view::IconView;
+use retro_kit::layout::Layout;
+use retro_kit::split_view::{SplitDirection, SplitView};
+use retro_kit::tree_view::{TreeNode, TreeView};
+use retro_kit::window::Window;
+use retro_sdk::{build_menu, Application};
+
+mod file_ops;
 
 fn main() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -13,11 +15,27 @@ fn main() {
     let mut file_menu = build_menu("File");
     {
         let item = file_menu.add_action("New Finder Window");
-        item.with_shortcut(KeyCode::N, Modifiers { shift: false, control: false, alt: false, meta: true });
+        item.with_shortcut(
+            KeyCode::N,
+            Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        );
     }
     {
         let item = file_menu.add_action("New Folder");
-        item.with_shortcut(KeyCode::N, Modifiers { shift: true, control: false, alt: false, meta: true });
+        item.with_shortcut(
+            KeyCode::N,
+            Modifiers {
+                shift: true,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        );
     }
     file_menu.add_separator();
     {
@@ -26,17 +44,41 @@ fn main() {
     }
     {
         let item = file_menu.add_action("Close Window");
-        item.with_shortcut(KeyCode::W, Modifiers { shift: false, control: false, alt: false, meta: true });
+        item.with_shortcut(
+            KeyCode::W,
+            Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        );
     }
     file_menu.add_separator();
     {
         let item = file_menu.add_action("Get Info");
-        item.with_shortcut(KeyCode::I, Modifiers { shift: false, control: false, alt: false, meta: true });
+        item.with_shortcut(
+            KeyCode::I,
+            Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        );
     }
     file_menu.add_separator();
     {
         let item = file_menu.add_action("Move to Trash");
-        item.with_shortcut(KeyCode::Backspace, Modifiers { shift: false, control: false, alt: false, meta: true });
+        item.with_shortcut(
+            KeyCode::Backspace,
+            Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        );
     }
     file_menu.add_action("Empty Trash...");
 
@@ -62,7 +104,15 @@ fn main() {
     view_menu.add_separator();
     {
         let item = view_menu.add_action("Enter Fullscreen");
-        item.with_shortcut(KeyCode::F, Modifiers { shift: false, control: false, alt: false, meta: true });
+        item.with_shortcut(
+            KeyCode::F,
+            Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        );
     }
 
     let mut go_menu = build_menu("Go");
@@ -88,7 +138,14 @@ fn main() {
     let mut help_menu = build_menu("Help");
     help_menu.add_action("Finder Help");
 
-    app.set_menus(vec![file_menu, edit_menu, view_menu, go_menu, window_menu, help_menu]);
+    app.set_menus(vec![
+        file_menu,
+        edit_menu,
+        view_menu,
+        go_menu,
+        window_menu,
+        help_menu,
+    ]);
 
     let mut sidebar = TreeView::new();
     let mut favorites = TreeNode::new("Favorites");

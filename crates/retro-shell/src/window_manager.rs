@@ -1,6 +1,6 @@
 use retro_kit::Rect;
-use uuid::Uuid;
 use std::collections::HashMap;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowState {
@@ -30,6 +30,12 @@ pub struct WindowManager {
     pub active_window: Option<Uuid>,
     pub focus_history: Vec<Uuid>,
     pub next_order: usize,
+}
+
+impl Default for WindowManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WindowManager {
@@ -132,13 +138,15 @@ impl WindowManager {
     }
 
     pub fn windows_on_workspace(&self, workspace: usize) -> Vec<&ManagedWindow> {
-        self.windows.values()
+        self.windows
+            .values()
             .filter(|w| w.workspace == workspace && w.state != WindowState::Hidden)
             .collect()
     }
 
     pub fn app_windows(&self, app_id: &str) -> Vec<&ManagedWindow> {
-        self.windows.values()
+        self.windows
+            .values()
             .filter(|w| w.app_id == app_id)
             .collect()
     }

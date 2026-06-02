@@ -1,0 +1,8 @@
+name = "Terminal"
+bundle_id = "com.retro.terminal"
+version = "1.0.0"
+author = "Retro Project"
+minimum_platform = "1.0"
+entrypoint = "Executable/terminal"
+file_types = []
+permissions = ["process", "pty"]

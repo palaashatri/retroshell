@@ -1,6 +1,6 @@
 use crate::{Color, Result};
-use wgpu::{Device, Queue, SurfaceConfiguration, Surface as WgpuSurface, Instance};
 use wgpu::PowerPreference;
+use wgpu::{Device, Instance, Queue, Surface as WgpuSurface, SurfaceConfiguration};
 
 pub struct Renderer {
     pub instance: Instance,
@@ -13,21 +13,26 @@ pub struct Renderer {
 impl Renderer {
     pub async fn new(surface: &WgpuSurface<'static>, width: u32, height: u32) -> Result<Self> {
         let instance = Instance::new(Default::default());
-        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: PowerPreference::HighPerformance,
-            compatible_surface: Some(surface),
-            force_fallback_adapter: false,
-        }).await.ok_or(crate::RenderError::Surface("no adapter found".into()))?;
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: PowerPreference::HighPerformance,
+                compatible_surface: Some(surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .ok_or(crate::RenderError::Surface("no adapter found".into()))?;
 
-        let (device, queue) = adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("RetroRender Device"),
-                required_features: wgpu::Features::default(),
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::Performance,
-            },
-            None,
-        ).await?;
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("RetroRender Device"),
+                    required_features: wgpu::Features::default(),
+                    required_limits: wgpu::Limits::default(),
+                    memory_hints: wgpu::MemoryHints::Performance,
+                },
+                None,
+            )
+            .await?;
 
         let capabilities = surface.get_capabilities(&adapter);
         let format = capabilities.formats[0];
@@ -45,7 +50,13 @@ impl Renderer {
 
         surface.configure(&device, &config);
 
-        Ok(Self { instance, adapter, device, queue, config })
+        Ok(Self {
+            instance,
+            adapter,
+            device,
+            queue,
+            config,
+        })
     }
 
     pub fn resize(&mut self, surface: &WgpuSurface<'static>, width: u32, height: u32) {
@@ -59,9 +70,11 @@ impl Renderer {
     }
 
     pub fn clear(&self, view: &wgpu::TextureView, color: Color) {
-        let mut encoder = self.device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("clear encoder") }
-        );
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("clear encoder"),
+            });
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("clear pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -88,6 +101,10 @@ impl Renderer {
         frame.present();
     }
 
-    pub fn device(&self) -> &Device { &self.device }
-    pub fn queue(&self) -> &Queue { &self.queue }
+    pub fn device(&self) -> &Device {
+        &self.device
+    }
+    pub fn queue(&self) -> &Queue {
+        &self.queue
+    }
 }

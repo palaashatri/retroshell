@@ -1,7 +1,6 @@
 use crate::{
-    Widget, WidgetState, Rect, Size, Event, EventResult,
-    LayoutConstraint, AccessibilityNode, AccessibilityRole,
-    theme::ThemeContext,
+    theme::ThemeContext, AccessibilityNode, AccessibilityRole, Event, EventResult,
+    LayoutConstraint, Rect, Size, Widget, WidgetState,
 };
 
 pub struct TextField {
@@ -11,6 +10,12 @@ pub struct TextField {
     pub is_password: bool,
     pub on_change: Option<Box<dyn FnMut(String) + Send>>,
     cursor_position: usize,
+}
+
+impl Default for TextField {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TextField {
@@ -30,19 +35,32 @@ impl TextField {
         self
     }
 
-    pub fn text(&self) -> &str { &self.text }
-    pub fn set_text<S: Into<String>>(&mut self, text: S) { self.text = text.into(); }
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+    pub fn set_text<S: Into<String>>(&mut self, text: S) {
+        self.text = text.into();
+    }
 }
 
 impl Widget for TextField {
-    fn widget_state(&self) -> &WidgetState { &self.state }
-    fn widget_state_mut(&mut self) -> &mut WidgetState { &mut self.state }
+    fn widget_state(&self) -> &WidgetState {
+        &self.state
+    }
+    fn widget_state_mut(&mut self) -> &mut WidgetState {
+        &mut self.state
+    }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
         let width = constraint.max_width.min(200.0);
         let height = 26.0;
         let size = constraint.clamp(Size::new(width, height));
-        self.set_rect(Rect::new(self.rect().x, self.rect().y, size.width, size.height));
+        self.set_rect(Rect::new(
+            self.rect().x,
+            self.rect().y,
+            size.width,
+            size.height,
+        ));
         size
     }
 
@@ -50,7 +68,10 @@ impl Widget for TextField {
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
         match event {
-            Event::KeyDown { key: crate::event::KeyCode::Backspace, .. } => {
+            Event::KeyDown {
+                key: crate::event::KeyCode::Backspace,
+                ..
+            } => {
                 if self.cursor_position > 0 {
                     self.text.remove(self.cursor_position - 1);
                     self.cursor_position -= 1;
@@ -73,10 +94,16 @@ impl Widget for TextField {
     }
 
     fn accessibility(&self) -> Option<AccessibilityNode> {
-        Some(AccessibilityNode::new(AccessibilityRole::TextField, &self.text)
-            .with_description(&self.placeholder))
+        Some(
+            AccessibilityNode::new(AccessibilityRole::TextField, &self.text)
+                .with_description(&self.placeholder),
+        )
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }

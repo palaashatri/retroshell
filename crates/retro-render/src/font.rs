@@ -1,10 +1,16 @@
 use cosmic_text::{FontSystem, SwashCache};
-use std::sync::Arc;
 use parking_lot::Mutex;
+use std::sync::Arc;
 
 pub struct Font {
     pub(crate) font_system: Arc<Mutex<FontSystem>>,
     pub(crate) swash_cache: Arc<Mutex<SwashCache>>,
+}
+
+impl Default for Font {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Font {

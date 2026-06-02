@@ -1,14 +1,14 @@
-pub mod service_registry;
 pub mod message;
+pub mod service_registry;
 pub mod transport;
 
-pub use service_registry::ServiceRegistry;
 pub use message::*;
+pub use service_registry::ServiceRegistry;
 pub use transport::Transport;
 
-use serde::{Serialize, Deserialize};
-use std::sync::Arc;
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 pub type Result<T> = std::result::Result<T, BusError>;
 

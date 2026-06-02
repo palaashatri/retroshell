@@ -1,44 +1,53 @@
+pub mod accessibility;
+pub mod button;
+pub mod clipboard;
+pub mod dialog;
+pub mod dnd;
+pub mod event;
+pub mod icon_view;
+pub mod label;
+pub mod layout;
+pub mod list_view;
+pub mod menu;
+pub mod popup_button;
+pub mod progress_bar;
+pub mod scroll_view;
+pub mod slider;
+pub mod split_view;
+pub mod status_bar;
+pub mod tab_view;
+pub mod text_field;
+pub mod theme;
+pub mod toolbar;
+pub mod tree_view;
 pub mod widget;
 pub mod window;
-pub mod button;
-pub mod menu;
-pub mod list_view;
-pub mod tree_view;
-pub mod icon_view;
-pub mod text_field;
-pub mod toolbar;
-pub mod dialog;
-pub mod scroll_view;
-pub mod split_view;
-pub mod layout;
-pub mod event;
-pub mod accessibility;
-pub mod theme;
-pub mod label;
-pub mod progress_bar;
-pub mod slider;
 
+pub use accessibility::{AccessibilityNode, AccessibilityRole, AccessibilityState};
+pub use button::Button;
+pub use clipboard::Clipboard;
+pub use dialog::Dialog;
+pub use dnd::{DragData, DragSession, DragSource, DropTarget};
+pub use event::{Event, EventHandler, EventResult};
+pub use icon_view::IconView;
+pub use label::Label;
+pub use layout::{Layout, LayoutConstraint, LayoutHints};
+pub use list_view::ListView;
+pub use menu::{Menu, MenuItem};
+pub use popup_button::PopupButton;
+pub use progress_bar::ProgressBar;
 pub use retro_render::Color;
+pub use scroll_view::ScrollView;
+pub use slider::Slider;
+pub use split_view::SplitView;
+pub use status_bar::{StatusBar, StatusBarAlignment, StatusBarItem};
+pub use tab_view::{Tab, TabView};
+pub use text_field::TextField;
+pub use theme::{ThemeContext, ThemeToken, ThemeValue};
+pub use toolbar::Toolbar;
+pub use tree_view::TreeView;
 pub use widget::{Widget, WidgetId, WidgetState};
 pub use window::Window;
-pub use button::Button;
-pub use menu::{Menu, MenuItem};
-pub use list_view::ListView;
-pub use tree_view::TreeView;
-pub use icon_view::IconView;
-pub use text_field::TextField;
-pub use toolbar::Toolbar;
-pub use dialog::Dialog;
-pub use scroll_view::ScrollView;
-pub use split_view::SplitView;
-pub use layout::{Layout, LayoutConstraint, LayoutHints};
-pub use event::{Event, EventHandler, EventResult};
-pub use accessibility::{AccessibilityNode, AccessibilityRole, AccessibilityState};
-pub use theme::{ThemeToken, ThemeValue, ThemeContext};
-pub use label::Label;
-pub use progress_bar::ProgressBar;
-pub use slider::Slider;
-
 
 pub type Result<T> = std::result::Result<T, KitError>;
 
@@ -70,7 +79,9 @@ pub struct Point {
 impl Point {
     pub const ZERO: Point = Point { x: 0.0, y: 0.0 };
 
-    pub const fn new(x: f32, y: f32) -> Self { Self { x, y } }
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -80,9 +91,14 @@ pub struct Size {
 }
 
 impl Size {
-    pub const ZERO: Size = Size { width: 0.0, height: 0.0 };
+    pub const ZERO: Size = Size {
+        width: 0.0,
+        height: 0.0,
+    };
 
-    pub const fn new(width: f32, height: f32) -> Self { Self { width, height } }
+    pub const fn new(width: f32, height: f32) -> Self {
+        Self { width, height }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -94,10 +110,20 @@ pub struct Rect {
 }
 
 impl Rect {
-    pub const ZERO: Rect = Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 };
+    pub const ZERO: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 0.0,
+        height: 0.0,
+    };
 
     pub const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     pub fn contains(&self, point: Point) -> bool {

@@ -20,6 +20,12 @@ pub struct SessionManager {
     lock_on_sleep: bool,
 }
 
+impl Default for SessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionManager {
     pub fn new() -> Self {
         Self {
@@ -43,26 +49,54 @@ impl SessionManager {
     }
 
     pub fn lock(&mut self) {
-        // Lock the screen
+        // Lock the screen placeholder
     }
 
     pub fn unlock(&mut self) {
-        // Unlock the screen
+        // Unlock the screen placeholder
     }
 
     pub fn shutdown(&self) {
-        // Initiate system shutdown
+        // Initiate system shutdown placeholder
     }
 
     pub fn restart(&self) {
-        // Initiate system restart
+        // Initiate system restart placeholder
     }
 
     pub fn save_state(&mut self) {
-        // Save session state for restoration
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let config_dir = std::path::PathBuf::from(home).join(".config/retroshell");
+        let _ = std::fs::create_dir_all(&config_dir);
+        let path = config_dir.join("session.toml");
+
+        let mut content = String::new();
+        content.push_str("[session]\n");
+        content.push_str(&format!("username = \"{}\"\n", self.username));
+        content.push_str(&format!("logged_in = {}\n", self.logged_in));
+        for (k, v) in &self.session_state {
+            content.push_str(&format!("{} = \"{}\"\n", k, v));
+        }
+        let _ = std::fs::write(path, content);
     }
 
     pub fn restore_state(&mut self) {
-        // Restore previous session
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let path = std::path::PathBuf::from(home).join(".config/retroshell/session.toml");
+        if let Ok(content) = std::fs::read_to_string(path) {
+            for line in content.lines() {
+                if let Some(pos) = line.find('=') {
+                    let key = line[..pos].trim();
+                    let val = line[pos + 1..].trim().trim_matches('"');
+                    if key == "username" {
+                        self.username = val.to_string();
+                    } else if key == "logged_in" {
+                        self.logged_in = val.parse().unwrap_or(false);
+                    } else if key != "[session]" {
+                        self.session_state.insert(key.to_string(), val.to_string());
+                    }
+                }
+            }
+        }
     }
 }

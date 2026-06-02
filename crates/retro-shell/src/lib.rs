@@ -1,28 +1,28 @@
-pub mod menu_server;
-pub mod window_manager;
+pub mod application_registry;
 pub mod desktop_manager;
 pub mod dock;
-pub mod notification_center;
-pub mod workspace_manager;
 pub mod launch_services;
+pub mod menu_server;
+pub mod notification_center;
 pub mod session_manager;
 pub mod theme_manager;
-pub mod application_registry;
+pub mod window_manager;
+pub mod workspace_manager;
 
-pub use menu_server::MenuServer;
-pub use window_manager::WindowManager;
+pub use application_registry::ApplicationRegistry;
 pub use desktop_manager::DesktopManager;
 pub use dock::Dock;
-pub use notification_center::NotificationCenter;
-pub use workspace_manager::WorkspaceManager;
 pub use launch_services::LaunchServices;
+pub use menu_server::MenuServer;
+pub use notification_center::NotificationCenter;
 pub use session_manager::SessionManager;
 pub use theme_manager::ThemeManager;
-pub use application_registry::ApplicationRegistry;
+pub use window_manager::WindowManager;
+pub use workspace_manager::WorkspaceManager;
 
-use std::sync::Arc;
 use parking_lot::RwLock;
 use retro_kit::theme::ThemeContext;
+use std::sync::Arc;
 
 pub type Result<T> = std::result::Result<T, ShellError>;
 
@@ -53,6 +53,12 @@ pub struct RetroShell {
     pub application_registry: Arc<RwLock<ApplicationRegistry>>,
 }
 
+impl Default for RetroShell {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RetroShell {
     pub fn new() -> Self {
         Self {
@@ -81,6 +87,25 @@ impl RetroShell {
     }
 
     pub fn run(&self) -> Result<()> {
+        let event_loop = retro_render::event_loop::RetroEventLoop::new();
+        struct ShellHandler;
+        impl retro_render::event_loop::RetroAppHandler for ShellHandler {
+            fn init(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+                let attrs = winit::window::Window::default_attributes().with_title("RetroShell");
+                let _window = event_loop.create_window(attrs).unwrap();
+            }
+            fn handle_window_event(
+                &mut self,
+                event_loop: &winit::event_loop::ActiveEventLoop,
+                event: winit::event::WindowEvent,
+            ) {
+                if let winit::event::WindowEvent::CloseRequested = event {
+                    event_loop.exit();
+                }
+            }
+        }
+        let mut handler = ShellHandler;
+        let _ = event_loop.run(&mut handler);
         Ok(())
     }
 }

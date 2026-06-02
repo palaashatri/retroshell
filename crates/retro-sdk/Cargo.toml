@@ -6,8 +6,12 @@ edition = "2021"
 [dependencies]
 retro-kit = { path = "../retro-kit" }
 retro-bus = { path = "../retro-bus" }
+retro-render = { path = "../retro-render" }
+winit = "0.30"
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
 tracing = { workspace = true }
+
+

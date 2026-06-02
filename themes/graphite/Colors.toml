@@ -1,6 +1,6 @@
 [window]
 background = "#EDEDED"
-border =="#666666"
+border = "#666666"
 title_text = "#000000"
 titlebar_active = "#666666"
 titlebar_inactive = "#999999"
@@ -21,7 +21,7 @@ disabled_text = "#999999"
 
 [text]
 primary = "#000000"
-secondary =="#555555"
+secondary = "#555555"
 link = "#666666"
 selection_background = "#666666"
 selection_text = "#FFFFFF"
@@ -30,7 +30,7 @@ selection_text = "#FFFFFF"
 background = "#333333"
 
 [dock]
-background =="#D0D0D5"
+background = "#D0D0D5"
 highlight = "#666666"
 indicator = "#666666"
 

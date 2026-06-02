@@ -1,4 +1,4 @@
-use retro_kit::{Rect, Point, Color};
+use retro_kit::{Color, Point, Rect};
 
 #[derive(Debug, Clone)]
 pub struct DesktopIcon {
@@ -16,6 +16,12 @@ pub struct DesktopManager {
     pub show_volumes: bool,
     pub show_hard_disks: bool,
     pub selected_icons: Vec<usize>,
+}
+
+impl Default for DesktopManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DesktopManager {
@@ -60,5 +66,41 @@ impl DesktopManager {
 
     pub fn set_background(&mut self, color: Color) {
         self.background_color = color;
+    }
+
+    pub fn render_desktop(&self) -> retro_render::RenderNode {
+        let mut children = vec![];
+        children.push(retro_render::RenderNode::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+            color: self.background_color,
+            corner_radius: 0.0,
+        });
+
+        for icon in &self.icons {
+            children.push(retro_render::RenderNode::Rect {
+                x: icon.rect.x,
+                y: icon.rect.y,
+                width: icon.rect.width,
+                height: icon.rect.height,
+                color: if icon.selected {
+                    retro_render::Color::new(0.4, 0.4, 0.8, 0.5)
+                } else {
+                    retro_render::Color::TRANSPARENT
+                },
+                corner_radius: 4.0,
+            });
+            children.push(retro_render::RenderNode::Text {
+                x: icon.rect.x + 5.0,
+                y: icon.rect.y + 70.0,
+                text: icon.label.clone(),
+                font_size: 11.0,
+                color: retro_render::Color::WHITE,
+            });
+        }
+
+        retro_render::RenderNode::Group { children }
     }
 }

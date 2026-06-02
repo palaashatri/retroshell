@@ -1,16 +1,22 @@
-use crate::{
-    Widget, WidgetState, Rect, Size, LayoutConstraint,
-    theme::ThemeContext,
-};
+use crate::{theme::ThemeContext, LayoutConstraint, Rect, Size, Widget, WidgetState};
 
 pub struct Toolbar {
     state: WidgetState,
     pub items: Vec<Box<dyn Widget>>,
 }
 
+impl Default for Toolbar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Toolbar {
     pub fn new() -> Self {
-        Self { state: WidgetState::new(), items: vec![] }
+        Self {
+            state: WidgetState::new(),
+            items: vec![],
+        }
     }
 
     pub fn add(&mut self, widget: Box<dyn Widget>) {
@@ -19,8 +25,12 @@ impl Toolbar {
 }
 
 impl Widget for Toolbar {
-    fn widget_state(&self) -> &WidgetState { &self.state }
-    fn widget_state_mut(&mut self) -> &mut WidgetState { &mut self.state }
+    fn widget_state(&self) -> &WidgetState {
+        &self.state
+    }
+    fn widget_state_mut(&mut self) -> &mut WidgetState {
+        &mut self.state
+    }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
         let height = 32.0;
@@ -30,7 +40,12 @@ impl Widget for Toolbar {
             width += size.width;
         }
         let size = constraint.clamp(Size::new(width.max(constraint.min_width), height));
-        self.set_rect(Rect::new(self.rect().x, self.rect().y, size.width, size.height));
+        self.set_rect(Rect::new(
+            self.rect().x,
+            self.rect().y,
+            size.width,
+            size.height,
+        ));
         size
     }
 
@@ -52,6 +67,10 @@ impl Widget for Toolbar {
         result
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }

@@ -36,6 +36,12 @@ pub struct Dock {
     pub trash_items: usize,
 }
 
+impl Default for Dock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Dock {
     pub fn new() -> Self {
         let mut dock = Self {
@@ -106,10 +112,10 @@ impl Dock {
         if let Some(item) = self.items.iter_mut().find(|i| i.app_id == app_id) {
             item.state = state;
         }
-        if state == AppState::Running || state == AppState::Focused {
-            if !self.running_apps.contains(&app_id.to_string()) {
-                self.running_apps.push(app_id.to_string());
-            }
+        if (state == AppState::Running || state == AppState::Focused)
+            && !self.running_apps.contains(&app_id.to_string())
+        {
+            self.running_apps.push(app_id.to_string());
         }
     }
 
@@ -133,5 +139,50 @@ impl Dock {
                 self.icon_size,
             );
         }
+    }
+
+    pub fn render_dock(&self) -> retro_render::RenderNode {
+        let mut children = vec![];
+        if let (Some(first), Some(last)) = (self.items.first(), self.items.last()) {
+            let padding = 8.0;
+            let bg_x = first.position.x - padding;
+            let bg_y = first.position.y - padding;
+            let bg_w = last.position.x + last.position.width + padding - bg_x;
+            let bg_h = self.icon_size + padding * 2.0;
+
+            children.push(retro_render::RenderNode::Rect {
+                x: bg_x,
+                y: bg_y,
+                width: bg_w,
+                height: bg_h,
+                color: retro_render::Color::new(0.8, 0.8, 0.8, 0.9),
+                corner_radius: 8.0,
+            });
+        }
+
+        for item in &self.items {
+            children.push(retro_render::RenderNode::Rect {
+                x: item.position.x,
+                y: item.position.y,
+                width: item.position.width,
+                height: item.position.height,
+                color: match item.state {
+                    AppState::Focused => retro_render::Color::new(0.6, 0.6, 0.6, 1.0),
+                    AppState::Running => retro_render::Color::new(0.7, 0.7, 0.7, 1.0),
+                    AppState::AttentionRequired => retro_render::Color::new(0.9, 0.3, 0.3, 1.0),
+                    AppState::NotRunning => retro_render::Color::new(0.9, 0.9, 0.9, 1.0),
+                },
+                corner_radius: 4.0,
+            });
+            children.push(retro_render::RenderNode::Text {
+                x: item.position.x + 2.0,
+                y: item.position.y + item.position.height / 2.0 + 4.0,
+                text: item.label.clone(),
+                font_size: 11.0,
+                color: retro_render::Color::BLACK,
+            });
+        }
+
+        retro_render::RenderNode::Group { children }
     }
 }

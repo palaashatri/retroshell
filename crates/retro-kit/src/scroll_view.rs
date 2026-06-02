@@ -1,7 +1,5 @@
 use crate::{
-    Widget, WidgetState, Rect, Size, Event, EventResult,
-    LayoutConstraint,
-    theme::ThemeContext,
+    theme::ThemeContext, Event, EventResult, LayoutConstraint, Rect, Size, Widget, WidgetState,
 };
 
 pub struct ScrollView {
@@ -11,6 +9,12 @@ pub struct ScrollView {
     pub scroll_y: f32,
     pub scrollable_x: bool,
     pub scrollable_y: bool,
+}
+
+impl Default for ScrollView {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ScrollView {
@@ -31,15 +35,20 @@ impl ScrollView {
 }
 
 impl Widget for ScrollView {
-    fn widget_state(&self) -> &WidgetState { &self.state }
-    fn widget_state_mut(&mut self) -> &mut WidgetState { &mut self.state }
+    fn widget_state(&self) -> &WidgetState {
+        &self.state
+    }
+    fn widget_state_mut(&mut self) -> &mut WidgetState {
+        &mut self.state
+    }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
         let size = constraint.clamp(Size::new(constraint.max_width, constraint.max_height));
         let rect = Rect::new(self.rect().x, self.rect().y, size.width, size.height);
         self.set_rect(rect);
         if let Some(content) = &mut self.content {
-            let content_constraint = LayoutConstraint::loose(Size::new(size.width * 2.0, size.height * 2.0));
+            let content_constraint =
+                LayoutConstraint::loose(Size::new(size.width * 2.0, size.height * 2.0));
             content.layout(content_constraint);
             let content_rect = content.rect();
             content.set_rect(Rect::new(
@@ -83,6 +92,10 @@ impl Widget for ScrollView {
         }
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }

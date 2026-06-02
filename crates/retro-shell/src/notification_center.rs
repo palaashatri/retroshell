@@ -1,4 +1,3 @@
-
 #[derive(Debug, Clone)]
 pub enum NotificationPriority {
     Low,
@@ -24,12 +23,27 @@ pub struct NotificationCenter {
     pub max_visible: usize,
 }
 
+impl Default for NotificationCenter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NotificationCenter {
     pub fn new() -> Self {
-        Self { notifications: vec![], max_visible: 5 }
+        Self {
+            notifications: vec![],
+            max_visible: 5,
+        }
     }
 
-    pub fn post(&mut self, app_id: &str, title: &str, message: &str, priority: NotificationPriority) -> String {
+    pub fn post(
+        &mut self,
+        app_id: &str,
+        title: &str,
+        message: &str,
+        priority: NotificationPriority,
+    ) -> String {
         let id = format!("notif-{}", self.notifications.len());
         self.notifications.push(Notification {
             id: id.clone(),
@@ -57,7 +71,8 @@ impl NotificationCenter {
     }
 
     pub fn visible(&self) -> Vec<&Notification> {
-        self.notifications.iter()
+        self.notifications
+            .iter()
             .filter(|n| !n.dismissed)
             .take(self.max_visible)
             .collect()
@@ -65,6 +80,40 @@ impl NotificationCenter {
 
     pub fn clear_expired(&mut self, max_age: std::time::Duration) {
         let now = std::time::Instant::now();
-        self.notifications.retain(|n| n.dismissed || now.duration_since(n.timestamp) < max_age);
+        self.notifications
+            .retain(|n| n.dismissed || now.duration_since(n.timestamp) < max_age);
+    }
+
+    pub fn render_notifications(&self) -> retro_render::RenderNode {
+        let mut children = vec![];
+        let mut y = 30.0;
+
+        for notif in self.visible() {
+            children.push(retro_render::RenderNode::Rect {
+                x: 1600.0,
+                y,
+                width: 300.0,
+                height: 80.0,
+                color: retro_render::Color::new(0.95, 0.95, 0.95, 0.9),
+                corner_radius: 6.0,
+            });
+            children.push(retro_render::RenderNode::Text {
+                x: 1610.0,
+                y: y + 20.0,
+                text: notif.title.clone(),
+                font_size: 13.0,
+                color: retro_render::Color::BLACK,
+            });
+            children.push(retro_render::RenderNode::Text {
+                x: 1610.0,
+                y: y + 45.0,
+                text: notif.message.clone(),
+                font_size: 11.0,
+                color: retro_render::Color::new(0.3, 0.3, 0.3, 1.0),
+            });
+            y += 90.0;
+        }
+
+        retro_render::RenderNode::Group { children }
     }
 }

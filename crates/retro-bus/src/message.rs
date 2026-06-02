@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MessageKind {
@@ -10,13 +10,27 @@ pub enum MessageKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Command {
-    LaunchApplication { bundle_id: String },
-    OpenDocument { path: String, app_id: Option<String> },
+    LaunchApplication {
+        bundle_id: String,
+    },
+    OpenDocument {
+        path: String,
+        app_id: Option<String>,
+    },
     ShowPreferences,
-    QuitApplication { bundle_id: String },
-    SetTheme { name: String },
-    SwitchWorkspace { index: usize },
-    ShowNotification { title: String, message: String },
+    QuitApplication {
+        bundle_id: String,
+    },
+    SetTheme {
+        name: String,
+    },
+    SwitchWorkspace {
+        index: usize,
+    },
+    ShowNotification {
+        title: String,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

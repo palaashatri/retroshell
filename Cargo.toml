@@ -9,6 +9,7 @@ members = [
     "apps/finder",
     "apps/settings",
     "apps/textedit",
+    "apps/terminal",
 ]
 
 [workspace.dependencies]

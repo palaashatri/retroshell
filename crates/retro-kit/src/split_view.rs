@@ -1,7 +1,4 @@
-use crate::{
-    Widget, WidgetState, Rect, Size, LayoutConstraint,
-    theme::ThemeContext,
-};
+use crate::{theme::ThemeContext, LayoutConstraint, Rect, Size, Widget, WidgetState};
 
 pub enum SplitDirection {
     Horizontal,
@@ -29,13 +26,21 @@ impl SplitView {
         }
     }
 
-    pub fn set_first(&mut self, widget: Box<dyn Widget>) { self.first = Some(widget); }
-    pub fn set_second(&mut self, widget: Box<dyn Widget>) { self.second = Some(widget); }
+    pub fn set_first(&mut self, widget: Box<dyn Widget>) {
+        self.first = Some(widget);
+    }
+    pub fn set_second(&mut self, widget: Box<dyn Widget>) {
+        self.second = Some(widget);
+    }
 }
 
 impl Widget for SplitView {
-    fn widget_state(&self) -> &WidgetState { &self.state }
-    fn widget_state_mut(&mut self) -> &mut WidgetState { &mut self.state }
+    fn widget_state(&self) -> &WidgetState {
+        &self.state
+    }
+    fn widget_state_mut(&mut self) -> &mut WidgetState {
+        &mut self.state
+    }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
         let size = constraint.clamp(Size::new(constraint.max_width, constraint.max_height));
@@ -50,7 +55,12 @@ impl Widget for SplitView {
                     child.set_rect(Rect::new(r.x, r.y, first_w, r.height));
                 }
                 if let Some(child) = &mut self.second {
-                    child.set_rect(Rect::new(r.x + first_w + self.divider_size, r.y, second_w, r.height));
+                    child.set_rect(Rect::new(
+                        r.x + first_w + self.divider_size,
+                        r.y,
+                        second_w,
+                        r.height,
+                    ));
                 }
             }
             SplitDirection::Vertical => {
@@ -60,7 +70,12 @@ impl Widget for SplitView {
                     child.set_rect(Rect::new(r.x, r.y, r.width, first_h));
                 }
                 if let Some(child) = &mut self.second {
-                    child.set_rect(Rect::new(r.x, r.y + first_h + self.divider_size, r.width, second_h));
+                    child.set_rect(Rect::new(
+                        r.x,
+                        r.y + first_h + self.divider_size,
+                        r.width,
+                        second_h,
+                    ));
                 }
             }
         }
@@ -72,18 +87,30 @@ impl Widget for SplitView {
 
     fn children(&self) -> Vec<&dyn Widget> {
         let mut result = vec![];
-        if let Some(ref f) = self.first { result.push(f.as_ref()); }
-        if let Some(ref s) = self.second { result.push(s.as_ref()); }
+        if let Some(ref f) = self.first {
+            result.push(f.as_ref());
+        }
+        if let Some(ref s) = self.second {
+            result.push(s.as_ref());
+        }
         result
     }
 
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         let mut result: Vec<&mut dyn Widget> = vec![];
-        if let Some(f) = &mut self.first { result.push(f.as_mut()); }
-        if let Some(s) = &mut self.second { result.push(s.as_mut()); }
+        if let Some(f) = &mut self.first {
+            result.push(f.as_mut());
+        }
+        if let Some(s) = &mut self.second {
+            result.push(s.as_mut());
+        }
         result
     }
 
-    fn as_any(&self) -> &dyn std::any::Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }

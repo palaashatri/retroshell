@@ -1,16 +1,23 @@
-pub mod renderer;
-pub mod texture;
-pub mod surface;
+pub mod event_loop;
 pub mod font;
+pub mod primitives;
+pub mod render_tree;
+pub mod renderer;
 pub mod shader;
+pub mod surface;
+pub mod texture;
 pub mod theme_renderer;
+pub mod windowing;
 
-pub use renderer::Renderer;
-pub use texture::Texture;
-pub use surface::Surface;
+pub use event_loop::{RetroAppHandler, RetroEventLoop};
 pub use font::Font;
+pub use render_tree::{RenderNode, RenderTree};
+pub use renderer::Renderer;
 pub use shader::Shader;
+pub use surface::Surface;
+pub use texture::Texture;
 pub use theme_renderer::ThemeRenderer;
+pub use windowing::WindowHandle;
 
 use thiserror::Error;
 
@@ -45,9 +52,24 @@ pub struct Color {
 }
 
 impl Color {
-    pub const BLACK: Color = Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
-    pub const WHITE: Color = Color { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
-    pub const TRANSPARENT: Color = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 };
+    pub const BLACK: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 1.0,
+    };
+    pub const WHITE: Color = Color {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+        a: 1.0,
+    };
+    pub const TRANSPARENT: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    };
 
     pub const fn new(r: f32, g: f32, b: f32, a: f32) -> Self {
         Self { r, g, b, a }

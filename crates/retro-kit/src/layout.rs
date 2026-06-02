@@ -1,4 +1,4 @@
-use crate::{Size, Rect, Widget};
+use crate::{Rect, Size, Widget};
 
 #[derive(Debug, Clone, Copy)]
 pub struct LayoutConstraint {
@@ -17,7 +17,12 @@ impl LayoutConstraint {
     };
 
     pub fn new(min_width: f32, max_width: f32, min_height: f32, max_height: f32) -> Self {
-        Self { min_width, max_width, min_height, max_height }
+        Self {
+            min_width,
+            max_width,
+            min_height,
+            max_height,
+        }
     }
 
     pub fn tight(size: Size) -> Self {
@@ -83,22 +88,57 @@ pub enum Layout {
 
 impl Layout {
     pub fn horizontal(spacing: f32) -> Self {
-        Layout::Horizontal { spacing, padding: 0.0, children: vec![] }
+        Layout::Horizontal {
+            spacing,
+            padding: 0.0,
+            children: vec![],
+        }
     }
 
     pub fn vertical(spacing: f32) -> Self {
-        Layout::Vertical { spacing, padding: 0.0, children: vec![] }
+        Layout::Vertical {
+            spacing,
+            padding: 0.0,
+            children: vec![],
+        }
     }
 
     pub fn grid(columns: usize, spacing: f32) -> Self {
-        Layout::Grid { columns, spacing, padding: 0.0, children: vec![] }
+        Layout::Grid {
+            columns,
+            spacing,
+            padding: 0.0,
+            children: vec![],
+        }
     }
 
     pub fn padding(self, padding_val: f32) -> Self {
         match self {
-            Layout::Horizontal { spacing, children, .. } => Layout::Horizontal { spacing, padding: padding_val, children },
-            Layout::Vertical { spacing, children, .. } => Layout::Vertical { spacing, padding: padding_val, children },
-            Layout::Grid { columns, spacing, children, .. } => Layout::Grid { columns, spacing, padding: padding_val, children },
+            Layout::Horizontal {
+                spacing, children, ..
+            } => Layout::Horizontal {
+                spacing,
+                padding: padding_val,
+                children,
+            },
+            Layout::Vertical {
+                spacing, children, ..
+            } => Layout::Vertical {
+                spacing,
+                padding: padding_val,
+                children,
+            },
+            Layout::Grid {
+                columns,
+                spacing,
+                children,
+                ..
+            } => Layout::Grid {
+                columns,
+                spacing,
+                padding: padding_val,
+                children,
+            },
             other => other,
         }
     }
@@ -117,7 +157,11 @@ impl Layout {
 
     pub fn layout_size(&mut self, constraint: LayoutConstraint) -> Size {
         match self {
-            Layout::Horizontal { spacing, padding, children } => {
+            Layout::Horizontal {
+                spacing,
+                padding,
+                children,
+            } => {
                 let spacing = *spacing;
                 let padding = *padding;
                 let mut width: f32 = padding * 2.0;
@@ -140,7 +184,11 @@ impl Layout {
                 height += padding * 2.0;
                 constraint.clamp(Size { width, height })
             }
-            Layout::Vertical { spacing, padding, children } => {
+            Layout::Vertical {
+                spacing,
+                padding,
+                children,
+            } => {
                 let spacing = *spacing;
                 let padding = *padding;
                 let mut width: f32 = 0.0;
@@ -162,21 +210,30 @@ impl Layout {
                 height += padding * 2.0;
                 constraint.clamp(Size { width, height })
             }
-            Layout::Grid { columns, spacing, padding, children } => {
+            Layout::Grid {
+                columns,
+                spacing,
+                padding,
+                children,
+            } => {
                 let spacing = *spacing;
                 let padding = *padding;
                 let columns = *columns;
                 let _width: f32 = padding * 2.0;
-                let num_rows = (children.len() + columns - 1) / columns;
+                let num_rows = children.len().div_ceil(columns);
                 let mut heights: Vec<f32> = vec![0.0; num_rows];
                 let col_width = if columns > 0 {
-                    (constraint.max_width - padding * 2.0 - spacing * (columns as f32 - 1.0)) / columns as f32
+                    (constraint.max_width - padding * 2.0 - spacing * (columns as f32 - 1.0))
+                        / columns as f32
                 } else {
                     0.0
                 };
                 for (i, child) in children.iter_mut().enumerate() {
                     let row = i / columns;
-                    let child_size = child.layout(LayoutConstraint::tight(Size::new(col_width, constraint.max_height)));
+                    let child_size = child.layout(LayoutConstraint::tight(Size::new(
+                        col_width,
+                        constraint.max_height,
+                    )));
                     heights[row] = heights[row].max(child_size.height);
                 }
                 let total_height: f32 = heights.iter().sum::<f32>()
@@ -213,17 +270,30 @@ impl Layout {
 
     pub fn arrange(&mut self, rect: Rect) {
         match self {
-            Layout::Horizontal { spacing, padding, children } => {
+            Layout::Horizontal {
+                spacing,
+                padding,
+                children,
+            } => {
                 let spacing = *spacing;
                 let padding = *padding;
                 let mut x = rect.x + padding;
                 for child in children.iter_mut() {
                     let child_height = child.rect().height;
-                    child.set_rect(Rect::new(x, rect.y + padding, child.rect().width.max(0.0), child_height));
+                    child.set_rect(Rect::new(
+                        x,
+                        rect.y + padding,
+                        child.rect().width.max(0.0),
+                        child_height,
+                    ));
                     x += child.rect().width + spacing;
                 }
             }
-            Layout::Vertical { spacing, padding, children } => {
+            Layout::Vertical {
+                spacing,
+                padding,
+                children,
+            } => {
                 let spacing = *spacing;
                 let padding = *padding;
                 let mut y = rect.y + padding;
@@ -234,7 +304,12 @@ impl Layout {
                     y += child_height + spacing;
                 }
             }
-            Layout::Grid { columns, spacing, padding, children } => {
+            Layout::Grid {
+                columns,
+                spacing,
+                padding,
+                children,
+            } => {
                 let spacing = *spacing;
                 let padding = *padding;
                 let columns = *columns;
