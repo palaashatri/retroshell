@@ -40,6 +40,7 @@ impl TextField {
     }
     pub fn set_text<S: Into<String>>(&mut self, text: S) {
         self.text = text.into();
+        self.cursor_position = self.text.len();
     }
 }
 

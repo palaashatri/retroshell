@@ -33,6 +33,10 @@ fn test_session_manager() {
     sm.login("testuser");
     assert!(sm.logged_in);
     assert_eq!(sm.username, "testuser");
+    sm.lock();
+    assert!(sm.locked);
+    sm.unlock();
+    assert!(!sm.locked);
     sm.session_state
         .insert("active_app".to_string(), "finder".to_string());
     sm.save_state();
@@ -41,6 +45,8 @@ fn test_session_manager() {
     sm2.restore_state();
     assert_eq!(sm2.username, "testuser");
     assert!(sm2.logged_in);
+    assert!(!sm2.locked);
+    assert!(sm2.restore_windows);
     assert_eq!(
         sm2.session_state.get("active_app").map(|s| s.as_str()),
         Some("finder")

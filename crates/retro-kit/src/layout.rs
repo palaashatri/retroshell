@@ -1,4 +1,4 @@
-use crate::{Rect, Size, Widget};
+use crate::{theme::ThemeContext, Event, EventResult, Rect, Size, Widget, WidgetState};
 
 #[derive(Debug, Clone, Copy)]
 pub struct LayoutConstraint {
@@ -164,14 +164,14 @@ impl Layout {
             } => {
                 let spacing = *spacing;
                 let padding = *padding;
-                let mut width: f32 = padding * 2.0;
+                let mut width: f32 = 0.0;
                 let mut height: f32 = 0.0;
                 for child in children.iter_mut() {
                     let child_constraint = LayoutConstraint {
                         min_width: 0.0,
-                        max_width: constraint.max_width - width,
+                        max_width: (constraint.max_width - padding * 2.0 - width).max(0.0),
                         min_height: 0.0,
-                        max_height: constraint.max_height,
+                        max_height: (constraint.max_height - padding * 2.0).max(0.0),
                     };
                     let size = child.layout(child_constraint);
                     width += size.width + spacing;
@@ -192,13 +192,13 @@ impl Layout {
                 let spacing = *spacing;
                 let padding = *padding;
                 let mut width: f32 = 0.0;
-                let mut height: f32 = padding * 2.0;
+                let mut height: f32 = 0.0;
                 for child in children.iter_mut() {
                     let child_constraint = LayoutConstraint {
                         min_width: 0.0,
-                        max_width: constraint.max_width,
+                        max_width: (constraint.max_width - padding * 2.0).max(0.0),
                         min_height: 0.0,
-                        max_height: constraint.max_height - height,
+                        max_height: (constraint.max_height - padding * 2.0 - height).max(0.0),
                     };
                     let size = child.layout(child_constraint);
                     width = width.max(size.width);
@@ -207,6 +207,7 @@ impl Layout {
                 if !children.is_empty() {
                     height -= spacing;
                 }
+                width += padding * 2.0;
                 height += padding * 2.0;
                 constraint.clamp(Size { width, height })
             }
@@ -219,15 +220,15 @@ impl Layout {
                 let spacing = *spacing;
                 let padding = *padding;
                 let columns = *columns;
-                let _width: f32 = padding * 2.0;
+                if columns == 0 {
+                    return constraint.clamp(Size::new(padding * 2.0, padding * 2.0));
+                }
                 let num_rows = children.len().div_ceil(columns);
                 let mut heights: Vec<f32> = vec![0.0; num_rows];
-                let col_width = if columns > 0 {
-                    (constraint.max_width - padding * 2.0 - spacing * (columns as f32 - 1.0))
-                        / columns as f32
-                } else {
-                    0.0
-                };
+                let col_width =
+                    ((constraint.max_width - padding * 2.0 - spacing * (columns as f32 - 1.0))
+                        / columns as f32)
+                        .max(0.0);
                 for (i, child) in children.iter_mut().enumerate() {
                     let row = i / columns;
                     let child_size = child.layout(LayoutConstraint::tight(Size::new(
@@ -239,11 +240,11 @@ impl Layout {
                 let total_height: f32 = heights.iter().sum::<f32>()
                     + spacing * (heights.len().saturating_sub(1) as f32)
                     + padding * 2.0;
-                let total_width = if columns > 0 {
+                let total_width = if children.is_empty() {
+                    padding * 2.0
+                } else {
                     let cols = children.len().min(columns) as f32;
                     col_width * cols + spacing * (cols - 1.0) + padding * 2.0
-                } else {
-                    padding * 2.0
                 };
                 constraint.clamp(Size::new(total_width, total_height))
             }
@@ -313,11 +314,12 @@ impl Layout {
                 let spacing = *spacing;
                 let padding = *padding;
                 let columns = *columns;
-                let col_width = if columns > 0 {
-                    (rect.width - padding * 2.0 - spacing * (columns as f32 - 1.0)) / columns as f32
-                } else {
-                    0.0
-                };
+                if columns == 0 {
+                    return;
+                }
+                let col_width = ((rect.width - padding * 2.0 - spacing * (columns as f32 - 1.0))
+                    / columns as f32)
+                    .max(0.0);
                 let mut x = rect.x + padding;
                 let mut y = rect.y + padding;
                 for (i, child) in children.iter_mut().enumerate() {
@@ -340,5 +342,107 @@ impl Layout {
                 }
             }
         }
+    }
+
+    pub fn draw(&self, theme: &ThemeContext) {
+        match self {
+            Layout::Horizontal { children, .. }
+            | Layout::Vertical { children, .. }
+            | Layout::Grid { children, .. }
+            | Layout::Stack { children }
+            | Layout::Overlay { children } => {
+                for child in children {
+                    child.draw(theme);
+                }
+            }
+        }
+    }
+
+    pub fn handle_event(&mut self, event: &Event) -> EventResult {
+        match self {
+            Layout::Horizontal { children, .. }
+            | Layout::Vertical { children, .. }
+            | Layout::Grid { children, .. }
+            | Layout::Stack { children }
+            | Layout::Overlay { children } => {
+                for child in children.iter_mut().rev() {
+                    match child.handle_event(event) {
+                        EventResult::Ignored => {}
+                        other => return other,
+                    }
+                }
+                EventResult::Ignored
+            }
+        }
+    }
+
+    pub fn update(&mut self) {
+        match self {
+            Layout::Horizontal { children, .. }
+            | Layout::Vertical { children, .. }
+            | Layout::Grid { children, .. }
+            | Layout::Stack { children }
+            | Layout::Overlay { children } => {
+                for child in children {
+                    child.update();
+                }
+            }
+        }
+    }
+}
+
+pub struct LayoutView {
+    state: WidgetState,
+    pub layout: Layout,
+}
+
+impl LayoutView {
+    pub fn new(layout: Layout) -> Self {
+        Self {
+            state: WidgetState::new(),
+            layout,
+        }
+    }
+}
+
+impl Widget for LayoutView {
+    fn widget_state(&self) -> &WidgetState {
+        &self.state
+    }
+
+    fn widget_state_mut(&mut self) -> &mut WidgetState {
+        &mut self.state
+    }
+
+    fn layout(&mut self, constraint: LayoutConstraint) -> Size {
+        let size = self.layout.layout_size(constraint);
+        self.set_rect(Rect::new(
+            self.rect().x,
+            self.rect().y,
+            size.width,
+            size.height,
+        ));
+        self.layout.arrange(self.rect());
+        size
+    }
+
+    fn draw(&self, theme: &ThemeContext) {
+        self.layout.draw(theme);
+    }
+
+    fn handle_event(&mut self, event: &Event) -> EventResult {
+        self.layout.handle_event(event)
+    }
+
+    fn update(&mut self) {
+        self.layout.update();
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }

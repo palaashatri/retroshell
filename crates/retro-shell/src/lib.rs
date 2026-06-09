@@ -88,11 +88,19 @@ impl RetroShell {
 
     pub fn run(&self) -> Result<()> {
         let event_loop = retro_render::event_loop::RetroEventLoop::new();
-        struct ShellHandler;
+        struct ShellHandler {
+            window: Option<winit::window::Window>,
+        }
         impl retro_render::event_loop::RetroAppHandler for ShellHandler {
             fn init(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
                 let attrs = winit::window::Window::default_attributes().with_title("RetroShell");
-                let _window = event_loop.create_window(attrs).unwrap();
+                match event_loop.create_window(attrs) {
+                    Ok(window) => self.window = Some(window),
+                    Err(err) => {
+                        tracing::error!("failed to create shell window: {err}");
+                        event_loop.exit();
+                    }
+                }
             }
             fn handle_window_event(
                 &mut self,
@@ -104,7 +112,7 @@ impl RetroShell {
                 }
             }
         }
-        let mut handler = ShellHandler;
+        let mut handler = ShellHandler { window: None };
         let _ = event_loop.run(&mut handler);
         Ok(())
     }

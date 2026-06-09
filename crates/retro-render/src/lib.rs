@@ -11,6 +11,7 @@ pub mod windowing;
 
 pub use event_loop::{RetroAppHandler, RetroEventLoop};
 pub use font::Font;
+pub use primitives::DrawCommand;
 pub use render_tree::{RenderNode, RenderTree};
 pub use renderer::Renderer;
 pub use shader::Shader;

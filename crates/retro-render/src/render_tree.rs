@@ -1,4 +1,4 @@
-use crate::{Color, Renderer, Surface};
+use crate::{primitives, Color, Renderer, Surface};
 
 pub enum RenderNode {
     Rect {
@@ -41,20 +41,34 @@ impl RenderTree {
         Self::draw_node(&self.root, renderer, surface);
     }
 
-    fn draw_node(node: &RenderNode, _renderer: &mut Renderer, _surface: &mut Surface) {
+    fn draw_node(node: &RenderNode, renderer: &mut Renderer, surface: &mut Surface) {
+        let _surface_extent = surface.extent;
         match node {
-            RenderNode::Rect { .. } => {
-                // Rect drawing logic placeholder (structurally complete for GPU batching)
-            }
-            RenderNode::Text { .. } => {
-                // Text drawing logic placeholder
-            }
-            RenderNode::Image { .. } => {
-                // Image drawing logic placeholder
-            }
+            RenderNode::Rect {
+                x,
+                y,
+                width,
+                height,
+                color,
+                corner_radius,
+            } => primitives::draw_rect(renderer, *x, *y, *width, *height, *color, *corner_radius),
+            RenderNode::Text {
+                x,
+                y,
+                text,
+                font_size,
+                color,
+            } => primitives::draw_text(renderer, text, *x, *y, *font_size, *color),
+            RenderNode::Image {
+                x,
+                y,
+                width,
+                height,
+                texture_id,
+            } => primitives::draw_image(renderer, *x, *y, *width, *height, *texture_id),
             RenderNode::Group { children } => {
                 for child in children {
-                    Self::draw_node(child, _renderer, _surface);
+                    Self::draw_node(child, renderer, surface);
                 }
             }
         }

@@ -1,36 +1,93 @@
 use crate::{Color, Renderer};
 
-pub fn draw_rect(
-    _renderer: &Renderer,
-    _x: f32,
-    _y: f32,
-    _width: f32,
-    _height: f32,
-    _color: Color,
-    _corner_radius: f32,
-) {
-    // Structural helper interface for batch GPU rendering
+#[derive(Debug, Clone, PartialEq)]
+pub enum DrawCommand {
+    Rect {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        color: Color,
+        corner_radius: f32,
+    },
+    Text {
+        text: String,
+        x: f32,
+        y: f32,
+        font_size: f32,
+        color: Color,
+    },
+    Line {
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        color: Color,
+        thickness: f32,
+    },
+    Image {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        texture_id: u32,
+    },
 }
 
-pub fn draw_text(
-    _renderer: &Renderer,
-    _text: &str,
-    _x: f32,
-    _y: f32,
-    _font_size: f32,
-    _color: Color,
+pub fn draw_rect(
+    renderer: &Renderer,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    color: Color,
+    corner_radius: f32,
 ) {
-    // Structural helper interface for text rendering
+    renderer.enqueue(DrawCommand::Rect {
+        x,
+        y,
+        width,
+        height,
+        color,
+        corner_radius,
+    });
+}
+
+pub fn draw_text(renderer: &Renderer, text: &str, x: f32, y: f32, font_size: f32, color: Color) {
+    renderer.enqueue(DrawCommand::Text {
+        text: text.to_string(),
+        x,
+        y,
+        font_size,
+        color,
+    });
 }
 
 pub fn draw_line(
-    _renderer: &Renderer,
-    _x1: f32,
-    _y1: f32,
-    _x2: f32,
-    _y2: f32,
-    _color: Color,
-    _thickness: f32,
+    renderer: &Renderer,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    color: Color,
+    thickness: f32,
 ) {
-    // Structural helper interface for line rendering
+    renderer.enqueue(DrawCommand::Line {
+        x1,
+        y1,
+        x2,
+        y2,
+        color,
+        thickness,
+    });
+}
+
+pub fn draw_image(renderer: &Renderer, x: f32, y: f32, width: f32, height: f32, texture_id: u32) {
+    renderer.enqueue(DrawCommand::Image {
+        x,
+        y,
+        width,
+        height,
+        texture_id,
+    });
 }

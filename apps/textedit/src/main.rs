@@ -1,5 +1,6 @@
 use retro_kit::button::Button;
 use retro_kit::event::{KeyCode, Modifiers};
+use retro_kit::layout::{Layout, LayoutView};
 use retro_kit::scroll_view::ScrollView;
 use retro_kit::text_field::TextField;
 use retro_kit::toolbar::Toolbar;
@@ -194,7 +195,13 @@ fn main() {
     let mut scroll = ScrollView::new();
     scroll.set_content(Box::new(text_editor));
 
-    let window = Window::new("Untitled - TextEdit");
+    let mut content = Layout::vertical(0.0);
+    content.add(Box::new(toolbar));
+    content.add(Box::new(scroll));
+
+    let mut window = Window::new("Untitled - TextEdit");
+    window.has_toolbar = true;
+    window.set_content(Box::new(LayoutView::new(content)));
     app.set_main_window(window);
     app.run();
 }
