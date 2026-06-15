@@ -87,8 +87,9 @@ impl Menu {
     }
 
     pub fn add_action<S: Into<String>>(&mut self, label: S) -> &mut MenuItem {
+        let index = self.items.len();
         self.items.push(MenuItem::action(label));
-        self.items.last_mut().unwrap()
+        &mut self.items[index]
     }
 
     pub fn add_separator(&mut self) {

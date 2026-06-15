@@ -1,7 +1,8 @@
 use retro_bus::RetroBus;
+use retro_kit::event::{Modifiers, MouseButton};
 use retro_kit::menu::{Menu, MenuItem};
 use retro_kit::window::Window;
-use retro_kit::Widget;
+use retro_kit::{LayoutConstraint, Point, Size, Widget};
 
 pub struct Application {
     pub name: String,
@@ -47,13 +48,48 @@ impl Application {
         struct AppHandler {
             name: String,
             window: Option<Window>,
+            platform_window: Option<winit::window::Window>,
             modifiers: winit::keyboard::ModifiersState,
+            cursor_position: Point,
+            last_click: Option<(MouseButton, Point, std::time::Instant)>,
         }
+        impl AppHandler {
+            fn modifiers(&self) -> Modifiers {
+                modifiers_from_winit(self.modifiers)
+            }
+
+            fn dispatch(&mut self, event: retro_kit::Event) -> retro_kit::EventResult {
+                if let Some(ref mut win) = self.window {
+                    win.handle_event(&event)
+                } else {
+                    retro_kit::EventResult::Ignored
+                }
+            }
+
+            fn layout_window(&mut self, width: u32, height: u32) {
+                if let Some(ref mut win) = self.window {
+                    let size = Size::new(width as f32, height as f32);
+                    win.layout(LayoutConstraint::tight(size));
+                }
+            }
+        }
+
         impl retro_render::event_loop::RetroAppHandler for AppHandler {
             fn init(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
                 let attrs = winit::window::Window::default_attributes().with_title(&self.name);
-                let _window = event_loop.create_window(attrs).unwrap();
+                match event_loop.create_window(attrs) {
+                    Ok(window) => {
+                        let size = window.inner_size();
+                        self.layout_window(size.width, size.height);
+                        self.platform_window = Some(window);
+                    }
+                    Err(err) => {
+                        tracing::error!("failed to create application window: {err}");
+                        event_loop.exit();
+                    }
+                }
             }
+
             fn handle_window_event(
                 &mut self,
                 event_loop: &winit::event_loop::ActiveEventLoop,
@@ -63,39 +99,112 @@ impl Application {
                     winit::event::WindowEvent::CloseRequested => {
                         event_loop.exit();
                     }
+                    winit::event::WindowEvent::Resized(size) => {
+                        self.layout_window(size.width, size.height);
+                    }
                     winit::event::WindowEvent::ModifiersChanged(new_mods) => {
                         self.modifiers = new_mods.state();
                     }
-                    winit::event::WindowEvent::KeyboardInput { event: key_event, .. }
-                        if key_event.state == winit::event::ElementState::Pressed =>
-                    {
-                        let mut handled = false;
-                        if let winit::keyboard::PhysicalKey::Code(phys_key) = key_event.physical_key {
-                            if let Some(rkey) = winit_to_retro_key(phys_key) {
-                                let retro_modifiers = retro_kit::event::Modifiers {
-                                    shift: self.modifiers.shift_key(),
-                                    control: self.modifiers.control_key(),
-                                    alt: self.modifiers.alt_key(),
-                                    meta: self.modifiers.super_key(),
-                                };
-                                let retro_event = retro_kit::Event::KeyDown {
-                                    key: rkey,
-                                    modifiers: retro_modifiers,
-                                };
-                                if let Some(ref mut win) = self.window {
-                                    if let retro_kit::EventResult::Handled = win.handle_event(&retro_event) {
-                                        handled = true;
+                    winit::event::WindowEvent::CursorMoved { position, .. } => {
+                        self.cursor_position = Point::new(position.x as f32, position.y as f32);
+                        let _ = self.dispatch(retro_kit::Event::MouseMove {
+                            point: self.cursor_position,
+                            modifiers: self.modifiers(),
+                        });
+                    }
+                    winit::event::WindowEvent::CursorEntered { .. } => {
+                        let _ = self.dispatch(retro_kit::Event::MouseEnter);
+                    }
+                    winit::event::WindowEvent::CursorLeft { .. } => {
+                        let _ = self.dispatch(retro_kit::Event::MouseLeave);
+                    }
+                    winit::event::WindowEvent::MouseInput { state, button, .. } => {
+                        if let Some(button) = winit_to_retro_mouse_button(button) {
+                            let event = match state {
+                                winit::event::ElementState::Pressed => {
+                                    let now = std::time::Instant::now();
+                                    let is_double_click = self
+                                        .last_click
+                                        .as_ref()
+                                        .map(|(last_button, last_point, last_time)| {
+                                            *last_button == button
+                                                && now.duration_since(*last_time)
+                                                    <= std::time::Duration::from_millis(500)
+                                                && distance_squared(
+                                                    *last_point,
+                                                    self.cursor_position,
+                                                ) <= 16.0
+                                        })
+                                        .unwrap_or(false);
+                                    self.last_click = Some((button, self.cursor_position, now));
+                                    if is_double_click {
+                                        retro_kit::Event::DoubleClick {
+                                            button,
+                                            point: self.cursor_position,
+                                            modifiers: self.modifiers(),
+                                        }
+                                    } else {
+                                        retro_kit::Event::MouseDown {
+                                            button,
+                                            point: self.cursor_position,
+                                            modifiers: self.modifiers(),
+                                        }
                                     }
                                 }
+                                winit::event::ElementState::Released => retro_kit::Event::MouseUp {
+                                    button,
+                                    point: self.cursor_position,
+                                    modifiers: self.modifiers(),
+                                },
+                            };
+                            let _ = self.dispatch(event);
+                        }
+                    }
+                    winit::event::WindowEvent::MouseWheel { delta, .. } => {
+                        let delta = winit_to_retro_scroll_delta(delta);
+                        let _ = self.dispatch(retro_kit::Event::Scroll {
+                            delta,
+                            modifiers: self.modifiers(),
+                        });
+                    }
+                    winit::event::WindowEvent::Focused(true) => {
+                        let _ = self.dispatch(retro_kit::Event::FocusIn);
+                    }
+                    winit::event::WindowEvent::Focused(false) => {
+                        let _ = self.dispatch(retro_kit::Event::FocusOut);
+                    }
+                    winit::event::WindowEvent::KeyboardInput {
+                        event: key_event, ..
+                    } => {
+                        let mut handled = false;
+                        if let winit::keyboard::PhysicalKey::Code(phys_key) = key_event.physical_key
+                        {
+                            if let Some(rkey) = winit_to_retro_key(phys_key) {
+                                let retro_event = match key_event.state {
+                                    winit::event::ElementState::Pressed => {
+                                        retro_kit::Event::KeyDown {
+                                            key: rkey,
+                                            modifiers: self.modifiers(),
+                                        }
+                                    }
+                                    winit::event::ElementState::Released => {
+                                        retro_kit::Event::KeyUp {
+                                            key: rkey,
+                                            modifiers: self.modifiers(),
+                                        }
+                                    }
+                                };
+                                handled = matches!(
+                                    self.dispatch(retro_event),
+                                    retro_kit::EventResult::Handled
+                                        | retro_kit::EventResult::StopPropagation
+                                );
                             }
                         }
-                        if !handled {
+                        if key_event.state == winit::event::ElementState::Pressed && !handled {
                             if let Some(ref text) = key_event.text {
                                 for character in text.chars() {
-                                    let retro_event = retro_kit::Event::Char { character };
-                                    if let Some(ref mut win) = self.window {
-                                        let _ = win.handle_event(&retro_event);
-                                    }
+                                    let _ = self.dispatch(retro_kit::Event::Char { character });
                                 }
                             }
                         }
@@ -113,7 +222,10 @@ impl Application {
         let mut handler = AppHandler {
             name: self.name.clone(),
             window: main_window,
+            platform_window: None,
             modifiers: winit::keyboard::ModifiersState::default(),
+            cursor_position: Point::ZERO,
+            last_click: None,
         };
         let _ = event_loop.run(&mut handler);
     }
@@ -143,6 +255,41 @@ pub fn menu_item(label: &str, action: &str) -> MenuItem {
 
 pub fn separator() -> MenuItem {
     MenuItem::separator()
+}
+
+pub fn modifiers_from_winit(modifiers: winit::keyboard::ModifiersState) -> Modifiers {
+    Modifiers {
+        shift: modifiers.shift_key(),
+        control: modifiers.control_key(),
+        alt: modifiers.alt_key(),
+        meta: modifiers.super_key(),
+    }
+}
+
+pub fn winit_to_retro_mouse_button(button: winit::event::MouseButton) -> Option<MouseButton> {
+    match button {
+        winit::event::MouseButton::Left => Some(MouseButton::Left),
+        winit::event::MouseButton::Right => Some(MouseButton::Right),
+        winit::event::MouseButton::Middle => Some(MouseButton::Middle),
+        winit::event::MouseButton::Back => Some(MouseButton::Back),
+        winit::event::MouseButton::Forward => Some(MouseButton::Forward),
+        winit::event::MouseButton::Other(_) => None,
+    }
+}
+
+pub fn winit_to_retro_scroll_delta(delta: winit::event::MouseScrollDelta) -> Point {
+    match delta {
+        winit::event::MouseScrollDelta::LineDelta(x, y) => Point::new(x * 16.0, y * 16.0),
+        winit::event::MouseScrollDelta::PixelDelta(position) => {
+            Point::new(position.x as f32, position.y as f32)
+        }
+    }
+}
+
+fn distance_squared(a: Point, b: Point) -> f32 {
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
+    dx * dx + dy * dy
 }
 
 pub fn winit_to_retro_key(key: winit::keyboard::KeyCode) -> Option<retro_kit::event::KeyCode> {

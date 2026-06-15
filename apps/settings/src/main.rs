@@ -1,6 +1,6 @@
 use retro_kit::button::Button;
 use retro_kit::label::Label;
-use retro_kit::layout::Layout;
+use retro_kit::layout::{Layout, LayoutView};
 use retro_kit::split_view::{SplitDirection, SplitView};
 use retro_kit::tree_view::{TreeNode, TreeView};
 use retro_kit::window::Window;
@@ -62,8 +62,10 @@ fn main() {
     let mut split = SplitView::new(SplitDirection::Horizontal);
     split.divider_position = 0.25;
     split.set_first(Box::new(categories));
+    split.set_second(Box::new(LayoutView::new(appearance_content)));
 
-    let window = Window::new("Settings");
+    let mut window = Window::new("Settings");
+    window.set_content(Box::new(split));
     app.set_main_window(window);
     app.run();
 }

@@ -53,6 +53,7 @@ impl Widget for SplitView {
                 let second_w = r.width - first_w - self.divider_size;
                 if let Some(child) = &mut self.first {
                     child.set_rect(Rect::new(r.x, r.y, first_w, r.height));
+                    let _ = child.layout(LayoutConstraint::tight(Size::new(first_w, r.height)));
                 }
                 if let Some(child) = &mut self.second {
                     child.set_rect(Rect::new(
@@ -61,6 +62,7 @@ impl Widget for SplitView {
                         second_w,
                         r.height,
                     ));
+                    let _ = child.layout(LayoutConstraint::tight(Size::new(second_w, r.height)));
                 }
             }
             SplitDirection::Vertical => {
@@ -68,6 +70,7 @@ impl Widget for SplitView {
                 let second_h = r.height - first_h - self.divider_size;
                 if let Some(child) = &mut self.first {
                     child.set_rect(Rect::new(r.x, r.y, r.width, first_h));
+                    let _ = child.layout(LayoutConstraint::tight(Size::new(r.width, first_h)));
                 }
                 if let Some(child) = &mut self.second {
                     child.set_rect(Rect::new(
@@ -76,6 +79,7 @@ impl Widget for SplitView {
                         r.width,
                         second_h,
                     ));
+                    let _ = child.layout(LayoutConstraint::tight(Size::new(r.width, second_h)));
                 }
             }
         }
@@ -83,7 +87,28 @@ impl Widget for SplitView {
         size
     }
 
-    fn draw(&self, _theme: &ThemeContext) {}
+    fn draw(&self, theme: &ThemeContext) {
+        if let Some(first) = &self.first {
+            first.draw(theme);
+        }
+        if let Some(second) = &self.second {
+            second.draw(theme);
+        }
+    }
+
+    fn handle_event(&mut self, event: &crate::Event) -> crate::EventResult {
+        if let Some(second) = &mut self.second {
+            match second.handle_event(event) {
+                crate::EventResult::Ignored => {}
+                other => return other,
+            }
+        }
+        if let Some(first) = &mut self.first {
+            first.handle_event(event)
+        } else {
+            crate::EventResult::Ignored
+        }
+    }
 
     fn children(&self) -> Vec<&dyn Widget> {
         let mut result = vec![];

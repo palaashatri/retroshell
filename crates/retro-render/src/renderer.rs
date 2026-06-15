@@ -1,4 +1,5 @@
-use crate::{Color, Result};
+use crate::{primitives::DrawCommand, Color, Result};
+use parking_lot::Mutex;
 use wgpu::PowerPreference;
 use wgpu::{Device, Instance, Queue, Surface as WgpuSurface, SurfaceConfiguration};
 
@@ -8,6 +9,7 @@ pub struct Renderer {
     pub device: Device,
     pub queue: Queue,
     pub config: SurfaceConfiguration,
+    draw_commands: Mutex<Vec<DrawCommand>>,
 }
 
 impl Renderer {
@@ -56,6 +58,7 @@ impl Renderer {
             device,
             queue,
             config,
+            draw_commands: Mutex::new(Vec::new()),
         })
     }
 
@@ -99,6 +102,18 @@ impl Renderer {
 
     pub fn present(frame: wgpu::SurfaceTexture) {
         frame.present();
+    }
+
+    pub fn enqueue(&self, command: DrawCommand) {
+        self.draw_commands.lock().push(command);
+    }
+
+    pub fn drain_commands(&self) -> Vec<DrawCommand> {
+        self.draw_commands.lock().drain(..).collect()
+    }
+
+    pub fn queued_command_count(&self) -> usize {
+        self.draw_commands.lock().len()
     }
 
     pub fn device(&self) -> &Device {

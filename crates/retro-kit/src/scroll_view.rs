@@ -61,7 +61,11 @@ impl Widget for ScrollView {
         size
     }
 
-    fn draw(&self, _theme: &ThemeContext) {}
+    fn draw(&self, theme: &ThemeContext) {
+        if let Some(content) = &self.content {
+            content.draw(theme);
+        }
+    }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
         match event {
@@ -74,7 +78,13 @@ impl Widget for ScrollView {
                 }
                 EventResult::Handled
             }
-            _ => EventResult::Ignored,
+            _ => {
+                if let Some(content) = &mut self.content {
+                    content.handle_event(event)
+                } else {
+                    EventResult::Ignored
+                }
+            }
         }
     }
 

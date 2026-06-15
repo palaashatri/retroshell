@@ -45,24 +45,58 @@ impl Widget for Window {
     }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
-        let size = self.layout.layout_size(constraint);
-        self.set_rect(Rect::new(
-            self.rect().x,
-            self.rect().y,
-            size.width,
-            size.height,
-        ));
-        self.layout.arrange(self.rect());
-        size
+        if self.content.is_some() {
+            let proposed = constraint.clamp(Size::new(constraint.max_width, constraint.max_height));
+            self.set_rect(Rect::new(
+                self.rect().x,
+                self.rect().y,
+                proposed.width,
+                proposed.height,
+            ));
+            let rect = self.rect();
+            if let Some(content) = &mut self.content {
+                content.set_rect(rect);
+                content.layout(LayoutConstraint::tight(proposed))
+            } else {
+                proposed
+            }
+        } else {
+            let size = self.layout.layout_size(constraint);
+            self.set_rect(Rect::new(
+                self.rect().x,
+                self.rect().y,
+                size.width,
+                size.height,
+            ));
+            self.layout.arrange(self.rect());
+            size
+        }
     }
 
     fn draw(&self, theme: &ThemeContext) {
         let _bg = theme.color(crate::ThemeToken::WindowBackground);
         let _border = theme.color(crate::ThemeToken::WindowBorder);
+        if let Some(content) = &self.content {
+            content.draw(theme);
+        } else {
+            self.layout.draw(theme);
+        }
     }
 
-    fn handle_event(&mut self, _event: &Event) -> EventResult {
-        EventResult::Ignored
+    fn handle_event(&mut self, event: &Event) -> EventResult {
+        if let Some(content) = &mut self.content {
+            content.handle_event(event)
+        } else {
+            self.layout.handle_event(event)
+        }
+    }
+
+    fn update(&mut self) {
+        if let Some(content) = &mut self.content {
+            content.update();
+        } else {
+            self.layout.update();
+        }
     }
 
     fn accessibility(&self) -> Option<AccessibilityNode> {

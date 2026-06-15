@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -49,8 +49,9 @@ pub fn move_file(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 pub fn delete_file(path: &Path) -> std::io::Result<()> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let trash_files = PathBuf::from(home).join(".local/share/Trash/files");
-    let trash_info = PathBuf::from(&trash_files).parent().unwrap().join("info");
+    let trash_root = PathBuf::from(home).join(".local/share/Trash");
+    let trash_files = trash_root.join("files");
+    let trash_info = trash_root.join("info");
 
     fs::create_dir_all(&trash_files)?;
     fs::create_dir_all(&trash_info)?;
@@ -58,14 +59,22 @@ pub fn delete_file(path: &Path) -> std::io::Result<()> {
     let file_name = path
         .file_name()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid path"))?;
-    let dest_path = trash_files.join(file_name);
+    let dest_path = unique_destination(&trash_files, file_name.as_ref());
 
     fs::rename(path, &dest_path)?;
 
-    let info_path = trash_info.join(format!("{}.trashinfo", file_name.to_string_lossy()));
+    let trash_name = dest_path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid trash path")
+    })?;
+    let info_path = trash_info.join(format!("{}.trashinfo", trash_name.to_string_lossy()));
+    let deletion_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| format_unix_time(d.as_secs()))
+        .unwrap_or_else(|_| "1970-01-01T00:00:00".to_string());
     let info_content = format!(
-        "[Trash Info]\nPath={}\nDeletionDate=2026-06-02T12:00:00\n",
-        path.to_string_lossy()
+        "[Trash Info]\nPath={}\nDeletionDate={}\n",
+        path.to_string_lossy(),
+        deletion_time
     );
     fs::write(info_path, info_content)?;
 
@@ -80,19 +89,85 @@ pub fn rename_file(path: &Path, new_name: &str) -> std::io::Result<()> {
 }
 
 pub fn duplicate_file(path: &Path) -> std::io::Result<()> {
-    let mut new_path = path.to_path_buf();
-    if let Some(stem) = path.file_stem() {
-        if let Some(ext) = path.extension() {
-            new_path.set_file_name(format!(
-                "{} copy.{}",
-                stem.to_string_lossy(),
-                ext.to_string_lossy()
-            ));
-        } else {
-            new_path.set_file_name(format!("{} copy", stem.to_string_lossy()));
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid path"))?;
+    let new_path = unique_copy_destination(parent, file_name.as_ref());
+    copy_file(path, &new_path)
+}
+
+fn unique_destination(parent: &Path, file_name: &Path) -> PathBuf {
+    let mut candidate = parent.join(file_name);
+    if !candidate.exists() {
+        return candidate;
+    }
+
+    let stem = file_name
+        .file_stem()
+        .unwrap_or(file_name.as_os_str())
+        .to_string_lossy();
+    let extension = file_name.extension().map(|ext| ext.to_string_lossy());
+    for index in 1.. {
+        let name = match &extension {
+            Some(ext) => format!("{} {}.{}", stem, index, ext),
+            None => format!("{} {}", stem, index),
+        };
+        candidate = parent.join(name);
+        if !candidate.exists() {
+            return candidate;
         }
     }
-    copy_file(path, &new_path)
+    unreachable!("unbounded iterator should always produce a candidate")
+}
+
+fn unique_copy_destination(parent: &Path, file_name: &Path) -> PathBuf {
+    let stem = file_name
+        .file_stem()
+        .unwrap_or(file_name.as_os_str())
+        .to_string_lossy();
+    let extension = file_name.extension().map(|ext| ext.to_string_lossy());
+    for index in 0.. {
+        let suffix = if index == 0 {
+            " copy".to_string()
+        } else {
+            format!(" copy {}", index + 1)
+        };
+        let name = match &extension {
+            Some(ext) => format!("{}{}.{}", stem, suffix, ext),
+            None => format!("{}{}", stem, suffix),
+        };
+        let candidate = parent.join(name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!("unbounded iterator should always produce a candidate")
+}
+
+fn format_unix_time(seconds: u64) -> String {
+    let days = (seconds / 86_400) as i64;
+    let seconds_of_day = seconds % 86_400;
+    let (year, month, day) = civil_from_days(days);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}")
+}
+
+fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
+    let days = days_since_epoch + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    let year = year + if month <= 2 { 1 } else { 0 };
+    (year, month as u32, day as u32)
 }
 
 pub fn create_directory(path: &Path) -> std::io::Result<()> {

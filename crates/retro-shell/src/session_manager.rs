@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionAction {
     Login,
     Logout,
@@ -15,8 +16,9 @@ pub struct SessionManager {
     pub username: String,
     pub autologin: bool,
     pub restore_windows: bool,
+    pub locked: bool,
+    pub pending_action: Option<SessionAction>,
     pub session_state: HashMap<String, String>,
-    #[allow(dead_code)]
     lock_on_sleep: bool,
 }
 
@@ -33,6 +35,8 @@ impl SessionManager {
             username: String::new(),
             autologin: false,
             restore_windows: true,
+            locked: false,
+            pending_action: None,
             session_state: HashMap::new(),
             lock_on_sleep: true,
         }
@@ -40,28 +44,45 @@ impl SessionManager {
 
     pub fn login(&mut self, username: &str) {
         self.logged_in = true;
+        self.locked = false;
+        self.pending_action = Some(SessionAction::Login);
         self.username = username.to_string();
     }
 
     pub fn logout(&mut self) {
         self.logged_in = false;
+        self.locked = false;
+        self.pending_action = Some(SessionAction::Logout);
         self.save_state();
     }
 
     pub fn lock(&mut self) {
-        // Lock the screen placeholder
+        if self.logged_in {
+            self.locked = true;
+            self.pending_action = Some(SessionAction::Lock);
+        }
     }
 
     pub fn unlock(&mut self) {
-        // Unlock the screen placeholder
+        self.locked = false;
+        self.pending_action = Some(SessionAction::Unlock);
     }
 
-    pub fn shutdown(&self) {
-        // Initiate system shutdown placeholder
+    pub fn sleep(&mut self) {
+        if self.lock_on_sleep {
+            self.lock();
+        }
+        self.pending_action = Some(SessionAction::Sleep);
     }
 
-    pub fn restart(&self) {
-        // Initiate system restart placeholder
+    pub fn shutdown(&mut self) {
+        self.pending_action = Some(SessionAction::Shutdown);
+        self.save_state();
+    }
+
+    pub fn restart(&mut self) {
+        self.pending_action = Some(SessionAction::Restart);
+        self.save_state();
     }
 
     pub fn save_state(&mut self) {
@@ -72,10 +93,15 @@ impl SessionManager {
 
         let mut content = String::new();
         content.push_str("[session]\n");
-        content.push_str(&format!("username = \"{}\"\n", self.username));
+        content.push_str(&format!(
+            "username = \"{}\"\n",
+            escape_toml_string(&self.username)
+        ));
         content.push_str(&format!("logged_in = {}\n", self.logged_in));
+        content.push_str(&format!("locked = {}\n", self.locked));
+        content.push_str(&format!("restore_windows = {}\n", self.restore_windows));
         for (k, v) in &self.session_state {
-            content.push_str(&format!("{} = \"{}\"\n", k, v));
+            content.push_str(&format!("{} = \"{}\"\n", k, escape_toml_string(v)));
         }
         let _ = std::fs::write(path, content);
     }
@@ -92,6 +118,10 @@ impl SessionManager {
                         self.username = val.to_string();
                     } else if key == "logged_in" {
                         self.logged_in = val.parse().unwrap_or(false);
+                    } else if key == "locked" {
+                        self.locked = val.parse().unwrap_or(false);
+                    } else if key == "restore_windows" {
+                        self.restore_windows = val.parse().unwrap_or(true);
                     } else if key != "[session]" {
                         self.session_state.insert(key.to_string(), val.to_string());
                     }
@@ -99,4 +129,8 @@ impl SessionManager {
             }
         }
     }
+}
+
+fn escape_toml_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }

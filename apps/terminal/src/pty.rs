@@ -45,12 +45,17 @@ impl Pty {
                 dup2(slave_raw_fd, 2).map_err(|e| format!("dup2 stderr failed: {}", e))?;
 
                 let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-                let shell_c = CString::new(shell.clone()).unwrap();
+                let shell_c = match CString::new(shell) {
+                    Ok(shell) => shell,
+                    Err(_) => std::process::exit(1),
+                };
                 let args = [shell_c.clone()];
                 let env: [CString; 0] = [];
 
-                let _ = execve(&shell_c, &args, &env);
-                std::process::exit(1);
+                if execve(&shell_c, &args, &env).is_err() {
+                    std::process::exit(1);
+                }
+                std::process::exit(0);
             }
             Err(e) => Err(format!("Fork failed: {}", e)),
         }

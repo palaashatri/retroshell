@@ -46,10 +46,31 @@ impl Widget for Toolbar {
             size.width,
             size.height,
         ));
+        let mut x = self.rect().x;
+        let y = self.rect().y;
+        for child in &mut self.items {
+            let rect = child.rect();
+            child.set_rect(Rect::new(x, y, rect.width, height));
+            x += rect.width;
+        }
         size
     }
 
-    fn draw(&self, _theme: &ThemeContext) {}
+    fn draw(&self, theme: &ThemeContext) {
+        for item in &self.items {
+            item.draw(theme);
+        }
+    }
+
+    fn handle_event(&mut self, event: &crate::Event) -> crate::EventResult {
+        for item in self.items.iter_mut().rev() {
+            match item.handle_event(event) {
+                crate::EventResult::Ignored => {}
+                other => return other,
+            }
+        }
+        crate::EventResult::Ignored
+    }
 
     fn children(&self) -> Vec<&dyn Widget> {
         let mut result: Vec<&dyn Widget> = vec![];

@@ -31,7 +31,7 @@ pub use dnd::{DragData, DragSession, DragSource, DropTarget};
 pub use event::{Event, EventHandler, EventResult};
 pub use icon_view::IconView;
 pub use label::Label;
-pub use layout::{Layout, LayoutConstraint, LayoutHints};
+pub use layout::{Layout, LayoutConstraint, LayoutHints, LayoutView};
 pub use list_view::ListView;
 pub use menu::{Menu, MenuItem};
 pub use popup_button::PopupButton;
