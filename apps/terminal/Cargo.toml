@@ -1,0 +1,20 @@
+[package]
+name = "terminal"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "terminal"
+path = "src/main.rs"
+
+[dependencies]
+retro-sdk = { path = "../../crates/retro-sdk" }
+retro-kit = { path = "../../crates/retro-kit" }
+nix = { version = "0.27", features = ["term", "ioctl", "process", "fs", "signal"] }
+vte = "0.11"
+libc = "0.2"
+serde = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

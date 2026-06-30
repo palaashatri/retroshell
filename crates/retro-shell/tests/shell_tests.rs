@@ -1,0 +1,54 @@
+use retro_shell::notification_center::NotificationPriority;
+use retro_shell::*;
+
+#[test]
+fn test_shell_startup() {
+    let shell = RetroShell::startup().unwrap();
+    assert_eq!(shell.workspace_manager.read().total, 4);
+}
+
+#[test]
+fn test_menu_server() {
+    let server = MenuServer::new();
+    assert_eq!(server.menus.len(), 5);
+}
+
+#[test]
+fn test_notification_center() {
+    let mut nc = NotificationCenter::new();
+    let id = nc.post(
+        "com.test",
+        "Alert",
+        "This is an alert",
+        NotificationPriority::High,
+    );
+    assert_eq!(nc.visible().len(), 1);
+    nc.dismiss(&id);
+    assert_eq!(nc.visible().len(), 0);
+}
+
+#[test]
+fn test_session_manager() {
+    let mut sm = SessionManager::new();
+    sm.login("testuser");
+    assert!(sm.logged_in);
+    assert_eq!(sm.username, "testuser");
+    sm.lock();
+    assert!(sm.locked);
+    sm.unlock();
+    assert!(!sm.locked);
+    sm.session_state
+        .insert("active_app".to_string(), "finder".to_string());
+    sm.save_state();
+
+    let mut sm2 = SessionManager::new();
+    sm2.restore_state();
+    assert_eq!(sm2.username, "testuser");
+    assert!(sm2.logged_in);
+    assert!(!sm2.locked);
+    assert!(sm2.restore_windows);
+    assert_eq!(
+        sm2.session_state.get("active_app").map(|s| s.as_str()),
+        Some("finder")
+    );
+}

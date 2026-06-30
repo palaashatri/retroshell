@@ -1,0 +1,17 @@
+[package]
+name = "finder"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "finder"
+path = "src/main.rs"
+
+[dependencies]
+retro-sdk = { path = "../../crates/retro-sdk" }
+retro-kit = { path = "../../crates/retro-kit" }
+serde = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

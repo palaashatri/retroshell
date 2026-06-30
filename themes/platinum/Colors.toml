@@ -1,0 +1,68 @@
+[window]
+background = "#F2F2F2"
+border = "#808080"
+title_text = "#000000"
+titlebar_active = "#3A6BDD"
+titlebar_inactive = "#A0A0A0"
+
+[menu]
+background = "#FAFAFA"
+highlight = "#3A6BDD"
+text = "#000000"
+disabled_text = "#A0A0A0"
+separator = "#BFBFBF"
+
+[button]
+background = "#E0E0E0"
+highlight = "#3A6BDD"
+shadow = "#999999"
+text = "#000000"
+disabled_text = "#A0A0A0"
+
+[text]
+primary = "#000000"
+secondary = "#666666"
+link = "#3A6BDD"
+selection_background = "#3A6BDD"
+selection_text = "#FFFFFF"
+
+[desktop]
+background = "#3D3D73"
+
+[dock]
+background = "#D9D9DE"
+highlight = "#3A6BDD"
+indicator = "#3A6BDD"
+
+[scrollbar]
+track = "#E0E0E0"
+thumb = "#999999"
+thumb_hover = "#808080"
+
+[toolbar]
+background = "#EBEBED"
+border = "#BFBFBF"
+
+[dialog]
+background = "#F5F5F5"
+border = "#808080"
+
+[notification]
+background = "#F5F5F5"
+border = "#BFBFBF"
+
+[selection]
+background = "#3A6BDD"
+text = "#FFFFFF"
+
+[progress]
+fill = "#3A6BDD"
+track = "#E0E0E0"
+
+[slider]
+track = "#BFBFBF"
+thumb = "#999999"
+thumb_hover = "#808080"
+
+[icon]
+background = "transparent"
