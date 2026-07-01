@@ -2,7 +2,7 @@
 
 ## Summary
 
-RetroShell is a working native Rust prototype, not a complete desktop environment yet. Current work has a `wgpu` rendered shell window, original Classic-inspired desktop surface, interactive menu bar, desktop icons, first-party app foundations, managed Finder-style shell windows with menu-driven creation, focus/raise, active-window close, titlebar close/zoom controls, View-menu fullscreen, drag, resize, desktop folder icons opening filesystem-backed shell windows, and folder icons inside managed shell windows opening child folder windows.
+RetroShell is a working native Rust prototype, not a complete desktop environment yet. Current work has a `wgpu` rendered shell window, original Classic-inspired desktop surface filling the 1280x800 VM smoke surface, interactive menu bar, desktop icons, first-party app foundations, managed Finder-style shell windows with menu-driven creation, focus/raise, active-window close, titlebar close/zoom controls, View-menu fullscreen, drag, resize, desktop folder icons opening filesystem-backed shell windows, and folder icons inside managed shell windows opening child folder windows.
 
 Finder has sidebar, icon grid, sorted directory listing, status/path bar, parent-folder navigation, folder-entry helpers. Definition done remains a full desktop environment: working Finder, TextEdit, Settings, Terminal, package-manager backed App Store, native dark mode, compositor/session path, HDR, VRR, and real application/game validation.
 
@@ -30,9 +30,9 @@ Finder has sidebar, icon grid, sorted directory listing, status/path bar, parent
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (43 tests)
+- `cargo test --workspace -q` (44 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- Linux VM/Xvfb/Mesa Vulkan llvmpipe smoke: `retro-shell` starts, accepts pointer interaction, toggles the active Finder-style managed shell window into fullscreen from the View menu, opens Home from the desktop into a managed folder window, opens a child folder from inside the initial managed folder window, and captures `docs/screenshots/current-retroshell-desktop.png`.
+- Linux VM/Xvfb/Mesa Vulkan llvmpipe smoke: `retro-shell` starts at 1280x800, accepts pointer interaction, toggles the active Finder-style managed shell window into fullscreen from the View menu, opens Home from the desktop into a managed folder window, opens a child folder from inside the initial managed folder window, and captures `docs/screenshots/current-retroshell-desktop.png`.
 - Prior Linux VM/Xvfb/Mesa smoke: `finder` starts against a demo home directory and captures `docs/screenshots/current-finder.png`.
 
 ## Next Milestones

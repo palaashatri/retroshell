@@ -22,6 +22,7 @@ pub struct Application {
     pub name: String,
     pub bundle_id: String,
     pub main_window: Option<Window>,
+    pub initial_size: Size,
     pub menus: Vec<Menu>,
     pub bus: Option<RetroBus>,
     pub running: bool,
@@ -33,6 +34,7 @@ impl Application {
             name: name.to_string(),
             bundle_id: bundle_id.to_string(),
             main_window: None,
+            initial_size: Size::new(960.0, 640.0),
             menus: vec![],
             bus: None,
             running: false,
@@ -46,6 +48,10 @@ impl Application {
 
     pub fn set_main_window(&mut self, window: Window) {
         self.main_window = Some(window);
+    }
+
+    pub fn set_initial_size(&mut self, size: Size) {
+        self.initial_size = Size::new(size.width.max(1.0), size.height.max(1.0));
     }
 
     pub fn set_menus(&mut self, menus: Vec<Menu>) {
@@ -91,6 +97,7 @@ impl Application {
         struct AppHandler {
             name: String,
             window: Option<Window>,
+            initial_size: Size,
             platform_window: Option<Arc<winit::window::Window>>,
             presenter: Option<WgpuPresenter>,
             modifiers: winit::keyboard::ModifiersState,
@@ -146,9 +153,13 @@ impl Application {
 
         impl retro_render::event_loop::RetroAppHandler for AppHandler {
             fn init(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+                let initial_size = self.initial_size;
                 let attrs = winit::window::Window::default_attributes()
                     .with_title(&self.name)
-                    .with_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0));
+                    .with_inner_size(winit::dpi::LogicalSize::new(
+                        initial_size.width,
+                        initial_size.height,
+                    ));
 
                 match event_loop.create_window(attrs) {
                     Ok(window) => {
@@ -319,6 +330,7 @@ impl Application {
         let mut handler = AppHandler {
             name: self.name.clone(),
             window: main_window,
+            initial_size: self.initial_size,
             platform_window: None,
             presenter: None,
             modifiers: winit::keyboard::ModifiersState::default(),

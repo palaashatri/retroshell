@@ -18,7 +18,7 @@ Every major UI/UX change should refresh the current screenshots. Screenshots liv
 
 ### Current Implementation
 
-Captured from a Linux VM/Xvfb/Mesa smoke run after the native `wgpu` desktop, interactive menu bar, original desktop icons, managed Finder-style shell windows, desktop folder icons opening filesystem-backed shell windows, folder icons inside managed shell windows opening child folder windows, focus/raise, active-window close, titlebar close/zoom controls, View-menu fullscreen, drag/resize, and visible grow box passed.
+Captured from a Linux VM/Xvfb/Mesa smoke run after the native `wgpu` desktop fills a 1280x800 surface, interactive menu bar, original desktop icons, managed Finder-style shell windows, desktop folder icons opening filesystem-backed shell windows, folder icons inside managed shell windows opening child folder windows, focus/raise, active-window close, titlebar close/zoom controls, View-menu fullscreen, drag/resize, and visible grow box passed.
 
 ![Current RetroShell desktop](docs/screenshots/current-retroshell-desktop.png)
 
@@ -40,9 +40,9 @@ Verified locally:
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (43 tests)
+- `cargo test --workspace -q` (44 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `retro-shell` under Linux/Xvfb/Mesa Vulkan llvmpipe, including View-menu fullscreen for the active managed Finder-style shell window, desktop Home icon opening a managed folder window, and in-window folder double-click opening a child managed folder window
+- `retro-shell` under Linux/Xvfb/Mesa Vulkan llvmpipe at 1280x800, including View-menu fullscreen for the active managed Finder-style shell window, desktop Home icon opening a managed folder window, and in-window folder double-click opening a child managed folder window
 
 ## What Is Left
 

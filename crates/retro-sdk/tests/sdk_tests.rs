@@ -5,7 +5,19 @@ fn test_app_creation() {
     let app = Application::new("TestApp", "com.test.app");
     assert_eq!(app.name, "TestApp");
     assert_eq!(app.bundle_id, "com.test.app");
+    assert_eq!(app.initial_size.width, 960.0);
+    assert_eq!(app.initial_size.height, 640.0);
     assert!(!app.running);
+}
+
+#[test]
+fn test_app_initial_size_can_be_configured() {
+    let mut app = Application::new("TestApp", "com.test.app");
+
+    app.set_initial_size(retro_kit::Size::new(1280.0, 800.0));
+
+    assert_eq!(app.initial_size.width, 1280.0);
+    assert_eq!(app.initial_size.height, 800.0);
 }
 
 #[test]

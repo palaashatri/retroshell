@@ -97,6 +97,7 @@ impl RetroShell {
 
     pub fn run(&self) -> Result<()> {
         let mut app = retro_sdk::Application::new("RetroShell", "com.retro.shell");
+        app.set_initial_size(Size::new(1280.0, 800.0));
 
         let desktop_view = ShellDesktop::new(
             self.menu_server.clone(),
