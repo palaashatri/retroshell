@@ -18,7 +18,7 @@ Every major UI/UX change should refresh this section with a current screenshot. 
 
 ### Current Implementation
 
-Captured from a Linux VM/Xvfb/Mesa smoke run after the native `wgpu` desktop, interactive menu bar, original desktop icons, managed Finder-style shell windows, focus/raise, active-window close, titlebar close/zoom controls, drag/resize, and visible grow box pass.
+Captured from a Linux VM/Xvfb/Mesa smoke run after the native `wgpu` desktop, interactive menu bar, original desktop icons, managed Finder-style shell windows, focus/raise, active-window close, titlebar close/zoom controls, View-menu fullscreen, drag/resize, and visible grow box pass.
 
 ![Current RetroShell desktop](docs/screenshots/current-retroshell-desktop.png)
 
@@ -34,20 +34,20 @@ The current visual direction is Classic Mac-inspired desktop proportions, menu d
 
 ## Current State
 
-RetroShell currently builds and launches a native rendered desktop surface, menu strip, desktop icons, app bundle labels, first-party apps wired through RetroKit/RetroSDK, and a first pass at managed shell windows with functional close and zoom controls. This implementation is still a foundation, not a polished desktop environment.
+RetroShell currently builds and launches a native rendered desktop surface, menu strip, desktop icons, app bundle labels, first-party apps wired through RetroKit/RetroSDK, and a first pass at managed shell windows with functional close, zoom, and fullscreen controls. This implementation is still a foundation, not a polished desktop environment.
 
 Verified locally:
 
 - `cargo check --workspace --all-targets`
 - `cargo test --workspace -q`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `retro-shell` under Linux/Xvfb/Mesa Vulkan llvmpipe, including menu-driven creation of a second managed Finder-style shell window and titlebar zoom to desktop content bounds
+- `retro-shell` under Linux/Xvfb/Mesa Vulkan llvmpipe, including View-menu fullscreen of the active managed Finder-style shell window
 
 ## What Is Left
 
 Plenty. The next major work is closing the gap between the current functional shell and the full desktop environment target.
 
-- Window management: focus rings, minimize/fullscreen controls, modal dialogs, persisted placement, external app surfaces.
+- Window management: focus rings, minimize controls, modal dialogs, persisted placement, external app surfaces.
 - Finder desktop: real folder windows, desktop integration, trash UI, surfaced file operations, drag/drop, contextual menus.
 - Dock/application launching: running indicators, focus, lifecycle integration, folders, trash.
 - Native dark mode: complete theme-token coverage, live switching from Settings, dark assets/icons, contrast validation.

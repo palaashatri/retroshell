@@ -206,15 +206,18 @@ impl MenuServer {
         view_menu.add_action("Show Toolbar");
         view_menu.add_action("Show Sidebar");
         view_menu.add_separator();
-        view_menu.add_action("Enter Fullscreen").with_shortcut(
-            KeyCode::F,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
+        view_menu
+            .add_action("Enter Fullscreen")
+            .with_action("shell.toggle_fullscreen")
+            .with_shortcut(
+                KeyCode::F,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
 
         let mut help_menu = Menu::new("Help");
         help_menu.add_action("Search");

@@ -127,6 +127,14 @@ struct ShellWindow {
     id: Uuid,
     window: Window,
     restore_rect: Option<Rect>,
+    mode: ShellWindowMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellWindowMode {
+    Normal,
+    Zoomed,
+    Fullscreen,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -276,6 +284,7 @@ impl ShellDesktop {
             id,
             window,
             restore_rect: None,
+            mode: ShellWindowMode::Normal,
         });
         self.focus_window(id);
         self.layout_window(id);
@@ -306,18 +315,50 @@ impl ShellDesktop {
             return;
         };
 
-        if let Some(restore_rect) = self.windows[index].restore_rect.take() {
+        if self.windows[index].mode == ShellWindowMode::Zoomed {
+            let Some(restore_rect) = self.windows[index].restore_rect.take() else {
+                return;
+            };
             let restore_rect = clamp_window_rect(restore_rect, self.content_bounds());
             self.windows[index].window.set_rect(restore_rect);
+            self.windows[index].mode = ShellWindowMode::Normal;
             self.window_manager.write().restore_window(id);
         } else {
             let current = self.windows[index].window.rect();
             let zoom_rect = zoomed_window_rect(self.content_bounds(), self.windows.len());
             self.windows[index].restore_rect = Some(current);
+            self.windows[index].mode = ShellWindowMode::Zoomed;
             self.windows[index].window.set_rect(zoom_rect);
             self.window_manager.write().maximize_window(id);
         }
 
+        self.layout_window(id);
+    }
+
+    fn toggle_window_fullscreen(&mut self, id: Uuid) {
+        let Some(index) = self.window_index(id) else {
+            return;
+        };
+
+        if self.windows[index].mode == ShellWindowMode::Fullscreen {
+            let Some(restore_rect) = self.windows[index].restore_rect.take() else {
+                return;
+            };
+            let restore_rect = clamp_window_rect(restore_rect, self.content_bounds());
+            self.windows[index].window.set_rect(restore_rect);
+            self.windows[index].mode = ShellWindowMode::Normal;
+            self.window_manager.write().restore_window(id);
+        } else {
+            let current = self.windows[index].window.rect();
+            let fullscreen_rect = fullscreen_window_rect(self.content_bounds());
+            self.windows[index].restore_rect = Some(current);
+            self.windows[index].mode = ShellWindowMode::Fullscreen;
+            self.windows[index].window.set_rect(fullscreen_rect);
+            self.window_manager.write().set_fullscreen(id);
+        }
+
+        self.window_interaction = None;
+        self.focus_window(id);
         self.layout_window(id);
     }
 
@@ -362,7 +403,9 @@ impl ShellDesktop {
         let bounds = self.content_bounds();
         for index in 0..self.windows.len() {
             let rect = self.windows[index].window.rect();
-            let rect = if self.windows[index].restore_rect.is_some() {
+            let rect = if self.windows[index].mode == ShellWindowMode::Fullscreen {
+                fullscreen_window_rect(bounds)
+            } else if self.windows[index].mode == ShellWindowMode::Zoomed {
                 zoomed_window_rect(bounds, self.windows.len())
             } else if rect.width <= 1.0 || rect.height <= 1.0 {
                 let base = default_finder_rect(self.rect());
@@ -384,6 +427,11 @@ impl ShellDesktop {
                 self.open_finder_window();
             }
             "shell.close_finder_window" => self.close_active_window(),
+            "shell.toggle_fullscreen" => {
+                if let Some(id) = self.active_window_id() {
+                    self.toggle_window_fullscreen(id);
+                }
+            }
             "shell.open_finder" => launch_app_binary("com.retro.finder"),
             "shell.settings" => launch_app_binary("com.retro.settings"),
             "shell.software_catalog" => {
@@ -401,6 +449,7 @@ impl ShellDesktop {
             return;
         };
         self.windows[index].restore_rect = None;
+        self.windows[index].mode = ShellWindowMode::Normal;
         self.window_manager.write().restore_window(id);
         let current = self.windows[index].window.rect();
         let moved = Rect::new(
@@ -419,6 +468,7 @@ impl ShellDesktop {
             return;
         };
         self.windows[index].restore_rect = None;
+        self.windows[index].mode = ShellWindowMode::Normal;
         self.window_manager.write().restore_window(id);
         let resized = Rect::new(
             start_rect.x,
@@ -476,6 +526,15 @@ fn zoomed_window_rect(bounds: Rect, window_count: usize) -> Rect {
         bounds.y + margin,
         (bounds.width - margin * 2.0).max(320.0),
         (bounds.height - margin * 2.0).max(220.0),
+    )
+}
+
+fn fullscreen_window_rect(bounds: Rect) -> Rect {
+    Rect::new(
+        bounds.x,
+        bounds.y,
+        bounds.width.max(320.0),
+        bounds.height.max(220.0),
     )
 }
 
@@ -938,6 +997,34 @@ mod tests {
     }
 
     #[test]
+    fn fullscreen_menu_toggles_active_window_state() {
+        let (mut desktop, window_manager) = test_desktop();
+        let id = desktop.windows[0].id;
+        let original = desktop.windows[0].window.rect();
+
+        desktop.handle_menu_action("shell.toggle_fullscreen");
+
+        assert_eq!(desktop.windows[0].mode, ShellWindowMode::Fullscreen);
+        assert!(desktop.windows[0].restore_rect.is_some());
+        assert_rect_eq(desktop.windows[0].restore_rect.unwrap(), original);
+        assert_eq!(
+            window_manager.read().windows[&id].state,
+            window_manager::WindowState::Fullscreen
+        );
+        assert_rect_eq(desktop.windows[0].window.rect(), desktop.content_bounds());
+
+        desktop.handle_menu_action("shell.toggle_fullscreen");
+
+        assert_eq!(desktop.windows[0].mode, ShellWindowMode::Normal);
+        assert!(desktop.windows[0].restore_rect.is_none());
+        assert_eq!(
+            window_manager.read().windows[&id].state,
+            window_manager::WindowState::Normal
+        );
+        assert_rect_eq(desktop.windows[0].window.rect(), original);
+    }
+
+    #[test]
     fn default_shell_menus_have_routable_action_ids() {
         let server = MenuServer::new();
         let file = server
@@ -949,5 +1036,12 @@ mod tests {
         assert_eq!(file.items[0].action_id, "shell.new_finder_window");
         assert_eq!(file.items[1].action_id, "shell.open_finder");
         assert_eq!(file.items[2].action_id, "shell.close_finder_window");
+
+        let view = server
+            .menus
+            .iter()
+            .find(|menu| menu.title == "View")
+            .expect("view menu exists");
+        assert_eq!(view.items[3].action_id, "shell.toggle_fullscreen");
     }
 }
