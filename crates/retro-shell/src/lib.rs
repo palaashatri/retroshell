@@ -127,8 +127,14 @@ struct ShellDesktop {
 struct ShellWindow {
     id: Uuid,
     window: Window,
+    folder_path: Option<PathBuf>,
     restore_rect: Option<Rect>,
     mode: ShellWindowMode,
+}
+
+struct FolderOpenTarget {
+    title: String,
+    path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,6 +301,7 @@ impl ShellDesktop {
         self.windows.push(ShellWindow {
             id,
             window,
+            folder_path: Some(path),
             restore_rect: None,
             mode: ShellWindowMode::Normal,
         });
@@ -398,6 +405,34 @@ impl ShellDesktop {
             .rev()
             .find(|(_, window)| window.window.rect().contains(point))
             .map(|(index, _)| index)
+    }
+
+    fn folder_open_target_at(&self, window_index: usize, point: Point) -> Option<FolderOpenTarget> {
+        let shell_window = self.windows.get(window_index)?;
+        let folder_path = shell_window.folder_path.as_ref()?;
+        let icon_view = shell_window
+            .window
+            .content
+            .as_ref()?
+            .as_any()
+            .downcast_ref::<IconView>()?;
+        let item = icon_view
+            .items
+            .iter()
+            .find(|item| item.rect.contains(point))?;
+        if item.icon.as_deref() != Some("folder") {
+            return None;
+        }
+
+        let path = folder_path.join(&item.label);
+        if !path.is_dir() {
+            return None;
+        }
+
+        Some(FolderOpenTarget {
+            title: item.label.clone(),
+            path,
+        })
     }
 
     fn layout_window(&mut self, id: Uuid) {
@@ -795,6 +830,17 @@ impl Widget for ShellDesktop {
             }
             Event::DoubleClick { point, .. } => {
                 if let Some(index) = self.top_window_index_at(*point) {
+                    let window_id = self.windows[index].id;
+                    self.focus_window(window_id);
+                    let Some(index) = self.window_index(window_id) else {
+                        return EventResult::Ignored;
+                    };
+
+                    if let Some(target) = self.folder_open_target_at(index, *point) {
+                        self.open_folder_window(target.title, target.path);
+                        return EventResult::Handled;
+                    }
+
                     let result = self.windows[index].window.handle_event(event);
                     if matches!(result, EventResult::Handled | EventResult::StopPropagation) {
                         return result;
@@ -863,6 +909,7 @@ impl Widget for ShellDesktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use retro_kit::event::Modifiers;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_shell_root() -> PathBuf {
@@ -890,6 +937,22 @@ mod tests {
         assert_eq!(actual.y, expected.y);
         assert_eq!(actual.width, expected.width);
         assert_eq!(actual.height, expected.height);
+    }
+
+    fn icon_item_center(window: &ShellWindow, label: &str) -> Point {
+        let icon_view = window
+            .window
+            .content
+            .as_ref()
+            .and_then(|content| content.as_any().downcast_ref::<IconView>())
+            .expect("shell folder window has icon content");
+        let rect = icon_view
+            .items
+            .iter()
+            .find(|item| item.label == label)
+            .expect("folder item exists")
+            .rect;
+        Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0)
     }
 
     #[test]
@@ -961,6 +1024,58 @@ mod tests {
         let active = desktop.windows.last().expect("active home window");
         assert_eq!(active.window.title(), "Home");
         assert_eq!(window_manager.read().active_window, Some(active.id));
+    }
+
+    #[test]
+    fn shell_folder_window_double_click_opens_child_folder() {
+        let root = temp_shell_root();
+        fs::create_dir_all(root.join("Projects")).unwrap();
+        fs::write(root.join("note.txt"), "hello").unwrap();
+        let (mut desktop, window_manager) = test_desktop();
+        let initial_count = desktop.windows.len();
+        let root_id = desktop.open_folder_window("Root", root.clone());
+        let index = desktop.window_index(root_id).unwrap();
+        let point = icon_item_center(&desktop.windows[index], "Projects");
+
+        let result = desktop.handle_event(&Event::DoubleClick {
+            button: MouseButton::Left,
+            point,
+            modifiers: Modifiers::NONE,
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(desktop.windows.len(), initial_count + 2);
+        let active = desktop.windows.last().expect("child folder window");
+        assert_eq!(active.window.title(), "Projects");
+        assert_eq!(
+            active.folder_path.as_deref(),
+            Some(root.join("Projects").as_path())
+        );
+        assert_eq!(window_manager.read().active_window, Some(active.id));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shell_folder_window_double_click_file_does_not_open_window() {
+        let root = temp_shell_root();
+        fs::write(root.join("note.txt"), "hello").unwrap();
+        let (mut desktop, _) = test_desktop();
+        let root_id = desktop.open_folder_window("Root", root.clone());
+        let index = desktop.window_index(root_id).unwrap();
+        let point = icon_item_center(&desktop.windows[index], "note.txt");
+        let initial_count = desktop.windows.len();
+
+        let result = desktop.handle_event(&Event::DoubleClick {
+            button: MouseButton::Left,
+            point,
+            modifiers: Modifiers::NONE,
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(desktop.windows.len(), initial_count);
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

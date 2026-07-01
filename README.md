@@ -18,7 +18,7 @@ Every major UI/UX change should refresh the current screenshots. Screenshots liv
 
 ### Current Implementation
 
-Captured from a Linux VM/Xvfb/Mesa smoke run after the native `wgpu` desktop, interactive menu bar, original desktop icons, managed Finder-style shell windows, desktop folder icons opening filesystem-backed shell windows, focus/raise, active-window close, titlebar close/zoom controls, View-menu fullscreen, drag/resize, and visible grow box passed.
+Captured from a Linux VM/Xvfb/Mesa smoke run after the native `wgpu` desktop, interactive menu bar, original desktop icons, managed Finder-style shell windows, desktop folder icons opening filesystem-backed shell windows, folder icons inside managed shell windows opening child folder windows, focus/raise, active-window close, titlebar close/zoom controls, View-menu fullscreen, drag/resize, and visible grow box passed.
 
 ![Current RetroShell desktop](docs/screenshots/current-retroshell-desktop.png)
 
@@ -34,15 +34,15 @@ Current visual direction: Classic Mac-inspired desktop proportions, menu density
 
 ## Current State
 
-RetroShell currently builds and launches a native rendered desktop surface, menu strip, desktop icons, app bundle labels, first-party apps wired through RetroKit/RetroSDK, a first pass at managed shell windows with functional close, zoom, fullscreen controls, and desktop Home/Hard Disk/Trash icons opening folder-backed shell windows. This implementation is still foundation work, not a polished desktop environment.
+RetroShell currently builds and launches a native rendered desktop surface, menu strip, desktop icons, app bundle labels, first-party apps wired through RetroKit/RetroSDK, a first pass at managed shell windows with functional close, zoom, fullscreen controls, desktop Home/Hard Disk/Trash icons opening folder-backed shell windows, and in-window folder icons opening child folder windows. This implementation is still foundation work, not a polished desktop environment.
 
 Verified locally:
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (41 tests)
+- `cargo test --workspace -q` (43 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `retro-shell` under Linux/Xvfb/Mesa Vulkan llvmpipe, including View-menu fullscreen for the active managed Finder-style shell window and desktop Home icon opening a managed folder window
+- `retro-shell` under Linux/Xvfb/Mesa Vulkan llvmpipe, including View-menu fullscreen for the active managed Finder-style shell window, desktop Home icon opening a managed folder window, and in-window folder double-click opening a child managed folder window
 
 ## What Is Left
 
