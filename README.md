@@ -34,6 +34,12 @@ Captured from a Linux VM/Xvfb smoke run after TextEdit opened a real document pa
 
 ![Current TextEdit app](docs/screenshots/current-textedit.png)
 
+### Settings
+
+Captured from a Linux VM/Xvfb smoke run after Settings clicked the Dark appearance control, persisted `appearance=dark`, and refreshed the selected mode/status UI.
+
+![Current Settings app](docs/screenshots/current-settings.png)
+
 ## Current State
 
 RetroShell currently builds and launches a native rendered desktop surface, menu strip, desktop icons, app bundle labels, first-party apps wired through RetroKit/RetroSDK, and first-pass managed shell windows with close, zoom, fullscreen, drag, and resize behavior. Desktop Home/Hard Disk/Trash icons open folder-backed shell windows, and folder icons inside managed shell windows open child folder windows.
@@ -41,6 +47,8 @@ RetroShell currently builds and launches a native rendered desktop surface, menu
 Finder has directory listing, folder entry, visible navigation controls, parent navigation, back/forward history, file-operation toolbar controls, New Folder/Duplicate/Trash helpers, and VM-smoked path/status display.
 
 TextEdit now opens an optional document path passed on the command line, edits through a native multiline text field, saves back to disk, supports Cmd-N/Cmd-S and toolbar New/Save actions, and reports saved/edited status.
+
+Settings now has a real appearance workflow. It loads and saves `settings.conf` under `RETROSHELL_CONFIG_DIR` or `~/.config/retroshell`, exposes Light/Dark/System controls, persists changes immediately, and reports the active mode.
 
 This is still foundation work, not a polished full desktop environment.
 
@@ -53,6 +61,7 @@ This is still foundation work, not a polished full desktop environment.
 - Linux VM/Xvfb/Mesa smoke: `retro-shell` starts at 1280x800 and captures `docs/screenshots/current-retroshell-desktop.png`.
 - Linux VM/Xvfb/Mesa smoke: `finder` starts against a demo home directory, creates New Folder from the toolbar, refreshes path/status display, and captures `docs/screenshots/current-finder.png`.
 - Linux VM/Xvfb/Mesa smoke: `textedit` opens a document path and captures `docs/screenshots/current-textedit.png`.
+- Linux VM/Xvfb/Mesa smoke: `settings` clicks Dark appearance, verifies `appearance=dark`, and captures `docs/screenshots/current-settings.png`.
 
 ## Visual Direction
 
