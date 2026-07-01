@@ -8,6 +8,7 @@ pub struct TextField {
     pub text: String,
     pub placeholder: String,
     pub is_password: bool,
+    pub multiline: bool,
     pub on_change: Option<Box<dyn FnMut(String) + Send>>,
     cursor_position: usize,
 }
@@ -25,6 +26,7 @@ impl TextField {
             text: String::new(),
             placeholder: String::new(),
             is_password: false,
+            multiline: false,
             on_change: None,
             cursor_position: 0,
         }
@@ -37,6 +39,9 @@ impl TextField {
 
     pub fn text(&self) -> &str {
         &self.text
+    }
+    pub fn set_multiline(&mut self, multiline: bool) {
+        self.multiline = multiline;
     }
     pub fn set_text<S: Into<String>>(&mut self, text: S) {
         self.text = text.into();
@@ -53,8 +58,14 @@ impl Widget for TextField {
     }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
-        let width = constraint.max_width.min(200.0);
-        let height = 26.0;
+        let (width, height) = if self.multiline {
+            (
+                constraint.max_width.max(constraint.min_width),
+                constraint.max_height.max(constraint.min_height),
+            )
+        } else {
+            (constraint.max_width.min(200.0), 26.0)
+        };
         let size = constraint.clamp(Size::new(width, height));
         self.set_rect(Rect::new(
             self.rect().x,
