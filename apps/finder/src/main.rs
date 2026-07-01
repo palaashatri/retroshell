@@ -192,6 +192,9 @@ impl FinderView {
         toolbar.add(Box::new(Button::new("BACK")));
         toolbar.add(Box::new(Button::new("FWD")));
         toolbar.add(Box::new(Button::new("UP")));
+        toolbar.add(Box::new(Button::new("NEW FOLDER")));
+        toolbar.add(Box::new(Button::new("DUP")));
+        toolbar.add(Box::new(Button::new("TRASH")));
 
         let mut view = FinderView {
             state: WidgetState::new(),
@@ -332,11 +335,14 @@ impl FinderView {
             0 => self.go_back(),
             1 => self.go_forward(),
             2 => self.go_to_parent(),
+            3 => self.create_new_folder(),
+            4 => self.duplicate_selected(),
+            5 => self.move_selected_to_trash(),
             _ => false,
         }
     }
 
-    fn create_new_folder(&mut self) {
+    fn create_new_folder(&mut self) -> bool {
         let mut candidate = self.current_path.join("New Folder");
         for index in 2.. {
             if !candidate.exists() {
@@ -344,8 +350,36 @@ impl FinderView {
             }
             candidate = self.current_path.join(format!("New Folder {index}"));
         }
-        let _ = file_ops::create_directory(&candidate);
-        self.reload_directory();
+        if file_ops::create_directory(&candidate).is_ok() {
+            self.reload_directory();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn duplicate_selected(&mut self) -> bool {
+        let Some(path) = self.selected_path() else {
+            return false;
+        };
+        if file_ops::duplicate_file(&path).is_ok() {
+            self.reload_directory();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn move_selected_to_trash(&mut self) -> bool {
+        let Some(path) = self.selected_path() else {
+            return false;
+        };
+        if file_ops::delete_file(&path).is_ok() {
+            self.reload_directory();
+            true
+        } else {
+            false
+        }
     }
 
     fn sync_sidebar_selection(&mut self) {
@@ -450,17 +484,11 @@ impl Widget for FinderView {
                         return EventResult::Handled;
                     }
                     KeyCode::Backspace => {
-                        if let Some(path) = self.selected_path() {
-                            let _ = file_ops::delete_file(&path);
-                            self.reload_directory();
-                        }
+                        self.move_selected_to_trash();
                         return EventResult::Handled;
                     }
                     KeyCode::D => {
-                        if let Some(path) = self.selected_path() {
-                            let _ = file_ops::duplicate_file(&path);
-                            self.reload_directory();
-                        }
+                        self.duplicate_selected();
                         return EventResult::Handled;
                     }
                     _ => {}
@@ -670,6 +698,15 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    fn click_toolbar_button(view: &mut FinderView, index: usize) -> EventResult {
+        let rect = view.toolbar.items[index].rect();
+        view.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point: retro_kit::Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0),
+            modifiers: Modifiers::NONE,
+        })
+    }
+
     #[test]
     fn finder_toolbar_buttons_drive_navigation_history() {
         let root = temp_finder_root();
@@ -681,28 +718,68 @@ mod tests {
         view.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
         assert!(view.enter_folder_named("Child"));
 
-        let back = view.toolbar.items[0].rect();
-        let handled = view.handle_event(&Event::MouseDown {
-            button: MouseButton::Left,
-            point: retro_kit::Point::new(back.x + back.width / 2.0, back.y + back.height / 2.0),
-            modifiers: Modifiers::NONE,
-        });
-
+        let handled = click_toolbar_button(&mut view, 0);
         assert!(matches!(handled, EventResult::Handled));
         assert_eq!(view.current_path, root);
 
-        let forward = view.toolbar.items[1].rect();
-        let handled = view.handle_event(&Event::MouseDown {
-            button: MouseButton::Left,
-            point: retro_kit::Point::new(
-                forward.x + forward.width / 2.0,
-                forward.y + forward.height / 2.0,
-            ),
-            modifiers: Modifiers::NONE,
-        });
-
+        let handled = click_toolbar_button(&mut view, 1);
         assert!(matches!(handled, EventResult::Handled));
         assert_eq!(view.current_path, child);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finder_toolbar_new_folder_creates_directory() {
+        let root = temp_finder_root();
+        fs::create_dir_all(&root).unwrap();
+
+        let mut view = FinderView::new();
+        view.set_current_path(root.clone());
+        view.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+
+        let handled = click_toolbar_button(&mut view, 3);
+
+        assert!(matches!(handled, EventResult::Handled));
+        assert!(root.join("New Folder").is_dir());
+        assert!(view
+            .file_grid
+            .items
+            .iter()
+            .any(|item| item.label == "New Folder"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finder_toolbar_duplicate_copies_selected_file() {
+        let root = temp_finder_root();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("note.txt"), "hello").unwrap();
+
+        let mut view = FinderView::new();
+        view.set_current_path(root.clone());
+        view.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+        let note = view
+            .file_grid
+            .items
+            .iter_mut()
+            .find(|item| item.label == "note.txt")
+            .expect("note is listed");
+        note.selected = true;
+
+        let handled = click_toolbar_button(&mut view, 4);
+
+        assert!(matches!(handled, EventResult::Handled));
+        assert_eq!(
+            fs::read_to_string(root.join("note copy.txt")).unwrap(),
+            "hello"
+        );
+        assert!(view
+            .file_grid
+            .items
+            .iter()
+            .any(|item| item.label == "note copy.txt"));
 
         fs::remove_dir_all(root).unwrap();
     }

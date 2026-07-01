@@ -24,7 +24,7 @@ Captured from a Linux VM/Xvfb/Mesa smoke run after the native `wgpu` desktop fil
 
 ### Finder
 
-Captured from a Linux VM/Xvfb smoke run against a demo home directory after Finder status bar, path display, directory sorting, folder entry, visible Back/Forward/Up controls, and navigation-history behavior passed.
+Captured from a Linux VM/Xvfb smoke run against a demo home directory after Finder status bar, path display, directory sorting, folder entry, visible Back/Forward/Up controls, visible New Folder/Duplicate/Trash controls, and navigation-history behavior passed.
 
 ![Current Finder app](docs/screenshots/current-finder.png)
 
@@ -34,23 +34,23 @@ Current visual direction: Classic Mac-inspired desktop proportions, menu density
 
 ## Current State
 
-RetroShell currently builds and launches a native rendered desktop surface, menu strip, desktop icons, app bundle labels, first-party apps wired through RetroKit/RetroSDK, a first pass at managed shell windows with functional close, zoom, fullscreen controls, desktop Home/Hard Disk/Trash icons opening folder-backed shell windows, and in-window folder icons opening child folder windows. Finder now has directory listing, folder entry, visible Back/Forward/Up controls, parent navigation, back/forward history, and VM-smoked path/status display. This implementation is still foundation work, not a polished desktop environment.
+RetroShell currently builds and launches a native rendered desktop surface, menu strip, desktop icons, app bundle labels, first-party apps wired through RetroKit/RetroSDK, a first pass at managed shell windows with functional close, zoom, fullscreen controls, desktop Home/Hard Disk/Trash icons opening folder-backed shell windows, and in-window folder icons opening child folder windows. Finder now has directory listing, folder entry, visible Back/Forward/Up controls, parent navigation, back/forward history, visible New Folder/Duplicate/Trash controls, and VM-smoked path/status display. This implementation is still foundation work, not a polished desktop environment.
 
 Verified locally:
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (48 tests)
+- `cargo test --workspace -q` (50 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `retro-shell` under Linux/Xvfb/Mesa Vulkan llvmpipe at 1280x800, including View-menu fullscreen for the active managed Finder-style shell window, desktop Home icon opening a managed folder window, and in-window folder double-click opening a child managed folder window
-- `finder` under Linux/Xvfb/Mesa Vulkan llvmpipe against a demo home directory, including visible Back/Forward/Up controls, folder entry, and refreshed path/status display
+- `finder` under Linux/Xvfb/Mesa Vulkan llvmpipe against a demo home directory, including visible Back/Forward/Up and file-operation controls, New Folder from the toolbar, and refreshed path/status display
 
 ## What Is Left
 
 Plenty. The next major work is closing the gap between the current functional shell and the full desktop environment target.
 
 - Window management: focus rings, minimize controls, modal dialogs, persisted placement, external app surfaces.
-- Finder desktop: desktop integration, trash UI, surfaced file operations, drag/drop, contextual menus, polished multi-window workflows.
+- Finder desktop: contextual menus, drag/drop, trash UI polish, desktop integration, polished multi-window workflows.
 - Dock/application launching: running indicators, focus, lifecycle integration, folders, trash.
 - Native dark mode: complete theme-token coverage, live switching from Settings, dark assets/icons, contrast validation.
 - Text rendering: proper `cosmic-text` rendering, font metrics, clipping, invalidation, visual regression screenshots.
