@@ -1,6 +1,6 @@
 use crate::{
-    theme::ThemeContext, AccessibilityNode, AccessibilityRole, Event, EventResult, LayoutConstraint, Rect, Size,
-    Widget, WidgetState,
+    theme::ThemeContext, AccessibilityNode, AccessibilityRole, Event, EventResult,
+    LayoutConstraint, Rect, Size, Widget, WidgetState,
 };
 
 #[derive(Debug, Clone)]
@@ -68,7 +68,12 @@ impl Widget for TreeView {
     fn draw(&self, _theme: &ThemeContext) {}
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
-        if let Event::MouseDown { button: crate::event::MouseButton::Left, point, .. } = event {
+        if let Event::MouseDown {
+            button: crate::event::MouseButton::Left,
+            point,
+            ..
+        } = event
+        {
             if self.rect().contains(*point) {
                 let relative_y = point.y - self.rect().y;
                 let height = self.rect().height;

@@ -1,9 +1,13 @@
 use retro_kit::event::{KeyCode, Modifiers};
-use retro_kit::icon_view::IconView;
+use retro_kit::icon_view::{IconItem, IconView};
 use retro_kit::layout::Layout;
+use retro_kit::status_bar::{StatusBar, StatusBarAlignment};
 use retro_kit::tree_view::{TreeNode, TreeView};
 use retro_kit::window::Window;
-use retro_kit::{Widget, WidgetState, LayoutConstraint, Size, Rect, Event, EventResult, ThemeContext, AccessibilityNode};
+use retro_kit::{
+    AccessibilityNode, Event, EventResult, LayoutConstraint, Rect, Size, ThemeContext, Widget,
+    WidgetState,
+};
 use retro_sdk::{build_menu, Application};
 use std::path::PathBuf;
 
@@ -11,76 +15,61 @@ mod file_ops;
 
 fn main() {
     let _ = tracing_subscriber::fmt::try_init();
+
     let mut app = Application::new("Finder", "com.retro.finder");
 
     let mut file_menu = build_menu("File");
-    {
-        let item = file_menu.add_action("New Finder Window");
-        item.with_shortcut(
-            KeyCode::N,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
-    }
-    {
-        let item = file_menu.add_action("New Folder");
-        item.with_shortcut(
-            KeyCode::N,
-            Modifiers {
-                shift: true,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
-    }
+    file_menu.add_action("New Finder Window").with_shortcut(
+        KeyCode::N,
+        Modifiers {
+            shift: false,
+            control: false,
+            alt: false,
+            meta: true,
+        },
+    );
+    file_menu.add_action("New Folder").with_shortcut(
+        KeyCode::N,
+        Modifiers {
+            shift: true,
+            control: false,
+            alt: false,
+            meta: true,
+        },
+    );
     file_menu.add_separator();
-    {
-        let item = file_menu.add_action("Open");
-        item.with_shortcut(KeyCode::O, Modifiers::NONE);
-    }
-    {
-        let item = file_menu.add_action("Close Window");
-        item.with_shortcut(
-            KeyCode::W,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
-    }
+    file_menu
+        .add_action("Open")
+        .with_shortcut(KeyCode::O, Modifiers::NONE);
+    file_menu.add_action("Close Window").with_shortcut(
+        KeyCode::W,
+        Modifiers {
+            shift: false,
+            control: false,
+            alt: false,
+            meta: true,
+        },
+    );
     file_menu.add_separator();
-    {
-        let item = file_menu.add_action("Get Info");
-        item.with_shortcut(
-            KeyCode::I,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
-    }
+    file_menu.add_action("Get Info").with_shortcut(
+        KeyCode::I,
+        Modifiers {
+            shift: false,
+            control: false,
+            alt: false,
+            meta: true,
+        },
+    );
     file_menu.add_separator();
-    {
-        let item = file_menu.add_action("Move to Trash");
-        item.with_shortcut(
-            KeyCode::Backspace,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
-    }
+    file_menu.add_action("Move to Trash").with_shortcut(
+        KeyCode::Backspace,
+        Modifiers {
+            shift: false,
+            control: false,
+            alt: false,
+            meta: true,
+        },
+    );
     file_menu.add_action("Empty Trash...");
 
     let mut edit_menu = build_menu("Edit");
@@ -103,18 +92,15 @@ fn main() {
     view_menu.add_action("Show Status Bar");
     view_menu.add_action("Show Sidebar");
     view_menu.add_separator();
-    {
-        let item = view_menu.add_action("Enter Fullscreen");
-        item.with_shortcut(
-            KeyCode::F,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
-    }
+    view_menu.add_action("Enter Fullscreen").with_shortcut(
+        KeyCode::F,
+        Modifiers {
+            shift: false,
+            control: false,
+            alt: false,
+            meta: true,
+        },
+    );
 
     let mut go_menu = build_menu("Go");
     go_menu.add_action("Back");
@@ -149,11 +135,9 @@ fn main() {
     ]);
 
     let finderview = FinderView::new();
-
     let mut window = Window::new("Finder");
     window.layout = Layout::vertical(0.0);
     window.set_content(Box::new(finderview));
-
     app.set_main_window(window);
     app.run();
 }
@@ -163,6 +147,7 @@ pub struct FinderView {
     current_path: PathBuf,
     sidebar: TreeView,
     file_grid: IconView,
+    status_bar: StatusBar,
     last_selected_path: Option<Vec<usize>>,
 }
 
@@ -186,10 +171,12 @@ impl FinderView {
         favorites.children.push(TreeNode::new("Documents"));
         favorites.children.push(TreeNode::new("Downloads"));
         favorites.expanded = true;
+
         let mut locations = TreeNode::new("Locations");
-        locations.children.push(TreeNode::new("Macintosh HD"));
+        locations.children.push(TreeNode::new("Retro HD"));
         locations.children.push(TreeNode::new("Network"));
         locations.expanded = true;
+
         sidebar.roots = vec![favorites, locations];
 
         let mut file_grid = IconView::new();
@@ -201,6 +188,7 @@ impl FinderView {
             current_path,
             sidebar,
             file_grid,
+            status_bar: StatusBar::new(),
             last_selected_path: None,
         };
         view.reload_directory();
@@ -209,21 +197,119 @@ impl FinderView {
 
     pub fn reload_directory(&mut self) {
         self.file_grid.items.clear();
-        if let Ok(entries) = file_ops::list_directory(&self.current_path) {
+        if let Ok(mut entries) = file_ops::list_directory(&self.current_path) {
+            entries.sort_by(|left, right| {
+                right
+                    .is_dir
+                    .cmp(&left.is_dir)
+                    .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+            });
+
             for entry in entries {
-                let icon = if entry.is_dir {
-                    Some("folder".to_string())
-                } else {
-                    Some("document".to_string())
-                };
-                self.file_grid.items.push(retro_kit::icon_view::IconItem {
+                self.file_grid.items.push(IconItem {
                     label: entry.name,
-                    icon,
+                    icon: Some(if entry.is_dir { "folder" } else { "document" }.to_string()),
                     selected: false,
                     rect: Rect::ZERO,
                 });
             }
         }
+        self.refresh_status_bar();
+    }
+
+    fn refresh_status_bar(&mut self) {
+        self.status_bar.items.clear();
+        let selected = self
+            .file_grid
+            .items
+            .iter()
+            .filter(|item| item.selected)
+            .count();
+        let item_count = self.file_grid.items.len();
+        let count_text = if selected > 0 {
+            format!("{selected} of {item_count} selected")
+        } else {
+            format!("{item_count} items")
+        };
+        self.status_bar
+            .add_item(&count_text, StatusBarAlignment::Left, 140.0);
+        self.status_bar.add_item(
+            &self.current_path.display().to_string(),
+            StatusBarAlignment::Left,
+            520.0,
+        );
+    }
+
+    fn selected_item(&self) -> Option<IconItem> {
+        self.file_grid
+            .items
+            .iter()
+            .find(|item| item.selected)
+            .cloned()
+    }
+
+    fn selected_path(&self) -> Option<PathBuf> {
+        self.selected_item()
+            .map(|item| self.current_path.join(item.label))
+    }
+
+    fn set_current_path(&mut self, path: PathBuf) {
+        if path.is_dir() {
+            self.current_path = path;
+            self.reload_directory();
+        }
+    }
+
+    fn enter_folder_named(&mut self, folder: &str) -> bool {
+        let path = self.current_path.join(folder);
+        if path.is_dir() {
+            self.set_current_path(path);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn go_to_parent(&mut self) -> bool {
+        let Some(parent) = self.current_path.parent().map(PathBuf::from) else {
+            return false;
+        };
+        self.set_current_path(parent);
+        true
+    }
+
+    fn create_new_folder(&mut self) {
+        let mut candidate = self.current_path.join("New Folder");
+        for index in 2.. {
+            if !candidate.exists() {
+                break;
+            }
+            candidate = self.current_path.join(format!("New Folder {index}"));
+        }
+        let _ = file_ops::create_directory(&candidate);
+        self.reload_directory();
+    }
+
+    fn sync_sidebar_selection(&mut self) {
+        let sidebar_selected = self.sidebar.selected_path.clone();
+        if sidebar_selected == self.last_selected_path {
+            return;
+        }
+
+        self.last_selected_path = sidebar_selected.clone();
+        let Some(selected) = sidebar_selected else {
+            return;
+        };
+
+        let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()));
+        let path = match selected.as_slice() {
+            [0, 3] => home.join("Desktop"),
+            [0, 4] => home.join("Documents"),
+            [0, 5] => home.join("Downloads"),
+            [1, 0] => PathBuf::from("/"),
+            _ => home,
+        };
+        self.set_current_path(path);
     }
 }
 
@@ -231,6 +317,7 @@ impl Widget for FinderView {
     fn widget_state(&self) -> &WidgetState {
         &self.state
     }
+
     fn widget_state_mut(&mut self) -> &mut WidgetState {
         &mut self.state
     }
@@ -240,14 +327,28 @@ impl Widget for FinderView {
         let r = Rect::new(self.rect().x, self.rect().y, size.width, size.height);
         self.set_rect(r);
 
-        let sidebar_w = r.width * 0.25;
-        let grid_w = r.width - sidebar_w;
+        let status_h = 24.0;
+        let content_h = (r.height - status_h).max(0.0);
+        let sidebar_w = (r.width * 0.25).clamp(150.0, 220.0).min(r.width);
+        let grid_w = (r.width - sidebar_w).max(0.0);
 
-        self.sidebar.set_rect(Rect::new(r.x, r.y, sidebar_w, r.height));
-        let _ = self.sidebar.layout(LayoutConstraint::tight(Size::new(sidebar_w, r.height)));
+        self.sidebar
+            .set_rect(Rect::new(r.x, r.y, sidebar_w, content_h));
+        let _ = self
+            .sidebar
+            .layout(LayoutConstraint::tight(Size::new(sidebar_w, content_h)));
 
-        self.file_grid.set_rect(Rect::new(r.x + sidebar_w, r.y, grid_w, r.height));
-        let _ = self.file_grid.layout(LayoutConstraint::tight(Size::new(grid_w, r.height)));
+        self.file_grid
+            .set_rect(Rect::new(r.x + sidebar_w, r.y, grid_w, content_h));
+        let _ = self
+            .file_grid
+            .layout(LayoutConstraint::tight(Size::new(grid_w, content_h)));
+
+        self.status_bar
+            .set_rect(Rect::new(r.x, r.y + content_h, r.width, status_h));
+        let _ = self
+            .status_bar
+            .layout(LayoutConstraint::tight(Size::new(r.width, status_h)));
 
         size
     }
@@ -255,31 +356,31 @@ impl Widget for FinderView {
     fn draw(&self, theme: &ThemeContext) {
         self.sidebar.draw(theme);
         self.file_grid.draw(theme);
+        self.status_bar.draw(theme);
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
         if let Event::KeyDown { key, modifiers } = event {
             if modifiers.meta {
                 match key {
+                    KeyCode::ArrowUp => {
+                        if self.go_to_parent() {
+                            return EventResult::Handled;
+                        }
+                    }
                     KeyCode::N if modifiers.shift => {
-                        let path = self.current_path.join("New Folder");
-                        let _ = file_ops::create_directory(&path);
-                        self.reload_directory();
+                        self.create_new_folder();
                         return EventResult::Handled;
                     }
                     KeyCode::Backspace => {
-                        let selected_item = self.file_grid.items.iter().find(|i| i.selected).cloned();
-                        if let Some(item) = selected_item {
-                            let path = self.current_path.join(&item.label);
+                        if let Some(path) = self.selected_path() {
                             let _ = file_ops::delete_file(&path);
                             self.reload_directory();
                         }
                         return EventResult::Handled;
                     }
                     KeyCode::D => {
-                        let selected_item = self.file_grid.items.iter().find(|i| i.selected).cloned();
-                        if let Some(item) = selected_item {
-                            let path = self.current_path.join(&item.label);
+                        if let Some(path) = self.selected_path() {
                             let _ = file_ops::duplicate_file(&path);
                             self.reload_directory();
                         }
@@ -287,52 +388,47 @@ impl Widget for FinderView {
                     }
                     _ => {}
                 }
+            } else if *key == KeyCode::Enter {
+                if let Some(item) = self.selected_item() {
+                    if item.icon == Some("folder".to_string())
+                        && self.enter_folder_named(&item.label)
+                    {
+                        return EventResult::Handled;
+                    }
+                }
             }
         }
 
-        let mut res = self.sidebar.handle_event(event);
-        if let EventResult::Ignored = res {
-            res = self.file_grid.handle_event(event);
+        let mut result = self.sidebar.handle_event(event);
+        if let EventResult::Ignored = result {
+            result = self.file_grid.handle_event(event);
+            if matches!(result, EventResult::Handled) {
+                self.refresh_status_bar();
+            }
         }
 
         if let Event::DoubleClick { point, .. } = event {
-            let mut folder_to_enter = None;
-            for item in &self.file_grid.items {
-                if item.rect.contains(*point) && item.icon == Some("folder".to_string()) {
-                    folder_to_enter = Some(item.label.clone());
-                    break;
+            let folder_to_enter = self
+                .file_grid
+                .items
+                .iter()
+                .find(|item| item.rect.contains(*point) && item.icon == Some("folder".to_string()))
+                .map(|item| item.label.clone());
+
+            if let Some(folder) = folder_to_enter {
+                if self.enter_folder_named(&folder) {
+                    return EventResult::Handled;
                 }
             }
-            if let Some(folder) = folder_to_enter {
-                self.current_path = self.current_path.join(folder);
-                self.reload_directory();
-                return EventResult::Handled;
-            }
         }
-        res
+
+        result
     }
 
     fn update(&mut self) {
         self.sidebar.update();
         self.file_grid.update();
-
-        let sidebar_selected = self.sidebar.selected_path.clone();
-        if sidebar_selected != self.last_selected_path {
-            self.last_selected_path = sidebar_selected.clone();
-            if let Some(ref selected) = sidebar_selected {
-                if selected.len() > 1 && selected[0] == 0 {
-                    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-                    let path = match selected[1] {
-                        3 => PathBuf::from(home).join("Desktop"),
-                        4 => PathBuf::from(home).join("Documents"),
-                        5 => PathBuf::from(home).join("Downloads"),
-                        _ => PathBuf::from(home),
-                    };
-                    self.current_path = path;
-                    self.reload_directory();
-                }
-            }
-        }
+        self.sync_sidebar_selection();
     }
 
     fn accessibility(&self) -> Option<AccessibilityNode> {
@@ -340,17 +436,66 @@ impl Widget for FinderView {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.sidebar, &self.file_grid]
+        vec![&self.sidebar, &self.file_grid, &self.status_bar]
     }
 
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        vec![&mut self.sidebar, &mut self.file_grid]
+        vec![&mut self.sidebar, &mut self.file_grid, &mut self.status_bar]
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_finder_root() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("retroshell_finder_view_{unique}"))
+    }
+
+    #[test]
+    fn reload_directory_sorts_folders_first_and_updates_status() {
+        let root = temp_finder_root();
+        fs::create_dir_all(root.join("Folder")).unwrap();
+        fs::write(root.join("note.txt"), "hello").unwrap();
+
+        let mut view = FinderView::new();
+        view.set_current_path(root.clone());
+
+        assert_eq!(view.file_grid.items[0].label, "Folder");
+        assert_eq!(view.status_bar.items[0].text, "2 items");
+        assert_eq!(view.status_bar.items[1].text, root.display().to_string());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finder_enters_folder_and_returns_to_parent() {
+        let root = temp_finder_root();
+        let child = root.join("Child");
+        fs::create_dir_all(&child).unwrap();
+
+        let mut view = FinderView::new();
+        view.set_current_path(root.clone());
+
+        assert!(view.enter_folder_named("Child"));
+        assert_eq!(view.current_path, child);
+        assert!(view.go_to_parent());
+        assert_eq!(view.current_path, root);
+
+        fs::remove_dir_all(view.current_path).unwrap();
     }
 }

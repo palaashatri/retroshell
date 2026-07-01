@@ -39,7 +39,12 @@ impl Widget for Toolbar {
             let size = child.layout(LayoutConstraint::loose(Size::new(100.0, height)));
             width += size.width;
         }
-        let size = constraint.clamp(Size::new(width.max(constraint.min_width), height));
+        let preferred_width = if constraint.max_width.is_finite() {
+            constraint.max_width
+        } else {
+            width.max(constraint.min_width)
+        };
+        let size = constraint.clamp(Size::new(preferred_width, height));
         self.set_rect(Rect::new(
             self.rect().x,
             self.rect().y,

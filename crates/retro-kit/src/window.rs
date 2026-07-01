@@ -55,8 +55,21 @@ impl Widget for Window {
             ));
             let rect = self.rect();
             if let Some(content) = &mut self.content {
-                content.set_rect(rect);
-                content.layout(LayoutConstraint::tight(proposed))
+                let content_rect = if self.title == "RetroShell Desktop" {
+                    rect
+                } else {
+                    Rect::new(
+                        rect.x + 1.0,
+                        rect.y + 25.0,
+                        (rect.width - 2.0).max(0.0),
+                        (rect.height - 26.0).max(0.0),
+                    )
+                };
+                content.set_rect(content_rect);
+                content.layout(LayoutConstraint::tight(Size::new(
+                    content_rect.width,
+                    content_rect.height,
+                )))
             } else {
                 proposed
             }

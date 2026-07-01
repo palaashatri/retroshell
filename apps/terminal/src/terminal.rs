@@ -1,11 +1,11 @@
 use crate::vt_parser::VtHandler;
+use retro_kit::event::KeyCode;
 use retro_kit::theme::ThemeContext;
 use retro_kit::Color;
 use retro_kit::{
-    AccessibilityNode, AccessibilityRole, Event, EventResult, LayoutConstraint, Rect, Size, Widget,
-    WidgetState,
+    AccessibilityNode, AccessibilityRole, Event, EventResult, LayoutConstraint, MonospaceCell,
+    MonospaceView, Rect, Size, Widget, WidgetState,
 };
-use retro_kit::event::KeyCode;
 use std::any::Any;
 
 #[allow(dead_code)]
@@ -49,6 +49,7 @@ pub struct Terminal {
     parser: vte::Parser,
     pub pty: Option<crate::pty::Pty>,
     pub rx: Option<std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Vec<u8>>>>>,
+    display: MonospaceView,
 }
 
 impl Terminal {
@@ -70,6 +71,7 @@ impl Terminal {
             parser: vte::Parser::new(),
             pty: None,
             rx: None,
+            display: MonospaceView::new(cols, rows),
         }
     }
 
@@ -83,8 +85,9 @@ impl Terminal {
         self.grid = new_grid;
         self.cols = cols;
         self.rows = rows;
-        self.cursor_x = self.cursor_x.min(cols - 1);
-        self.cursor_y = self.cursor_y.min(rows - 1);
+        self.display.resize(cols, rows);
+        self.cursor_x = self.cursor_x.min(cols.saturating_sub(1));
+        self.cursor_y = self.cursor_y.min(rows.saturating_sub(1));
         if let Some(ref pty) = self.pty {
             let _ = pty.resize(cols as u16, rows as u16);
         }
@@ -142,17 +145,21 @@ impl Widget for Terminal {
     }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
-        let size = constraint.clamp(Size::new(800.0, 600.0));
+        let size = constraint.clamp(Size::new(constraint.max_width, constraint.max_height));
         self.set_rect(Rect::new(
             self.rect().x,
             self.rect().y,
             size.width,
             size.height,
         ));
+        self.display.set_rect(self.rect());
+        self.display.layout(constraint);
         size
     }
 
-    fn draw(&self, _theme: &ThemeContext) {}
+    fn draw(&self, theme: &ThemeContext) {
+        self.display.draw(theme);
+    }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
         match event {
@@ -270,6 +277,15 @@ impl Widget for Terminal {
                 }
             }
         }
+        self.sync_display();
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.display]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
+        vec![&mut self.display]
     }
 
     fn accessibility(&self) -> Option<AccessibilityNode> {
@@ -284,6 +300,20 @@ impl Widget for Terminal {
     }
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+impl Terminal {
+    fn sync_display(&mut self) {
+        for (index, cell) in self.grid.iter().enumerate() {
+            if let Some(slot) = self.display.cells.get_mut(index) {
+                *slot = MonospaceCell {
+                    ch: cell.c,
+                    fg: [cell.fg.r, cell.fg.g, cell.fg.b, cell.fg.a],
+                    bg: [cell.bg.r, cell.bg.g, cell.bg.b, cell.bg.a],
+                };
+            }
+        }
     }
 }
 

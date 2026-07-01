@@ -7,11 +7,12 @@ edition = "2021"
 retro-kit = { path = "../retro-kit" }
 retro-bus = { path = "../retro-bus" }
 retro-render = { path = "../retro-render" }
+bytemuck = { workspace = true }
+futures = { workspace = true }
+wgpu = { workspace = true }
 winit = "0.30"
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
 tracing = { workspace = true }
-
-

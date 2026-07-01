@@ -11,6 +11,7 @@ path = "src/main.rs"
 retro-kit = { path = "../retro-kit" }
 retro-render = { path = "../retro-render" }
 retro-bus = { path = "../retro-bus" }
+retro-sdk = { path = "../retro-sdk" }
 winit = "0.30"
 serde = { workspace = true }
 

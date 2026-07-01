@@ -41,15 +41,21 @@ impl MenuServer {
     }
 
     fn setup_default_menus(&mut self) {
-        let mut apple_menu = Menu::new("");
-        apple_menu.add_action("About This Mac");
-        apple_menu.add_separator();
-        apple_menu.add_action("System Settings...");
-        apple_menu.add_action("App Store...");
-        apple_menu.add_separator();
-        apple_menu.add_action("Recent Items").with_action("recent");
-        apple_menu.add_separator();
-        apple_menu.add_action("Force Quit...").with_shortcut(
+        let mut system_menu = Menu::new("Retro");
+        system_menu
+            .add_action("About RetroShell")
+            .with_action("shell.about");
+        system_menu.add_separator();
+        system_menu
+            .add_action("System Settings...")
+            .with_action("shell.settings");
+        system_menu
+            .add_action("Software Catalog...")
+            .with_action("shell.software_catalog");
+        system_menu.add_separator();
+        system_menu.add_action("Recent Items").with_action("recent");
+        system_menu.add_separator();
+        system_menu.add_action("Force Quit...").with_shortcut(
             KeyCode::Escape,
             Modifiers {
                 shift: false,
@@ -58,12 +64,12 @@ impl MenuServer {
                 meta: true,
             },
         );
-        apple_menu.add_separator();
-        apple_menu.add_action("Sleep");
-        apple_menu.add_action("Restart...");
-        apple_menu.add_action("Shut Down...");
-        apple_menu.add_separator();
-        apple_menu.add_action("Lock Screen").with_shortcut(
+        system_menu.add_separator();
+        system_menu.add_action("Sleep");
+        system_menu.add_action("Restart...");
+        system_menu.add_action("Shut Down...");
+        system_menu.add_separator();
+        system_menu.add_action("Lock Screen").with_shortcut(
             KeyCode::Q,
             Modifiers {
                 shift: false,
@@ -72,7 +78,7 @@ impl MenuServer {
                 meta: true,
             },
         );
-        apple_menu.add_action("Log Out...").with_shortcut(
+        system_menu.add_action("Log Out...").with_shortcut(
             KeyCode::Q,
             Modifiers {
                 shift: true,
@@ -83,33 +89,42 @@ impl MenuServer {
         );
 
         let mut file_menu = Menu::new("File");
-        file_menu.add_action("New").with_shortcut(
-            KeyCode::N,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
-        file_menu.add_action("Open...").with_shortcut(
-            KeyCode::O,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
-        file_menu.add_action("Close Window").with_shortcut(
-            KeyCode::W,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
+        file_menu
+            .add_action("New")
+            .with_action("shell.new_finder_window")
+            .with_shortcut(
+                KeyCode::N,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+        file_menu
+            .add_action("Open...")
+            .with_action("shell.open_finder")
+            .with_shortcut(
+                KeyCode::O,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+        file_menu
+            .add_action("Close Window")
+            .with_action("shell.close_finder_window")
+            .with_shortcut(
+                KeyCode::W,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
         file_menu.add_action("Save").with_shortcut(
             KeyCode::S,
             Modifiers {
@@ -204,7 +219,7 @@ impl MenuServer {
         let mut help_menu = Menu::new("Help");
         help_menu.add_action("Search");
 
-        self.menus = vec![apple_menu, file_menu, edit_menu, view_menu, help_menu];
+        self.menus = vec![system_menu, file_menu, edit_menu, view_menu, help_menu];
     }
 
     pub fn set_app_menus(&mut self, app_id: &str, menus: Vec<Menu>) {

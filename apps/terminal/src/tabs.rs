@@ -1,7 +1,10 @@
 use crate::pty::Pty;
 use crate::terminal::Terminal;
 use nix::unistd::Pid;
-use retro_kit::{Widget, WidgetState, LayoutConstraint, Size, Rect, Event, EventResult, ThemeContext, AccessibilityNode};
+use retro_kit::{
+    AccessibilityNode, Event, EventResult, LayoutConstraint, Rect, Size, ThemeContext, Widget,
+    WidgetState,
+};
 
 #[allow(dead_code)]
 pub struct Tab {
@@ -48,10 +51,10 @@ impl TabManager {
     pub fn open_tab(&mut self, cols: u16, rows: u16) -> Result<usize, String> {
         let (pty, pid) = Pty::new(cols, rows)?;
         let mut term = Terminal::new(cols as usize, rows as usize);
-        
+
         let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
         let mut reader_pty = pty.try_clone().map_err(|e| e.to_string())?;
-        
+
         std::thread::spawn(move || {
             let mut buf = [0u8; 1024];
             loop {
@@ -65,7 +68,7 @@ impl TabManager {
                 }
             }
         });
-        
+
         term.pty = Some(pty.try_clone().map_err(|e| e.to_string())?);
         term.rx = Some(std::sync::Arc::new(std::sync::Mutex::new(rx)));
 
@@ -93,7 +96,12 @@ impl TabManager {
             return false;
         }
         let tab = &self.tabs[index];
-        tracing::info!("Closing tab {} ({}) with PID {}", tab.id, tab.title, tab.child_pid);
+        tracing::info!(
+            "Closing tab {} ({}) with PID {}",
+            tab.id,
+            tab.title,
+            tab.child_pid
+        );
         self.tabs.remove(index);
         if self.active_tab_index >= self.tabs.len() && !self.tabs.is_empty() {
             self.active_tab_index = self.tabs.len() - 1;

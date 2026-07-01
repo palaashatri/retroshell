@@ -46,24 +46,59 @@ impl Widget for IconView {
     }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
-        let width = constraint.max_width.min(400.0);
-        let height = constraint.max_height.min(300.0);
+        let width = constraint.max_width;
+        let height = constraint.max_height;
         let size = constraint.clamp(Size::new(width, height));
         let r = Rect::new(self.rect().x, self.rect().y, size.width, size.height);
         self.set_rect(r);
 
-        let cols = (size.width / (self.icon_size + self.spacing)).max(1.0) as usize;
+        let is_desktop = size.width >= 600.0
+            && size.height >= 360.0
+            && self.items.iter().any(|item| item.label == "Hard Disk")
+            && self.items.iter().any(|item| item.label == "Trash");
         let icon_size = self.icon_size;
         let spacing = self.spacing;
-        for (i, item) in self.items.iter_mut().enumerate() {
-            let col = i % cols;
-            let row = i / cols;
-            item.rect = Rect::new(
-                r.x + col as f32 * (icon_size + spacing),
-                r.y + row as f32 * (icon_size + spacing),
-                icon_size,
-                icon_size + 20.0,
-            );
+        if is_desktop {
+            let right_x = r.x + size.width - icon_size - 28.0;
+            let app_x = r.x + 24.0;
+            let mut app_index = 0usize;
+            for item in &mut self.items {
+                let rect = match item.label.as_str() {
+                    "Hard Disk" => Rect::new(right_x, r.y + 28.0, icon_size, icon_size + 22.0),
+                    "Home" => Rect::new(right_x, r.y + 118.0, icon_size, icon_size + 22.0),
+                    "Applications" => Rect::new(right_x, r.y + 208.0, icon_size, icon_size + 22.0),
+                    "Trash" => Rect::new(
+                        right_x,
+                        r.y + size.height - icon_size - 34.0,
+                        icon_size,
+                        icon_size + 22.0,
+                    ),
+                    _ => {
+                        let col = app_index % 4;
+                        let row = app_index / 4;
+                        app_index += 1;
+                        Rect::new(
+                            app_x + col as f32 * (icon_size + 38.0),
+                            r.y + 36.0 + row as f32 * (icon_size + 38.0),
+                            icon_size,
+                            icon_size + 22.0,
+                        )
+                    }
+                };
+                item.rect = rect;
+            }
+        } else {
+            let cols = (size.width / (icon_size + spacing)).max(1.0) as usize;
+            for (i, item) in self.items.iter_mut().enumerate() {
+                let col = i % cols;
+                let row = i / cols;
+                item.rect = Rect::new(
+                    r.x + col as f32 * (icon_size + spacing),
+                    r.y + row as f32 * (icon_size + spacing),
+                    icon_size,
+                    icon_size + 20.0,
+                );
+            }
         }
         size
     }
@@ -83,7 +118,11 @@ impl Widget for IconView {
                 }
                 EventResult::Ignored
             }
-            Event::MouseDown { button: crate::event::MouseButton::Left, point, .. } => {
+            Event::MouseDown {
+                button: crate::event::MouseButton::Left,
+                point,
+                ..
+            } => {
                 let mut hit = false;
                 for item in &mut self.items {
                     if item.rect.contains(*point) {

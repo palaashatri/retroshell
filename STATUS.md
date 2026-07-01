@@ -1,58 +1,46 @@
-# RetroShell — Project Status
+# RetroShell Project Status
 
 ## Summary
 
-Phase 1 and 2 implementations are complete: a multi-crate Rust workspace with all components fully defined, real runtime rendering pipeline integrations, event loops, custom widgets, metadata app bundles, and a full suite of integration tests.
+RetroShell is a working native Rust prototype, not a complete desktop environment yet. Current work has a `wgpu` rendered shell window, original Classic-inspired desktop surface, interactive menu bar, draggable/resizable Finder-style desktop window, visible grow box, and first-party app foundations. Finder now has a sidebar, icon grid, sorted directory listing, status/path bar, parent-folder navigation, and folder-entry helpers.
+
+The definition of done is a full desktop environment: working Finder, TextEdit, Settings, Terminal, package-manager backed App Store, native dark mode, compositor/session path, HDR, VRR, and real application/game validation.
 
 ## Workspace
 
 | Crate | Path | Status |
 |-------|------|--------|
-| retro-render | `crates/retro-render/` | Complete — wgpu device init, texture, surface, shader, font, window handles, event loop, render tree, drawing primitives |
-| retro-kit | `crates/retro-kit/` | Complete — all 17 widget types, layout, event, accessibility, theme system, clipboard, drag and drop |
-| retro-shell | `crates/retro-shell/` | Complete — all 10 services defined with menu/dock/desktop/notification rendering and persistent sessions |
-| retro-bus | `crates/retro-bus/` | Complete — message types, service registry, transport trait, and local transport |
-| retro-sdk | `crates/retro-sdk/` | Complete — Application struct with menus, bus, window, and event loop integration |
+| retro-render | `crates/retro-render/` | Prototype: native `wgpu` rendering works; text, clipping, compositor/display features, HDR, and VRR remain incomplete. |
+| retro-kit | `crates/retro-kit/` | Prototype: core widgets and layout exist; polished accessibility, drag/drop, focus, menus, and theme coverage remain incomplete. |
+| retro-shell | `crates/retro-shell/` | Prototype: shell services and rendered desktop exist; full window management, sessions, app lifecycle, and compositor integration remain incomplete. |
+| retro-bus | `crates/retro-bus/` | Foundation: message and local transport primitives exist; broader service integration remains incomplete. |
+| retro-sdk | `crates/retro-sdk/` | Prototype: app runtime and immediate renderer exist; command routing and mature app integration remain incomplete. |
 
 ## Applications
 
 | App | Path | Status |
 |-----|------|--------|
-| Finder | `apps/finder/` | Complete — Menu bar + tree layout, custom file operations, trash, and metadata App.toml |
-| Settings | `apps/settings/` | Complete — Menu bar + category tree + appearance panel and App.toml |
-| TextEdit | `apps/textedit/` | Complete — Menu bar + toolbar + text field + scroll view and App.toml |
-| Terminal | `apps/terminal/` | Complete — VT100/xterm-256color emulator, PTY allocator, scrollback, tab manager, and App.toml |
+| Finder | `apps/finder/` | Prototype: menus, sorted file listing, status/path bar, folder entry, parent navigation, and file operation helpers exist; multi-window workflows, desktop integration, trash UI, context menus, and richer status/details remain incomplete. |
+| Settings | `apps/settings/` | Prototype: category shell exists; persistent settings, appearance switching, display/HDR/VRR controls, input settings, and package-manager settings remain incomplete. |
+| TextEdit | `apps/textedit/` | Prototype: editor surface exists; open/save, document lifecycle, undo/redo, formatting, and file dialogs remain incomplete. |
+| Terminal | `apps/terminal/` | Foundation: PTY and terminal grid exist; robust terminal behavior, resizing, scrollback UI, selection, clipboard, and session integration remain incomplete. |
+| App Store | `apps/app-store/` | Not started: package-manager adapter, search, install/remove/update, permissions, and distro/BSD backend support remain incomplete. |
 
-## Themes
+## Recent Verification
 
-| Theme | Files | Status |
-|-------|-------|--------|
-| Platinum | `themes/platinum/` | Theme.toml, Colors.toml, Metrics.toml, Typography.toml, and placeholder asset directories |
-| Graphite | `themes/graphite/` | Same structure, syntax errors fixed |
-| OLED Graphite | `themes/oled-graphite/` | Same structure |
-| High Contrast | `themes/high-contrast/` | Same structure |
+- `cargo check --workspace --all-targets`
+- `cargo test --workspace -q`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- Linux VM/Xvfb/Mesa smoke: `retro-shell` starts, accepts pointer interaction, opens the menu bar, and captures `docs/screenshots/current-retroshell-desktop.png`.
+- Linux VM/Xvfb/Mesa smoke: `finder` starts against a demo home directory and captures `docs/screenshots/current-finder.png`.
 
-All themes have identifiers defined in Theme.toml and standard folder templates for icons, cursors, sounds, and wallpapers.
+## Next Milestones
 
-## Verification
-
-### All Features Implemented ✅
-
-- Terminal application with pseudo-terminals and ANSI escaping
-- Workspace event loops wired to `retro-render` and `winit`
-- Custom RetroKit widgets (StatusBar, TabView, PopupButton)
-- Deserializable metadata `App.toml` files for all packages
-- Theme directory layouts and syntax validation
-- Rendering and session persistence inside RetroShell services
-- Custom integration and unit test suites for all crates (19 tests passing)
-- Clean workspace compile with zero compiler or clippy warnings
-
-## Build and Verification
-
-The project compiles, passes clippy lints, and runs tests successfully with zero warnings:
-
-```sh
-cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets
-cargo test --workspace
-```
+1. Finish shell window management: z-order, focus, multiple windows, close/zoom/minimize, drag/resize for all managed windows.
+2. Make Finder real: browse directories, open folders in shell windows, wire file operations to UI, add context menus and trash behavior.
+3. Make TextEdit real: open/save documents, dirty state, undo/redo, selection, clipboard, and file dialogs.
+4. Make Terminal robust: PTY lifecycle, resize propagation, scrollback UI, selection, copy/paste, and shell session persistence.
+5. Make Settings persistent: appearance, input, display, package-manager, and future HDR/VRR controls.
+6. Add App Store: backend abstraction for Linux/BSD package managers, search/install/remove/update flows, and safe privilege handling.
+7. Build compositor/display path: Wayland/session integration, multi-monitor, HiDPI, HDR metadata/color pipeline, and VRR frame pacing.
+8. Capture release evidence: video with audio of Doom running on RetroShell in windowed, borderless fullscreen, and exclusive fullscreen modes.

@@ -1,8 +1,22 @@
 use retro_bus::RetroBus;
-use retro_kit::event::{Modifiers, MouseButton};
-use retro_kit::menu::{Menu, MenuItem};
+use retro_kit::button::Button;
+use retro_kit::event::{KeyCode, Modifiers, MouseButton};
+use retro_kit::icon_view::{IconItem, IconView};
+use retro_kit::label::Label;
+use retro_kit::layout::{Layout, LayoutView};
+use retro_kit::list_view::ListView;
+use retro_kit::menu::{Menu, MenuItem, MenuItemKind};
+use retro_kit::menu_bar::MenuBar;
+use retro_kit::scroll_view::ScrollView;
+use retro_kit::split_view::SplitView;
+use retro_kit::status_bar::StatusBar;
+use retro_kit::text_field::TextField;
+use retro_kit::toolbar::Toolbar;
+use retro_kit::tree_view::{TreeNode, TreeView};
 use retro_kit::window::Window;
-use retro_kit::{LayoutConstraint, Point, Size, Widget};
+use retro_kit::{Color, LayoutConstraint, MonospaceView, Point, Rect, Size, Widget};
+use std::sync::Arc;
+use wgpu::util::DeviceExt;
 
 pub struct Application {
     pub name: String,
@@ -38,7 +52,36 @@ impl Application {
         self.menus = menus;
     }
 
+    fn attach_menu_bar(&mut self) {
+        let Some(mut window) = self.main_window.take() else {
+            return;
+        };
+        if self.menus.is_empty() {
+            self.main_window = Some(window);
+            return;
+        }
+
+        let mut menus = self.menus.clone();
+        let mut app_menu = Menu::new(&self.name);
+        app_menu.add_action(format!("About {}", self.name));
+        app_menu.add_separator();
+        app_menu.add_action(format!("Hide {}", self.name));
+        app_menu.add_separator();
+        app_menu.add_action(format!("Quit {}", self.name));
+        menus.insert(0, app_menu);
+
+        let content = window.content.take();
+        let mut root = Layout::vertical(0.0);
+        root.add(Box::new(MenuBar::new(menus)));
+        if let Some(content) = content {
+            root.add(content);
+        }
+        window.set_content(Box::new(LayoutView::new(root)));
+        self.main_window = Some(window);
+    }
+
     pub fn run(&mut self) {
+        self.attach_menu_bar();
         self.running = true;
         tracing::info!("Application '{}' started", self.name);
 
@@ -48,40 +91,81 @@ impl Application {
         struct AppHandler {
             name: String,
             window: Option<Window>,
-            platform_window: Option<winit::window::Window>,
+            platform_window: Option<Arc<winit::window::Window>>,
+            presenter: Option<WgpuPresenter>,
             modifiers: winit::keyboard::ModifiersState,
             cursor_position: Point,
             last_click: Option<(MouseButton, Point, std::time::Instant)>,
+            dirty: bool,
         }
+
         impl AppHandler {
             fn modifiers(&self) -> Modifiers {
                 modifiers_from_winit(self.modifiers)
             }
 
             fn dispatch(&mut self, event: retro_kit::Event) -> retro_kit::EventResult {
-                if let Some(ref mut win) = self.window {
+                let result = if let Some(ref mut win) = self.window {
                     win.handle_event(&event)
                 } else {
                     retro_kit::EventResult::Ignored
+                };
+                self.dirty = true;
+                if let Some(window) = &self.platform_window {
+                    window.request_redraw();
                 }
+                result
             }
 
             fn layout_window(&mut self, width: u32, height: u32) {
                 if let Some(ref mut win) = self.window {
-                    let size = Size::new(width as f32, height as f32);
+                    let size = Size::new(width.max(1) as f32, height.max(1) as f32);
+                    win.set_rect(Rect::new(0.0, 0.0, size.width, size.height));
                     win.layout(LayoutConstraint::tight(size));
+                    self.dirty = true;
+                }
+            }
+
+            fn paint(&mut self) {
+                let Some(window) = &self.window else {
+                    return;
+                };
+                let Some(presenter) = &mut self.presenter else {
+                    return;
+                };
+                if let Err(err) = presenter.render(|canvas| {
+                    draw_desktop_backdrop(canvas);
+                    draw_window(canvas, window);
+                }) {
+                    tracing::error!("failed to render frame: {err}");
+                } else {
+                    self.dirty = false;
                 }
             }
         }
 
         impl retro_render::event_loop::RetroAppHandler for AppHandler {
             fn init(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-                let attrs = winit::window::Window::default_attributes().with_title(&self.name);
+                let attrs = winit::window::Window::default_attributes()
+                    .with_title(&self.name)
+                    .with_inner_size(winit::dpi::LogicalSize::new(960.0, 640.0));
+
                 match event_loop.create_window(attrs) {
                     Ok(window) => {
+                        let window = Arc::new(window);
                         let size = window.inner_size();
-                        self.layout_window(size.width, size.height);
-                        self.platform_window = Some(window);
+                        match futures::executor::block_on(WgpuPresenter::new(window.clone())) {
+                            Ok(presenter) => {
+                                self.layout_window(size.width, size.height);
+                                window.request_redraw();
+                                self.presenter = Some(presenter);
+                                self.platform_window = Some(window);
+                            }
+                            Err(err) => {
+                                tracing::error!("failed to create presenter: {err}");
+                                event_loop.exit();
+                            }
+                        }
                     }
                     Err(err) => {
                         tracing::error!("failed to create application window: {err}");
@@ -96,11 +180,16 @@ impl Application {
                 event: winit::event::WindowEvent,
             ) {
                 match event {
-                    winit::event::WindowEvent::CloseRequested => {
-                        event_loop.exit();
-                    }
+                    winit::event::WindowEvent::CloseRequested => event_loop.exit(),
+                    winit::event::WindowEvent::RedrawRequested => self.paint(),
                     winit::event::WindowEvent::Resized(size) => {
+                        if let Some(presenter) = &mut self.presenter {
+                            presenter.resize(size.width, size.height);
+                        }
                         self.layout_window(size.width, size.height);
+                        if let Some(window) = &self.platform_window {
+                            window.request_redraw();
+                        }
                     }
                     winit::event::WindowEvent::ModifiersChanged(new_mods) => {
                         self.modifiers = new_mods.state();
@@ -204,7 +293,9 @@ impl Application {
                         if key_event.state == winit::event::ElementState::Pressed && !handled {
                             if let Some(ref text) = key_event.text {
                                 for character in text.chars() {
-                                    let _ = self.dispatch(retro_kit::Event::Char { character });
+                                    if !character.is_control() {
+                                        let _ = self.dispatch(retro_kit::Event::Char { character });
+                                    }
                                 }
                             }
                         }
@@ -212,9 +303,15 @@ impl Application {
                     _ => {}
                 }
             }
+
             fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
                 if let Some(ref mut win) = self.window {
                     win.update();
+                }
+                if self.dirty {
+                    if let Some(window) = &self.platform_window {
+                        window.request_redraw();
+                    }
                 }
             }
         }
@@ -223,11 +320,15 @@ impl Application {
             name: self.name.clone(),
             window: main_window,
             platform_window: None,
+            presenter: None,
             modifiers: winit::keyboard::ModifiersState::default(),
             cursor_position: Point::ZERO,
             last_click: None,
+            dirty: true,
         };
-        let _ = event_loop.run(&mut handler);
+        if let Err(err) = event_loop.run(&mut handler) {
+            tracing::error!("application event loop failed: {err}");
+        }
     }
 
     pub fn quit(&mut self) {
@@ -257,6 +358,1392 @@ pub fn separator() -> MenuItem {
     MenuItem::separator()
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 2],
+    color: [f32; 4],
+}
+
+impl Vertex {
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
+
+struct WgpuPresenter {
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    pipeline: wgpu::RenderPipeline,
+}
+
+impl WgpuPresenter {
+    async fn new(window: Arc<winit::window::Window>) -> Result<Self, String> {
+        let size = window.inner_size();
+        let instance = wgpu::Instance::new(Default::default());
+        let surface = instance
+            .create_surface(window)
+            .map_err(|err| format!("surface creation failed: {err}"))?;
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .ok_or_else(|| "no compatible graphics adapter found".to_string())?;
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("RetroSDK Device"),
+                    required_features: wgpu::Features::default(),
+                    required_limits: wgpu::Limits::default(),
+                    memory_hints: wgpu::MemoryHints::Performance,
+                },
+                None,
+            )
+            .await
+            .map_err(|err| format!("device creation failed: {err}"))?;
+
+        let caps = surface.get_capabilities(&adapter);
+        let format = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|format| format.is_srgb())
+            .unwrap_or(caps.formats[0]);
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&device, &config);
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("RetroSDK Immediate UI Shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                r#"
+struct VsOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+
+@vertex
+fn vs_main(@location(0) position: vec2<f32>, @location(1) color: vec4<f32>) -> VsOut {
+    var out: VsOut;
+    out.position = vec4<f32>(position, 0.0, 1.0);
+    out.color = color;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return in.color;
+}
+"#
+                .into(),
+            ),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("RetroSDK Pipeline Layout"),
+            bind_group_layouts: &[],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("RetroSDK Immediate UI Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                compilation_options: Default::default(),
+                buffers: &[Vertex::layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        Ok(Self {
+            surface,
+            device,
+            queue,
+            config,
+            pipeline,
+        })
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.config.width = width.max(1);
+        self.config.height = height.max(1);
+        self.surface.configure(&self.device, &self.config);
+    }
+
+    fn render(&mut self, draw: impl FnOnce(&mut Canvas<'_>)) -> Result<(), String> {
+        let frame = match self.surface.get_current_texture() {
+            Ok(frame) => frame,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                self.surface.configure(&self.device, &self.config);
+                self.surface
+                    .get_current_texture()
+                    .map_err(|err| format!("surface acquire failed after reconfigure: {err}"))?
+            }
+            Err(err) => return Err(format!("surface acquire failed: {err}")),
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut canvas = Canvas::new(self.config.width as f32, self.config.height as f32);
+        draw(&mut canvas);
+
+        let vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("RetroSDK Immediate UI Vertex Buffer"),
+                contents: bytemuck::cast_slice(&canvas.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("RetroSDK Frame Encoder"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("RetroSDK Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            if !canvas.vertices.is_empty() {
+                pass.set_pipeline(&self.pipeline);
+                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                pass.draw(0..canvas.vertices.len() as u32, 0..1);
+            }
+        }
+        self.queue.submit(Some(encoder.finish()));
+        frame.present();
+        Ok(())
+    }
+}
+
+struct Canvas<'a> {
+    width: f32,
+    height: f32,
+    vertices: Vec<Vertex>,
+    clip: Option<Rect>,
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a> Canvas<'a> {
+    fn new(width: f32, height: f32) -> Self {
+        Self {
+            width,
+            height,
+            vertices: Vec::with_capacity(8192),
+            clip: None,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    fn rect(&mut self, rect: Rect, color: [f32; 4]) {
+        let mut x0 = rect.x.max(0.0);
+        let mut y0 = rect.y.max(0.0);
+        let mut x1 = (rect.x + rect.width).min(self.width);
+        let mut y1 = (rect.y + rect.height).min(self.height);
+        if let Some(clip) = self.clip {
+            x0 = x0.max(clip.x);
+            y0 = y0.max(clip.y);
+            x1 = x1.min(clip.x + clip.width);
+            y1 = y1.min(clip.y + clip.height);
+        }
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+
+        let p0 = self.ndc(x0, y0);
+        let p1 = self.ndc(x1, y0);
+        let p2 = self.ndc(x1, y1);
+        let p3 = self.ndc(x0, y1);
+        self.vertices.extend_from_slice(&[
+            Vertex {
+                position: p0,
+                color,
+            },
+            Vertex {
+                position: p1,
+                color,
+            },
+            Vertex {
+                position: p2,
+                color,
+            },
+            Vertex {
+                position: p0,
+                color,
+            },
+            Vertex {
+                position: p2,
+                color,
+            },
+            Vertex {
+                position: p3,
+                color,
+            },
+        ]);
+    }
+
+    fn stroke(&mut self, rect: Rect, color: [f32; 4]) {
+        self.rect(Rect::new(rect.x, rect.y, rect.width, 1.0), color);
+        self.rect(
+            Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
+            color,
+        );
+        self.rect(Rect::new(rect.x, rect.y, 1.0, rect.height), color);
+        self.rect(
+            Rect::new(rect.x + rect.width - 1.0, rect.y, 1.0, rect.height),
+            color,
+        );
+    }
+
+    fn text(&mut self, text: &str, x: f32, y: f32, color: [f32; 4]) {
+        let mut cursor_x = x;
+        let mut cursor_y = y;
+        for ch in text.chars() {
+            if ch == '\n' {
+                cursor_x = x;
+                cursor_y += 12.0;
+                continue;
+            }
+            self.glyph(ch, cursor_x, cursor_y, color);
+            cursor_x += 7.0;
+        }
+    }
+
+    fn glyph(&mut self, ch: char, x: f32, y: f32, color: [f32; 4]) {
+        for (row, bits) in glyph_pattern(ch).iter().enumerate() {
+            for col in 0..5 {
+                if bits & (1 << (4 - col)) != 0 {
+                    self.rect(Rect::new(x + col as f32, y + row as f32, 1.0, 1.0), color);
+                }
+            }
+        }
+    }
+
+    fn with_clip(&mut self, clip: Rect, draw: impl FnOnce(&mut Self)) {
+        let old = self.clip;
+        self.clip = Some(if let Some(old) = old {
+            intersect_rect(old, clip).unwrap_or(Rect::ZERO)
+        } else {
+            clip
+        });
+        draw(self);
+        self.clip = old;
+    }
+
+    fn ndc(&self, x: f32, y: f32) -> [f32; 2] {
+        [(x / self.width) * 2.0 - 1.0, 1.0 - (y / self.height) * 2.0]
+    }
+}
+
+fn draw_desktop_backdrop(canvas: &mut Canvas<'_>) {
+    canvas.rect(
+        Rect::new(0.0, 0.0, canvas.width, canvas.height),
+        rgb(152, 152, 148),
+    );
+    let width = canvas.width as usize;
+    let height = canvas.height as usize;
+    for y in (0..height).step_by(4) {
+        for x in (0..width).step_by(4) {
+            let pattern_x = x / 4;
+            let pattern_y = y / 4;
+            let shade = match (pattern_x + pattern_y) % 4 {
+                0 => 168,
+                1 => 148,
+                2 => 160,
+                _ => 152,
+            };
+            let size = 2.0;
+            canvas.rect(
+                Rect::new(x as f32, y as f32, size, size),
+                rgb(shade, shade, shade),
+            );
+            if x + 2 < width {
+                canvas.rect(
+                    Rect::new(x as f32 + 2.0, y as f32, size, size),
+                    rgb(shade, shade, shade),
+                );
+            }
+            if y + 2 < height {
+                canvas.rect(
+                    Rect::new(x as f32, y as f32 + 2.0, size, size),
+                    rgb(shade, shade, shade),
+                );
+            }
+            if x + 2 < width && y + 2 < height {
+                canvas.rect(
+                    Rect::new(x as f32 + 2.0, y as f32 + 2.0, size, size),
+                    rgb(shade, shade, shade),
+                );
+            }
+        }
+    }
+}
+
+fn draw_window(canvas: &mut Canvas<'_>, window: &Window) {
+    let rect = window.rect();
+    if window.title() == "RetroShell Desktop" {
+        canvas.rect(rect, rgb(152, 152, 148));
+        draw_desktop_backdrop(canvas);
+        for child in window.children() {
+            draw_widget(canvas, child);
+        }
+        for child in window.children() {
+            draw_menu_overlays(canvas, child);
+        }
+        return;
+    }
+
+    canvas.rect(rect, rgb(236, 235, 229));
+    draw_beveled_rect(canvas, rect, rgb(238, 238, 232), true);
+
+    let titlebar = Rect::new(rect.x, rect.y, rect.width, 24.0);
+    draw_classic_titlebar(canvas, titlebar, window.title());
+
+    canvas.with_clip(
+        Rect::new(
+            rect.x + 1.0,
+            rect.y + 25.0,
+            rect.width - 2.0,
+            rect.height - 26.0,
+        ),
+        |canvas| {
+            for child in window.children() {
+                draw_widget(canvas, child);
+            }
+            for child in window.children() {
+                draw_menu_overlays(canvas, child);
+            }
+        },
+    );
+
+    draw_resize_grow_box(canvas, rect);
+}
+
+fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str) {
+    canvas.rect(rect, rgb(224, 224, 218));
+    draw_beveled_rect(canvas, rect, rgb(224, 224, 218), true);
+
+    for y in (rect.y as i32 + 4..rect.y as i32 + rect.height as i32 - 4).step_by(3) {
+        canvas.rect(
+            Rect::new(rect.x + 26.0, y as f32, rect.width - 52.0, 1.0),
+            rgb(112, 112, 108),
+        );
+        canvas.rect(
+            Rect::new(rect.x + 26.0, y as f32 + 1.0, rect.width - 52.0, 1.0),
+            rgb(246, 246, 242),
+        );
+    }
+
+    let close_box = Rect::new(rect.x + 8.0, rect.y + 7.0, 11.0, 11.0);
+    canvas.rect(close_box, rgb(238, 238, 232));
+    canvas.stroke(close_box, rgb(60, 60, 58));
+    canvas.rect(
+        Rect::new(
+            close_box.x + 2.0,
+            close_box.y + 2.0,
+            close_box.width - 4.0,
+            1.0,
+        ),
+        rgb(255, 255, 255),
+    );
+
+    let zoom_box = Rect::new(rect.x + rect.width - 19.0, rect.y + 7.0, 11.0, 11.0);
+    canvas.rect(zoom_box, rgb(238, 238, 232));
+    canvas.stroke(zoom_box, rgb(60, 60, 58));
+    canvas.rect(
+        Rect::new(
+            zoom_box.x + 2.0,
+            zoom_box.y + 2.0,
+            zoom_box.width - 4.0,
+            1.0,
+        ),
+        rgb(255, 255, 255),
+    );
+
+    let title_width = title.len() as f32 * 7.0 + 18.0;
+    let title_rect = Rect::new(
+        rect.x + (rect.width - title_width) * 0.5,
+        rect.y + 3.0,
+        title_width,
+        18.0,
+    );
+    canvas.rect(title_rect, rgb(224, 224, 218));
+    canvas.text(title, title_rect.x + 9.0, rect.y + 8.0, rgb(24, 24, 24));
+    canvas.rect(
+        Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
+        rgb(92, 92, 88),
+    );
+}
+
+fn draw_resize_grow_box(canvas: &mut Canvas<'_>, window_rect: Rect) {
+    let box_rect = Rect::new(
+        window_rect.x + window_rect.width - 16.0,
+        window_rect.y + window_rect.height - 16.0,
+        15.0,
+        15.0,
+    );
+    canvas.rect(box_rect, rgb(232, 232, 226));
+    canvas.stroke(box_rect, rgb(132, 132, 126));
+
+    for offset in [4.0, 8.0, 12.0] {
+        canvas.rect(
+            Rect::new(box_rect.x + offset, box_rect.y + 13.0, 1.0, 1.0),
+            rgb(82, 82, 78),
+        );
+        canvas.rect(
+            Rect::new(box_rect.x + 13.0, box_rect.y + offset, 1.0, 1.0),
+            rgb(82, 82, 78),
+        );
+        canvas.rect(
+            Rect::new(box_rect.x + offset, box_rect.y + offset, 1.0, 1.0),
+            rgb(164, 164, 158),
+        );
+    }
+}
+
+fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
+    let rect = widget.rect();
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return;
+    }
+
+    if let Some(window) = widget.as_any().downcast_ref::<Window>() {
+        draw_window(canvas, window);
+        return;
+    }
+
+    if let Some(label) = widget.as_any().downcast_ref::<Label>() {
+        canvas.text(&label.text, rect.x + 2.0, rect.y + 5.0, rgb(24, 24, 24));
+    } else if let Some(button) = widget.as_any().downcast_ref::<Button>() {
+        if rect.height <= 24.0 {
+            canvas.text(button.label(), rect.x + 8.0, rect.y + 7.0, rgb(8, 8, 8));
+            return;
+        }
+        let bg = if button.widget_state().hovered {
+            rgb(226, 235, 246)
+        } else {
+            rgb(222, 222, 218)
+        };
+        canvas.rect(rect, bg);
+        draw_beveled_rect(canvas, rect, bg, true);
+        canvas.text(button.label(), rect.x + 12.0, rect.y + 9.0, rgb(20, 20, 20));
+    } else if let Some(text_field) = widget.as_any().downcast_ref::<TextField>() {
+        canvas.rect(rect, rgb(255, 255, 252));
+        canvas.stroke(rect, rgb(115, 115, 110));
+        let text = if text_field.text().is_empty() {
+            &text_field.placeholder
+        } else {
+            text_field.text()
+        };
+        canvas.text(text, rect.x + 6.0, rect.y + 8.0, rgb(25, 25, 25));
+    } else if let Some(tree) = widget.as_any().downcast_ref::<TreeView>() {
+        draw_tree(canvas, rect, tree);
+    } else if let Some(icon_view) = widget.as_any().downcast_ref::<IconView>() {
+        draw_icon_view(canvas, icon_view);
+    } else if let Some(list) = widget.as_any().downcast_ref::<ListView>() {
+        draw_list(canvas, rect, list);
+    } else if let Some(menu_bar) = widget.as_any().downcast_ref::<MenuBar>() {
+        draw_menu_bar_widget(canvas, rect, menu_bar);
+        return;
+    } else if let Some(toolbar) = widget.as_any().downcast_ref::<Toolbar>() {
+        if rect.y <= 1.0 && rect.width > 500.0 {
+            draw_menu_bar(canvas, rect, toolbar);
+        } else {
+            canvas.rect(rect, rgb(218, 218, 214));
+            canvas.rect(
+                Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
+                rgb(145, 145, 140),
+            );
+            for child in toolbar.children() {
+                draw_widget(canvas, child);
+            }
+        }
+        return;
+    } else if let Some(scroll) = widget.as_any().downcast_ref::<ScrollView>() {
+        canvas.rect(rect, rgb(248, 248, 244));
+        canvas.stroke(rect, rgb(160, 160, 154));
+        canvas.with_clip(rect, |canvas| {
+            for child in scroll.children() {
+                draw_widget(canvas, child);
+            }
+        });
+        return;
+    } else if widget.as_any().is::<SplitView>() {
+        canvas.rect(rect, rgb(230, 230, 225));
+        if let Some(split) = widget.as_any().downcast_ref::<SplitView>() {
+            let divider = match split.direction {
+                retro_kit::split_view::SplitDirection::Horizontal => Rect::new(
+                    rect.x + rect.width * split.divider_position,
+                    rect.y,
+                    split.divider_size,
+                    rect.height,
+                ),
+                retro_kit::split_view::SplitDirection::Vertical => Rect::new(
+                    rect.x,
+                    rect.y + rect.height * split.divider_position,
+                    rect.width,
+                    split.divider_size,
+                ),
+            };
+            canvas.rect(divider, rgb(180, 180, 176));
+            canvas.stroke(divider, rgb(110, 110, 106));
+        }
+    } else if let Some(grid) = widget.as_any().downcast_ref::<MonospaceView>() {
+        draw_monospace_view(canvas, rect, grid);
+        return;
+    } else if let Some(status) = widget.as_any().downcast_ref::<StatusBar>() {
+        canvas.rect(rect, rgb(220, 220, 216));
+        canvas.rect(
+            Rect::new(rect.x, rect.y, rect.width, 1.0),
+            rgb(150, 150, 145),
+        );
+        let mut x = rect.x + 8.0;
+        for item in &status.items {
+            canvas.text(&item.text, x, rect.y + 8.0, rgb(35, 35, 35));
+            x += item.width.max(item.text.len() as f32 * 7.0 + 12.0);
+        }
+    } else if let Some(layout_view) = widget.as_any().downcast_ref::<LayoutView>() {
+        draw_layout(canvas, &layout_view.layout);
+        return;
+    }
+
+    for child in widget.children() {
+        draw_widget(canvas, child);
+    }
+    for child in widget.children() {
+        if let Some(menu_bar) = child.as_any().downcast_ref::<MenuBar>() {
+            if menu_bar.open_menu.is_some() {
+                draw_menu_bar_widget(canvas, menu_bar.rect(), menu_bar);
+            }
+        }
+    }
+}
+
+fn draw_layout(canvas: &mut Canvas<'_>, layout: &Layout) {
+    match layout {
+        Layout::Horizontal { children, .. }
+        | Layout::Vertical { children, .. }
+        | Layout::Grid { children, .. }
+        | Layout::Stack { children }
+        | Layout::Overlay { children } => {
+            for child in children {
+                draw_widget(canvas, child.as_ref());
+            }
+            for child in children {
+                if child
+                    .as_any()
+                    .downcast_ref::<MenuBar>()
+                    .is_some_and(|menu_bar| menu_bar.open_menu.is_some())
+                {
+                    draw_widget(canvas, child.as_ref());
+                }
+                draw_menu_overlays(canvas, child.as_ref());
+            }
+        }
+    }
+}
+
+fn draw_menu_overlays(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
+    if let Some(menu_bar) = widget.as_any().downcast_ref::<MenuBar>() {
+        if menu_bar.open_menu.is_some() {
+            draw_menu_bar_widget(canvas, menu_bar.rect(), menu_bar);
+        }
+    }
+    for child in widget.children() {
+        draw_menu_overlays(canvas, child);
+    }
+}
+
+fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
+    canvas.rect(rect, rgb(238, 238, 238));
+    canvas.rect(
+        Rect::new(rect.x, rect.y, rect.width, 1.0),
+        rgb(255, 255, 255),
+    );
+    canvas.rect(
+        Rect::new(rect.x, rect.y + rect.height - 2.0, rect.width, 1.0),
+        rgb(95, 95, 95),
+    );
+    canvas.rect(
+        Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
+        rgb(35, 35, 35),
+    );
+
+    let mut x = rect.x + 10.0;
+    draw_apple_icon(canvas, x + 1.0, rect.y + 7.0, false);
+    x += 18.0;
+
+    for child in toolbar.children() {
+        if let Some(button) = child.as_any().downcast_ref::<Button>() {
+            let label = button.label();
+            canvas.text(label, x, rect.y + 8.0, rgb(8, 8, 8));
+            x += label.len() as f32 * 8.0 + 18.0;
+        }
+    }
+
+    let clock = "9:48 PM";
+    canvas.text(
+        clock,
+        rect.x + rect.width - clock.len() as f32 * 7.0 - 72.0,
+        rect.y + 8.0,
+        rgb(8, 8, 8),
+    );
+    draw_status_glyph(canvas, rect.x + rect.width - 42.0, rect.y + 7.0);
+    draw_status_glyph(canvas, rect.x + rect.width - 22.0, rect.y + 7.0);
+}
+
+fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar) {
+    canvas.rect(rect, rgb(238, 238, 238));
+    canvas.rect(
+        Rect::new(rect.x, rect.y, rect.width, 1.0),
+        rgb(255, 255, 255),
+    );
+    canvas.rect(
+        Rect::new(rect.x, rect.y + rect.height - 2.0, rect.width, 1.0),
+        rgb(95, 95, 95),
+    );
+    canvas.rect(
+        Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
+        rgb(35, 35, 35),
+    );
+
+    for (index, menu) in menu_bar.menus.iter().enumerate() {
+        let Some(menu_rect) = menu_bar.menu_rects().get(index).copied() else {
+            continue;
+        };
+        let active = menu_bar.open_menu == Some(index) || menu_bar.hovered_menu == Some(index);
+        if active {
+            canvas.rect(
+                Rect::new(
+                    menu_rect.x + 1.0,
+                    menu_rect.y + 2.0,
+                    menu_rect.width - 2.0,
+                    20.0,
+                ),
+                rgb(24, 24, 24),
+            );
+        }
+        if index == 0 {
+            draw_apple_icon(canvas, menu_rect.x + 4.0, menu_rect.y + 7.0, active);
+            canvas.text(
+                &menu.title,
+                menu_rect.x + 18.0,
+                menu_rect.y + 8.0,
+                if active {
+                    rgb(255, 255, 255)
+                } else {
+                    rgb(8, 8, 8)
+                },
+            );
+        } else {
+            canvas.text(
+                &menu.title,
+                menu_rect.x + 8.0,
+                menu_rect.y + 8.0,
+                if active {
+                    rgb(255, 255, 255)
+                } else {
+                    rgb(8, 8, 8)
+                },
+            );
+        }
+    }
+
+    let clock = "9:48 PM";
+    canvas.text(
+        clock,
+        rect.x + rect.width - clock.len() as f32 * 7.0 - 72.0,
+        rect.y + 8.0,
+        rgb(8, 8, 8),
+    );
+    draw_status_glyph(canvas, rect.x + rect.width - 42.0, rect.y + 7.0);
+    draw_status_glyph(canvas, rect.x + rect.width - 22.0, rect.y + 7.0);
+
+    if let Some(menu_index) = menu_bar.open_menu {
+        draw_open_menu(canvas, menu_bar, menu_index);
+    }
+}
+
+fn draw_apple_icon(canvas: &mut Canvas<'_>, x: f32, y: f32, active: bool) {
+    let color = if active {
+        rgb(255, 255, 255)
+    } else {
+        rgb(22, 22, 22)
+    };
+    canvas.rect(Rect::new(x + 1.0, y + 1.0, 5.0, 5.0), color);
+    canvas.rect(Rect::new(x + 1.0, y + 2.0, 1.0, 3.0), color);
+    canvas.rect(Rect::new(x + 5.0, y + 2.0, 1.0, 3.0), color);
+    canvas.rect(Rect::new(x + 2.0, y, 3.0, 1.0), color);
+    canvas.rect(Rect::new(x + 1.0, y + 6.0, 1.0, 1.0), color);
+    canvas.rect(Rect::new(x + 5.0, y + 6.0, 1.0, 1.0), color);
+    canvas.rect(
+        Rect::new(x + 2.0, y + 6.0, 3.0, 1.0),
+        if active {
+            rgb(22, 22, 22)
+        } else {
+            rgb(238, 238, 238)
+        },
+    );
+}
+
+fn draw_open_menu(canvas: &mut Canvas<'_>, menu_bar: &MenuBar, menu_index: usize) {
+    let Some(menu) = menu_bar.menus.get(menu_index) else {
+        return;
+    };
+    let Some(dropdown) = menu_bar.dropdown_rect(menu_index) else {
+        return;
+    };
+
+    canvas.rect(
+        Rect::new(
+            dropdown.x + 3.0,
+            dropdown.y + 3.0,
+            dropdown.width,
+            dropdown.height,
+        ),
+        rgba(0, 0, 0, 0.24),
+    );
+    draw_beveled_rect(canvas, dropdown, rgb(244, 244, 238), true);
+    canvas.rect(
+        Rect::new(
+            dropdown.x + 4.0,
+            dropdown.y + 4.0,
+            dropdown.width - 8.0,
+            1.0,
+        ),
+        rgb(255, 255, 255),
+    );
+    canvas.rect(
+        Rect::new(
+            dropdown.x + 4.0,
+            dropdown.y + 4.0,
+            1.0,
+            dropdown.height - 8.0,
+        ),
+        rgb(255, 255, 255),
+    );
+
+    for (item_index, item) in menu.items.iter().enumerate() {
+        let Some(item_rect) = menu_bar.item_rect(menu_index, item_index) else {
+            continue;
+        };
+        if matches!(item.kind, MenuItemKind::Separator) {
+            canvas.rect(
+                Rect::new(
+                    item_rect.x + 12.0,
+                    item_rect.y + 9.0,
+                    item_rect.width - 24.0,
+                    1.0,
+                ),
+                rgb(120, 120, 116),
+            );
+            canvas.rect(
+                Rect::new(
+                    item_rect.x + 12.0,
+                    item_rect.y + 10.0,
+                    item_rect.width - 24.0,
+                    1.0,
+                ),
+                rgb(255, 255, 255),
+            );
+            continue;
+        }
+
+        let hovered = menu_bar.hovered_item == Some(item_index);
+        if hovered && item.enabled {
+            canvas.rect(item_rect, rgb(22, 22, 22));
+        }
+        let text_color = if !item.enabled {
+            rgb(132, 132, 128)
+        } else if hovered {
+            rgb(255, 255, 255)
+        } else {
+            rgb(8, 8, 8)
+        };
+        match item.kind {
+            MenuItemKind::Checkbox if item.checked => {
+                canvas.text("✓", item_rect.x + 8.0, item_rect.y + 7.0, text_color);
+            }
+            MenuItemKind::Radio if item.checked => {
+                canvas.rect(
+                    Rect::new(item_rect.x + 10.0, item_rect.y + 8.0, 5.0, 5.0),
+                    text_color,
+                );
+            }
+            _ => {}
+        }
+        canvas.text(
+            &item.label,
+            item_rect.x + 24.0,
+            item_rect.y + 7.0,
+            text_color,
+        );
+        if let Some((key, modifiers)) = item.shortcut {
+            let shortcut = shortcut_label(key, modifiers);
+            canvas.text(
+                &shortcut,
+                item_rect.x + item_rect.width - shortcut.len() as f32 * 7.0 - 8.0,
+                item_rect.y + 7.0,
+                text_color,
+            );
+        }
+    }
+}
+
+fn shortcut_label(key: KeyCode, modifiers: Modifiers) -> String {
+    let mut parts = Vec::new();
+    if modifiers.control {
+        parts.push("Ctrl".to_string());
+    }
+    if modifiers.alt {
+        parts.push("Alt".to_string());
+    }
+    if modifiers.shift {
+        parts.push("Shift".to_string());
+    }
+    if modifiers.meta {
+        parts.push("Cmd".to_string());
+    }
+    parts.push(key_label(key).to_string());
+    parts.join("+")
+}
+
+fn key_label(key: KeyCode) -> &'static str {
+    match key {
+        KeyCode::A => "A",
+        KeyCode::B => "B",
+        KeyCode::C => "C",
+        KeyCode::D => "D",
+        KeyCode::E => "E",
+        KeyCode::F => "F",
+        KeyCode::G => "G",
+        KeyCode::H => "H",
+        KeyCode::I => "I",
+        KeyCode::J => "J",
+        KeyCode::K => "K",
+        KeyCode::L => "L",
+        KeyCode::M => "M",
+        KeyCode::N => "N",
+        KeyCode::O => "O",
+        KeyCode::P => "P",
+        KeyCode::Q => "Q",
+        KeyCode::R => "R",
+        KeyCode::S => "S",
+        KeyCode::T => "T",
+        KeyCode::U => "U",
+        KeyCode::V => "V",
+        KeyCode::W => "W",
+        KeyCode::X => "X",
+        KeyCode::Y => "Y",
+        KeyCode::Z => "Z",
+        KeyCode::Backspace => "Del",
+        KeyCode::Escape => "Esc",
+        KeyCode::Enter => "Ret",
+        KeyCode::Space => "Space",
+        KeyCode::ArrowUp => "Up",
+        KeyCode::ArrowDown => "Down",
+        KeyCode::ArrowLeft => "Left",
+        KeyCode::ArrowRight => "Right",
+        _ => "?",
+    }
+}
+
+fn draw_status_glyph(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x, y, 13.0, 13.0),
+        rgb(220, 220, 216),
+        true,
+    );
+    canvas.rect(Rect::new(x + 4.0, y + 3.0, 5.0, 7.0), rgb(78, 92, 132));
+    canvas.rect(Rect::new(x + 5.0, y + 4.0, 3.0, 5.0), rgb(176, 194, 222));
+}
+
+fn draw_beveled_rect(canvas: &mut Canvas<'_>, rect: Rect, fill: [f32; 4], raised: bool) {
+    canvas.rect(rect, fill);
+    let light = if raised {
+        rgb(255, 255, 255)
+    } else {
+        rgb(72, 72, 72)
+    };
+    let mid = if raised {
+        rgb(190, 190, 186)
+    } else {
+        rgb(132, 132, 128)
+    };
+    let dark = if raised {
+        rgb(74, 74, 72)
+    } else {
+        rgb(255, 255, 255)
+    };
+    canvas.rect(Rect::new(rect.x, rect.y, rect.width, 1.0), light);
+    canvas.rect(Rect::new(rect.x, rect.y, 1.0, rect.height), light);
+    canvas.rect(
+        Rect::new(rect.x + 1.0, rect.y + 1.0, rect.width - 2.0, 1.0),
+        mid,
+    );
+    canvas.rect(
+        Rect::new(rect.x + 1.0, rect.y + 1.0, 1.0, rect.height - 2.0),
+        mid,
+    );
+    canvas.rect(
+        Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
+        dark,
+    );
+    canvas.rect(
+        Rect::new(rect.x + rect.width - 1.0, rect.y, 1.0, rect.height),
+        dark,
+    );
+}
+
+fn draw_tree(canvas: &mut Canvas<'_>, rect: Rect, tree: &TreeView) {
+    canvas.rect(rect, rgb(222, 226, 230));
+    canvas.stroke(rect, rgb(145, 150, 154));
+    let mut y = rect.y + 8.0;
+    for (index, node) in tree.roots.iter().enumerate() {
+        draw_tree_node(
+            canvas,
+            node,
+            &tree.selected_path,
+            &[index],
+            rect.x + 10.0,
+            &mut y,
+            0,
+        );
+    }
+}
+
+fn draw_tree_node(
+    canvas: &mut Canvas<'_>,
+    node: &TreeNode,
+    selected_path: &Option<Vec<usize>>,
+    path: &[usize],
+    x: f32,
+    y: &mut f32,
+    depth: usize,
+) {
+    let selected = selected_path
+        .as_ref()
+        .is_some_and(|selected| selected == path);
+    if selected {
+        canvas.rect(Rect::new(x - 4.0, *y - 3.0, 170.0, 16.0), rgb(64, 111, 171));
+    }
+    canvas.text(
+        &node.label,
+        x + depth as f32 * 12.0,
+        *y,
+        if selected {
+            rgb(255, 255, 255)
+        } else {
+            rgb(30, 30, 30)
+        },
+    );
+    *y += 18.0;
+    if node.expanded {
+        for (index, child) in node.children.iter().enumerate() {
+            let mut child_path = path.to_vec();
+            child_path.push(index);
+            draw_tree_node(canvas, child, selected_path, &child_path, x, y, depth + 1);
+        }
+    }
+}
+
+fn draw_icon_view(canvas: &mut Canvas<'_>, icon_view: &IconView) {
+    let rect = icon_view.rect();
+    let is_desktop = rect.width >= 600.0
+        && rect.height >= 360.0
+        && icon_view.items.iter().any(|item| item.label == "Hard Disk")
+        && icon_view.items.iter().any(|item| item.label == "Trash");
+    if is_desktop {
+        canvas.with_clip(rect, draw_desktop_backdrop);
+    } else {
+        canvas.rect(rect, rgb(248, 248, 244));
+    }
+    for item in &icon_view.items {
+        if item.selected {
+            let sel_rect = Rect::new(
+                item.rect.x - 6.0,
+                item.rect.y - 6.0,
+                item.rect.width + 12.0,
+                icon_view.icon_size + 32.0,
+            );
+            draw_selection_highlight(canvas, sel_rect);
+        }
+        draw_desktop_icon(canvas, item);
+        let label_y = item.rect.y + icon_view.icon_size + 6.0;
+        canvas.text(
+            &item.label,
+            item.rect.x + (item.rect.width - item.label.len() as f32 * 6.0) * 0.5,
+            label_y,
+            if item.selected {
+                rgb(255, 255, 255)
+            } else {
+                rgb(20, 20, 20)
+            },
+        );
+    }
+}
+
+fn draw_selection_highlight(canvas: &mut Canvas<'_>, rect: Rect) {
+    canvas.rect(rect, rgb(64, 111, 171));
+    canvas.rect(
+        Rect::new(rect.x + 1.0, rect.y + 1.0, rect.width - 2.0, 1.0),
+        rgb(120, 160, 220),
+    );
+    canvas.rect(
+        Rect::new(rect.x + 1.0, rect.y + 1.0, 1.0, rect.height - 2.0),
+        rgb(120, 160, 220),
+    );
+    canvas.rect(
+        Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
+        rgb(40, 70, 130),
+    );
+    canvas.rect(
+        Rect::new(rect.x + rect.width - 1.0, rect.y, 1.0, rect.height),
+        rgb(40, 70, 130),
+    );
+}
+
+fn draw_monospace_view(canvas: &mut Canvas<'_>, rect: Rect, grid: &MonospaceView) {
+    canvas.rect(rect, rgb(12, 12, 12));
+    canvas.stroke(rect, rgb(90, 90, 86));
+    let cols = grid.cols;
+    let rows = grid.rows;
+    for row in 0..rows {
+        for col in 0..cols {
+            let idx = row * cols + col;
+            let Some(cell) = grid.cells.get(idx) else {
+                continue;
+            };
+            let x = rect.x + col as f32 * grid.cell_width;
+            let y = rect.y + row as f32 * grid.cell_height;
+            if cell.bg[3] > 0.0 {
+                canvas.rect(Rect::new(x, y, grid.cell_width, grid.cell_height), cell.bg);
+            }
+            if cell.ch != ' ' {
+                canvas.glyph(cell.ch, x + 1.0, y + 4.0, cell.fg);
+            }
+        }
+    }
+}
+
+fn draw_desktop_icon(canvas: &mut Canvas<'_>, item: &IconItem) {
+    let x = item.rect.x + 9.0;
+    let y = item.rect.y + 3.0;
+    match item.label.as_str() {
+        "Hard Disk" | "Home" => draw_drive_icon(canvas, x, y),
+        "Trash" => draw_trash_icon(canvas, x + 5.0, y),
+        "Applications" => draw_folder_icon(canvas, x, y, rgb(226, 216, 142)),
+        _ => {
+            if item.icon.as_deref() == Some("folder") {
+                draw_folder_icon(canvas, x, y, rgb(226, 216, 142));
+            } else if item.icon.as_deref() == Some("document") {
+                draw_document_icon(canvas, x, y);
+            } else {
+                draw_app_icon(canvas, x, y);
+            }
+        }
+    }
+}
+
+fn draw_document_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x + 8.0, y + 4.0, 28.0, 36.0),
+        rgb(252, 252, 248),
+        true,
+    );
+    canvas.rect(Rect::new(x + 12.0, y + 12.0, 20.0, 2.0), rgb(120, 120, 116));
+    canvas.rect(Rect::new(x + 12.0, y + 18.0, 16.0, 2.0), rgb(120, 120, 116));
+    canvas.rect(Rect::new(x + 12.0, y + 24.0, 18.0, 2.0), rgb(120, 120, 116));
+    canvas.rect(Rect::new(x + 24.0, y + 4.0, 8.0, 8.0), rgb(236, 236, 232));
+    canvas.stroke(Rect::new(x + 24.0, y + 4.0, 8.0, 8.0), rgb(120, 120, 116));
+}
+
+fn draw_drive_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x, y + 7.0, 42.0, 30.0),
+        rgb(218, 218, 214),
+        true,
+    );
+    canvas.rect(Rect::new(x + 5.0, y + 12.0, 32.0, 4.0), rgb(96, 96, 96));
+    canvas.rect(Rect::new(x + 7.0, y + 14.0, 28.0, 1.0), rgb(210, 210, 210));
+    canvas.rect(Rect::new(x + 30.0, y + 27.0, 6.0, 4.0), rgb(92, 154, 82));
+}
+
+fn draw_folder_icon(canvas: &mut Canvas<'_>, x: f32, y: f32, color: [f32; 4]) {
+    canvas.rect(Rect::new(x + 3.0, y + 11.0, 15.0, 6.0), rgb(206, 194, 120));
+    draw_beveled_rect(canvas, Rect::new(x, y + 16.0, 44.0, 25.0), color, true);
+    canvas.rect(Rect::new(x + 2.0, y + 18.0, 40.0, 2.0), rgb(244, 236, 178));
+}
+
+fn draw_app_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x + 5.0, y + 4.0, 34.0, 38.0),
+        rgb(226, 226, 222),
+        true,
+    );
+    canvas.rect(
+        Rect::new(x + 10.0, y + 10.0, 24.0, 19.0),
+        rgb(154, 174, 196),
+    );
+    canvas.rect(
+        Rect::new(x + 12.0, y + 12.0, 20.0, 15.0),
+        rgb(232, 238, 240),
+    );
+    canvas.rect(Rect::new(x + 12.0, y + 33.0, 20.0, 2.0), rgb(80, 80, 80));
+}
+
+fn draw_trash_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    canvas.rect(Rect::new(x + 7.0, y + 6.0, 28.0, 4.0), rgb(70, 70, 70));
+    canvas.rect(Rect::new(x + 11.0, y + 2.0, 20.0, 4.0), rgb(110, 110, 110));
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x + 10.0, y + 10.0, 24.0, 34.0),
+        rgb(216, 216, 212),
+        true,
+    );
+    for offset in [15.0, 21.0, 27.0] {
+        canvas.rect(Rect::new(x + offset, y + 14.0, 1.0, 26.0), rgb(98, 98, 98));
+    }
+}
+
+fn draw_list(canvas: &mut Canvas<'_>, rect: Rect, list: &ListView) {
+    canvas.rect(rect, rgb(255, 255, 252));
+    canvas.stroke(rect, rgb(150, 150, 144));
+    for (index, item) in list.items.iter().enumerate() {
+        let y = rect.y + 6.0 + index as f32 * 18.0;
+        if list.selected_index == Some(index) {
+            canvas.rect(
+                Rect::new(rect.x + 3.0, y - 3.0, rect.width - 6.0, 16.0),
+                rgb(64, 111, 171),
+            );
+        }
+        canvas.text(
+            item,
+            rect.x + 8.0,
+            y,
+            if list.selected_index == Some(index) {
+                rgb(255, 255, 255)
+            } else {
+                rgb(25, 25, 25)
+            },
+        );
+    }
+}
+
+fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
+    let x0 = a.x.max(b.x);
+    let y0 = a.y.max(b.y);
+    let x1 = (a.x + a.width).min(b.x + b.width);
+    let y1 = (a.y + a.height).min(b.y + b.height);
+    (x1 > x0 && y1 > y0).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
+}
+
+fn rgb(r: u8, g: u8, b: u8) -> [f32; 4] {
+    rgba(r, g, b, 1.0)
+}
+
+fn rgba(r: u8, g: u8, b: u8, a: f32) -> [f32; 4] {
+    [
+        r as f32 / 255.0,
+        g as f32 / 255.0,
+        b as f32 / 255.0,
+        a.clamp(0.0, 1.0),
+    ]
+}
+
+fn _color_to_rgb(color: Color) -> [f32; 4] {
+    [
+        color.r.clamp(0.0, 1.0),
+        color.g.clamp(0.0, 1.0),
+        color.b.clamp(0.0, 1.0),
+        color.a.clamp(0.0, 1.0),
+    ]
+}
+
+fn glyph_pattern(ch: char) -> [u8; 7] {
+    match ch.to_ascii_uppercase() {
+        'A' => [
+            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'B' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
+        ],
+        'C' => [
+            0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111,
+        ],
+        'D' => [
+            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
+        ],
+        'E' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
+        ],
+        'F' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'G' => [
+            0b01111, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111,
+        ],
+        'H' => [
+            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+        ],
+        'I' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111,
+        ],
+        'J' => [
+            0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100,
+        ],
+        'K' => [
+            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
+        ],
+        'L' => [
+            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
+        ],
+        'M' => [
+            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
+        ],
+        'N' => [
+            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
+        ],
+        'O' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'P' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
+        ],
+        'Q' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
+        ],
+        'R' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+        ],
+        'S' => [
+            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        'T' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'U' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+        ],
+        'V' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100,
+        ],
+        'W' => [
+            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010,
+        ],
+        'X' => [
+            0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b01010, 0b10001,
+        ],
+        'Y' => [
+            0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+        ],
+        'Z' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
+        ],
+        '0' => [
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+        ],
+        '1' => [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+        ],
+        '2' => [
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+        ],
+        '3' => [
+            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
+        ],
+        '4' => [
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+        ],
+        '5' => [
+            0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110,
+        ],
+        '6' => [
+            0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+        ],
+        '7' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+        ],
+        '8' => [
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+        ],
+        '9' => [
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
+        ],
+        '-' => [0, 0, 0, 0b11111, 0, 0, 0],
+        '+' => [0, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0],
+        '_' => [0, 0, 0, 0, 0, 0, 0b11111],
+        '.' => [0, 0, 0, 0, 0, 0b01100, 0b01100],
+        ':' => [0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0],
+        '/' => [
+            0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000,
+        ],
+        '&' => [
+            0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101,
+        ],
+        ' ' => [0, 0, 0, 0, 0, 0, 0],
+        _ => [
+            0b11111, 0b10001, 0b00010, 0b00100, 0b00000, 0b00100, 0b00100,
+        ],
+    }
+}
+
 pub fn modifiers_from_winit(modifiers: winit::keyboard::ModifiersState) -> Modifiers {
     Modifiers {
         shift: modifiers.shift_key(),
@@ -280,21 +1767,14 @@ pub fn winit_to_retro_mouse_button(button: winit::event::MouseButton) -> Option<
 pub fn winit_to_retro_scroll_delta(delta: winit::event::MouseScrollDelta) -> Point {
     match delta {
         winit::event::MouseScrollDelta::LineDelta(x, y) => Point::new(x * 16.0, y * 16.0),
-        winit::event::MouseScrollDelta::PixelDelta(position) => {
-            Point::new(position.x as f32, position.y as f32)
-        }
+        winit::event::MouseScrollDelta::PixelDelta(pos) => Point::new(pos.x as f32, pos.y as f32),
     }
 }
 
-fn distance_squared(a: Point, b: Point) -> f32 {
-    let dx = a.x - b.x;
-    let dy = a.y - b.y;
-    dx * dx + dy * dy
-}
-
-pub fn winit_to_retro_key(key: winit::keyboard::KeyCode) -> Option<retro_kit::event::KeyCode> {
+pub fn winit_to_retro_key(key: winit::keyboard::KeyCode) -> Option<KeyCode> {
     use retro_kit::event::KeyCode as RKey;
     use winit::keyboard::KeyCode as WKey;
+
     match key {
         WKey::KeyA => Some(RKey::A),
         WKey::KeyB => Some(RKey::B),
@@ -380,4 +1860,10 @@ pub fn winit_to_retro_key(key: winit::keyboard::KeyCode) -> Option<retro_kit::ev
         WKey::Slash => Some(RKey::Slash),
         _ => None,
     }
+}
+
+fn distance_squared(a: Point, b: Point) -> f32 {
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
+    dx * dx + dy * dy
 }
