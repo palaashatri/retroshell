@@ -181,3 +181,31 @@ fn test_scroll_view_forwards_child_events() {
     assert!(matches!(result, EventResult::Handled));
     assert_eq!(handled_events.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+#[test]
+fn test_layout_arrange_reflows_nested_layout_view_children() {
+    let mut inner = Layout::vertical(0.0);
+    inner.add(Box::new(FixedWidget::new(20.0, 10.0)));
+
+    let mut outer = Layout::vertical(0.0).padding(5.0);
+    outer.add(Box::new(LayoutView::new(inner)));
+
+    let _ = outer.layout_size(LayoutConstraint::tight(Size::new(100.0, 100.0)));
+    outer.arrange(Rect::new(10.0, 20.0, 100.0, 100.0));
+
+    let Layout::Vertical { children, .. } = &outer else {
+        panic!("outer layout remains vertical");
+    };
+    let nested = children[0]
+        .as_any()
+        .downcast_ref::<LayoutView>()
+        .expect("nested layout view");
+    let Layout::Vertical { children, .. } = &nested.layout else {
+        panic!("inner layout remains vertical");
+    };
+
+    assert_eq!(nested.rect().x, 15.0);
+    assert_eq!(nested.rect().y, 25.0);
+    assert_eq!(children[0].rect().x, 15.0);
+    assert_eq!(children[0].rect().y, 25.0);
+}

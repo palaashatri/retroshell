@@ -1,7 +1,9 @@
+use retro_kit::button::Button;
 use retro_kit::event::{KeyCode, Modifiers, MouseButton};
 use retro_kit::icon_view::{IconItem, IconView};
 use retro_kit::layout::Layout;
 use retro_kit::status_bar::{StatusBar, StatusBarAlignment};
+use retro_kit::toolbar::Toolbar;
 use retro_kit::tree_view::{TreeNode, TreeView};
 use retro_kit::window::Window;
 use retro_kit::{
@@ -145,6 +147,7 @@ fn main() {
 pub struct FinderView {
     state: WidgetState,
     current_path: PathBuf,
+    toolbar: Toolbar,
     sidebar: TreeView,
     file_grid: IconView,
     status_bar: StatusBar,
@@ -185,9 +188,15 @@ impl FinderView {
         file_grid.icon_size = 64.0;
         file_grid.spacing = 12.0;
 
+        let mut toolbar = Toolbar::new();
+        toolbar.add(Box::new(Button::new("BACK")));
+        toolbar.add(Box::new(Button::new("FWD")));
+        toolbar.add(Box::new(Button::new("UP")));
+
         let mut view = FinderView {
             state: WidgetState::new(),
             current_path,
+            toolbar,
             sidebar,
             file_grid,
             status_bar: StatusBar::new(),
@@ -309,6 +318,24 @@ impl FinderView {
         true
     }
 
+    fn handle_toolbar_click(&mut self, point: retro_kit::Point) -> bool {
+        let Some(index) = self
+            .toolbar
+            .items
+            .iter()
+            .position(|item| item.rect().contains(point))
+        else {
+            return false;
+        };
+
+        match index {
+            0 => self.go_back(),
+            1 => self.go_forward(),
+            2 => self.go_to_parent(),
+            _ => false,
+        }
+    }
+
     fn create_new_folder(&mut self) {
         let mut candidate = self.current_path.join("New Folder");
         for index in 2.. {
@@ -358,19 +385,27 @@ impl Widget for FinderView {
         let r = Rect::new(self.rect().x, self.rect().y, size.width, size.height);
         self.set_rect(r);
 
+        let toolbar_h = 32.0;
         let status_h = 24.0;
-        let content_h = (r.height - status_h).max(0.0);
+        let content_y = r.y + toolbar_h;
+        let content_h = (r.height - toolbar_h - status_h).max(0.0);
         let sidebar_w = (r.width * 0.25).clamp(150.0, 220.0).min(r.width);
         let grid_w = (r.width - sidebar_w).max(0.0);
 
+        self.toolbar
+            .set_rect(Rect::new(r.x, r.y, r.width, toolbar_h));
+        let _ = self
+            .toolbar
+            .layout(LayoutConstraint::tight(Size::new(r.width, toolbar_h)));
+
         self.sidebar
-            .set_rect(Rect::new(r.x, r.y, sidebar_w, content_h));
+            .set_rect(Rect::new(r.x, content_y, sidebar_w, content_h));
         let _ = self
             .sidebar
             .layout(LayoutConstraint::tight(Size::new(sidebar_w, content_h)));
 
         self.file_grid
-            .set_rect(Rect::new(r.x + sidebar_w, r.y, grid_w, content_h));
+            .set_rect(Rect::new(r.x + sidebar_w, content_y, grid_w, content_h));
         let _ = self
             .file_grid
             .layout(LayoutConstraint::tight(Size::new(grid_w, content_h)));
@@ -385,6 +420,7 @@ impl Widget for FinderView {
     }
 
     fn draw(&self, theme: &ThemeContext) {
+        self.toolbar.draw(theme);
         self.sidebar.draw(theme);
         self.file_grid.draw(theme);
         self.status_bar.draw(theme);
@@ -446,6 +482,17 @@ impl Widget for FinderView {
             }
         }
 
+        if let Event::MouseDown {
+            button: MouseButton::Left,
+            point,
+            ..
+        } = event
+        {
+            if self.handle_toolbar_click(*point) {
+                return EventResult::Handled;
+            }
+        }
+
         let mut result = self.sidebar.handle_event(event);
         if let EventResult::Ignored = result {
             result = self.file_grid.handle_event(event);
@@ -473,6 +520,7 @@ impl Widget for FinderView {
     }
 
     fn update(&mut self) {
+        self.toolbar.update();
         self.sidebar.update();
         self.file_grid.update();
         self.sync_sidebar_selection();
@@ -483,11 +531,21 @@ impl Widget for FinderView {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.sidebar, &self.file_grid, &self.status_bar]
+        vec![
+            &self.toolbar,
+            &self.sidebar,
+            &self.file_grid,
+            &self.status_bar,
+        ]
     }
 
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        vec![&mut self.sidebar, &mut self.file_grid, &mut self.status_bar]
+        vec![
+            &mut self.toolbar,
+            &mut self.sidebar,
+            &mut self.file_grid,
+            &mut self.status_bar,
+        ]
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -606,6 +664,43 @@ mod tests {
                 ..Modifiers::NONE
             },
         });
+        assert!(matches!(handled, EventResult::Handled));
+        assert_eq!(view.current_path, child);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finder_toolbar_buttons_drive_navigation_history() {
+        let root = temp_finder_root();
+        let child = root.join("Child");
+        fs::create_dir_all(&child).unwrap();
+
+        let mut view = FinderView::new();
+        view.set_current_path(root.clone());
+        view.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+        assert!(view.enter_folder_named("Child"));
+
+        let back = view.toolbar.items[0].rect();
+        let handled = view.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point: retro_kit::Point::new(back.x + back.width / 2.0, back.y + back.height / 2.0),
+            modifiers: Modifiers::NONE,
+        });
+
+        assert!(matches!(handled, EventResult::Handled));
+        assert_eq!(view.current_path, root);
+
+        let forward = view.toolbar.items[1].rect();
+        let handled = view.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point: retro_kit::Point::new(
+                forward.x + forward.width / 2.0,
+                forward.y + forward.height / 2.0,
+            ),
+            modifiers: Modifiers::NONE,
+        });
+
         assert!(matches!(handled, EventResult::Handled));
         assert_eq!(view.current_path, child);
 

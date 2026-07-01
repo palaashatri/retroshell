@@ -280,14 +280,14 @@ impl Layout {
                 let padding = *padding;
                 let mut x = rect.x + padding;
                 for child in children.iter_mut() {
+                    let child_width = child.rect().width.max(0.0);
                     let child_height = child.rect().height;
-                    child.set_rect(Rect::new(
-                        x,
-                        rect.y + padding,
-                        child.rect().width.max(0.0),
+                    child.set_rect(Rect::new(x, rect.y + padding, child_width, child_height));
+                    let _ = child.layout(LayoutConstraint::tight(Size::new(
+                        child_width,
                         child_height,
-                    ));
-                    x += child.rect().width + spacing;
+                    )));
+                    x += child_width + spacing;
                 }
             }
             Layout::Vertical {
@@ -302,6 +302,10 @@ impl Layout {
                     let child_width = child.rect().width;
                     let child_height = child.rect().height;
                     child.set_rect(Rect::new(rect.x + padding, y, child_width, child_height));
+                    let _ = child.layout(LayoutConstraint::tight(Size::new(
+                        child_width,
+                        child_height,
+                    )));
                     y += child_height + spacing;
                 }
             }
@@ -327,18 +331,27 @@ impl Layout {
                         x = rect.x + padding;
                         y += child.rect().height + spacing;
                     }
-                    child.set_rect(Rect::new(x, y, col_width.max(0.0), child.rect().height));
+                    let child_height = child.rect().height;
+                    child.set_rect(Rect::new(x, y, col_width.max(0.0), child_height));
+                    let _ = child.layout(LayoutConstraint::tight(Size::new(
+                        col_width.max(0.0),
+                        child_height,
+                    )));
                     x += col_width + spacing;
                 }
             }
             Layout::Stack { children } => {
                 for child in children.iter_mut() {
                     child.set_rect(rect);
+                    let _ =
+                        child.layout(LayoutConstraint::tight(Size::new(rect.width, rect.height)));
                 }
             }
             Layout::Overlay { children } => {
                 for child in children.iter_mut() {
                     child.set_rect(rect);
+                    let _ =
+                        child.layout(LayoutConstraint::tight(Size::new(rect.width, rect.height)));
                 }
             }
         }
