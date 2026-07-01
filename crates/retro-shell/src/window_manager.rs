@@ -76,13 +76,23 @@ impl WindowManager {
     }
 
     pub fn focus_window(&mut self, id: Uuid) {
-        if let Some(ref mut window) = self.windows.get_mut(&id) {
+        if !self.windows.contains_key(&id) {
+            return;
+        }
+
+        for window in self.windows.values_mut() {
+            window.is_active = false;
+        }
+
+        if let Some(window) = self.windows.get_mut(&id) {
             window.is_active = true;
             window.order = self.next_order;
             self.next_order += 1;
             self.active_window = Some(id);
-            self.focus_history.push(id);
         }
+
+        self.focus_history.retain(|&fid| fid != id);
+        self.focus_history.push(id);
     }
 
     pub fn minimize_window(&mut self, id: Uuid) {

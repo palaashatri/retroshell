@@ -30,6 +30,7 @@ use retro_kit::{Event, EventResult, LayoutConstraint, Point, Rect, Size, Widget,
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
+use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, ShellError>;
 
@@ -96,8 +97,11 @@ impl RetroShell {
     pub fn run(&self) -> Result<()> {
         let mut app = retro_sdk::Application::new("RetroShell", "com.retro.shell");
 
-        let desktop_view =
-            ShellDesktop::new(self.menu_server.clone(), self.launch_services.clone());
+        let desktop_view = ShellDesktop::new(
+            self.menu_server.clone(),
+            self.launch_services.clone(),
+            self.window_manager.clone(),
+        );
 
         let mut window = Window::new("RetroShell Desktop");
         window.set_content(Box::new(desktop_view));
@@ -111,21 +115,27 @@ struct ShellDesktop {
     state: WidgetState,
     menu_bar: MenuBar,
     desktop: IconView,
-    finder_window: Window,
-    finder_visible: bool,
-    finder_placed: bool,
+    windows: Vec<ShellWindow>,
     window_interaction: Option<WindowInteraction>,
     menu_server: Arc<RwLock<MenuServer>>,
     launch_services: Arc<RwLock<LaunchServices>>,
+    window_manager: Arc<RwLock<WindowManager>>,
     bundle_ids: Vec<String>,
+}
+
+struct ShellWindow {
+    id: Uuid,
+    window: Window,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum WindowInteraction {
     Move {
+        window_id: Uuid,
         pointer_offset: Point,
     },
     Resize {
+        window_id: Uuid,
         start_point: Point,
         start_rect: Rect,
     },
@@ -135,6 +145,7 @@ impl ShellDesktop {
     fn new(
         menu_server: Arc<RwLock<MenuServer>>,
         launch_services: Arc<RwLock<LaunchServices>>,
+        window_manager: Arc<RwLock<WindowManager>>,
     ) -> Self {
         let mut desktop = IconView::new();
         desktop.icon_size = 56.0;
@@ -185,18 +196,19 @@ impl ShellDesktop {
         }
 
         let menus = menu_server.read().menus.clone();
-        Self {
+        let mut shell = Self {
             state: WidgetState::new(),
             menu_bar: MenuBar::new(menus),
             desktop,
-            finder_window: build_desktop_finder_window(),
-            finder_visible: true,
-            finder_placed: false,
+            windows: Vec::new(),
             window_interaction: None,
             menu_server,
             launch_services,
+            window_manager,
             bundle_ids,
-        }
+        };
+        shell.open_finder_window();
+        shell
     }
 
     fn launch_item(&self, index: usize) {
@@ -229,13 +241,6 @@ impl ShellDesktop {
         }
     }
 
-    fn layout_finder_window(&mut self) {
-        let rect = self.finder_window.rect();
-        let _ = self
-            .finder_window
-            .layout(LayoutConstraint::tight(Size::new(rect.width, rect.height)));
-    }
-
     fn content_bounds(&self) -> Rect {
         Rect::new(
             self.rect().x,
@@ -245,30 +250,113 @@ impl ShellDesktop {
         )
     }
 
-    fn place_finder_window_if_needed(&mut self) {
-        if self.finder_placed {
-            return;
-        }
-
-        let rect = default_finder_rect(self.rect());
-        self.finder_window.set_rect(rect);
-        self.finder_placed = true;
+    fn next_finder_rect(&self) -> Rect {
+        let base = if self.rect().width > 0.0 && self.rect().height > 0.0 {
+            default_finder_rect(self.rect())
+        } else {
+            Rect::new(66.0, 66.0, 520.0, 320.0)
+        };
+        let offset = (self.windows.len() as f32 * 22.0) % 132.0;
+        clamp_window_rect(
+            Rect::new(base.x + offset, base.y + offset, base.width, base.height),
+            self.content_bounds(),
+        )
     }
 
-    fn show_finder_window(&mut self) {
-        self.finder_visible = true;
-        self.finder_placed = false;
-        self.place_finder_window_if_needed();
-        self.layout_finder_window();
+    fn open_finder_window(&mut self) -> Uuid {
+        let rect = self.next_finder_rect();
+        let mut window = build_desktop_finder_window();
+        window.set_rect(rect);
+        let id =
+            self.window_manager
+                .write()
+                .create_window("com.retro.finder", window.title(), rect);
+        self.windows.push(ShellWindow { id, window });
+        self.focus_window(id);
+        self.layout_window(id);
+        id
+    }
+
+    fn close_active_window(&mut self) {
+        let Some(id) = self.active_window_id() else {
+            return;
+        };
+        self.close_window(id);
+    }
+
+    fn close_window(&mut self, id: Uuid) {
+        self.windows.retain(|window| window.id != id);
+        self.window_manager.write().close_window(id);
+        if matches!(
+            self.window_interaction,
+            Some(WindowInteraction::Move { window_id, .. } | WindowInteraction::Resize { window_id, .. })
+                if window_id == id
+        ) {
+            self.window_interaction = None;
+        }
+    }
+
+    fn focus_window(&mut self, id: Uuid) {
+        let Some(index) = self.window_index(id) else {
+            return;
+        };
+        let shell_window = self.windows.remove(index);
+        self.windows.push(shell_window);
+        self.window_manager.write().focus_window(id);
+    }
+
+    fn active_window_id(&self) -> Option<Uuid> {
+        self.windows.last().map(|window| window.id)
+    }
+
+    fn window_index(&self, id: Uuid) -> Option<usize> {
+        self.windows.iter().position(|window| window.id == id)
+    }
+
+    fn top_window_index_at(&self, point: Point) -> Option<usize> {
+        self.windows
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, window)| window.window.rect().contains(point))
+            .map(|(index, _)| index)
+    }
+
+    fn layout_window(&mut self, id: Uuid) {
+        let Some(index) = self.window_index(id) else {
+            return;
+        };
+        let rect = self.windows[index].window.rect();
+        let _ = self.windows[index]
+            .window
+            .layout(LayoutConstraint::tight(Size::new(rect.width, rect.height)));
+        self.window_manager.write().move_window(id, rect);
+    }
+
+    fn layout_windows(&mut self) {
+        let bounds = self.content_bounds();
+        for index in 0..self.windows.len() {
+            let rect = self.windows[index].window.rect();
+            let rect = if rect.width <= 1.0 || rect.height <= 1.0 {
+                let base = default_finder_rect(self.rect());
+                let offset = (index as f32 * 22.0) % 132.0;
+                Rect::new(base.x + offset, base.y + offset, base.width, base.height)
+            } else {
+                rect
+            };
+            let rect = clamp_window_rect(rect, bounds);
+            let id = self.windows[index].id;
+            self.windows[index].window.set_rect(rect);
+            self.layout_window(id);
+        }
     }
 
     fn handle_menu_action(&mut self, action: &str) {
         match action {
-            "shell.new_finder_window" => self.show_finder_window(),
-            "shell.close_finder_window" => {
-                self.finder_visible = false;
-                self.window_interaction = None;
+            "shell.new_finder_window" => {
+                self.open_finder_window();
             }
+            "shell.close_finder_window" => self.close_active_window(),
             "shell.open_finder" => launch_app_binary("com.retro.finder"),
             "shell.settings" => launch_app_binary("com.retro.settings"),
             "shell.software_catalog" => {
@@ -281,29 +369,35 @@ impl ShellDesktop {
         }
     }
 
-    fn move_finder_window_to(&mut self, point: Point, pointer_offset: Point) {
-        let current = self.finder_window.rect();
+    fn move_window_to(&mut self, id: Uuid, point: Point, pointer_offset: Point) {
+        let Some(index) = self.window_index(id) else {
+            return;
+        };
+        let current = self.windows[index].window.rect();
         let moved = Rect::new(
             point.x - pointer_offset.x,
             point.y - pointer_offset.y,
             current.width,
             current.height,
         );
-        self.finder_window
-            .set_rect(clamp_window_rect(moved, self.content_bounds()));
-        self.layout_finder_window();
+        let moved = clamp_window_rect(moved, self.content_bounds());
+        self.windows[index].window.set_rect(moved);
+        self.layout_window(id);
     }
 
-    fn resize_finder_window_to(&mut self, point: Point, start_point: Point, start_rect: Rect) {
+    fn resize_window_to(&mut self, id: Uuid, point: Point, start_point: Point, start_rect: Rect) {
+        let Some(index) = self.window_index(id) else {
+            return;
+        };
         let resized = Rect::new(
             start_rect.x,
             start_rect.y,
             (start_rect.width + point.x - start_point.x).max(320.0),
             (start_rect.height + point.y - start_point.y).max(220.0),
         );
-        self.finder_window
-            .set_rect(clamp_window_rect(resized, self.content_bounds()));
-        self.layout_finder_window();
+        let resized = clamp_window_rect(resized, self.content_bounds());
+        self.windows[index].window.set_rect(resized);
+        self.layout_window(id);
     }
 }
 
@@ -461,22 +555,15 @@ impl Widget for ShellDesktop {
             (size.height - 24.0).max(0.0),
         )));
 
-        if self.finder_visible {
-            self.place_finder_window_if_needed();
-            self.finder_window.set_rect(clamp_window_rect(
-                self.finder_window.rect(),
-                self.content_bounds(),
-            ));
-            self.layout_finder_window();
-        }
+        self.layout_windows();
 
         size
     }
 
     fn draw(&self, theme: &ThemeContext) {
         self.desktop.draw(theme);
-        if self.finder_visible {
-            self.finder_window.draw(theme);
+        for shell_window in &self.windows {
+            shell_window.window.draw(theme);
         }
         self.menu_bar.draw(theme);
     }
@@ -492,10 +579,19 @@ impl Widget for ShellDesktop {
                 button: MouseButton::Left,
                 point,
                 ..
-            } if self.finder_visible && self.finder_window.rect().contains(*point) => {
-                let window_rect = self.finder_window.rect();
+            } => {
+                let Some(index) = self.top_window_index_at(*point) else {
+                    return self.desktop.handle_event(event);
+                };
+                let window_id = self.windows[index].id;
+                self.focus_window(window_id);
+                let Some(index) = self.window_index(window_id) else {
+                    return EventResult::Ignored;
+                };
+                let window_rect = self.windows[index].window.rect();
                 if resize_handle_rect(window_rect).contains(*point) {
                     self.window_interaction = Some(WindowInteraction::Resize {
+                        window_id,
                         start_point: *point,
                         start_rect: window_rect,
                     });
@@ -504,6 +600,7 @@ impl Widget for ShellDesktop {
 
                 if titlebar_rect(window_rect).contains(*point) {
                     self.window_interaction = Some(WindowInteraction::Move {
+                        window_id,
                         pointer_offset: Point::new(
                             point.x - window_rect.x,
                             point.y - window_rect.y,
@@ -512,7 +609,7 @@ impl Widget for ShellDesktop {
                     return EventResult::Handled;
                 }
 
-                let result = self.finder_window.handle_event(event);
+                let result = self.windows[index].window.handle_event(event);
                 if matches!(result, EventResult::Handled | EventResult::StopPropagation) {
                     return result;
                 }
@@ -520,19 +617,23 @@ impl Widget for ShellDesktop {
             Event::MouseMove { point, .. } => {
                 if let Some(interaction) = self.window_interaction {
                     match interaction {
-                        WindowInteraction::Move { pointer_offset } => {
-                            self.move_finder_window_to(*point, pointer_offset);
+                        WindowInteraction::Move {
+                            window_id,
+                            pointer_offset,
+                        } => {
+                            self.move_window_to(window_id, *point, pointer_offset);
                         }
                         WindowInteraction::Resize {
+                            window_id,
                             start_point,
                             start_rect,
-                        } => self.resize_finder_window_to(*point, start_point, start_rect),
+                        } => self.resize_window_to(window_id, *point, start_point, start_rect),
                     }
                     return EventResult::Handled;
                 }
 
-                if self.finder_visible && self.finder_window.rect().contains(*point) {
-                    let result = self.finder_window.handle_event(event);
+                if let Some(index) = self.top_window_index_at(*point) {
+                    let result = self.windows[index].window.handle_event(event);
                     if matches!(result, EventResult::Handled | EventResult::StopPropagation) {
                         return result;
                     }
@@ -546,12 +647,12 @@ impl Widget for ShellDesktop {
                     return EventResult::Handled;
                 }
             }
-            Event::DoubleClick { point, .. }
-                if self.finder_visible && self.finder_window.rect().contains(*point) =>
-            {
-                let result = self.finder_window.handle_event(event);
-                if matches!(result, EventResult::Handled | EventResult::StopPropagation) {
-                    return result;
+            Event::DoubleClick { point, .. } => {
+                if let Some(index) = self.top_window_index_at(*point) {
+                    let result = self.windows[index].window.handle_event(event);
+                    if matches!(result, EventResult::Handled | EventResult::StopPropagation) {
+                        return result;
+                    }
                 }
             }
             _ => {}
@@ -584,15 +685,24 @@ impl Widget for ShellDesktop {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.desktop, &self.finder_window, &self.menu_bar]
+        let mut children: Vec<&dyn Widget> = Vec::with_capacity(self.windows.len() + 2);
+        children.push(&self.desktop);
+        for shell_window in &self.windows {
+            children.push(&shell_window.window);
+        }
+        children.push(&self.menu_bar);
+        children
     }
 
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        vec![
-            &mut self.desktop,
-            &mut self.finder_window,
-            &mut self.menu_bar,
-        ]
+        let capacity = self.windows.len() + 2;
+        let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(capacity);
+        children.push(&mut self.desktop);
+        for shell_window in &mut self.windows {
+            children.push(&mut shell_window.window);
+        }
+        children.push(&mut self.menu_bar);
+        children
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -643,22 +753,51 @@ mod tests {
     }
 
     #[test]
-    fn shell_menu_actions_hide_and_restore_finder_window() {
+    fn shell_menu_actions_create_and_close_managed_windows() {
         let menu_server = Arc::new(RwLock::new(MenuServer::new()));
         let launch_services = Arc::new(RwLock::new(LaunchServices::new()));
-        let mut desktop = ShellDesktop::new(menu_server, launch_services);
+        let window_manager = Arc::new(RwLock::new(WindowManager::new()));
+        let mut desktop = ShellDesktop::new(menu_server, launch_services, window_manager.clone());
         desktop.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
 
-        assert!(desktop.finder_visible);
-        let original_rect = desktop.finder_window.rect();
-
-        desktop.handle_menu_action("shell.close_finder_window");
-        assert!(!desktop.finder_visible);
+        assert_eq!(desktop.windows.len(), 1);
+        let first_id = desktop.windows[0].id;
+        assert_eq!(window_manager.read().active_window, Some(first_id));
 
         desktop.handle_menu_action("shell.new_finder_window");
-        assert!(desktop.finder_visible);
-        assert_eq!(desktop.finder_window.rect().x, original_rect.x);
-        assert_eq!(desktop.finder_window.rect().y, original_rect.y);
+        assert_eq!(desktop.windows.len(), 2);
+        let second_id = desktop.windows[1].id;
+        assert_ne!(first_id, second_id);
+        assert_eq!(window_manager.read().active_window, Some(second_id));
+
+        desktop.handle_menu_action("shell.close_finder_window");
+        assert_eq!(desktop.windows.len(), 1);
+        assert_eq!(desktop.windows[0].id, first_id);
+        assert_eq!(window_manager.read().active_window, Some(first_id));
+    }
+
+    #[test]
+    fn focusing_window_raises_it_to_front() {
+        let menu_server = Arc::new(RwLock::new(MenuServer::new()));
+        let launch_services = Arc::new(RwLock::new(LaunchServices::new()));
+        let window_manager = Arc::new(RwLock::new(WindowManager::new()));
+        let mut desktop = ShellDesktop::new(menu_server, launch_services, window_manager.clone());
+        desktop.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+        let first_id = desktop.windows[0].id;
+        let second_id = desktop.open_finder_window();
+
+        desktop.focus_window(first_id);
+
+        assert_eq!(desktop.active_window_id(), Some(first_id));
+        assert_eq!(
+            desktop.windows.last().map(|window| window.id),
+            Some(first_id)
+        );
+        assert_eq!(window_manager.read().active_window, Some(first_id));
+        assert_ne!(
+            desktop.windows.last().map(|window| window.id),
+            Some(second_id)
+        );
     }
 
     #[test]
