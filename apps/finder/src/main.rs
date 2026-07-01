@@ -1,4 +1,4 @@
-use retro_kit::event::{KeyCode, Modifiers};
+use retro_kit::event::{KeyCode, Modifiers, MouseButton};
 use retro_kit::icon_view::{IconItem, IconView};
 use retro_kit::layout::Layout;
 use retro_kit::status_bar::{StatusBar, StatusBarAlignment};
@@ -149,6 +149,8 @@ pub struct FinderView {
     file_grid: IconView,
     status_bar: StatusBar,
     last_selected_path: Option<Vec<usize>>,
+    back_stack: Vec<PathBuf>,
+    forward_stack: Vec<PathBuf>,
 }
 
 impl Default for FinderView {
@@ -190,6 +192,8 @@ impl FinderView {
             file_grid,
             status_bar: StatusBar::new(),
             last_selected_path: None,
+            back_stack: Vec::new(),
+            forward_stack: Vec::new(),
         };
         view.reload_directory();
         view
@@ -260,11 +264,21 @@ impl FinderView {
         }
     }
 
+    fn navigate_to_path(&mut self, path: PathBuf) -> bool {
+        if !path.is_dir() || path == self.current_path {
+            return false;
+        }
+
+        self.back_stack.push(self.current_path.clone());
+        self.forward_stack.clear();
+        self.set_current_path(path);
+        true
+    }
+
     fn enter_folder_named(&mut self, folder: &str) -> bool {
         let path = self.current_path.join(folder);
         if path.is_dir() {
-            self.set_current_path(path);
-            true
+            self.navigate_to_path(path)
         } else {
             false
         }
@@ -274,7 +288,24 @@ impl FinderView {
         let Some(parent) = self.current_path.parent().map(PathBuf::from) else {
             return false;
         };
-        self.set_current_path(parent);
+        self.navigate_to_path(parent)
+    }
+
+    fn go_back(&mut self) -> bool {
+        let Some(previous) = self.back_stack.pop() else {
+            return false;
+        };
+        self.forward_stack.push(self.current_path.clone());
+        self.set_current_path(previous);
+        true
+    }
+
+    fn go_forward(&mut self) -> bool {
+        let Some(next) = self.forward_stack.pop() else {
+            return false;
+        };
+        self.back_stack.push(self.current_path.clone());
+        self.set_current_path(next);
         true
     }
 
@@ -309,7 +340,7 @@ impl FinderView {
             [1, 0] => PathBuf::from("/"),
             _ => home,
         };
-        self.set_current_path(path);
+        self.navigate_to_path(path);
     }
 }
 
@@ -368,6 +399,16 @@ impl Widget for FinderView {
                             return EventResult::Handled;
                         }
                     }
+                    KeyCode::LeftBracket => {
+                        if self.go_back() {
+                            return EventResult::Handled;
+                        }
+                    }
+                    KeyCode::RightBracket => {
+                        if self.go_forward() {
+                            return EventResult::Handled;
+                        }
+                    }
                     KeyCode::N if modifiers.shift => {
                         self.create_new_folder();
                         return EventResult::Handled;
@@ -396,6 +437,12 @@ impl Widget for FinderView {
                         return EventResult::Handled;
                     }
                 }
+            }
+        } else if let Event::MouseDown { button, .. } = event {
+            match button {
+                MouseButton::Back if self.go_back() => return EventResult::Handled,
+                MouseButton::Forward if self.go_forward() => return EventResult::Handled,
+                _ => {}
             }
         }
 
@@ -503,5 +550,65 @@ mod tests {
         assert_eq!(view.current_path, root);
 
         fs::remove_dir_all(view.current_path).unwrap();
+    }
+
+    #[test]
+    fn finder_navigation_history_tracks_back_and_forward() {
+        let root = temp_finder_root();
+        let child = root.join("Child");
+        let grandchild = child.join("Grandchild");
+        fs::create_dir_all(&grandchild).unwrap();
+
+        let mut view = FinderView::new();
+        view.set_current_path(root.clone());
+
+        assert!(view.enter_folder_named("Child"));
+        assert_eq!(view.current_path, child);
+        assert_eq!(view.back_stack, vec![root.clone()]);
+        assert!(view.enter_folder_named("Grandchild"));
+        assert_eq!(view.current_path, grandchild);
+        assert_eq!(view.back_stack, vec![root.clone(), child.clone()]);
+
+        assert!(view.go_back());
+        assert_eq!(view.current_path, child);
+        assert_eq!(view.forward_stack, vec![grandchild.clone()]);
+        assert!(view.go_forward());
+        assert_eq!(view.current_path, grandchild);
+        assert!(view.forward_stack.is_empty());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finder_keyboard_shortcuts_drive_navigation_history() {
+        let root = temp_finder_root();
+        let child = root.join("Child");
+        fs::create_dir_all(&child).unwrap();
+
+        let mut view = FinderView::new();
+        view.set_current_path(root.clone());
+        assert!(view.enter_folder_named("Child"));
+
+        let handled = view.handle_event(&Event::KeyDown {
+            key: KeyCode::LeftBracket,
+            modifiers: Modifiers {
+                meta: true,
+                ..Modifiers::NONE
+            },
+        });
+        assert!(matches!(handled, EventResult::Handled));
+        assert_eq!(view.current_path, root);
+
+        let handled = view.handle_event(&Event::KeyDown {
+            key: KeyCode::RightBracket,
+            modifiers: Modifiers {
+                meta: true,
+                ..Modifiers::NONE
+            },
+        });
+        assert!(matches!(handled, EventResult::Handled));
+        assert_eq!(view.current_path, child);
+
+        fs::remove_dir_all(root).unwrap();
     }
 }
