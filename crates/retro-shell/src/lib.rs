@@ -27,6 +27,7 @@ use retro_kit::menu_bar::MenuBar;
 use retro_kit::theme::ThemeContext;
 use retro_kit::window::Window;
 use retro_kit::{Event, EventResult, LayoutConstraint, Point, Rect, Size, Widget, WidgetState};
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
@@ -220,7 +221,7 @@ impl ShellDesktop {
         shell
     }
 
-    fn launch_item(&self, index: usize) {
+    fn launch_item(&mut self, index: usize) {
         let item = match self.desktop.items.get(index) {
             Some(item) => item,
             None => return,
@@ -243,9 +244,15 @@ impl ShellDesktop {
                     launch_app_binary(&bundle.bundle_id);
                 }
             }
-            "Home" => tracing::info!("Opening home folder"),
-            "Hard Disk" => tracing::info!("Opening hard disk"),
-            "Trash" => tracing::info!("Opening trash"),
+            "Home" => {
+                self.open_folder_window("Home", home_dir());
+            }
+            "Hard Disk" => {
+                self.open_folder_window("Hard Disk", PathBuf::from("/"));
+            }
+            "Trash" => {
+                self.open_folder_window("Trash", trash_dir());
+            }
             _ => {}
         }
     }
@@ -273,8 +280,13 @@ impl ShellDesktop {
     }
 
     fn open_finder_window(&mut self) -> Uuid {
+        self.open_folder_window("Retro HD", PathBuf::from("/"))
+    }
+
+    fn open_folder_window<S: Into<String>>(&mut self, title: S, path: PathBuf) -> Uuid {
         let rect = self.next_finder_rect();
-        let mut window = build_desktop_finder_window();
+        let title = title.into();
+        let mut window = build_folder_window(&title, &path);
         window.set_rect(rect);
         let id =
             self.window_manager
@@ -554,52 +566,63 @@ fn clamp_window_rect(rect: Rect, bounds: Rect) -> Rect {
     )
 }
 
-fn build_desktop_finder_window() -> Window {
+fn build_folder_window(title: &str, path: &PathBuf) -> Window {
     let mut files = IconView::new();
     files.icon_size = 76.0;
     files.spacing = 10.0;
-    files.items = vec![
-        IconItem {
-            label: "System".to_string(),
-            icon: Some("folder".to_string()),
-            selected: true,
-            rect: Rect::ZERO,
-        },
-        IconItem {
-            label: "Applications".to_string(),
-            icon: Some("folder".to_string()),
-            selected: false,
-            rect: Rect::ZERO,
-        },
-        IconItem {
-            label: "Documents".to_string(),
-            icon: Some("folder".to_string()),
-            selected: false,
-            rect: Rect::ZERO,
-        },
-        IconItem {
-            label: "Terminal".to_string(),
-            icon: Some("com.retro.terminal".to_string()),
-            selected: false,
-            rect: Rect::ZERO,
-        },
-        IconItem {
-            label: "TextEdit".to_string(),
-            icon: Some("com.retro.textedit".to_string()),
-            selected: false,
-            rect: Rect::ZERO,
-        },
-        IconItem {
-            label: "Read Me".to_string(),
-            icon: Some("document".to_string()),
-            selected: false,
-            rect: Rect::ZERO,
-        },
-    ];
+    files.items = folder_items_for_path(path);
 
-    let mut window = Window::new("Retro HD");
+    let mut window = Window::new(title);
     window.set_content(Box::new(files));
     window
+}
+
+fn folder_items_for_path(path: &PathBuf) -> Vec<IconItem> {
+    let Ok(entries) = fs::read_dir(path) else {
+        return Vec::new();
+    };
+
+    let mut entries = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                return None;
+            }
+            let is_dir = entry.file_type().ok().is_some_and(|kind| kind.is_dir());
+            Some((name, is_dir))
+        })
+        .collect::<Vec<_>>();
+
+    entries.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| left.0.to_lowercase().cmp(&right.0.to_lowercase()))
+    });
+
+    entries
+        .into_iter()
+        .map(|(label, is_dir)| IconItem {
+            label,
+            icon: Some(if is_dir { "folder" } else { "document" }.to_string()),
+            selected: false,
+            rect: Rect::ZERO,
+        })
+        .collect()
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+fn trash_dir() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".local/share"))
+        .join("Trash/files")
 }
 
 fn launch_app_binary(bundle_id: &str) {
@@ -840,6 +863,18 @@ impl Widget for ShellDesktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_shell_root() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("retroshell_shell_folder_{unique}"));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
 
     fn test_desktop() -> (ShellDesktop, Arc<RwLock<WindowManager>>) {
         let menu_server = Arc::new(RwLock::new(MenuServer::new()));
@@ -889,6 +924,43 @@ mod tests {
 
         assert!(handle.contains(Point::new(565.0, 365.0)));
         assert!(!handle.contains(Point::new(540.0, 340.0)));
+    }
+
+    #[test]
+    fn folder_items_sort_directories_first_and_hide_dotfiles() {
+        let root = temp_shell_root();
+        fs::create_dir_all(root.join("Folder")).unwrap();
+        fs::write(root.join("note.txt"), "hello").unwrap();
+        fs::write(root.join(".hidden"), "secret").unwrap();
+
+        let items = folder_items_for_path(&root);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].label, "Folder");
+        assert_eq!(items[0].icon.as_deref(), Some("folder"));
+        assert_eq!(items[1].label, "note.txt");
+        assert_eq!(items[1].icon.as_deref(), Some("document"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn desktop_home_icon_opens_managed_folder_window() {
+        let (mut desktop, window_manager) = test_desktop();
+        let initial_count = desktop.windows.len();
+        let home_index = desktop
+            .desktop
+            .items
+            .iter()
+            .position(|item| item.label == "Home")
+            .expect("home desktop icon exists");
+
+        desktop.launch_item(home_index);
+
+        assert_eq!(desktop.windows.len(), initial_count + 1);
+        let active = desktop.windows.last().expect("active home window");
+        assert_eq!(active.window.title(), "Home");
+        assert_eq!(window_manager.read().active_window, Some(active.id));
     }
 
     #[test]
