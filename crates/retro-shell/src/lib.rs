@@ -126,6 +126,7 @@ struct ShellDesktop {
 struct ShellWindow {
     id: Uuid,
     window: Window,
+    restore_rect: Option<Rect>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -271,7 +272,11 @@ impl ShellDesktop {
             self.window_manager
                 .write()
                 .create_window("com.retro.finder", window.title(), rect);
-        self.windows.push(ShellWindow { id, window });
+        self.windows.push(ShellWindow {
+            id,
+            window,
+            restore_rect: None,
+        });
         self.focus_window(id);
         self.layout_window(id);
         id
@@ -294,6 +299,26 @@ impl ShellDesktop {
         ) {
             self.window_interaction = None;
         }
+    }
+
+    fn toggle_window_zoom(&mut self, id: Uuid) {
+        let Some(index) = self.window_index(id) else {
+            return;
+        };
+
+        if let Some(restore_rect) = self.windows[index].restore_rect.take() {
+            let restore_rect = clamp_window_rect(restore_rect, self.content_bounds());
+            self.windows[index].window.set_rect(restore_rect);
+            self.window_manager.write().restore_window(id);
+        } else {
+            let current = self.windows[index].window.rect();
+            let zoom_rect = zoomed_window_rect(self.content_bounds(), self.windows.len());
+            self.windows[index].restore_rect = Some(current);
+            self.windows[index].window.set_rect(zoom_rect);
+            self.window_manager.write().maximize_window(id);
+        }
+
+        self.layout_window(id);
     }
 
     fn focus_window(&mut self, id: Uuid) {
@@ -337,7 +362,9 @@ impl ShellDesktop {
         let bounds = self.content_bounds();
         for index in 0..self.windows.len() {
             let rect = self.windows[index].window.rect();
-            let rect = if rect.width <= 1.0 || rect.height <= 1.0 {
+            let rect = if self.windows[index].restore_rect.is_some() {
+                zoomed_window_rect(bounds, self.windows.len())
+            } else if rect.width <= 1.0 || rect.height <= 1.0 {
                 let base = default_finder_rect(self.rect());
                 let offset = (index as f32 * 22.0) % 132.0;
                 Rect::new(base.x + offset, base.y + offset, base.width, base.height)
@@ -373,6 +400,8 @@ impl ShellDesktop {
         let Some(index) = self.window_index(id) else {
             return;
         };
+        self.windows[index].restore_rect = None;
+        self.window_manager.write().restore_window(id);
         let current = self.windows[index].window.rect();
         let moved = Rect::new(
             point.x - pointer_offset.x,
@@ -389,6 +418,8 @@ impl ShellDesktop {
         let Some(index) = self.window_index(id) else {
             return;
         };
+        self.windows[index].restore_rect = None;
+        self.window_manager.write().restore_window(id);
         let resized = Rect::new(
             start_rect.x,
             start_rect.y,
@@ -416,12 +447,35 @@ fn titlebar_rect(window_rect: Rect) -> Rect {
     Rect::new(window_rect.x, window_rect.y, window_rect.width, 24.0)
 }
 
+fn close_box_rect(window_rect: Rect) -> Rect {
+    Rect::new(window_rect.x + 8.0, window_rect.y + 7.0, 11.0, 11.0)
+}
+
+fn zoom_box_rect(window_rect: Rect) -> Rect {
+    Rect::new(
+        window_rect.x + window_rect.width - 19.0,
+        window_rect.y + 7.0,
+        11.0,
+        11.0,
+    )
+}
+
 fn resize_handle_rect(window_rect: Rect) -> Rect {
     Rect::new(
         window_rect.x + window_rect.width - 18.0,
         window_rect.y + window_rect.height - 18.0,
         18.0,
         18.0,
+    )
+}
+
+fn zoomed_window_rect(bounds: Rect, window_count: usize) -> Rect {
+    let margin = if window_count > 1 { 10.0 } else { 0.0 };
+    Rect::new(
+        bounds.x + margin,
+        bounds.y + margin,
+        (bounds.width - margin * 2.0).max(320.0),
+        (bounds.height - margin * 2.0).max(220.0),
     )
 }
 
@@ -589,6 +643,16 @@ impl Widget for ShellDesktop {
                     return EventResult::Ignored;
                 };
                 let window_rect = self.windows[index].window.rect();
+                if close_box_rect(window_rect).contains(*point) {
+                    self.close_window(window_id);
+                    return EventResult::Handled;
+                }
+
+                if zoom_box_rect(window_rect).contains(*point) {
+                    self.toggle_window_zoom(window_id);
+                    return EventResult::Handled;
+                }
+
                 if resize_handle_rect(window_rect).contains(*point) {
                     self.window_interaction = Some(WindowInteraction::Resize {
                         window_id,
@@ -718,6 +782,22 @@ impl Widget for ShellDesktop {
 mod tests {
     use super::*;
 
+    fn test_desktop() -> (ShellDesktop, Arc<RwLock<WindowManager>>) {
+        let menu_server = Arc::new(RwLock::new(MenuServer::new()));
+        let launch_services = Arc::new(RwLock::new(LaunchServices::new()));
+        let window_manager = Arc::new(RwLock::new(WindowManager::new()));
+        let mut desktop = ShellDesktop::new(menu_server, launch_services, window_manager.clone());
+        desktop.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+        (desktop, window_manager)
+    }
+
+    fn assert_rect_eq(actual: Rect, expected: Rect) {
+        assert_eq!(actual.x, expected.x);
+        assert_eq!(actual.y, expected.y);
+        assert_eq!(actual.width, expected.width);
+        assert_eq!(actual.height, expected.height);
+    }
+
     #[test]
     fn default_finder_rect_stays_inside_shell() {
         let shell = Rect::new(0.0, 0.0, 960.0, 640.0);
@@ -753,12 +833,17 @@ mod tests {
     }
 
     #[test]
+    fn classic_titlebar_controls_match_drawn_chrome() {
+        let window = Rect::new(66.0, 66.0, 500.0, 300.0);
+
+        assert!(close_box_rect(window).contains(Point::new(78.0, 78.0)));
+        assert!(zoom_box_rect(window).contains(Point::new(554.0, 78.0)));
+        assert!(!titlebar_rect(window).contains(Point::new(554.0, 96.0)));
+    }
+
+    #[test]
     fn shell_menu_actions_create_and_close_managed_windows() {
-        let menu_server = Arc::new(RwLock::new(MenuServer::new()));
-        let launch_services = Arc::new(RwLock::new(LaunchServices::new()));
-        let window_manager = Arc::new(RwLock::new(WindowManager::new()));
-        let mut desktop = ShellDesktop::new(menu_server, launch_services, window_manager.clone());
-        desktop.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+        let (mut desktop, window_manager) = test_desktop();
 
         assert_eq!(desktop.windows.len(), 1);
         let first_id = desktop.windows[0].id;
@@ -778,11 +863,7 @@ mod tests {
 
     #[test]
     fn focusing_window_raises_it_to_front() {
-        let menu_server = Arc::new(RwLock::new(MenuServer::new()));
-        let launch_services = Arc::new(RwLock::new(LaunchServices::new()));
-        let window_manager = Arc::new(RwLock::new(WindowManager::new()));
-        let mut desktop = ShellDesktop::new(menu_server, launch_services, window_manager.clone());
-        desktop.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+        let (mut desktop, window_manager) = test_desktop();
         let first_id = desktop.windows[0].id;
         let second_id = desktop.open_finder_window();
 
@@ -798,6 +879,62 @@ mod tests {
             desktop.windows.last().map(|window| window.id),
             Some(second_id)
         );
+    }
+
+    #[test]
+    fn close_box_closes_the_clicked_window() {
+        let (mut desktop, window_manager) = test_desktop();
+        let first_id = desktop.windows[0].id;
+        let point = Point::new(78.0, 78.0);
+
+        let result = desktop.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point,
+            modifiers: retro_kit::event::Modifiers::NONE,
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert!(desktop.windows.is_empty());
+        assert!(!window_manager.read().windows.contains_key(&first_id));
+    }
+
+    #[test]
+    fn zoom_box_toggles_managed_window_between_zoomed_and_restored() {
+        let (mut desktop, window_manager) = test_desktop();
+        let id = desktop.windows[0].id;
+        let original = desktop.windows[0].window.rect();
+        let point = Point::new(original.x + original.width - 14.0, original.y + 12.0);
+
+        let result = desktop.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point,
+            modifiers: retro_kit::event::Modifiers::NONE,
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert!(desktop.windows[0].restore_rect.is_some());
+        assert_rect_eq(desktop.windows[0].restore_rect.unwrap(), original);
+        assert_eq!(
+            window_manager.read().windows[&id].state,
+            window_manager::WindowState::Maximized
+        );
+        assert!(desktop.windows[0].window.rect().width > original.width);
+
+        let zoomed = desktop.windows[0].window.rect();
+        let restore_point = Point::new(zoomed.x + zoomed.width - 14.0, zoomed.y + 12.0);
+        let result = desktop.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point: restore_point,
+            modifiers: retro_kit::event::Modifiers::NONE,
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert!(desktop.windows[0].restore_rect.is_none());
+        assert_eq!(
+            window_manager.read().windows[&id].state,
+            window_manager::WindowState::Normal
+        );
+        assert_rect_eq(desktop.windows[0].window.rect(), original);
     }
 
     #[test]

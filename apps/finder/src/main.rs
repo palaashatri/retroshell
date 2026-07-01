@@ -456,14 +456,20 @@ impl Widget for FinderView {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     fn temp_finder_root() -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("retroshell_finder_view_{unique}"))
+        let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("retroshell_finder_view_{unique}_{sequence}"));
+        let _ = fs::remove_dir_all(&root);
+        root
     }
 
     #[test]
