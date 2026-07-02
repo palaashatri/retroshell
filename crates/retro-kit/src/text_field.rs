@@ -9,6 +9,7 @@ pub struct TextField {
     pub placeholder: String,
     pub is_password: bool,
     pub multiline: bool,
+    pub expands_horizontally: bool,
     pub on_change: Option<Box<dyn FnMut(String) + Send>>,
     cursor_position: usize,
 }
@@ -27,6 +28,7 @@ impl TextField {
             placeholder: String::new(),
             is_password: false,
             multiline: false,
+            expands_horizontally: false,
             on_change: None,
             cursor_position: 0,
         }
@@ -42,6 +44,10 @@ impl TextField {
     }
     pub fn set_multiline(&mut self, multiline: bool) {
         self.multiline = multiline;
+    }
+
+    pub fn set_expands_horizontally(&mut self, expands: bool) {
+        self.expands_horizontally = expands;
     }
     pub fn set_text<S: Into<String>>(&mut self, text: S) {
         self.text = text.into();
@@ -63,6 +69,8 @@ impl Widget for TextField {
                 constraint.max_width.max(constraint.min_width),
                 constraint.max_height.max(constraint.min_height),
             )
+        } else if self.expands_horizontally {
+            (constraint.max_width.max(constraint.min_width), 26.0)
         } else {
             (constraint.max_width.min(200.0), 26.0)
         };

@@ -30,7 +30,7 @@ Captured from a Linux VM/Xvfb smoke run against a demo home directory. Finder re
 
 ### TextEdit
 
-Captured from a Linux VM/Xvfb smoke run after TextEdit opened a real document path, rendered editable document text, exposed New/Save/Undo/Redo/Copy/Paste actions, and showed saved/path status.
+Captured from a Linux VM/Xvfb smoke run after TextEdit opened a real document path, rendered the path row, exposed New/Open/Save/Save As/Undo/Redo/Copy/Paste actions, rendered editable document text, and showed saved/path status.
 
 ![Current TextEdit app](docs/screenshots/current-textedit.png)
 
@@ -64,7 +64,7 @@ RetroShell currently builds and launches a native rendered desktop surface with 
 
 Finder has sidebar/icon-grid browsing, sorted directory listing, folder entry, parent navigation, back/forward history, file-operation toolbar controls, New Folder/Duplicate/Trash helpers, VM-smoked path/status display, and a working `INFO` action that reports selected file/folder metadata in the status bar.
 
-TextEdit opens an optional document path passed on the command line, edits through the native multiline text field, saves back to disk, supports Cmd-N/Cmd-S, supports Cmd-Z/Shift-Cmd-Z undo/redo, exposes baseline whole-document copy/cut/paste/select-all shortcuts, and shows toolbar actions for New/Save/Undo/Redo/Copy/Paste.
+TextEdit opens an optional document path passed on the command line, opens paths from its path row, edits through the native multiline text field, saves back to disk, saves as a new path from the path row, supports Cmd-N/Cmd-O/Cmd-S/Shift-Cmd-S, supports Cmd-Z/Shift-Cmd-Z undo/redo, exposes baseline whole-document copy/cut/paste/select-all shortcuts, and shows toolbar actions for New/Open/Save/Save As/Undo/Redo/Copy/Paste.
 
 Settings loads and saves `settings.conf` under `RETROSHELL_CONFIG_DIR` or `~/.config/retroshell`, exposes Light/Dark/System controls, persists changes immediately, and reports the active mode. RetroSDK consumes the same preference and renders shared native chrome/controls in dark appearance when `appearance=dark`.
 
@@ -78,11 +78,11 @@ This is still foundation work, not a polished full desktop environment.
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (71 tests)
+- `cargo test --workspace -q` (75 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - Linux VM/Xvfb/Mesa smoke: `retro-shell` renders the desktop, manages shell windows, handles menu interaction/window controls/drag/resize/fullscreen, and captures `docs/screenshots/current-retroshell-desktop.png`.
 - Linux VM/Xvfb smoke: `finder` starts against a demo home directory, selects a real file, triggers the `INFO` toolbar action, renders selected-file metadata in the status bar, and captures `docs/screenshots/current-finder.png`.
-- Linux VM/Xvfb smoke: `textedit` opens a document path, renders edit controls, and captures `docs/screenshots/current-textedit.png`.
+- Linux VM/Xvfb smoke: `textedit` opens a document path, renders the path row and Open/Save As controls, shows loaded document text and saved/path status, and captures `docs/screenshots/current-textedit.png`.
 - Linux VM/Xvfb/Mesa smoke: `settings` clicks Dark appearance, verifies `appearance=dark`, renders selected mode/status UI, and captures `docs/screenshots/current-settings.png`.
 - Linux VM/Xvfb/Mesa smoke: `settings` launches with `appearance=dark`, renders dark native chrome/controls, and captures `docs/screenshots/current-dark-mode-settings.png`.
 - Linux VM/Xvfb smoke: `terminal` launches a PTY-backed shell script, renders live output, mouse-selects terminal text, and captures `docs/screenshots/current-terminal.png`.

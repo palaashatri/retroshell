@@ -593,6 +593,9 @@ mod tests {
     use super::*;
     use crate::pty::Pty;
     use crate::tabs::TabManager;
+    use std::sync::Mutex;
+
+    static CLIPBOARD_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_terminal_emulator() {
@@ -729,6 +732,7 @@ mod tests {
 
     #[test]
     fn terminal_meta_copy_copies_visible_text() {
+        let _guard = CLIPBOARD_TEST_LOCK.lock().unwrap();
         Clipboard::clear();
         let mut term = Terminal::new(8, 2);
         for byte in b"copy me" {
@@ -751,6 +755,7 @@ mod tests {
 
     #[test]
     fn terminal_selected_text_copies_only_selection() {
+        let _guard = CLIPBOARD_TEST_LOCK.lock().unwrap();
         Clipboard::clear();
         let mut term = Terminal::new(12, 2);
         for byte in b"alpha beta\r\nnext" {

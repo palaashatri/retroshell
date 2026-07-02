@@ -47,7 +47,15 @@ fn main() {
             meta: true,
         },
     );
-    file_menu.add_action("Save As...");
+    file_menu.add_action("Save As...").with_shortcut(
+        KeyCode::S,
+        Modifiers {
+            shift: true,
+            control: false,
+            alt: false,
+            meta: true,
+        },
+    );
     file_menu.add_separator();
     file_menu.add_action("Close").with_shortcut(
         KeyCode::W,
@@ -149,6 +157,8 @@ fn main() {
 struct TextEditView {
     state: WidgetState,
     toolbar: Toolbar,
+    path_label: Label,
+    path_field: TextField,
     editor: TextField,
     status: Label,
     document_path: Option<PathBuf>,
@@ -157,6 +167,7 @@ struct TextEditView {
     last_error: Option<String>,
     undo_stack: Vec<String>,
     redo_stack: Vec<String>,
+    path_focused: bool,
 }
 
 impl TextEditView {
@@ -174,11 +185,19 @@ impl TextEditView {
 
         let mut toolbar = Toolbar::new();
         toolbar.add(Box::new(Button::new("NEW")));
+        toolbar.add(Box::new(Button::new("OPEN")));
         toolbar.add(Box::new(Button::new("SAVE")));
+        toolbar.add(Box::new(Button::new("SAVE AS")));
         toolbar.add(Box::new(Button::new("UNDO")));
         toolbar.add(Box::new(Button::new("REDO")));
         toolbar.add(Box::new(Button::new("COPY")));
         toolbar.add(Box::new(Button::new("PASTE")));
+
+        let mut path_field = TextField::new().with_placeholder("Document path");
+        path_field.set_expands_horizontally(true);
+        if let Some(path) = document_path.as_deref() {
+            path_field.set_text(path.display().to_string());
+        }
 
         let mut editor = TextField::new();
         editor.set_multiline(true);
@@ -187,6 +206,8 @@ impl TextEditView {
         let mut view = Self {
             state: WidgetState::new(),
             toolbar,
+            path_label: Label::new("PATH"),
+            path_field,
             editor,
             status: Label::new(""),
             document_path,
@@ -195,6 +216,7 @@ impl TextEditView {
             last_error: error,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            path_focused: false,
         };
         view.refresh_status();
         view
@@ -227,6 +249,14 @@ impl TextEditView {
             .map(|error| format!(" - {error}"))
             .unwrap_or_default();
         self.status.text = format!("{state} - {path}{error}");
+    }
+
+    fn sync_path_field(&mut self) {
+        if let Some(path) = self.document_path.as_deref() {
+            self.path_field.set_text(path.display().to_string());
+        } else {
+            self.path_field.set_text("");
+        }
     }
 
     fn mark_dirty_from_editor(&mut self) {
@@ -311,6 +341,7 @@ impl TextEditView {
     fn new_document(&mut self) -> bool {
         self.push_undo_snapshot();
         self.document_path = None;
+        self.sync_path_field();
         self.saved_text.clear();
         self.editor.set_text("");
         self.dirty = false;
@@ -318,6 +349,46 @@ impl TextEditView {
         self.redo_stack.clear();
         self.refresh_status();
         true
+    }
+
+    fn path_from_field(&mut self) -> Option<PathBuf> {
+        let path = self.path_field.text().trim();
+        if path.is_empty() {
+            self.last_error = Some("Enter a document path".to_string());
+            self.refresh_status();
+            None
+        } else {
+            Some(PathBuf::from(path))
+        }
+    }
+
+    fn open_path(&mut self, path: PathBuf) -> bool {
+        match fs::read_to_string(&path) {
+            Ok(text) => {
+                self.push_undo_snapshot();
+                self.document_path = Some(path);
+                self.sync_path_field();
+                self.editor.set_text(text.clone());
+                self.saved_text = text;
+                self.dirty = false;
+                self.last_error = None;
+                self.redo_stack.clear();
+                self.refresh_status();
+                true
+            }
+            Err(err) => {
+                self.last_error = Some(format!("Could not open: {err}"));
+                self.refresh_status();
+                false
+            }
+        }
+    }
+
+    fn open_from_path_field(&mut self) -> bool {
+        let Some(path) = self.path_from_field() else {
+            return false;
+        };
+        self.open_path(path)
     }
 
     fn save_document(&mut self) -> bool {
@@ -343,6 +414,28 @@ impl TextEditView {
         }
     }
 
+    fn save_as_from_path_field(&mut self) -> bool {
+        let Some(path) = self.path_from_field() else {
+            return false;
+        };
+        match fs::write(&path, self.editor.text()) {
+            Ok(()) => {
+                self.document_path = Some(path);
+                self.sync_path_field();
+                self.saved_text = self.editor.text().to_string();
+                self.dirty = false;
+                self.last_error = None;
+                self.refresh_status();
+                true
+            }
+            Err(err) => {
+                self.last_error = Some(format!("Could not save as: {err}"));
+                self.refresh_status();
+                false
+            }
+        }
+    }
+
     fn handle_toolbar_click(&mut self, point: Point) -> bool {
         let Some(index) = self
             .toolbar
@@ -355,11 +448,13 @@ impl TextEditView {
 
         match index {
             0 => self.new_document(),
-            1 => self.save_document(),
-            2 => self.undo(),
-            3 => self.redo(),
-            4 => self.copy_document(),
-            5 => self.paste_document(),
+            1 => self.open_from_path_field(),
+            2 => self.save_document(),
+            3 => self.save_as_from_path_field(),
+            4 => self.undo(),
+            5 => self.redo(),
+            6 => self.copy_document(),
+            7 => self.paste_document(),
             _ => false,
         }
     }
@@ -380,8 +475,9 @@ impl Widget for TextEditView {
         self.set_rect(rect);
 
         let toolbar_h = 32.0;
+        let path_h = 30.0;
         let status_h = 24.0;
-        let editor_h = (rect.height - toolbar_h - status_h).max(0.0);
+        let editor_h = (rect.height - toolbar_h - path_h - status_h).max(0.0);
 
         self.toolbar
             .set_rect(Rect::new(rect.x, rect.y, rect.width, toolbar_h));
@@ -389,15 +485,41 @@ impl Widget for TextEditView {
             .toolbar
             .layout(LayoutConstraint::tight(Size::new(rect.width, toolbar_h)));
 
-        self.editor
-            .set_rect(Rect::new(rect.x, rect.y + toolbar_h, rect.width, editor_h));
+        self.path_label.set_rect(Rect::new(
+            rect.x + 8.0,
+            rect.y + toolbar_h + 4.0,
+            46.0,
+            22.0,
+        ));
+        let _ = self
+            .path_label
+            .layout(LayoutConstraint::tight(Size::new(46.0, 22.0)));
+
+        let path_field_x = rect.x + 58.0;
+        let path_field_w = (rect.width - 66.0).max(0.0);
+        self.path_field.set_rect(Rect::new(
+            path_field_x,
+            rect.y + toolbar_h + 2.0,
+            path_field_w,
+            26.0,
+        ));
+        let _ = self
+            .path_field
+            .layout(LayoutConstraint::tight(Size::new(path_field_w, 26.0)));
+
+        self.editor.set_rect(Rect::new(
+            rect.x,
+            rect.y + toolbar_h + path_h,
+            rect.width,
+            editor_h,
+        ));
         let _ = self
             .editor
             .layout(LayoutConstraint::tight(Size::new(rect.width, editor_h)));
 
         self.status.set_rect(Rect::new(
             rect.x,
-            rect.y + toolbar_h + editor_h,
+            rect.y + toolbar_h + path_h + editor_h,
             rect.width,
             status_h,
         ));
@@ -410,6 +532,8 @@ impl Widget for TextEditView {
 
     fn draw(&self, theme: &ThemeContext) {
         self.toolbar.draw(theme);
+        self.path_label.draw(theme);
+        self.path_field.draw(theme);
         self.editor.draw(theme);
         self.status.draw(theme);
     }
@@ -423,7 +547,15 @@ impl Widget for TextEditView {
                         return EventResult::Handled;
                     }
                     KeyCode::S => {
-                        self.save_document();
+                        if modifiers.shift {
+                            self.save_as_from_path_field();
+                        } else {
+                            self.save_document();
+                        }
+                        return EventResult::Handled;
+                    }
+                    KeyCode::O => {
+                        self.open_from_path_field();
                         return EventResult::Handled;
                     }
                     KeyCode::Z if modifiers.shift => {
@@ -464,6 +596,31 @@ impl Widget for TextEditView {
             if self.handle_toolbar_click(*point) {
                 return EventResult::Handled;
             }
+            if self.path_field.rect().contains(*point) {
+                self.path_focused = true;
+                return EventResult::Handled;
+            }
+            if self.editor.rect().contains(*point) {
+                self.path_focused = false;
+            }
+        }
+
+        if self.path_focused {
+            match event {
+                Event::Char { .. }
+                | Event::KeyDown {
+                    key: KeyCode::Backspace,
+                    ..
+                } => {
+                    let result = self.path_field.handle_event(event);
+                    if matches!(result, EventResult::Handled) {
+                        self.last_error = None;
+                        self.refresh_status();
+                    }
+                    return result;
+                }
+                _ => {}
+            }
         }
 
         let before_edit = self.editor.text().to_string();
@@ -485,6 +642,8 @@ impl Widget for TextEditView {
 
     fn update(&mut self) {
         self.toolbar.update();
+        self.path_label.update();
+        self.path_field.update();
         self.editor.update();
         self.status.update();
     }
@@ -494,11 +653,23 @@ impl Widget for TextEditView {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.toolbar, &self.editor, &self.status]
+        vec![
+            &self.toolbar,
+            &self.path_label,
+            &self.path_field,
+            &self.editor,
+            &self.status,
+        ]
     }
 
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        vec![&mut self.toolbar, &mut self.editor, &mut self.status]
+        vec![
+            &mut self.toolbar,
+            &mut self.path_label,
+            &mut self.path_field,
+            &mut self.editor,
+            &mut self.status,
+        ]
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -569,7 +740,7 @@ mod tests {
         view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
         let _ = view.handle_event(&Event::Char { character: '!' });
 
-        let result = click_toolbar_button(&mut view, 1);
+        let result = click_toolbar_button(&mut view, 2);
 
         assert!(matches!(result, EventResult::Handled));
         assert_eq!(fs::read_to_string(&path).unwrap(), "hello!");
@@ -577,6 +748,95 @@ mod tests {
         assert!(view.status.text.contains("Saved"));
 
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn textedit_open_toolbar_loads_path_field_document() {
+        let path = temp_textedit_path("open.txt");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "opened from path").unwrap();
+
+        let mut view = TextEditView::open(None);
+        view.layout(LayoutConstraint::tight(Size::new(700.0, 460.0)));
+        view.path_field.set_text(path.display().to_string());
+
+        let result = click_toolbar_button(&mut view, 1);
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(view.editor.text(), "opened from path");
+        assert_eq!(view.document_path.as_deref(), Some(path.as_path()));
+        assert!(!view.dirty);
+        assert!(view.status.text.contains("Saved"));
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn textedit_save_as_toolbar_writes_path_field_document() {
+        let path = temp_textedit_path("saved-as.txt");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        let mut view = TextEditView::open(None);
+        view.layout(LayoutConstraint::tight(Size::new(700.0, 460.0)));
+        view.editor.set_text("save as body");
+        view.mark_dirty_from_editor();
+        view.path_field.set_text(path.display().to_string());
+
+        let result = click_toolbar_button(&mut view, 3);
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "save as body");
+        assert_eq!(view.document_path.as_deref(), Some(path.as_path()));
+        assert!(!view.dirty);
+        assert!(view.status.text.contains("Saved"));
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn textedit_shift_cmd_s_runs_save_as() {
+        let path = temp_textedit_path("shortcut-save-as.txt");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        let mut view = TextEditView::open(None);
+        view.editor.set_text("shortcut body");
+        view.mark_dirty_from_editor();
+        view.path_field.set_text(path.display().to_string());
+
+        let result = view.handle_event(&Event::KeyDown {
+            key: KeyCode::S,
+            modifiers: Modifiers {
+                shift: true,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "shortcut body");
+        assert_eq!(view.document_path.as_deref(), Some(path.as_path()));
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn textedit_path_field_accepts_typed_path_when_focused() {
+        let mut view = TextEditView::open(None);
+        view.layout(LayoutConstraint::tight(Size::new(700.0, 460.0)));
+        let rect = view.path_field.rect();
+
+        let focus = view.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point: Point::new(rect.x + 4.0, rect.y + 4.0),
+            modifiers: Modifiers::NONE,
+        });
+        let typed = view.handle_event(&Event::Char { character: 'x' });
+
+        assert!(matches!(focus, EventResult::Handled));
+        assert!(matches!(typed, EventResult::Handled));
+        assert_eq!(view.path_field.text(), "x");
+        assert!(!view.editor.text().ends_with('x'));
     }
 
     #[test]
@@ -593,6 +853,7 @@ mod tests {
         assert!(matches!(result, EventResult::Handled));
         assert_eq!(view.editor.text(), "");
         assert!(view.document_path.is_none());
+        assert_eq!(view.path_field.text(), "");
         assert!(!view.dirty);
 
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
