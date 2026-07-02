@@ -18,7 +18,7 @@ Every major UI/UX change should refresh current screenshots. Screenshots live in
 
 ### Current Implementation
 
-Captured from a Linux VM/Xvfb/Mesa smoke run after the native `wgpu` desktop filled a 1280x800 surface, rendered the shell-owned global menu with active Finder menus, accepted menu pointer interaction, rendered desktop icons, opened managed Finder-style shell windows, opened folder-backed shell windows, raised/focused windows, closed active windows, used titlebar close/zoom controls, toggled fullscreen through the View menu, dragged/resized windows, and rendered the grow box.
+Captured from a Linux VM/Xvfb/Mesa smoke run after the native `wgpu` desktop filled a 1280x800 surface, rendered the shell-owned global menu with active Finder menus, accepted menu pointer interaction, routed global menu actions/shortcuts for managed windows, rendered desktop icons, opened managed Finder-style shell windows, opened folder-backed shell windows, raised/focused windows, closed active windows, used titlebar close/zoom controls, toggled fullscreen through the View menu, dragged/resized windows, and rendered the grow box.
 
 ![Current RetroShell desktop](docs/screenshots/current-retroshell-desktop.png)
 
@@ -78,9 +78,9 @@ This is still foundation work, not a polished full desktop environment.
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (82 tests)
+- `cargo test --workspace -q` (85 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- Linux VM/Xvfb/Mesa smoke: `retro-shell` renders the desktop with the shell-owned active Finder global menu, manages shell windows, handles menu interaction/window controls/drag/resize/fullscreen, and captures `docs/screenshots/current-retroshell-desktop.png`.
+- Linux VM/Xvfb/Mesa smoke: `retro-shell` renders the desktop with the shell-owned active Finder global menu, manages shell windows, handles menu interaction/shortcuts/window controls/drag/resize/fullscreen, and captures `docs/screenshots/current-retroshell-desktop.png`.
 - Linux VM/Xvfb smoke: `finder` starts against a demo home directory, selects a real file, triggers the `INFO` toolbar action, renders selected-file metadata in the status bar, and captures `docs/screenshots/current-finder.png`.
 - Linux VM/Xvfb smoke: `textedit` opens a document path, renders the path row and Open/Save As controls, shows loaded document text and saved/path status, and captures `docs/screenshots/current-textedit.png`.
 - Linux VM/Xvfb/Mesa smoke: `settings` clicks Dark appearance, verifies `appearance=dark`, renders selected mode/status UI, and captures `docs/screenshots/current-settings.png`.

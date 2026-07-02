@@ -1,5 +1,5 @@
 use retro_kit::event::{KeyCode, Modifiers};
-use retro_kit::menu::Menu;
+use retro_kit::menu::{Menu, MenuItem, MenuItemKind};
 
 pub struct MenuServer {
     pub menus: Vec<Menu>,
@@ -388,6 +388,12 @@ impl MenuServer {
             .find(|s| s.key == key && s.modifiers == modifiers)
     }
 
+    pub fn action_for_shortcut(&self, key: KeyCode, modifiers: Modifiers) -> Option<String> {
+        self.menus
+            .iter()
+            .find_map(|menu| find_shortcut_action(&menu.items, key, modifiers))
+    }
+
     pub fn render_menu_bar(&self) -> retro_render::RenderNode {
         let mut children = vec![];
         children.push(retro_render::RenderNode::Rect {
@@ -413,4 +419,23 @@ impl MenuServer {
 
         retro_render::RenderNode::Group { children }
     }
+}
+
+fn find_shortcut_action(items: &[MenuItem], key: KeyCode, modifiers: Modifiers) -> Option<String> {
+    for item in items {
+        if !item.enabled {
+            continue;
+        }
+        if item.shortcut == Some((key, modifiers)) && !item.action_id.is_empty() {
+            return Some(item.action_id.clone());
+        }
+        if matches!(item.kind, MenuItemKind::Submenu) {
+            if let Some(submenu) = &item.submenu {
+                if let Some(action) = find_shortcut_action(&submenu.items, key, modifiers) {
+                    return Some(action);
+                }
+            }
+        }
+    }
+    None
 }

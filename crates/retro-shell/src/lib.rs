@@ -493,10 +493,21 @@ impl ShellDesktop {
                 self.open_finder_window();
             }
             "shell.close_finder_window" => self.close_active_window(),
+            "shell.zoom_window" => {
+                if let Some(id) = self.active_window_id() {
+                    self.toggle_window_zoom(id);
+                }
+            }
             "shell.toggle_fullscreen" => {
                 if let Some(id) = self.active_window_id() {
                     self.toggle_window_fullscreen(id);
                 }
+            }
+            "shell.open_home" => {
+                self.open_folder_window("Home", home_dir());
+            }
+            "shell.open_computer" => {
+                self.open_folder_window("Hard Disk", PathBuf::from("/"));
             }
             "shell.open_finder" => launch_app_binary("com.retro.finder"),
             "shell.settings" => launch_app_binary("com.retro.settings"),
@@ -768,6 +779,17 @@ impl Widget for ShellDesktop {
         let result = self.menu_bar.handle_event(event);
         if matches!(result, EventResult::Handled | EventResult::StopPropagation) {
             return result;
+        }
+
+        if let Event::KeyDown { key, modifiers } = event {
+            let action = self
+                .menu_server
+                .read()
+                .action_for_shortcut(*key, *modifiers);
+            if let Some(action) = action {
+                self.handle_menu_action(&action);
+                return EventResult::Handled;
+            }
         }
 
         match event {
@@ -1293,6 +1315,59 @@ mod tests {
             window_manager::WindowState::Normal
         );
         assert_rect_eq(desktop.windows[0].window.rect(), original);
+    }
+
+    #[test]
+    fn global_menu_shortcut_opens_new_finder_window() {
+        let (mut desktop, _) = test_desktop();
+        let initial_count = desktop.windows.len();
+
+        let result = desktop.handle_event(&Event::KeyDown {
+            key: retro_kit::event::KeyCode::N,
+            modifiers: Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(desktop.windows.len(), initial_count + 1);
+        assert_eq!(
+            desktop.menu_server.read().active_app.as_deref(),
+            Some("com.retro.finder")
+        );
+    }
+
+    #[test]
+    fn global_menu_shortcut_closes_active_window() {
+        let (mut desktop, _) = test_desktop();
+        let initial_count = desktop.windows.len();
+
+        let result = desktop.handle_event(&Event::KeyDown {
+            key: retro_kit::event::KeyCode::W,
+            modifiers: Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(desktop.windows.len(), initial_count.saturating_sub(1));
+    }
+
+    #[test]
+    fn global_menu_go_home_action_opens_home_window() {
+        let (mut desktop, _) = test_desktop();
+        let initial_count = desktop.windows.len();
+
+        desktop.handle_menu_action("shell.open_home");
+
+        assert_eq!(desktop.windows.len(), initial_count + 1);
+        assert_eq!(desktop.windows.last().unwrap().window.title(), "Home");
     }
 
     #[test]

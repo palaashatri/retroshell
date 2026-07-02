@@ -22,7 +22,7 @@ Definition of done remains a full desktop environment: working Finder, TextEdit,
 
 | Component | Path | Status |
 | --- | --- | --- |
-| retro-shell | `crates/retro-shell/` | Prototype: rendered desktop, shell-owned active-app global menu for managed shell windows, shell services, managed shell windows, close, zoom, fullscreen, drag, resize, desktop folder icon launch, and child folder opening exist; standalone SDK app menu integration, focus visuals, minimize, sessions, app lifecycle, compositor integration remain incomplete. |
+| retro-shell | `crates/retro-shell/` | Prototype: rendered desktop, shell-owned active-app global menu for managed shell windows, global menu action/shortcut routing, shell services, managed shell windows, close, zoom, fullscreen, drag, resize, desktop folder icon launch, and child folder opening exist; standalone SDK app menu integration, focus visuals, minimize, sessions, app lifecycle, compositor integration remain incomplete. |
 | retro-bus | `crates/retro-bus/` | Foundation: local transport primitives exist; broader service integration remains incomplete. |
 | retro-sdk | `crates/retro-sdk/` | First-party app runtime works for basic windows/menus/widgets, repaints async widget updates, consumes `appearance=dark` shared native rendering; app lifecycle, dialogs, platform clipboard, platform services, complete theme tokens, and polished text rendering remain incomplete. |
 | Finder | `apps/finder/` | In progress: navigation history, visible navigation controls, file operation helpers, and Get Info status metadata exist; contextual menus, drag/drop, trash polish, desktop integration, and multi-window workflows remain incomplete. |
@@ -35,9 +35,9 @@ Definition of done remains a full desktop environment: working Finder, TextEdit,
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (82 tests)
+- `cargo test --workspace -q` (85 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- Linux VM/Xvfb/Mesa Vulkan llvmpipe smoke: `retro-shell` renders the desktop with the shell-owned active Finder global menu, handles menu interaction/window controls/drag/resize/fullscreen, opens a managed folder window, and captures `docs/screenshots/current-retroshell-desktop.png`.
+- Linux VM/Xvfb/Mesa Vulkan llvmpipe smoke: `retro-shell` renders the desktop with the shell-owned active Finder global menu, handles menu interaction/shortcuts/window controls/drag/resize/fullscreen, opens a managed folder window, and captures `docs/screenshots/current-retroshell-desktop.png`.
 - Linux VM/Xvfb smoke: `finder` starts against a demo home directory, selects `note.txt`, triggers the `INFO` toolbar action, renders `INFO - FILE - NOTE.TXT - 5 BYTES` in the status bar, and captures `docs/screenshots/current-finder.png`.
 - Linux VM/Xvfb smoke: `textedit` opens a document path, renders the path row plus Open/Save As controls, shows loaded document text and saved/path status, and captures `docs/screenshots/current-textedit.png`.
 - Linux VM/Xvfb/Mesa Vulkan llvmpipe smoke: `settings` clicks Dark appearance, verifies `appearance=dark`, renders selected mode/status UI, and captures `docs/screenshots/current-settings.png`.
