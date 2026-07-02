@@ -324,10 +324,11 @@ impl ShellDesktop {
         if matches!(
             self.window_interaction,
             Some(WindowInteraction::Move { window_id, .. } | WindowInteraction::Resize { window_id, .. })
-                if window_id == id
+            if window_id == id
         ) {
             self.window_interaction = None;
         }
+        self.sync_global_menu_to_active_window();
     }
 
     fn toggle_window_zoom(&mut self, id: Uuid) {
@@ -389,6 +390,24 @@ impl ShellDesktop {
         let shell_window = self.windows.remove(index);
         self.windows.push(shell_window);
         self.window_manager.write().focus_window(id);
+        self.sync_global_menu_to_active_window();
+    }
+
+    fn sync_global_menu_to_active_window(&mut self) {
+        let active_app = self.window_manager.read().active_window.and_then(|id| {
+            self.window_manager
+                .read()
+                .windows
+                .get(&id)
+                .map(|window| window.app_id.clone())
+        });
+
+        if let Some(app_id) = active_app {
+            self.menu_server.write().set_active_app_menus(&app_id);
+        } else {
+            self.menu_server.write().reset_to_shell_menus();
+        }
+        self.menu_bar.menus = self.menu_server.read().menus.clone();
     }
 
     fn active_window_id(&self) -> Option<Uuid> {
@@ -1035,6 +1054,58 @@ mod tests {
         let active = desktop.windows.last().expect("active home window");
         assert_eq!(active.window.title(), "Home");
         assert_eq!(window_manager.read().active_window, Some(active.id));
+    }
+
+    #[test]
+    fn shell_global_menu_switches_to_focused_finder_window() {
+        let (mut desktop, _) = test_desktop();
+
+        let titles = desktop
+            .menu_bar
+            .menus
+            .iter()
+            .map(|menu| menu.title.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(titles.contains(&"Retro"));
+        assert!(titles.contains(&"Finder"));
+        assert_eq!(
+            desktop.menu_server.read().active_app.as_deref(),
+            Some("com.retro.finder")
+        );
+
+        let second_id = desktop.open_finder_window();
+        desktop.focus_window(second_id);
+        let titles = desktop
+            .menu_bar
+            .menus
+            .iter()
+            .map(|menu| menu.title.as_str())
+            .collect::<Vec<_>>();
+        assert!(titles.contains(&"Finder"));
+        assert!(titles.contains(&"Go"));
+    }
+
+    #[test]
+    fn shell_global_menu_resets_when_last_window_closes() {
+        let (mut desktop, _) = test_desktop();
+        let ids = desktop
+            .windows
+            .iter()
+            .map(|window| window.id)
+            .collect::<Vec<_>>();
+
+        for id in ids {
+            desktop.close_window(id);
+        }
+
+        assert!(desktop.windows.is_empty());
+        assert_eq!(desktop.menu_server.read().active_app, None);
+        assert!(!desktop
+            .menu_bar
+            .menus
+            .iter()
+            .any(|menu| menu.title == "Finder"));
     }
 
     #[test]

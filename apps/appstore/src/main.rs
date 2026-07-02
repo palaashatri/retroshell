@@ -105,6 +105,100 @@ impl PackageManager {
             Self::Brew => ("brew", vec!["search".into(), query.into()]),
         }
     }
+
+    fn transaction_command(self, action: PackageAction, package: &str) -> Vec<String> {
+        match (self, action) {
+            (Self::Apt, PackageAction::Install) => {
+                vec!["sudo", "apt-get", "install", "-y", package]
+            }
+            (Self::Apt, PackageAction::Remove) => {
+                vec!["sudo", "apt-get", "remove", "-y", package]
+            }
+            (Self::Apt, PackageAction::Update) => {
+                vec![
+                    "sudo",
+                    "apt-get",
+                    "install",
+                    "--only-upgrade",
+                    "-y",
+                    package,
+                ]
+            }
+            (Self::Dnf, PackageAction::Install) => vec!["sudo", "dnf", "install", "-y", package],
+            (Self::Dnf, PackageAction::Remove) => vec!["sudo", "dnf", "remove", "-y", package],
+            (Self::Dnf, PackageAction::Update) => vec!["sudo", "dnf", "upgrade", "-y", package],
+            (Self::Pacman, PackageAction::Install) => {
+                vec!["sudo", "pacman", "-S", "--noconfirm", package]
+            }
+            (Self::Pacman, PackageAction::Remove) => {
+                vec!["sudo", "pacman", "-R", "--noconfirm", package]
+            }
+            (Self::Pacman, PackageAction::Update) => {
+                vec!["sudo", "pacman", "-Syu", "--noconfirm", package]
+            }
+            (Self::Pkg, PackageAction::Install) => vec!["sudo", "pkg", "install", "-y", package],
+            (Self::Pkg, PackageAction::Remove) => vec!["sudo", "pkg", "delete", "-y", package],
+            (Self::Pkg, PackageAction::Update) => vec!["sudo", "pkg", "upgrade", "-y", package],
+            (Self::Apk, PackageAction::Install) => vec!["sudo", "apk", "add", package],
+            (Self::Apk, PackageAction::Remove) => vec!["sudo", "apk", "del", package],
+            (Self::Apk, PackageAction::Update) => vec!["sudo", "apk", "upgrade", package],
+            (Self::Zypper, PackageAction::Install) => {
+                vec!["sudo", "zypper", "install", "-y", package]
+            }
+            (Self::Zypper, PackageAction::Remove) => {
+                vec!["sudo", "zypper", "remove", "-y", package]
+            }
+            (Self::Zypper, PackageAction::Update) => {
+                vec!["sudo", "zypper", "update", "-y", package]
+            }
+            (Self::Brew, PackageAction::Install) => vec!["brew", "install", package],
+            (Self::Brew, PackageAction::Remove) => vec!["brew", "uninstall", package],
+            (Self::Brew, PackageAction::Update) => vec!["brew", "upgrade", package],
+        }
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageAction {
+    Install,
+    Remove,
+    Update,
+}
+
+impl PackageAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Install => "INSTALL",
+            Self::Remove => "REMOVE",
+            Self::Update => "UPDATE",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TransactionPlan {
+    action: PackageAction,
+    package: String,
+    command: Vec<String>,
+}
+
+impl TransactionPlan {
+    fn command_line(&self) -> String {
+        self.command.join(" ")
+    }
+
+    fn log_lines(&self) -> Vec<String> {
+        vec![
+            "TRANSACTION PLAN".to_string(),
+            format!("ACTION - {}", self.action.label()),
+            format!("PACKAGE - {}", self.package),
+            format!("COMMAND - {}", self.command_line()),
+            "CONFIRM requires RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES=1".to_string(),
+        ]
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +254,62 @@ impl PackageBackend {
         }
     }
 
+    fn plan_transaction(
+        &self,
+        action: PackageAction,
+        package: &str,
+    ) -> Result<TransactionPlan, String> {
+        let Some(manager) = self.manager else {
+            return Err("NO PACKAGE MANAGER FOUND".to_string());
+        };
+        let package = package.trim();
+        if package.is_empty() {
+            return Err("TRANSACTION NEEDS PACKAGE".to_string());
+        }
+
+        Ok(TransactionPlan {
+            action,
+            package: package.to_string(),
+            command: manager.transaction_command(action, package),
+        })
+    }
+
+    fn execute_transaction(&self, plan: &TransactionPlan) -> Result<String, String> {
+        if std::env::var("RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES")
+            .ok()
+            .as_deref()
+            != Some("1")
+        {
+            return Err(
+                "CONFIRM BLOCKED - SET RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES=1".to_string(),
+            );
+        }
+
+        let Some((binary, args)) = plan.command.split_first() else {
+            return Err("TRANSACTION HAS NO COMMAND".to_string());
+        };
+        let output = Command::new(binary)
+            .args(args)
+            .output()
+            .map_err(|err| format!("TRANSACTION FAILED {err}"))?;
+
+        let text = if output.status.success() {
+            String::from_utf8_lossy(&output.stdout).to_string()
+        } else {
+            String::from_utf8_lossy(&output.stderr).to_string()
+        };
+
+        if output.status.success() {
+            Ok(text)
+        } else {
+            Err(if text.trim().is_empty() {
+                "TRANSACTION FAILED".to_string()
+            } else {
+                text
+            })
+        }
+    }
+
     fn status_text(&self) -> String {
         match self.manager {
             Some(manager) => format!("BACKEND - {}", manager.display_name()),
@@ -189,6 +339,20 @@ fn parse_search_results(output: &str, limit: usize) -> Vec<String> {
         .collect()
 }
 
+fn package_name_from_result(result: &str) -> Option<String> {
+    let first = result.split_whitespace().next()?.trim();
+    let name = first
+        .rsplit_once('/')
+        .map(|(_, name)| name)
+        .unwrap_or(first)
+        .trim_matches(|c: char| matches!(c, ':' | ',' | ';'));
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
 struct AppStoreView {
     state: WidgetState,
     heading: Label,
@@ -196,9 +360,14 @@ struct AppStoreView {
     query: TextField,
     search_button: Button,
     refresh_button: Button,
+    install_button: Button,
+    remove_button: Button,
+    update_button: Button,
+    confirm_button: Button,
     results: ListView,
     status: Label,
     backend: PackageBackend,
+    pending_transaction: Option<TransactionPlan>,
 }
 
 impl AppStoreView {
@@ -213,9 +382,14 @@ impl AppStoreView {
             query,
             search_button: Button::new("SEARCH"),
             refresh_button: Button::new("REFRESH"),
+            install_button: Button::new("INSTALL"),
+            remove_button: Button::new("REMOVE"),
+            update_button: Button::new("UPDATE"),
+            confirm_button: Button::new("CONFIRM"),
             results: ListView::new(),
             status: Label::new("READY"),
             backend,
+            pending_transaction: None,
         };
         view.run_search();
         view
@@ -225,11 +399,15 @@ impl AppStoreView {
         match self.backend.search(self.query.text()) {
             Ok(results) => {
                 self.results.items = results;
+                self.results.selected_index = (!self.results.items.is_empty()).then_some(0);
+                self.pending_transaction = None;
                 self.status.text = format!("{} RESULTS", self.results.items.len());
                 true
             }
             Err(err) => {
                 self.results.items = vec![err.clone()];
+                self.results.selected_index = None;
+                self.pending_transaction = None;
                 self.status.text = err;
                 false
             }
@@ -242,12 +420,84 @@ impl AppStoreView {
         self.run_search()
     }
 
+    fn selected_package(&self) -> Option<String> {
+        self.results
+            .selected_index
+            .and_then(|index| self.results.items.get(index))
+            .and_then(|line| package_name_from_result(line))
+            .or_else(|| {
+                let query = self.query.text().trim();
+                (!query.is_empty()).then(|| query.to_string())
+            })
+    }
+
+    fn plan_transaction(&mut self, action: PackageAction) -> bool {
+        let Some(package) = self.selected_package() else {
+            self.status.text = "SELECT OR SEARCH FOR A PACKAGE".to_string();
+            return false;
+        };
+
+        match self.backend.plan_transaction(action, &package) {
+            Ok(plan) => {
+                self.status.text = format!("{} READY - {}", action.label(), package);
+                self.results.items = plan.log_lines();
+                self.results.selected_index = None;
+                self.pending_transaction = Some(plan);
+                true
+            }
+            Err(err) => {
+                self.status.text = err.clone();
+                self.results.items = vec![err];
+                self.results.selected_index = None;
+                self.pending_transaction = None;
+                false
+            }
+        }
+    }
+
+    fn confirm_transaction(&mut self) -> bool {
+        let Some(plan) = self.pending_transaction.clone() else {
+            self.status.text = "NO TRANSACTION TO CONFIRM".to_string();
+            return false;
+        };
+
+        match self.backend.execute_transaction(&plan) {
+            Ok(output) => {
+                self.status.text = format!("{} COMPLETE - {}", plan.action.label(), plan.package);
+                self.results.items = parse_search_results(&output, 12);
+                if self.results.items.is_empty() {
+                    self.results.items = vec!["TRANSACTION COMPLETE".to_string()];
+                }
+                self.pending_transaction = None;
+                true
+            }
+            Err(err) => {
+                self.status.text = err.clone();
+                self.results.items = plan.log_lines();
+                self.results.items.push(format!("STATUS - {err}"));
+                false
+            }
+        }
+    }
+
     fn handle_button_click(&mut self, point: Point) -> bool {
         if self.search_button.rect().contains(point) {
             return self.run_search();
         }
         if self.refresh_button.rect().contains(point) {
             return self.refresh_backend();
+        }
+        if self.install_button.rect().contains(point) {
+            return self.plan_transaction(PackageAction::Install);
+        }
+        if self.remove_button.rect().contains(point) {
+            return self.plan_transaction(PackageAction::Remove);
+        }
+        if self.update_button.rect().contains(point) {
+            return self.plan_transaction(PackageAction::Update);
+        }
+        if self.confirm_button.rect().contains(point) {
+            return self.confirm_transaction();
         }
         false
     }
@@ -308,6 +558,29 @@ impl Widget for AppStoreView {
             .layout(LayoutConstraint::tight(Size::new(96.0, 28.0)));
         y += 44.0;
 
+        let action_w = 94.0;
+        self.install_button
+            .set_rect(Rect::new(content_x, y, action_w, 28.0));
+        let _ = self
+            .install_button
+            .layout(LayoutConstraint::tight(Size::new(action_w, 28.0)));
+        self.remove_button
+            .set_rect(Rect::new(content_x + 102.0, y, action_w, 28.0));
+        let _ = self
+            .remove_button
+            .layout(LayoutConstraint::tight(Size::new(action_w, 28.0)));
+        self.update_button
+            .set_rect(Rect::new(content_x + 204.0, y, action_w, 28.0));
+        let _ = self
+            .update_button
+            .layout(LayoutConstraint::tight(Size::new(action_w, 28.0)));
+        self.confirm_button
+            .set_rect(Rect::new(content_x + 306.0, y, 104.0, 28.0));
+        let _ = self
+            .confirm_button
+            .layout(LayoutConstraint::tight(Size::new(104.0, 28.0)));
+        y += 42.0;
+
         let status_h = 26.0;
         let list_h = (rect.height - (y - rect.y) - status_h - pad).max(0.0);
         self.results
@@ -332,6 +605,10 @@ impl Widget for AppStoreView {
         self.query.draw(theme);
         self.search_button.draw(theme);
         self.refresh_button.draw(theme);
+        self.install_button.draw(theme);
+        self.remove_button.draw(theme);
+        self.update_button.draw(theme);
+        self.confirm_button.draw(theme);
         self.results.draw(theme);
         self.status.draw(theme);
     }
@@ -363,6 +640,15 @@ impl Widget for AppStoreView {
             }
         }
 
+        let result = self.results.handle_event(event);
+        if matches!(result, EventResult::Handled) {
+            self.pending_transaction = None;
+            if let Some(package) = self.selected_package() {
+                self.status.text = format!("SELECTED - {package}");
+            }
+            return EventResult::Handled;
+        }
+
         let result = self.query.handle_event(event);
         if matches!(result, EventResult::Handled) {
             return EventResult::Handled;
@@ -376,6 +662,10 @@ impl Widget for AppStoreView {
         self.query.update();
         self.search_button.update();
         self.refresh_button.update();
+        self.install_button.update();
+        self.remove_button.update();
+        self.update_button.update();
+        self.confirm_button.update();
         self.results.update();
         self.status.update();
     }
@@ -391,6 +681,10 @@ impl Widget for AppStoreView {
             &self.query,
             &self.search_button,
             &self.refresh_button,
+            &self.install_button,
+            &self.remove_button,
+            &self.update_button,
+            &self.confirm_button,
             &self.results,
             &self.status,
         ]
@@ -403,6 +697,10 @@ impl Widget for AppStoreView {
             &mut self.query,
             &mut self.search_button,
             &mut self.refresh_button,
+            &mut self.install_button,
+            &mut self.remove_button,
+            &mut self.update_button,
+            &mut self.confirm_button,
             &mut self.results,
             &mut self.status,
         ]
@@ -444,5 +742,66 @@ mod tests {
 
         assert!(view.status.text.contains("NO PACKAGE MANAGER"));
         assert_eq!(view.results.items, vec!["NO PACKAGE MANAGER FOUND"]);
+    }
+
+    #[test]
+    fn package_manager_builds_transaction_commands() {
+        assert_eq!(
+            PackageManager::Apt.transaction_command(PackageAction::Install, "doom"),
+            vec!["sudo", "apt-get", "install", "-y", "doom"]
+        );
+        assert_eq!(
+            PackageManager::Brew.transaction_command(PackageAction::Remove, "doom"),
+            vec!["brew", "uninstall", "doom"]
+        );
+    }
+
+    #[test]
+    fn package_name_extracts_common_search_result_formats() {
+        assert_eq!(
+            package_name_from_result("community/chocolate-doom 3.0 game port").as_deref(),
+            Some("chocolate-doom")
+        );
+        assert_eq!(
+            package_name_from_result("freedoom - data files").as_deref(),
+            Some("freedoom")
+        );
+    }
+
+    #[test]
+    fn appstore_install_button_stages_transaction_plan() {
+        let mut view = AppStoreView::new(PackageBackend {
+            manager: Some(PackageManager::Apt),
+        });
+        view.results.items = vec!["chocolate-doom - game port".to_string()];
+        view.results.selected_index = Some(0);
+
+        assert!(view.plan_transaction(PackageAction::Install));
+
+        let plan = view.pending_transaction.as_ref().expect("transaction plan");
+        assert_eq!(plan.package, "chocolate-doom");
+        assert_eq!(plan.action, PackageAction::Install);
+        assert!(view.results.items[0].contains("TRANSACTION PLAN"));
+        assert!(view.status.text.contains("INSTALL READY"));
+    }
+
+    #[test]
+    fn appstore_confirm_is_blocked_without_explicit_env() {
+        std::env::remove_var("RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES");
+        let mut view = AppStoreView::new(PackageBackend {
+            manager: Some(PackageManager::Brew),
+        });
+        view.pending_transaction = Some(TransactionPlan {
+            action: PackageAction::Install,
+            package: "doom".to_string(),
+            command: vec![
+                "brew".to_string(),
+                "install".to_string(),
+                "doom".to_string(),
+            ],
+        });
+
+        assert!(!view.confirm_transaction());
+        assert!(view.status.text.contains("CONFIRM BLOCKED"));
     }
 }

@@ -18,7 +18,7 @@ Every major UI/UX change should refresh current screenshots. Screenshots live in
 
 ### Current Implementation
 
-Captured from a Linux VM/Xvfb/Mesa smoke run after the native `wgpu` desktop filled a 1280x800 surface, accepted menu pointer interaction, rendered desktop icons, opened managed Finder-style shell windows, opened folder-backed shell windows, raised/focused windows, closed active windows, used titlebar close/zoom controls, toggled fullscreen through the View menu, dragged/resized windows, and rendered the grow box.
+Captured from a Linux VM/Xvfb/Mesa smoke run after the native `wgpu` desktop filled a 1280x800 surface, rendered the shell-owned global menu with active Finder menus, accepted menu pointer interaction, rendered desktop icons, opened managed Finder-style shell windows, opened folder-backed shell windows, raised/focused windows, closed active windows, used titlebar close/zoom controls, toggled fullscreen through the View menu, dragged/resized windows, and rendered the grow box.
 
 ![Current RetroShell desktop](docs/screenshots/current-retroshell-desktop.png)
 
@@ -54,7 +54,7 @@ Captured from a Linux VM/Xvfb smoke run after Terminal launched a real PTY-backe
 
 ### App Store
 
-Captured from a Linux VM/Xvfb smoke run after App Store detected the host `APT` backend, ran a real read-only package-manager search for `doom`, and rendered package results.
+Captured from a Linux VM/Xvfb smoke run after App Store detected the host `APT` backend, ran a real read-only package-manager search for `doom`, rendered package results, and exposed install/remove/update transaction controls.
 
 ![Current App Store app](docs/screenshots/current-appstore.png)
 
@@ -70,7 +70,7 @@ Settings loads and saves `settings.conf` under `RETROSHELL_CONFIG_DIR` or `~/.co
 
 Terminal launches a real PTY, propagates layout resize to the terminal grid and PTY, consumes async PTY output through runtime repaint, supports scrollback navigation, renders mouse-drag text selection, copies selected text with Cmd-C, selects the visible buffer with Cmd-A, and wires Cmd-V to the in-process clipboard baseline.
 
-App Store launches as a first-party app, detects Linux/BSD package managers, and runs read-only package searches through the detected backend. Install/remove/update transactions and privilege handling remain future work.
+App Store launches as a first-party app, detects Linux/BSD package managers, runs read-only package searches through the detected backend, stages install/remove/update transaction plans from selected package rows, and gates execution behind `RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES=1`. Full privilege prompts and transaction progress UI remain future work.
 
 This is still foundation work, not a polished full desktop environment.
 
@@ -78,15 +78,15 @@ This is still foundation work, not a polished full desktop environment.
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (75 tests)
+- `cargo test --workspace -q` (82 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- Linux VM/Xvfb/Mesa smoke: `retro-shell` renders the desktop, manages shell windows, handles menu interaction/window controls/drag/resize/fullscreen, and captures `docs/screenshots/current-retroshell-desktop.png`.
+- Linux VM/Xvfb/Mesa smoke: `retro-shell` renders the desktop with the shell-owned active Finder global menu, manages shell windows, handles menu interaction/window controls/drag/resize/fullscreen, and captures `docs/screenshots/current-retroshell-desktop.png`.
 - Linux VM/Xvfb smoke: `finder` starts against a demo home directory, selects a real file, triggers the `INFO` toolbar action, renders selected-file metadata in the status bar, and captures `docs/screenshots/current-finder.png`.
 - Linux VM/Xvfb smoke: `textedit` opens a document path, renders the path row and Open/Save As controls, shows loaded document text and saved/path status, and captures `docs/screenshots/current-textedit.png`.
 - Linux VM/Xvfb/Mesa smoke: `settings` clicks Dark appearance, verifies `appearance=dark`, renders selected mode/status UI, and captures `docs/screenshots/current-settings.png`.
 - Linux VM/Xvfb/Mesa smoke: `settings` launches with `appearance=dark`, renders dark native chrome/controls, and captures `docs/screenshots/current-dark-mode-settings.png`.
 - Linux VM/Xvfb smoke: `terminal` launches a PTY-backed shell script, renders live output, mouse-selects terminal text, and captures `docs/screenshots/current-terminal.png`.
-- Linux VM/Xvfb smoke: `appstore` detects APT, searches `doom`, renders package-manager results, and captures `docs/screenshots/current-appstore.png`.
+- Linux VM/Xvfb smoke: `appstore` detects APT, searches `doom`, renders package-manager results plus transaction controls, and captures `docs/screenshots/current-appstore.png`.
 
 ## Visual Direction
 
@@ -97,6 +97,7 @@ Current visual direction: Classic Mac-inspired desktop proportions, menu density
 Plenty. The next major work is closing the gap between the current functional prototype and the full desktop environment target.
 
 - Window management: focus rings, minimize controls, modal dialogs, persisted placement, external app surfaces.
+- Global menu completion: route standalone SDK app menus through the shell-owned global bar instead of in-window app-local menu strips.
 - Finder desktop: contextual menus, drag/drop, trash UI polish, desktop integration, polished multi-window workflows.
 - Dock/application launching: running indicators, focus, lifecycle integration, folders, trash.
 - Native dark mode: complete theme-token coverage, live switching from Settings, dark assets/icons, contrast validation.

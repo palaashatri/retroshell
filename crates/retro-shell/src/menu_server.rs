@@ -241,6 +241,137 @@ impl MenuServer {
         self.setup_default_menus();
     }
 
+    pub fn set_active_app_menus(&mut self, app_id: &str) {
+        let title = match app_id {
+            "com.retro.finder" => "Finder",
+            "com.retro.textedit" => "TextEdit",
+            "com.retro.terminal" => "Terminal",
+            "com.retro.settings" => "Settings",
+            "com.retro.appstore" => "App Store",
+            _ => "Application",
+        };
+
+        let mut app_menu = Menu::new(title);
+        let about_action = format!("{app_id}.about");
+        let hide_action = format!("{app_id}.hide");
+        let quit_action = format!("{app_id}.quit");
+        app_menu
+            .add_action(format!("About {title}"))
+            .with_action(&about_action);
+        app_menu.add_separator();
+        app_menu
+            .add_action(format!("Hide {title}"))
+            .with_action(&hide_action);
+        app_menu.add_separator();
+        app_menu
+            .add_action(format!("Quit {title}"))
+            .with_action(&quit_action);
+
+        let mut file_menu = Menu::new("File");
+        file_menu
+            .add_action("New Window")
+            .with_action("shell.new_finder_window")
+            .with_shortcut(
+                KeyCode::N,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+        file_menu
+            .add_action("Close Window")
+            .with_action("shell.close_finder_window")
+            .with_shortcut(
+                KeyCode::W,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+
+        let mut edit_menu = Menu::new("Edit");
+        edit_menu.add_action("Cut").with_shortcut(
+            KeyCode::X,
+            Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        );
+        edit_menu.add_action("Copy").with_shortcut(
+            KeyCode::C,
+            Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        );
+        edit_menu.add_action("Paste").with_shortcut(
+            KeyCode::V,
+            Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        );
+        edit_menu.add_action("Select All").with_shortcut(
+            KeyCode::A,
+            Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        );
+
+        let mut view_menu = Menu::new("View");
+        view_menu.add_action("Show Toolbar");
+        view_menu.add_action("Show Sidebar");
+        view_menu.add_separator();
+        view_menu
+            .add_action("Enter Fullscreen")
+            .with_action("shell.toggle_fullscreen")
+            .with_shortcut(
+                KeyCode::F,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+
+        let mut window_menu = Menu::new("Window");
+        window_menu.add_action("Minimize");
+        window_menu
+            .add_action("Zoom")
+            .with_action("shell.zoom_window");
+
+        let mut help_menu = Menu::new("Help");
+        help_menu.add_action(format!("{title} Help"));
+
+        let mut menus = vec![app_menu, file_menu, edit_menu, view_menu];
+        if app_id == "com.retro.finder" {
+            let mut go_menu = Menu::new("Go");
+            go_menu.add_action("Home").with_action("shell.open_home");
+            go_menu
+                .add_action("Computer")
+                .with_action("shell.open_computer");
+            menus.push(go_menu);
+        }
+        menus.push(window_menu);
+        menus.push(help_menu);
+
+        self.set_app_menus(app_id, menus);
+    }
+
     pub fn add_status_item(&mut self, item: StatusItem) {
         self.status_items.push(item);
         self.status_items

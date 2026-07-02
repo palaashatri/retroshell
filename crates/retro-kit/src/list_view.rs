@@ -1,6 +1,6 @@
 use crate::{
-    theme::ThemeContext, AccessibilityNode, AccessibilityRole, Event, EventResult,
-    LayoutConstraint, Rect, Size, Widget, WidgetState,
+    event::MouseButton, theme::ThemeContext, AccessibilityNode, AccessibilityRole, Event,
+    EventResult, LayoutConstraint, Rect, Size, Widget, WidgetState,
 };
 
 pub struct ListView {
@@ -61,7 +61,27 @@ impl Widget for ListView {
 
     fn draw(&self, _theme: &ThemeContext) {}
 
-    fn handle_event(&mut self, _event: &Event) -> EventResult {
+    fn handle_event(&mut self, event: &Event) -> EventResult {
+        if let Event::MouseDown {
+            button: MouseButton::Left,
+            point,
+            ..
+        } = event
+        {
+            if !self.rect().contains(*point) {
+                return EventResult::Ignored;
+            }
+
+            let row = ((point.y - self.rect().y - 3.0) / 18.0).floor() as usize;
+            if row < self.items.len() {
+                self.selected_index = Some(row);
+                if let Some(on_select) = &mut self.on_select {
+                    on_select(self.selected_index);
+                }
+                return EventResult::Handled;
+            }
+        }
+
         EventResult::Ignored
     }
 
@@ -79,5 +99,30 @@ impl Widget for ListView {
     }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{event::Modifiers, LayoutConstraint, Point};
+
+    #[test]
+    fn list_view_selects_clicked_row() {
+        let mut list = ListView::new().with_items(vec![
+            "first".to_string(),
+            "second".to_string(),
+            "third".to_string(),
+        ]);
+        list.layout(LayoutConstraint::tight(Size::new(200.0, 120.0)));
+
+        let result = list.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point: Point::new(10.0, 25.0),
+            modifiers: Modifiers::NONE,
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(list.selected_index, Some(1));
     }
 }
