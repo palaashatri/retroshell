@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
+# Clean up leftover lock files and temp dirs from previous runs
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 /run/dbus/pid || true
+rm -rf /tmp/pulse-* /tmp/runtime-root/* || true
+
 echo "=== Starting PulseAudio ==="
 # Allow running pulseaudio as root
 mkdir -p /var/run/dbus

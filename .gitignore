@@ -6,3 +6,5 @@ target-docker/
 *.swo
 *~
 *.mp4
+*.png
+

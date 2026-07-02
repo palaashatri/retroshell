@@ -201,12 +201,15 @@ impl Application {
         impl retro_render::event_loop::RetroAppHandler for AppHandler {
             fn init(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
                 let initial_size = self.initial_size;
-                let attrs = winit::window::Window::default_attributes()
+                let mut attrs = winit::window::Window::default_attributes()
                     .with_title(&self.name)
                     .with_inner_size(winit::dpi::LogicalSize::new(
                         initial_size.width,
                         initial_size.height,
                     ));
+                if self.name == "RetroShell" {
+                    attrs = attrs.with_decorations(false);
+                }
 
                 match event_loop.create_window(attrs) {
                     Ok(window) => {
