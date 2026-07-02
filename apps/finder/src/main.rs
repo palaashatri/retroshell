@@ -154,6 +154,7 @@ pub struct FinderView {
     last_selected_path: Option<Vec<usize>>,
     back_stack: Vec<PathBuf>,
     forward_stack: Vec<PathBuf>,
+    info_text: Option<String>,
 }
 
 impl Default for FinderView {
@@ -195,6 +196,7 @@ impl FinderView {
         toolbar.add(Box::new(Button::new("NEW FOLDER")));
         toolbar.add(Box::new(Button::new("DUP")));
         toolbar.add(Box::new(Button::new("TRASH")));
+        toolbar.add(Box::new(Button::new("INFO")));
 
         let mut view = FinderView {
             state: WidgetState::new(),
@@ -206,12 +208,14 @@ impl FinderView {
             last_selected_path: None,
             back_stack: Vec::new(),
             forward_stack: Vec::new(),
+            info_text: None,
         };
         view.reload_directory();
         view
     }
 
     pub fn reload_directory(&mut self) {
+        self.info_text = None;
         self.file_grid.items.clear();
         if let Ok(mut entries) = file_ops::list_directory(&self.current_path) {
             entries.sort_by(|left, right| {
@@ -247,8 +251,9 @@ impl FinderView {
         } else {
             format!("{item_count} items")
         };
+        let summary = self.info_text.as_deref().unwrap_or(&count_text).to_string();
         self.status_bar
-            .add_item(&count_text, StatusBarAlignment::Left, 140.0);
+            .add_item(&summary, StatusBarAlignment::Left, 360.0);
         self.status_bar.add_item(
             &self.current_path.display().to_string(),
             StatusBarAlignment::Left,
@@ -338,6 +343,7 @@ impl FinderView {
             3 => self.create_new_folder(),
             4 => self.duplicate_selected(),
             5 => self.move_selected_to_trash(),
+            6 => self.show_selected_info(),
             _ => false,
         }
     }
@@ -379,6 +385,33 @@ impl FinderView {
             true
         } else {
             false
+        }
+    }
+
+    fn show_selected_info(&mut self) -> bool {
+        let Some(path) = self.selected_path() else {
+            self.info_text = Some("INFO - NO SELECTION".to_string());
+            self.refresh_status_bar();
+            return false;
+        };
+
+        match file_ops::get_file_info(&path) {
+            Ok(info) => {
+                let kind = if info.is_dir { "FOLDER" } else { "FILE" };
+                let size = if info.is_dir {
+                    "FOLDER".to_string()
+                } else {
+                    format!("{} BYTES", info.size)
+                };
+                self.info_text = Some(format!("INFO - {kind} - {} - {size}", info.name));
+                self.refresh_status_bar();
+                true
+            }
+            Err(err) => {
+                self.info_text = Some(format!("INFO FAILED - {err}"));
+                self.refresh_status_bar();
+                false
+            }
         }
     }
 
@@ -444,8 +477,12 @@ impl Widget for FinderView {
             .file_grid
             .layout(LayoutConstraint::tight(Size::new(grid_w, content_h)));
 
-        self.status_bar
-            .set_rect(Rect::new(r.x, r.y + content_h, r.width, status_h));
+        self.status_bar.set_rect(Rect::new(
+            r.x,
+            r.y + toolbar_h + content_h,
+            r.width,
+            status_h,
+        ));
         let _ = self
             .status_bar
             .layout(LayoutConstraint::tight(Size::new(r.width, status_h)));
@@ -491,6 +528,10 @@ impl Widget for FinderView {
                         self.duplicate_selected();
                         return EventResult::Handled;
                     }
+                    KeyCode::I => {
+                        self.show_selected_info();
+                        return EventResult::Handled;
+                    }
                     _ => {}
                 }
             } else if *key == KeyCode::Enter {
@@ -523,8 +564,12 @@ impl Widget for FinderView {
 
         let mut result = self.sidebar.handle_event(event);
         if let EventResult::Ignored = result {
+            let previous_selection = self.selected_path();
             result = self.file_grid.handle_event(event);
             if matches!(result, EventResult::Handled) {
+                if self.selected_path() != previous_selection {
+                    self.info_text = None;
+                }
                 self.refresh_status_bar();
             }
         }
@@ -782,5 +827,76 @@ mod tests {
             .any(|item| item.label == "note copy.txt"));
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finder_get_info_reports_selected_file_metadata() {
+        let root = temp_finder_root();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("note.txt"), "hello").unwrap();
+
+        let mut view = FinderView::new();
+        view.set_current_path(root.clone());
+        view.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+        let note = view
+            .file_grid
+            .items
+            .iter_mut()
+            .find(|item| item.label == "note.txt")
+            .expect("note is listed");
+        note.selected = true;
+
+        let handled = view.handle_event(&Event::KeyDown {
+            key: KeyCode::I,
+            modifiers: Modifiers {
+                meta: true,
+                ..Modifiers::NONE
+            },
+        });
+
+        assert!(matches!(handled, EventResult::Handled));
+        assert_eq!(
+            view.status_bar.items[0].text,
+            "INFO - FILE - note.txt - 5 BYTES"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finder_toolbar_info_uses_same_metadata_status() {
+        let root = temp_finder_root();
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(root.join("Folder")).unwrap();
+
+        let mut view = FinderView::new();
+        view.set_current_path(root.clone());
+        view.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+        let folder = view
+            .file_grid
+            .items
+            .iter_mut()
+            .find(|item| item.label == "Folder")
+            .expect("folder is listed");
+        folder.selected = true;
+
+        let handled = click_toolbar_button(&mut view, 6);
+
+        assert!(matches!(handled, EventResult::Handled));
+        assert_eq!(
+            view.status_bar.items[0].text,
+            "INFO - FOLDER - Folder - FOLDER"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finder_status_bar_sits_below_content() {
+        let mut view = FinderView::new();
+
+        view.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+
+        assert_eq!(view.status_bar.rect().y, 616.0);
     }
 }
