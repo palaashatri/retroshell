@@ -1,4 +1,5 @@
 use crate::vt_parser::VtHandler;
+use retro_kit::clipboard::Clipboard;
 use retro_kit::event::KeyCode;
 use retro_kit::theme::ThemeContext;
 use retro_kit::Color;
@@ -50,6 +51,7 @@ pub struct Terminal {
     pub pty: Option<crate::pty::Pty>,
     pub rx: Option<std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Vec<u8>>>>>,
     display: MonospaceView,
+    pub scroll_offset: usize,
 }
 
 impl Terminal {
@@ -72,6 +74,7 @@ impl Terminal {
             pty: None,
             rx: None,
             display: MonospaceView::new(cols, rows),
+            scroll_offset: 0,
         }
     }
 
@@ -88,6 +91,7 @@ impl Terminal {
         self.display.resize(cols, rows);
         self.cursor_x = self.cursor_x.min(cols.saturating_sub(1));
         self.cursor_y = self.cursor_y.min(rows.saturating_sub(1));
+        self.scroll_offset = self.scroll_offset.min(self.scrollback.len());
         if let Some(ref pty) = self.pty {
             let _ = pty.resize(cols as u16, rows as u16);
         }
@@ -124,6 +128,56 @@ impl Terminal {
         self.scrollback.push(first_row);
         self.grid.drain(0..self.cols);
         self.grid.extend(vec![Cell::default(); self.cols]);
+    }
+
+    pub fn scroll_lines(&mut self, lines: isize) {
+        if lines > 0 {
+            self.scroll_offset = (self.scroll_offset + lines as usize).min(self.scrollback.len());
+        } else if lines < 0 {
+            self.scroll_offset = self.scroll_offset.saturating_sub(lines.unsigned_abs());
+        }
+        self.sync_display();
+    }
+
+    pub fn visible_text(&self) -> String {
+        self.visible_rows()
+            .into_iter()
+            .map(Self::row_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn visible_rows(&self) -> Vec<Vec<Cell>> {
+        if self.scroll_offset == 0 {
+            return self
+                .grid
+                .chunks(self.cols)
+                .map(|row| row.to_vec())
+                .collect();
+        }
+
+        let history: Vec<Vec<Cell>> = self
+            .scrollback
+            .iter()
+            .cloned()
+            .chain(self.grid.chunks(self.cols).map(|row| row.to_vec()))
+            .collect();
+        let total = history.len();
+        let end = total.saturating_sub(self.scroll_offset);
+        let start = end.saturating_sub(self.rows);
+        let mut rows = history[start..end].to_vec();
+        while rows.len() < self.rows {
+            rows.insert(0, vec![Cell::default(); self.cols]);
+        }
+        rows
+    }
+
+    fn row_text(row: Vec<Cell>) -> String {
+        let mut text: String = row.into_iter().map(|cell| cell.c).collect();
+        while text.ends_with(' ') {
+            text.pop();
+        }
+        text
     }
 
     pub fn write_byte(&mut self, byte: u8) {
@@ -164,6 +218,53 @@ impl Widget for Terminal {
     fn handle_event(&mut self, event: &Event) -> EventResult {
         match event {
             Event::KeyDown { key, modifiers } => {
+                if modifiers.meta {
+                    match key {
+                        KeyCode::C => {
+                            Clipboard::copy(&self.visible_text());
+                            return EventResult::Handled;
+                        }
+                        KeyCode::V => {
+                            let pasted = Clipboard::paste();
+                            if !pasted.is_empty() {
+                                if let Some(ref mut pty) = self.pty {
+                                    let _ = pty.write(pasted.as_bytes());
+                                    return EventResult::Handled;
+                                }
+                            }
+                            return EventResult::Ignored;
+                        }
+                        KeyCode::A => {
+                            Clipboard::copy(&self.visible_text());
+                            return EventResult::Handled;
+                        }
+                        _ => {}
+                    }
+                }
+
+                if modifiers.shift {
+                    match key {
+                        KeyCode::PageUp => {
+                            self.scroll_lines(self.rows as isize);
+                            return EventResult::Handled;
+                        }
+                        KeyCode::PageDown => {
+                            self.scroll_lines(-(self.rows as isize));
+                            return EventResult::Handled;
+                        }
+                        KeyCode::Home => {
+                            self.scroll_lines(self.scrollback.len() as isize);
+                            return EventResult::Handled;
+                        }
+                        KeyCode::End => {
+                            self.scroll_offset = 0;
+                            self.sync_display();
+                            return EventResult::Handled;
+                        }
+                        _ => {}
+                    }
+                }
+
                 if let Some(ref mut pty) = self.pty {
                     let mut bytes = vec![];
                     if modifiers.control {
@@ -255,12 +356,21 @@ impl Widget for Terminal {
             }
             Event::Char { character } => {
                 if let Some(ref mut pty) = self.pty {
+                    self.scroll_offset = 0;
                     let mut buf = [0u8; 4];
                     let s = character.encode_utf8(&mut buf);
                     let _ = pty.write(s.as_bytes());
                     return EventResult::Handled;
                 }
                 EventResult::Ignored
+            }
+            Event::Scroll { delta, .. } => {
+                if delta.y > 0.0 {
+                    self.scroll_lines(3);
+                } else if delta.y < 0.0 {
+                    self.scroll_lines(-3);
+                }
+                EventResult::Handled
             }
             _ => EventResult::Ignored,
         }
@@ -304,14 +414,23 @@ impl Widget for Terminal {
 }
 
 impl Terminal {
-    fn sync_display(&mut self) {
-        for (index, cell) in self.grid.iter().enumerate() {
-            if let Some(slot) = self.display.cells.get_mut(index) {
-                *slot = MonospaceCell {
-                    ch: cell.c,
-                    fg: [cell.fg.r, cell.fg.g, cell.fg.b, cell.fg.a],
-                    bg: [cell.bg.r, cell.bg.g, cell.bg.b, cell.bg.a],
-                };
+    pub fn sync_display(&mut self) {
+        let rows = self.visible_rows();
+        for row in 0..self.rows {
+            for col in 0..self.cols {
+                let index = row * self.cols + col;
+                if let Some(slot) = self.display.cells.get_mut(index) {
+                    let cell = rows
+                        .get(row)
+                        .and_then(|row| row.get(col))
+                        .cloned()
+                        .unwrap_or_default();
+                    *slot = MonospaceCell {
+                        ch: cell.c,
+                        fg: [cell.fg.r, cell.fg.g, cell.fg.b, cell.fg.a],
+                        bg: [cell.bg.r, cell.bg.g, cell.bg.b, cell.bg.a],
+                    };
+                }
             }
         }
     }
@@ -437,5 +556,44 @@ mod tests {
 
         // Clean up process
         let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+    }
+
+    #[test]
+    fn terminal_scrollback_changes_visible_text() {
+        let mut term = Terminal::new(20, 2);
+        for byte in b"first\r\nsecond\r\nthird" {
+            term.write_byte(*byte);
+        }
+        term.sync_display();
+
+        assert!(term.visible_text().contains("third"));
+
+        term.scroll_lines(1);
+
+        assert_eq!(term.scroll_offset, 1);
+        assert!(term.visible_text().contains("second"));
+        assert!(!term.visible_text().contains("third"));
+    }
+
+    #[test]
+    fn terminal_meta_copy_copies_visible_text() {
+        Clipboard::clear();
+        let mut term = Terminal::new(8, 2);
+        for byte in b"copy me" {
+            term.write_byte(*byte);
+        }
+
+        let result = term.handle_event(&Event::KeyDown {
+            key: KeyCode::C,
+            modifiers: retro_kit::event::Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert!(Clipboard::paste().contains("copy me"));
     }
 }

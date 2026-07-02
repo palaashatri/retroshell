@@ -40,15 +40,23 @@ Captured from a Linux VM/Xvfb smoke run after Settings clicked the Dark appearan
 
 ![Current Settings app](docs/screenshots/current-settings.png)
 
+### Terminal
+
+Captured from a Linux VM/Xvfb smoke run after Terminal launched a real PTY-backed shell script, consumed asynchronous output, repainted the native terminal surface, and rendered the live output.
+
+![Current Terminal app](docs/screenshots/current-terminal.png)
+
 ## Current State
 
 RetroShell currently builds and launches a native rendered desktop surface, menu strip, desktop icons, app bundle labels, first-party apps wired through RetroKit/RetroSDK, and first-pass managed shell windows with close, zoom, fullscreen, drag, and resize behavior. Desktop Home/Hard Disk/Trash icons open folder-backed shell windows, and folder icons inside managed shell windows open child folder windows.
 
 Finder has directory listing, folder entry, visible navigation controls, parent navigation, back/forward history, file-operation toolbar controls, New Folder/Duplicate/Trash helpers, and VM-smoked path/status display.
 
-TextEdit now opens an optional document path passed on the command line, edits through a native multiline text field, saves back to disk, supports Cmd-N/Cmd-S and toolbar New/Save actions, and reports saved/edited status.
+TextEdit opens an optional document path passed on the command line, edits through a native multiline text field, saves back to disk, supports Cmd-N/Cmd-S and toolbar New/Save actions, and reports saved/edited status.
 
-Settings now has a real appearance workflow. It loads and saves `settings.conf` under `RETROSHELL_CONFIG_DIR` or `~/.config/retroshell`, exposes Light/Dark/System controls, persists changes immediately, and reports the active mode.
+Settings loads and saves `settings.conf` under `RETROSHELL_CONFIG_DIR` or `~/.config/retroshell`, exposes Light/Dark/System controls, persists changes immediately, and reports the active mode.
+
+Terminal now launches a real PTY, propagates layout resize to the terminal grid and PTY, consumes async PTY output with runtime repaint, supports scrollback navigation, and wires Cmd-C/Cmd-V to the in-process clipboard baseline.
 
 This is still foundation work, not a polished full desktop environment.
 
@@ -56,12 +64,13 @@ This is still foundation work, not a polished full desktop environment.
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (53 tests)
+- `cargo test --workspace -q` (58 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - Linux VM/Xvfb/Mesa smoke: `retro-shell` starts at 1280x800 and captures `docs/screenshots/current-retroshell-desktop.png`.
 - Linux VM/Xvfb/Mesa smoke: `finder` starts against a demo home directory, creates New Folder from the toolbar, refreshes path/status display, and captures `docs/screenshots/current-finder.png`.
 - Linux VM/Xvfb/Mesa smoke: `textedit` opens a document path and captures `docs/screenshots/current-textedit.png`.
 - Linux VM/Xvfb/Mesa smoke: `settings` clicks Dark appearance, verifies `appearance=dark`, and captures `docs/screenshots/current-settings.png`.
+- Linux VM/Xvfb/Mesa smoke: `terminal` launches a PTY-backed shell script, renders live output, and captures `docs/screenshots/current-terminal.png`.
 
 ## Visual Direction
 

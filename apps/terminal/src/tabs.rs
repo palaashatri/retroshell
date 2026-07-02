@@ -137,21 +137,27 @@ impl Widget for TabManager {
     }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
+        let size = constraint.clamp(Size::new(constraint.max_width, constraint.max_height));
+        self.set_rect(Rect::new(
+            self.rect().x,
+            self.rect().y,
+            size.width,
+            size.height,
+        ));
+
+        let rect = self.rect();
         if let Some(tab) = self.active_tab_mut() {
-            let cols = (constraint.max_width / 8.0).max(10.0) as usize;
-            let rows = (constraint.max_height / 16.0).max(5.0) as usize;
+            let cols = (rect.width / 8.0).max(10.0) as usize;
+            let rows = (rect.height / 16.0).max(5.0) as usize;
+            tab.term.set_rect(rect);
             tab.term.resize_term(cols, rows);
-            let size = tab.term.layout(constraint);
-            self.set_rect(Rect::new(
-                self.rect().x,
-                self.rect().y,
-                size.width,
-                size.height,
-            ));
-            size
+            let _ = tab
+                .term
+                .layout(LayoutConstraint::tight(Size::new(rect.width, rect.height)));
         } else {
-            constraint.clamp(Size::ZERO)
+            return constraint.clamp(Size::ZERO);
         }
+        size
     }
 
     fn draw(&self, theme: &ThemeContext) {
