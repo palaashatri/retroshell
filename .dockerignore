@@ -1,0 +1,7 @@
+target/
+.git/
+*.png
+*.jpg
+*.mp4
+*.mov
+node_modules/

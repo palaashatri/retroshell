@@ -414,9 +414,8 @@ impl ShellDesktop {
         let icon_view = shell_window
             .window
             .content
-            .as_ref()?
-            .as_any()
-            .downcast_ref::<IconView>()?;
+            .as_ref()
+            .and_then(|content| content.as_any().downcast_ref::<IconView>())?;
         let item = icon_view
             .items
             .iter()
@@ -543,6 +542,10 @@ fn titlebar_rect(window_rect: Rect) -> Rect {
 
 fn close_box_rect(window_rect: Rect) -> Rect {
     Rect::new(window_rect.x + 8.0, window_rect.y + 7.0, 11.0, 11.0)
+}
+
+fn minimize_box_rect(window_rect: Rect) -> Rect {
+    Rect::new(window_rect.x + 22.0, window_rect.y + 7.0, 11.0, 11.0)
 }
 
 fn zoom_box_rect(window_rect: Rect) -> Rect {
@@ -731,8 +734,13 @@ impl Widget for ShellDesktop {
 
     fn draw(&self, theme: &ThemeContext) {
         self.desktop.draw(theme);
-        for shell_window in &self.windows {
+        // Draw non-active windows first
+        for shell_window in self.windows.iter().rev().skip(1) {
             shell_window.window.draw(theme);
+        }
+        // Draw active window last (on top)
+        if let Some(active) = self.windows.last() {
+            active.window.draw(theme);
         }
         self.menu_bar.draw(theme);
     }
@@ -760,6 +768,11 @@ impl Widget for ShellDesktop {
                 let window_rect = self.windows[index].window.rect();
                 if close_box_rect(window_rect).contains(*point) {
                     self.close_window(window_id);
+                    return EventResult::Handled;
+                }
+
+                if minimize_box_rect(window_rect).contains(*point) {
+                    self.window_manager.write().minimize_window(window_id);
                     return EventResult::Handled;
                 }
 
@@ -1081,6 +1094,8 @@ mod tests {
         let window = Rect::new(66.0, 66.0, 500.0, 300.0);
 
         assert!(close_box_rect(window).contains(Point::new(78.0, 78.0)));
+        assert!(minimize_box_rect(window).contains(Point::new(92.0, 78.0)));
+        assert!(!close_box_rect(window).contains(Point::new(92.0, 78.0)));
         assert!(zoom_box_rect(window).contains(Point::new(554.0, 78.0)));
         assert!(!titlebar_rect(window).contains(Point::new(554.0, 96.0)));
     }

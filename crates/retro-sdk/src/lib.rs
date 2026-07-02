@@ -890,6 +890,20 @@ fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str) {
         ui(rgb(255, 255, 255), rgb(92, 94, 98)),
     );
 
+    // Minimize box (classic Mac OS style dash)
+    let minimize_box = Rect::new(rect.x + 22.0, rect.y + 7.0, 11.0, 11.0);
+    canvas.rect(minimize_box, ui(rgb(238, 238, 232), rgb(58, 60, 64)));
+    canvas.stroke(minimize_box, ui(rgb(60, 60, 58), rgb(168, 170, 174)));
+    canvas.rect(
+        Rect::new(
+            minimize_box.x + 2.0,
+            minimize_box.y + 5.0,
+            minimize_box.width - 4.0,
+            1.0,
+        ),
+        ui(rgb(255, 255, 255), rgb(92, 94, 98)),
+    );
+
     let zoom_box = Rect::new(rect.x + rect.width - 19.0, rect.y + 7.0, 11.0, 11.0);
     canvas.rect(zoom_box, ui(rgb(238, 238, 232), rgb(58, 60, 64)));
     canvas.stroke(zoom_box, ui(rgb(60, 60, 58), rgb(168, 170, 174)));

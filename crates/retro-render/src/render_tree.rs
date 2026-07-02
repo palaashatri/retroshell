@@ -1,4 +1,4 @@
-use crate::{primitives, Color, Renderer, Surface};
+use crate::{primitives, Color, FocusRingStyle, Renderer, Surface};
 
 pub enum RenderNode {
     Rect {
@@ -22,6 +22,15 @@ pub enum RenderNode {
         width: f32,
         height: f32,
         texture_id: u32,
+    },
+    FocusRing {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        thickness: f32,
+        color: Color,
+        style: FocusRingStyle,
     },
     Group {
         children: Vec<RenderNode>,
@@ -66,6 +75,17 @@ impl RenderTree {
                 height,
                 texture_id,
             } => primitives::draw_image(renderer, *x, *y, *width, *height, *texture_id),
+            RenderNode::FocusRing {
+                x,
+                y,
+                width,
+                height,
+                thickness,
+                color,
+                style,
+            } => primitives::draw_focus_ring(
+                renderer, *x, *y, *width, *height, *thickness, *color, *style,
+            ),
             RenderNode::Group { children } => {
                 for child in children {
                     Self::draw_node(child, renderer, surface);

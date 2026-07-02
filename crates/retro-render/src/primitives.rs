@@ -32,6 +32,23 @@ pub enum DrawCommand {
         height: f32,
         texture_id: u32,
     },
+    FocusRing {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        thickness: f32,
+        color: Color,
+        style: FocusRingStyle,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusRingStyle {
+    Inner,
+    Outer,
+    Classic,
+    Mask,
 }
 
 pub fn draw_rect(
@@ -89,5 +106,27 @@ pub fn draw_image(renderer: &Renderer, x: f32, y: f32, width: f32, height: f32, 
         width,
         height,
         texture_id,
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn draw_focus_ring(
+    renderer: &Renderer,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    thickness: f32,
+    color: Color,
+    style: FocusRingStyle,
+) {
+    renderer.enqueue(DrawCommand::FocusRing {
+        x,
+        y,
+        width,
+        height,
+        thickness,
+        color,
+        style,
     });
 }
