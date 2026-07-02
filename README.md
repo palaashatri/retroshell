@@ -40,6 +40,12 @@ Captured from a Linux VM/Xvfb smoke run after Settings clicked the Dark appearan
 
 ![Current Settings app](docs/screenshots/current-settings.png)
 
+### Native Dark Mode
+
+Captured from a Linux VM/Xvfb smoke run after the SDK read `appearance=dark` from `settings.conf` and rendered Settings with dark window chrome, menus, controls, lists, and text surfaces.
+
+![Current dark mode Settings app](docs/screenshots/current-dark-mode-settings.png)
+
 ### Terminal
 
 Captured from a Linux VM/Xvfb smoke run after Terminal launched a real PTY-backed shell script, consumed asynchronous output, repainted the native terminal surface, and rendered the live output.
@@ -60,7 +66,7 @@ Finder has directory listing, folder entry, visible navigation controls, parent 
 
 TextEdit opens an optional document path passed on the command line, edits through a native multiline text field, saves back to disk, supports Cmd-N/Cmd-S and toolbar New/Save actions, and reports saved/edited status.
 
-Settings loads and saves `settings.conf` under `RETROSHELL_CONFIG_DIR` or `~/.config/retroshell`, exposes Light/Dark/System controls, persists changes immediately, and reports the active mode.
+Settings loads and saves `settings.conf` under `RETROSHELL_CONFIG_DIR` or `~/.config/retroshell`, exposes Light/Dark/System controls, persists changes immediately, and reports the active mode. The SDK now consumes that same preference and renders shared native chrome/controls with a dark appearance when `appearance=dark`.
 
 Terminal now launches a real PTY, propagates layout resize to the terminal grid and PTY, consumes async PTY output with runtime repaint, supports scrollback navigation, and wires Cmd-C/Cmd-V to the in-process clipboard baseline.
 
@@ -72,12 +78,13 @@ This is still foundation work, not a polished full desktop environment.
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (61 tests)
+- `cargo test --workspace -q` (63 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - Linux VM/Xvfb/Mesa smoke: `retro-shell` starts at 1280x800 and captures `docs/screenshots/current-retroshell-desktop.png`.
 - Linux VM/Xvfb/Mesa smoke: `finder` starts against a demo home directory, creates New Folder from the toolbar, refreshes path/status display, and captures `docs/screenshots/current-finder.png`.
 - Linux VM/Xvfb/Mesa smoke: `textedit` opens a document path and captures `docs/screenshots/current-textedit.png`.
 - Linux VM/Xvfb/Mesa smoke: `settings` clicks Dark appearance, verifies `appearance=dark`, and captures `docs/screenshots/current-settings.png`.
+- Linux VM/Xvfb/Mesa smoke: `settings` launches with `appearance=dark`, renders dark native chrome/controls, and captures `docs/screenshots/current-dark-mode-settings.png`.
 - Linux VM/Xvfb/Mesa smoke: `terminal` launches a PTY-backed shell script, renders live output, and captures `docs/screenshots/current-terminal.png`.
 - Linux VM/Xvfb/Mesa smoke: `appstore` detects APT, searches for `doom`, renders package-manager results, and captures `docs/screenshots/current-appstore.png`.
 

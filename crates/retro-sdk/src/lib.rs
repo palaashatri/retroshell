@@ -15,8 +15,53 @@ use retro_kit::toolbar::Toolbar;
 use retro_kit::tree_view::{TreeNode, TreeView};
 use retro_kit::window::Window;
 use retro_kit::{Color, LayoutConstraint, MonospaceView, Point, Rect, Size, Widget};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
+
+static RENDER_DARK_MODE: AtomicBool = AtomicBool::new(false);
+
+fn set_render_dark_mode(is_dark: bool) {
+    RENDER_DARK_MODE.store(is_dark, Ordering::Relaxed);
+}
+
+fn render_dark_mode() -> bool {
+    RENDER_DARK_MODE.load(Ordering::Relaxed)
+}
+
+fn load_dark_mode_preference() -> bool {
+    let config_dir = std::env::var_os("RETROSHELL_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".config/retroshell"))
+        })
+        .unwrap_or_else(|| PathBuf::from("/tmp/retroshell"));
+    let path = config_dir.join("settings.conf");
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    parse_dark_mode_preference(&content)
+}
+
+fn parse_dark_mode_preference(content: &str) -> bool {
+    content.lines().any(|line| {
+        let Some((key, value)) = line.split_once('=') else {
+            return false;
+        };
+        key.trim() == "appearance" && value.trim().eq_ignore_ascii_case("dark")
+    })
+}
+
+fn ui(light: [f32; 4], dark: [f32; 4]) -> [f32; 4] {
+    if render_dark_mode() {
+        dark
+    } else {
+        light
+    }
+}
 
 pub struct Application {
     pub name: String,
@@ -104,6 +149,7 @@ impl Application {
             cursor_position: Point,
             last_click: Option<(MouseButton, Point, std::time::Instant)>,
             dirty: bool,
+            dark_mode: bool,
         }
 
         impl AppHandler {
@@ -140,6 +186,7 @@ impl Application {
                 let Some(presenter) = &mut self.presenter else {
                     return;
                 };
+                set_render_dark_mode(self.dark_mode);
                 if let Err(err) = presenter.render(|canvas| {
                     draw_desktop_backdrop(canvas);
                     draw_window(canvas, window);
@@ -316,6 +363,11 @@ impl Application {
             }
 
             fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+                let next_dark_mode = load_dark_mode_preference();
+                if next_dark_mode != self.dark_mode {
+                    self.dark_mode = next_dark_mode;
+                    self.dirty = true;
+                }
                 if let Some(ref mut win) = self.window {
                     win.update();
                     self.dirty = true;
@@ -338,6 +390,7 @@ impl Application {
             cursor_position: Point::ZERO,
             last_click: None,
             dirty: true,
+            dark_mode: load_dark_mode_preference(),
         };
         if let Err(err) = event_loop.run(&mut handler) {
             tracing::error!("application event loop failed: {err}");
@@ -703,7 +756,7 @@ impl<'a> Canvas<'a> {
 fn draw_desktop_backdrop(canvas: &mut Canvas<'_>) {
     canvas.rect(
         Rect::new(0.0, 0.0, canvas.width, canvas.height),
-        rgb(152, 152, 148),
+        ui(rgb(152, 152, 148), rgb(26, 28, 30)),
     );
     let width = canvas.width as usize;
     let height = canvas.height as usize;
@@ -712,10 +765,34 @@ fn draw_desktop_backdrop(canvas: &mut Canvas<'_>) {
             let pattern_x = x / 4;
             let pattern_y = y / 4;
             let shade = match (pattern_x + pattern_y) % 4 {
-                0 => 168,
-                1 => 148,
-                2 => 160,
-                _ => 152,
+                0 => {
+                    if render_dark_mode() {
+                        34
+                    } else {
+                        168
+                    }
+                }
+                1 => {
+                    if render_dark_mode() {
+                        24
+                    } else {
+                        148
+                    }
+                }
+                2 => {
+                    if render_dark_mode() {
+                        30
+                    } else {
+                        160
+                    }
+                }
+                _ => {
+                    if render_dark_mode() {
+                        28
+                    } else {
+                        152
+                    }
+                }
             };
             let size = 2.0;
             canvas.rect(
@@ -758,8 +835,8 @@ fn draw_window(canvas: &mut Canvas<'_>, window: &Window) {
         return;
     }
 
-    canvas.rect(rect, rgb(236, 235, 229));
-    draw_beveled_rect(canvas, rect, rgb(238, 238, 232), true);
+    canvas.rect(rect, ui(rgb(236, 235, 229), rgb(32, 34, 36)));
+    draw_beveled_rect(canvas, rect, ui(rgb(238, 238, 232), rgb(38, 40, 42)), true);
 
     let titlebar = Rect::new(rect.x, rect.y, rect.width, 24.0);
     draw_classic_titlebar(canvas, titlebar, window.title());
@@ -785,23 +862,24 @@ fn draw_window(canvas: &mut Canvas<'_>, window: &Window) {
 }
 
 fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str) {
-    canvas.rect(rect, rgb(224, 224, 218));
-    draw_beveled_rect(canvas, rect, rgb(224, 224, 218), true);
+    let titlebar_bg = ui(rgb(224, 224, 218), rgb(46, 48, 52));
+    canvas.rect(rect, titlebar_bg);
+    draw_beveled_rect(canvas, rect, titlebar_bg, true);
 
     for y in (rect.y as i32 + 4..rect.y as i32 + rect.height as i32 - 4).step_by(3) {
         canvas.rect(
             Rect::new(rect.x + 26.0, y as f32, rect.width - 52.0, 1.0),
-            rgb(112, 112, 108),
+            ui(rgb(112, 112, 108), rgb(112, 116, 120)),
         );
         canvas.rect(
             Rect::new(rect.x + 26.0, y as f32 + 1.0, rect.width - 52.0, 1.0),
-            rgb(246, 246, 242),
+            ui(rgb(246, 246, 242), rgb(22, 24, 26)),
         );
     }
 
     let close_box = Rect::new(rect.x + 8.0, rect.y + 7.0, 11.0, 11.0);
-    canvas.rect(close_box, rgb(238, 238, 232));
-    canvas.stroke(close_box, rgb(60, 60, 58));
+    canvas.rect(close_box, ui(rgb(238, 238, 232), rgb(58, 60, 64)));
+    canvas.stroke(close_box, ui(rgb(60, 60, 58), rgb(168, 170, 174)));
     canvas.rect(
         Rect::new(
             close_box.x + 2.0,
@@ -809,12 +887,12 @@ fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str) {
             close_box.width - 4.0,
             1.0,
         ),
-        rgb(255, 255, 255),
+        ui(rgb(255, 255, 255), rgb(92, 94, 98)),
     );
 
     let zoom_box = Rect::new(rect.x + rect.width - 19.0, rect.y + 7.0, 11.0, 11.0);
-    canvas.rect(zoom_box, rgb(238, 238, 232));
-    canvas.stroke(zoom_box, rgb(60, 60, 58));
+    canvas.rect(zoom_box, ui(rgb(238, 238, 232), rgb(58, 60, 64)));
+    canvas.stroke(zoom_box, ui(rgb(60, 60, 58), rgb(168, 170, 174)));
     canvas.rect(
         Rect::new(
             zoom_box.x + 2.0,
@@ -822,7 +900,7 @@ fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str) {
             zoom_box.width - 4.0,
             1.0,
         ),
-        rgb(255, 255, 255),
+        ui(rgb(255, 255, 255), rgb(92, 94, 98)),
     );
 
     let title_width = title.len() as f32 * 7.0 + 18.0;
@@ -832,11 +910,16 @@ fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str) {
         title_width,
         18.0,
     );
-    canvas.rect(title_rect, rgb(224, 224, 218));
-    canvas.text(title, title_rect.x + 9.0, rect.y + 8.0, rgb(24, 24, 24));
+    canvas.rect(title_rect, titlebar_bg);
+    canvas.text(
+        title,
+        title_rect.x + 9.0,
+        rect.y + 8.0,
+        ui(rgb(24, 24, 24), rgb(235, 235, 232)),
+    );
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
-        rgb(92, 92, 88),
+        ui(rgb(92, 92, 88), rgb(14, 16, 18)),
     );
 }
 
@@ -847,21 +930,21 @@ fn draw_resize_grow_box(canvas: &mut Canvas<'_>, window_rect: Rect) {
         15.0,
         15.0,
     );
-    canvas.rect(box_rect, rgb(232, 232, 226));
-    canvas.stroke(box_rect, rgb(132, 132, 126));
+    canvas.rect(box_rect, ui(rgb(232, 232, 226), rgb(50, 52, 54)));
+    canvas.stroke(box_rect, ui(rgb(132, 132, 126), rgb(148, 150, 152)));
 
     for offset in [4.0, 8.0, 12.0] {
         canvas.rect(
             Rect::new(box_rect.x + offset, box_rect.y + 13.0, 1.0, 1.0),
-            rgb(82, 82, 78),
+            ui(rgb(82, 82, 78), rgb(180, 182, 184)),
         );
         canvas.rect(
             Rect::new(box_rect.x + 13.0, box_rect.y + offset, 1.0, 1.0),
-            rgb(82, 82, 78),
+            ui(rgb(82, 82, 78), rgb(180, 182, 184)),
         );
         canvas.rect(
             Rect::new(box_rect.x + offset, box_rect.y + offset, 1.0, 1.0),
-            rgb(164, 164, 158),
+            ui(rgb(164, 164, 158), rgb(84, 86, 88)),
         );
     }
 }
@@ -878,29 +961,49 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
     }
 
     if let Some(label) = widget.as_any().downcast_ref::<Label>() {
-        canvas.text(&label.text, rect.x + 2.0, rect.y + 5.0, rgb(24, 24, 24));
+        canvas.text(
+            &label.text,
+            rect.x + 2.0,
+            rect.y + 5.0,
+            ui(rgb(24, 24, 24), rgb(226, 226, 222)),
+        );
     } else if let Some(button) = widget.as_any().downcast_ref::<Button>() {
         if rect.height <= 24.0 {
-            canvas.text(button.label(), rect.x + 8.0, rect.y + 7.0, rgb(8, 8, 8));
+            canvas.text(
+                button.label(),
+                rect.x + 8.0,
+                rect.y + 7.0,
+                ui(rgb(8, 8, 8), rgb(232, 232, 228)),
+            );
             return;
         }
         let bg = if button.widget_state().hovered {
-            rgb(226, 235, 246)
+            ui(rgb(226, 235, 246), rgb(70, 76, 84))
         } else {
-            rgb(222, 222, 218)
+            ui(rgb(222, 222, 218), rgb(58, 60, 64))
         };
         canvas.rect(rect, bg);
         draw_beveled_rect(canvas, rect, bg, true);
-        canvas.text(button.label(), rect.x + 12.0, rect.y + 9.0, rgb(20, 20, 20));
+        canvas.text(
+            button.label(),
+            rect.x + 12.0,
+            rect.y + 9.0,
+            ui(rgb(20, 20, 20), rgb(236, 236, 232)),
+        );
     } else if let Some(text_field) = widget.as_any().downcast_ref::<TextField>() {
-        canvas.rect(rect, rgb(255, 255, 252));
-        canvas.stroke(rect, rgb(115, 115, 110));
+        canvas.rect(rect, ui(rgb(255, 255, 252), rgb(18, 20, 22)));
+        canvas.stroke(rect, ui(rgb(115, 115, 110), rgb(120, 124, 128)));
         let text = if text_field.text().is_empty() {
             &text_field.placeholder
         } else {
             text_field.text()
         };
-        canvas.text(text, rect.x + 6.0, rect.y + 8.0, rgb(25, 25, 25));
+        canvas.text(
+            text,
+            rect.x + 6.0,
+            rect.y + 8.0,
+            ui(rgb(25, 25, 25), rgb(232, 232, 228)),
+        );
     } else if let Some(tree) = widget.as_any().downcast_ref::<TreeView>() {
         draw_tree(canvas, rect, tree);
     } else if let Some(icon_view) = widget.as_any().downcast_ref::<IconView>() {
@@ -914,10 +1017,10 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
         if rect.y <= 1.0 && rect.width > 500.0 {
             draw_menu_bar(canvas, rect, toolbar);
         } else {
-            canvas.rect(rect, rgb(218, 218, 214));
+            canvas.rect(rect, ui(rgb(218, 218, 214), rgb(42, 44, 46)));
             canvas.rect(
                 Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
-                rgb(145, 145, 140),
+                ui(rgb(145, 145, 140), rgb(92, 94, 96)),
             );
             for child in toolbar.children() {
                 draw_widget(canvas, child);
@@ -925,8 +1028,8 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
         }
         return;
     } else if let Some(scroll) = widget.as_any().downcast_ref::<ScrollView>() {
-        canvas.rect(rect, rgb(248, 248, 244));
-        canvas.stroke(rect, rgb(160, 160, 154));
+        canvas.rect(rect, ui(rgb(248, 248, 244), rgb(28, 30, 32)));
+        canvas.stroke(rect, ui(rgb(160, 160, 154), rgb(92, 94, 96)));
         canvas.with_clip(rect, |canvas| {
             for child in scroll.children() {
                 draw_widget(canvas, child);
@@ -934,7 +1037,7 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
         });
         return;
     } else if widget.as_any().is::<SplitView>() {
-        canvas.rect(rect, rgb(230, 230, 225));
+        canvas.rect(rect, ui(rgb(230, 230, 225), rgb(34, 36, 38)));
         if let Some(split) = widget.as_any().downcast_ref::<SplitView>() {
             let divider = match split.direction {
                 retro_kit::split_view::SplitDirection::Horizontal => Rect::new(
@@ -950,21 +1053,26 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
                     split.divider_size,
                 ),
             };
-            canvas.rect(divider, rgb(180, 180, 176));
-            canvas.stroke(divider, rgb(110, 110, 106));
+            canvas.rect(divider, ui(rgb(180, 180, 176), rgb(70, 72, 74)));
+            canvas.stroke(divider, ui(rgb(110, 110, 106), rgb(112, 114, 116)));
         }
     } else if let Some(grid) = widget.as_any().downcast_ref::<MonospaceView>() {
         draw_monospace_view(canvas, rect, grid);
         return;
     } else if let Some(status) = widget.as_any().downcast_ref::<StatusBar>() {
-        canvas.rect(rect, rgb(220, 220, 216));
+        canvas.rect(rect, ui(rgb(220, 220, 216), rgb(36, 38, 40)));
         canvas.rect(
             Rect::new(rect.x, rect.y, rect.width, 1.0),
-            rgb(150, 150, 145),
+            ui(rgb(150, 150, 145), rgb(96, 98, 100)),
         );
         let mut x = rect.x + 8.0;
         for item in &status.items {
-            canvas.text(&item.text, x, rect.y + 8.0, rgb(35, 35, 35));
+            canvas.text(
+                &item.text,
+                x,
+                rect.y + 8.0,
+                ui(rgb(35, 35, 35), rgb(228, 228, 224)),
+            );
             x += item.width.max(item.text.len() as f32 * 7.0 + 12.0);
         }
     } else if let Some(layout_view) = widget.as_any().downcast_ref::<LayoutView>() {
@@ -1020,18 +1128,18 @@ fn draw_menu_overlays(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
 }
 
 fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
-    canvas.rect(rect, rgb(238, 238, 238));
+    canvas.rect(rect, ui(rgb(238, 238, 238), rgb(28, 30, 32)));
     canvas.rect(
         Rect::new(rect.x, rect.y, rect.width, 1.0),
-        rgb(255, 255, 255),
+        ui(rgb(255, 255, 255), rgb(58, 60, 62)),
     );
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 2.0, rect.width, 1.0),
-        rgb(95, 95, 95),
+        ui(rgb(95, 95, 95), rgb(92, 94, 96)),
     );
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
-        rgb(35, 35, 35),
+        ui(rgb(35, 35, 35), rgb(8, 10, 12)),
     );
 
     let mut x = rect.x + 10.0;
@@ -1041,7 +1149,7 @@ fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
     for child in toolbar.children() {
         if let Some(button) = child.as_any().downcast_ref::<Button>() {
             let label = button.label();
-            canvas.text(label, x, rect.y + 8.0, rgb(8, 8, 8));
+            canvas.text(label, x, rect.y + 8.0, ui(rgb(8, 8, 8), rgb(232, 232, 228)));
             x += label.len() as f32 * 8.0 + 18.0;
         }
     }
@@ -1051,25 +1159,25 @@ fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
         clock,
         rect.x + rect.width - clock.len() as f32 * 7.0 - 72.0,
         rect.y + 8.0,
-        rgb(8, 8, 8),
+        ui(rgb(8, 8, 8), rgb(232, 232, 228)),
     );
     draw_status_glyph(canvas, rect.x + rect.width - 42.0, rect.y + 7.0);
     draw_status_glyph(canvas, rect.x + rect.width - 22.0, rect.y + 7.0);
 }
 
 fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar) {
-    canvas.rect(rect, rgb(238, 238, 238));
+    canvas.rect(rect, ui(rgb(238, 238, 238), rgb(28, 30, 32)));
     canvas.rect(
         Rect::new(rect.x, rect.y, rect.width, 1.0),
-        rgb(255, 255, 255),
+        ui(rgb(255, 255, 255), rgb(58, 60, 62)),
     );
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 2.0, rect.width, 1.0),
-        rgb(95, 95, 95),
+        ui(rgb(95, 95, 95), rgb(92, 94, 96)),
     );
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
-        rgb(35, 35, 35),
+        ui(rgb(35, 35, 35), rgb(8, 10, 12)),
     );
 
     for (index, menu) in menu_bar.menus.iter().enumerate() {
@@ -1085,7 +1193,7 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
                     menu_rect.width - 2.0,
                     20.0,
                 ),
-                rgb(24, 24, 24),
+                ui(rgb(24, 24, 24), rgb(78, 86, 98)),
             );
         }
         if index == 0 {
@@ -1097,7 +1205,7 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
                 if active {
                     rgb(255, 255, 255)
                 } else {
-                    rgb(8, 8, 8)
+                    ui(rgb(8, 8, 8), rgb(232, 232, 228))
                 },
             );
         } else {
@@ -1108,7 +1216,7 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
                 if active {
                     rgb(255, 255, 255)
                 } else {
-                    rgb(8, 8, 8)
+                    ui(rgb(8, 8, 8), rgb(232, 232, 228))
                 },
             );
         }
@@ -1119,7 +1227,7 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
         clock,
         rect.x + rect.width - clock.len() as f32 * 7.0 - 72.0,
         rect.y + 8.0,
-        rgb(8, 8, 8),
+        ui(rgb(8, 8, 8), rgb(232, 232, 228)),
     );
     draw_status_glyph(canvas, rect.x + rect.width - 42.0, rect.y + 7.0);
     draw_status_glyph(canvas, rect.x + rect.width - 22.0, rect.y + 7.0);
@@ -1133,7 +1241,7 @@ fn draw_apple_icon(canvas: &mut Canvas<'_>, x: f32, y: f32, active: bool) {
     let color = if active {
         rgb(255, 255, 255)
     } else {
-        rgb(22, 22, 22)
+        ui(rgb(22, 22, 22), rgb(232, 232, 228))
     };
     canvas.rect(Rect::new(x + 1.0, y + 1.0, 5.0, 5.0), color);
     canvas.rect(Rect::new(x + 1.0, y + 2.0, 1.0, 3.0), color);
@@ -1146,7 +1254,7 @@ fn draw_apple_icon(canvas: &mut Canvas<'_>, x: f32, y: f32, active: bool) {
         if active {
             rgb(22, 22, 22)
         } else {
-            rgb(238, 238, 238)
+            ui(rgb(238, 238, 238), rgb(28, 30, 32))
         },
     );
 }
@@ -1168,7 +1276,12 @@ fn draw_open_menu(canvas: &mut Canvas<'_>, menu_bar: &MenuBar, menu_index: usize
         ),
         rgba(0, 0, 0, 0.24),
     );
-    draw_beveled_rect(canvas, dropdown, rgb(244, 244, 238), true);
+    draw_beveled_rect(
+        canvas,
+        dropdown,
+        ui(rgb(244, 244, 238), rgb(42, 44, 48)),
+        true,
+    );
     canvas.rect(
         Rect::new(
             dropdown.x + 4.0,
@@ -1176,7 +1289,7 @@ fn draw_open_menu(canvas: &mut Canvas<'_>, menu_bar: &MenuBar, menu_index: usize
             dropdown.width - 8.0,
             1.0,
         ),
-        rgb(255, 255, 255),
+        ui(rgb(255, 255, 255), rgb(66, 68, 72)),
     );
     canvas.rect(
         Rect::new(
@@ -1185,7 +1298,7 @@ fn draw_open_menu(canvas: &mut Canvas<'_>, menu_bar: &MenuBar, menu_index: usize
             1.0,
             dropdown.height - 8.0,
         ),
-        rgb(255, 255, 255),
+        ui(rgb(255, 255, 255), rgb(66, 68, 72)),
     );
 
     for (item_index, item) in menu.items.iter().enumerate() {
@@ -1200,7 +1313,7 @@ fn draw_open_menu(canvas: &mut Canvas<'_>, menu_bar: &MenuBar, menu_index: usize
                     item_rect.width - 24.0,
                     1.0,
                 ),
-                rgb(120, 120, 116),
+                ui(rgb(120, 120, 116), rgb(116, 118, 122)),
             );
             canvas.rect(
                 Rect::new(
@@ -1209,21 +1322,21 @@ fn draw_open_menu(canvas: &mut Canvas<'_>, menu_bar: &MenuBar, menu_index: usize
                     item_rect.width - 24.0,
                     1.0,
                 ),
-                rgb(255, 255, 255),
+                ui(rgb(255, 255, 255), rgb(28, 30, 32)),
             );
             continue;
         }
 
         let hovered = menu_bar.hovered_item == Some(item_index);
         if hovered && item.enabled {
-            canvas.rect(item_rect, rgb(22, 22, 22));
+            canvas.rect(item_rect, ui(rgb(22, 22, 22), rgb(82, 90, 104)));
         }
         let text_color = if !item.enabled {
-            rgb(132, 132, 128)
+            ui(rgb(132, 132, 128), rgb(116, 118, 120))
         } else if hovered {
             rgb(255, 255, 255)
         } else {
-            rgb(8, 8, 8)
+            ui(rgb(8, 8, 8), rgb(232, 232, 228))
         };
         match item.kind {
             MenuItemKind::Checkbox if item.checked => {
@@ -1362,8 +1475,8 @@ fn draw_beveled_rect(canvas: &mut Canvas<'_>, rect: Rect, fill: [f32; 4], raised
 }
 
 fn draw_tree(canvas: &mut Canvas<'_>, rect: Rect, tree: &TreeView) {
-    canvas.rect(rect, rgb(222, 226, 230));
-    canvas.stroke(rect, rgb(145, 150, 154));
+    canvas.rect(rect, ui(rgb(222, 226, 230), rgb(30, 33, 36)));
+    canvas.stroke(rect, ui(rgb(145, 150, 154), rgb(92, 96, 100)));
     let mut y = rect.y + 8.0;
     for (index, node) in tree.roots.iter().enumerate() {
         draw_tree_node(
@@ -1391,7 +1504,10 @@ fn draw_tree_node(
         .as_ref()
         .is_some_and(|selected| selected == path);
     if selected {
-        canvas.rect(Rect::new(x - 4.0, *y - 3.0, 170.0, 16.0), rgb(64, 111, 171));
+        canvas.rect(
+            Rect::new(x - 4.0, *y - 3.0, 170.0, 16.0),
+            ui(rgb(64, 111, 171), rgb(82, 98, 126)),
+        );
     }
     canvas.text(
         &node.label,
@@ -1400,7 +1516,7 @@ fn draw_tree_node(
         if selected {
             rgb(255, 255, 255)
         } else {
-            rgb(30, 30, 30)
+            ui(rgb(30, 30, 30), rgb(226, 226, 222))
         },
     );
     *y += 18.0;
@@ -1576,14 +1692,14 @@ fn draw_trash_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
 }
 
 fn draw_list(canvas: &mut Canvas<'_>, rect: Rect, list: &ListView) {
-    canvas.rect(rect, rgb(255, 255, 252));
-    canvas.stroke(rect, rgb(150, 150, 144));
+    canvas.rect(rect, ui(rgb(255, 255, 252), rgb(24, 26, 28)));
+    canvas.stroke(rect, ui(rgb(150, 150, 144), rgb(92, 94, 96)));
     for (index, item) in list.items.iter().enumerate() {
         let y = rect.y + 6.0 + index as f32 * 18.0;
         if list.selected_index == Some(index) {
             canvas.rect(
                 Rect::new(rect.x + 3.0, y - 3.0, rect.width - 6.0, 16.0),
-                rgb(64, 111, 171),
+                ui(rgb(64, 111, 171), rgb(82, 98, 126)),
             );
         }
         canvas.text(
@@ -1593,7 +1709,7 @@ fn draw_list(canvas: &mut Canvas<'_>, rect: Rect, list: &ListView) {
             if list.selected_index == Some(index) {
                 rgb(255, 255, 255)
             } else {
-                rgb(25, 25, 25)
+                ui(rgb(25, 25, 25), rgb(230, 230, 226))
             },
         );
     }
@@ -1879,4 +1995,22 @@ fn distance_squared(a: Point, b: Point) -> f32 {
     let dx = a.x - b.x;
     let dy = a.y - b.y;
     dx * dx + dy * dy
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_dark_mode_preference;
+
+    #[test]
+    fn parses_dark_appearance_preference() {
+        assert!(parse_dark_mode_preference("appearance=dark\n"));
+        assert!(parse_dark_mode_preference("appearance=Dark\n"));
+    }
+
+    #[test]
+    fn ignores_non_dark_appearance_preferences() {
+        assert!(!parse_dark_mode_preference("appearance=light\n"));
+        assert!(!parse_dark_mode_preference("appearance=system\n"));
+        assert!(!parse_dark_mode_preference("other=dark\n"));
+    }
 }
