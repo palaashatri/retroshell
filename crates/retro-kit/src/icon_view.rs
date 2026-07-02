@@ -4,18 +4,29 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+/// Represents a single selectable icon item within an [`IconView`].
 pub struct IconItem {
+    /// The display label/name of the item.
     pub label: String,
+    /// Optional resource path or identifier of the icon graphic.
     pub icon: Option<String>,
+    /// Whether this specific item is currently selected by the user.
     pub selected: bool,
+    /// The physical layout bounds of this item, computed during layout.
     pub rect: Rect,
 }
 
+/// A grid or desktop-style icon grid view widget.
+/// Supports both file list grids (like Finder) and standard desktop desktop layouts.
 pub struct IconView {
     state: WidgetState,
+    /// The list of icons rendered inside this view.
     pub items: Vec<IconItem>,
+    /// The target icon square dimensions (width/height).
     pub icon_size: f32,
+    /// The spacing margin between items (desktop mode).
     pub spacing: f32,
+    /// Callback triggered upon double-clicking an icon item.
     pub on_double_click: Option<Box<dyn FnMut(usize) + Send>>,
 }
 
@@ -26,6 +37,7 @@ impl Default for IconView {
 }
 
 impl IconView {
+    /// Creates a new, empty `IconView` with default sizing configuration.
     pub fn new() -> Self {
         Self {
             state: WidgetState::new(),
@@ -45,6 +57,13 @@ impl Widget for IconView {
         &mut self.state
     }
 
+    /// Lays out icon items.
+    ///
+    /// # Assumptions/Shortcuts:
+    /// - **FIXME**: Detects "desktop" mode using a heuristic matching screen dimensions and specific
+    ///   system item names ("Hard Disk", "Trash"). This should be controlled by an explicit boolean flag instead.
+    /// - **FIXME**: Non-desktop mode grid sizing uses a hardcoded cell width/height of 90.0px.
+    ///   This does not dynamically adapt to UI scaling (DPI) or changes in font/icon size.
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
         let width = constraint.max_width;
         let height = constraint.max_height;

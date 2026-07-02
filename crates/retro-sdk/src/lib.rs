@@ -207,6 +207,8 @@ impl Application {
                         initial_size.width,
                         initial_size.height,
                     ));
+                // FIXME: Hardcoded application name comparison ("RetroShell") to determine borderless state.
+                // This property should ideally be configured dynamically via options in App.toml or manifest attributes.
                 if self.name == "RetroShell" {
                     attrs = attrs.with_decorations(false);
                 }
@@ -1546,6 +1548,11 @@ fn draw_tree_node(
     }
 }
 
+/// Truncates a string label to a maximum length, preserving file extensions if possible.
+///
+/// # Assumptions:
+/// - **FIXME**: Characters are assumed to have a fixed layout width (7px width spacing inside `Canvas`).
+///   This function only checks character length (`label.len()`) rather than visual bounding boxes.
 fn truncate_label(label: &str, max_len: usize) -> String {
     if label.len() <= max_len {
         return label.to_string();
@@ -1563,6 +1570,11 @@ fn truncate_label(label: &str, max_len: usize) -> String {
     format!("{}...", &label[..max_len - 3])
 }
 
+/// Renders the `IconView` grid.
+///
+/// # Limitations:
+/// - **FIXME**: The current renderer uses the built-in system pixel font, which only supports
+///   uppercase characters (lower-case is automatically mapped to upper-case by the rasterizer).
 fn draw_icon_view(canvas: &mut Canvas<'_>, icon_view: &IconView) {
     let rect = icon_view.rect();
     let is_desktop = rect.width >= 600.0
