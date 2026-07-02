@@ -10,6 +10,7 @@ pub struct Window {
     pub layout: Layout,
     pub is_dark: bool,
     pub has_toolbar: bool,
+    pub is_active: bool,
 }
 
 impl Window {
@@ -21,6 +22,7 @@ impl Window {
             layout: Layout::vertical(0.0),
             is_dark: false,
             has_toolbar: false,
+            is_active: true,
         }
     }
 
@@ -97,10 +99,22 @@ impl Widget for Window {
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
-        if let Some(content) = &mut self.content {
-            content.handle_event(event)
-        } else {
-            self.layout.handle_event(event)
+        match event {
+            Event::FocusIn => {
+                self.is_active = true;
+                EventResult::Handled
+            }
+            Event::FocusOut => {
+                self.is_active = false;
+                EventResult::Handled
+            }
+            _ => {
+                if let Some(content) = &mut self.content {
+                    content.handle_event(event)
+                } else {
+                    self.layout.handle_event(event)
+                }
+            }
         }
     }
 

@@ -321,6 +321,9 @@ impl ShellDesktop {
     fn close_window(&mut self, id: Uuid) {
         self.windows.retain(|window| window.id != id);
         self.window_manager.write().close_window(id);
+        if let Some(active) = self.windows.last_mut() {
+            active.window.is_active = true;
+        }
         if matches!(
             self.window_interaction,
             Some(WindowInteraction::Move { window_id, .. } | WindowInteraction::Resize { window_id, .. })
@@ -387,7 +390,11 @@ impl ShellDesktop {
         let Some(index) = self.window_index(id) else {
             return;
         };
-        let shell_window = self.windows.remove(index);
+        let mut shell_window = self.windows.remove(index);
+        shell_window.window.is_active = true;
+        for w in &mut self.windows {
+            w.window.is_active = false;
+        }
         self.windows.push(shell_window);
         self.window_manager.write().focus_window(id);
         self.sync_global_menu_to_active_window();

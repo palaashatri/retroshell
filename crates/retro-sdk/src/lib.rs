@@ -150,6 +150,7 @@ impl Application {
             last_click: Option<(MouseButton, Point, std::time::Instant)>,
             dirty: bool,
             dark_mode: bool,
+            scale: f32,
         }
 
         impl AppHandler {
@@ -172,7 +173,9 @@ impl Application {
 
             fn layout_window(&mut self, width: u32, height: u32) {
                 if let Some(ref mut win) = self.window {
-                    let size = Size::new(width.max(1) as f32, height.max(1) as f32);
+                    let logical_width = (width as f32 / self.scale).max(1.0);
+                    let logical_height = (height as f32 / self.scale).max(1.0);
+                    let size = Size::new(logical_width, logical_height);
                     win.set_rect(Rect::new(0.0, 0.0, size.width, size.height));
                     win.layout(LayoutConstraint::tight(size));
                     self.dirty = true;
@@ -187,7 +190,10 @@ impl Application {
                     return;
                 };
                 set_render_dark_mode(self.dark_mode);
+                let scale = self.scale;
                 if let Err(err) = presenter.render(|canvas| {
+                    canvas.width /= scale;
+                    canvas.height /= scale;
                     draw_desktop_backdrop(canvas);
                     draw_window(canvas, window);
                 }) {
@@ -216,6 +222,7 @@ impl Application {
                 match event_loop.create_window(attrs) {
                     Ok(window) => {
                         let window = Arc::new(window);
+                        self.scale = window.scale_factor() as f32;
                         let size = window.inner_size();
                         match futures::executor::block_on(WgpuPresenter::new(window.clone())) {
                             Ok(presenter) => {
@@ -254,11 +261,26 @@ impl Application {
                             window.request_redraw();
                         }
                     }
+                    winit::event::WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                        self.scale = scale_factor as f32;
+                        let size_and_win = self.platform_window.as_ref().map(|w| (w.inner_size(), w.clone()));
+                        if let Some((size, window)) = size_and_win {
+                            if let Some(presenter) = &mut self.presenter {
+                                presenter.resize(size.width, size.height);
+                            }
+                            self.layout_window(size.width, size.height);
+                            window.request_redraw();
+                        }
+                    }
                     winit::event::WindowEvent::ModifiersChanged(new_mods) => {
                         self.modifiers = new_mods.state();
                     }
                     winit::event::WindowEvent::CursorMoved { position, .. } => {
-                        self.cursor_position = Point::new(position.x as f32, position.y as f32);
+                        let scale = self.scale;
+                        self.cursor_position = Point::new(
+                            position.x as f32 / scale,
+                            position.y as f32 / scale,
+                        );
                         let _ = self.dispatch(retro_kit::Event::MouseMove {
                             point: self.cursor_position,
                             modifiers: self.modifiers(),
@@ -396,6 +418,7 @@ impl Application {
             last_click: None,
             dirty: true,
             dark_mode: load_dark_mode_preference(),
+            scale: 1.0,
         };
         if let Err(err) = event_loop.run(&mut handler) {
             tracing::error!("application event loop failed: {err}");
@@ -844,7 +867,7 @@ fn draw_window(canvas: &mut Canvas<'_>, window: &Window) {
     draw_beveled_rect(canvas, rect, ui(rgb(238, 238, 232), rgb(38, 40, 42)), true);
 
     let titlebar = Rect::new(rect.x, rect.y, rect.width, 24.0);
-    draw_classic_titlebar(canvas, titlebar, window.title());
+    draw_classic_titlebar(canvas, titlebar, window.title(), window.is_active);
 
     canvas.with_clip(
         Rect::new(
@@ -866,61 +889,63 @@ fn draw_window(canvas: &mut Canvas<'_>, window: &Window) {
     draw_resize_grow_box(canvas, rect);
 }
 
-fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str) {
+fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str, is_active: bool) {
     let titlebar_bg = ui(rgb(224, 224, 218), rgb(46, 48, 52));
     canvas.rect(rect, titlebar_bg);
     draw_beveled_rect(canvas, rect, titlebar_bg, true);
 
-    for y in (rect.y as i32 + 4..rect.y as i32 + rect.height as i32 - 4).step_by(3) {
+    if is_active {
+        for y in (rect.y as i32 + 4..rect.y as i32 + rect.height as i32 - 4).step_by(3) {
+            canvas.rect(
+                Rect::new(rect.x + 26.0, y as f32, rect.width - 52.0, 1.0),
+                ui(rgb(112, 112, 108), rgb(112, 116, 120)),
+            );
+            canvas.rect(
+                Rect::new(rect.x + 26.0, y as f32 + 1.0, rect.width - 52.0, 1.0),
+                ui(rgb(246, 246, 242), rgb(22, 24, 26)),
+            );
+        }
+
+        let close_box = Rect::new(rect.x + 8.0, rect.y + 7.0, 11.0, 11.0);
+        canvas.rect(close_box, ui(rgb(238, 238, 232), rgb(58, 60, 64)));
+        canvas.stroke(close_box, ui(rgb(60, 60, 58), rgb(168, 170, 174)));
         canvas.rect(
-            Rect::new(rect.x + 26.0, y as f32, rect.width - 52.0, 1.0),
-            ui(rgb(112, 112, 108), rgb(112, 116, 120)),
+            Rect::new(
+                close_box.x + 2.0,
+                close_box.y + 2.0,
+                close_box.width - 4.0,
+                1.0,
+            ),
+            ui(rgb(255, 255, 255), rgb(92, 94, 98)),
         );
+
+        // Minimize box (classic Mac OS style dash)
+        let minimize_box = Rect::new(rect.x + 22.0, rect.y + 7.0, 11.0, 11.0);
+        canvas.rect(minimize_box, ui(rgb(238, 238, 232), rgb(58, 60, 64)));
+        canvas.stroke(minimize_box, ui(rgb(60, 60, 58), rgb(168, 170, 174)));
         canvas.rect(
-            Rect::new(rect.x + 26.0, y as f32 + 1.0, rect.width - 52.0, 1.0),
-            ui(rgb(246, 246, 242), rgb(22, 24, 26)),
+            Rect::new(
+                minimize_box.x + 2.0,
+                minimize_box.y + 5.0,
+                minimize_box.width - 4.0,
+                1.0,
+            ),
+            ui(rgb(255, 255, 255), rgb(92, 94, 98)),
+        );
+
+        let zoom_box = Rect::new(rect.x + rect.width - 19.0, rect.y + 7.0, 11.0, 11.0);
+        canvas.rect(zoom_box, ui(rgb(238, 238, 232), rgb(58, 60, 64)));
+        canvas.stroke(zoom_box, ui(rgb(60, 60, 58), rgb(168, 170, 174)));
+        canvas.rect(
+            Rect::new(
+                zoom_box.x + 2.0,
+                zoom_box.y + 2.0,
+                zoom_box.width - 4.0,
+                1.0,
+            ),
+            ui(rgb(255, 255, 255), rgb(92, 94, 98)),
         );
     }
-
-    let close_box = Rect::new(rect.x + 8.0, rect.y + 7.0, 11.0, 11.0);
-    canvas.rect(close_box, ui(rgb(238, 238, 232), rgb(58, 60, 64)));
-    canvas.stroke(close_box, ui(rgb(60, 60, 58), rgb(168, 170, 174)));
-    canvas.rect(
-        Rect::new(
-            close_box.x + 2.0,
-            close_box.y + 2.0,
-            close_box.width - 4.0,
-            1.0,
-        ),
-        ui(rgb(255, 255, 255), rgb(92, 94, 98)),
-    );
-
-    // Minimize box (classic Mac OS style dash)
-    let minimize_box = Rect::new(rect.x + 22.0, rect.y + 7.0, 11.0, 11.0);
-    canvas.rect(minimize_box, ui(rgb(238, 238, 232), rgb(58, 60, 64)));
-    canvas.stroke(minimize_box, ui(rgb(60, 60, 58), rgb(168, 170, 174)));
-    canvas.rect(
-        Rect::new(
-            minimize_box.x + 2.0,
-            minimize_box.y + 5.0,
-            minimize_box.width - 4.0,
-            1.0,
-        ),
-        ui(rgb(255, 255, 255), rgb(92, 94, 98)),
-    );
-
-    let zoom_box = Rect::new(rect.x + rect.width - 19.0, rect.y + 7.0, 11.0, 11.0);
-    canvas.rect(zoom_box, ui(rgb(238, 238, 232), rgb(58, 60, 64)));
-    canvas.stroke(zoom_box, ui(rgb(60, 60, 58), rgb(168, 170, 174)));
-    canvas.rect(
-        Rect::new(
-            zoom_box.x + 2.0,
-            zoom_box.y + 2.0,
-            zoom_box.width - 4.0,
-            1.0,
-        ),
-        ui(rgb(255, 255, 255), rgb(92, 94, 98)),
-    );
 
     let title_width = title.len() as f32 * 7.0 + 18.0;
     let title_rect = Rect::new(
@@ -930,12 +955,19 @@ fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str) {
         18.0,
     );
     canvas.rect(title_rect, titlebar_bg);
+    
+    let text_color = if is_active {
+        ui(rgb(24, 24, 24), rgb(235, 235, 232))
+    } else {
+        ui(rgb(140, 140, 140), rgb(110, 112, 115))
+    };
     canvas.text(
         title,
         title_rect.x + 9.0,
         rect.y + 8.0,
-        ui(rgb(24, 24, 24), rgb(235, 235, 232)),
+        text_color,
     );
+    
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
         ui(rgb(92, 92, 88), rgb(14, 16, 18)),
@@ -1793,7 +1825,7 @@ fn _color_to_rgb(color: Color) -> [f32; 4] {
 }
 
 fn glyph_pattern(ch: char) -> [u8; 7] {
-    match ch.to_ascii_uppercase() {
+    match ch {
         'A' => [
             0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
         ],
@@ -1872,6 +1904,32 @@ fn glyph_pattern(ch: char) -> [u8; 7] {
         'Z' => [
             0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
         ],
+        'a' => [0b00000, 0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111],
+        'b' => [0b10000, 0b10000, 0b10110, 0b11001, 0b10001, 0b10001, 0b11110],
+        'c' => [0b00000, 0b00000, 0b01110, 0b10000, 0b10000, 0b10000, 0b01110],
+        'd' => [0b00001, 0b00001, 0b01101, 0b10011, 0b10001, 0b10001, 0b01111],
+        'e' => [0b00000, 0b00000, 0b01110, 0b10001, 0b11111, 0b10000, 0b01110],
+        'f' => [0b00110, 0b01001, 0b01000, 0b11110, 0b01000, 0b01000, 0b01000],
+        'g' => [0b00000, 0b00000, 0b01110, 0b10001, 0b01111, 0b00001, 0b01110],
+        'h' => [0b10000, 0b10000, 0b10110, 0b11001, 0b10001, 0b10001, 0b10001],
+        'i' => [0b00100, 0b00000, 0b01100, 0b00100, 0b00100, 0b00100, 0b01110],
+        'j' => [0b00010, 0b00000, 0b00110, 0b00010, 0b00010, 0b10010, 0b01100],
+        'k' => [0b10000, 0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010],
+        'l' => [0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        'm' => [0b00000, 0b00000, 0b11010, 0b10101, 0b10101, 0b10101, 0b10101],
+        'n' => [0b00000, 0b00000, 0b10110, 0b11001, 0b10001, 0b10001, 0b10001],
+        'o' => [0b00000, 0b00000, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110],
+        'p' => [0b00000, 0b00000, 0b01100, 0b01010, 0b01100, 0b01000, 0b01000],
+        'q' => [0b00000, 0b00000, 0b01100, 0b10100, 0b01100, 0b00100, 0b00100],
+        'r' => [0b00000, 0b00000, 0b10110, 0b11001, 0b10000, 0b10000, 0b10000],
+        's' => [0b00000, 0b00000, 0b01111, 0b10000, 0b01110, 0b00001, 0b11110],
+        't' => [0b00100, 0b00100, 0b11110, 0b00100, 0b00100, 0b00100, 0b00011],
+        'u' => [0b00000, 0b00000, 0b10001, 0b10001, 0b10001, 0b10011, 0b01101],
+        'v' => [0b00000, 0b00000, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100],
+        'w' => [0b00000, 0b00000, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010],
+        'x' => [0b00000, 0b00000, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001],
+        'y' => [0b00000, 0b00000, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110],
+        'z' => [0b00000, 0b00000, 0b11111, 0b00010, 0b00100, 0b01000, 0b11111],
         '0' => [
             0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
         ],
@@ -1910,6 +1968,15 @@ fn glyph_pattern(ch: char) -> [u8; 7] {
         '/' => [
             0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000,
         ],
+        '\\' => [
+            0b10000, 0b01000, 0b01000, 0b00100, 0b00010, 0b00010, 0b00001,
+        ],
+        '(' => [0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010],
+        ')' => [0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000],
+        ',' => [0, 0, 0, 0, 0, 0b01100, 0b00100],
+        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0, 0b00100, 0],
+        '?' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100],
+        '=' => [0, 0, 0b11111, 0, 0b11111, 0, 0],
         '&' => [
             0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101,
         ],
