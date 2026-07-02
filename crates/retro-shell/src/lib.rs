@@ -519,9 +519,77 @@ impl ShellDesktop {
             "shell.open_finder" => launch_app_binary("com.retro.finder"),
             "shell.settings" => launch_app_binary("com.retro.settings"),
             "shell.software_catalog" => launch_app_binary("com.retro.appstore"),
-            "shell.about" => tracing::info!("About RetroShell selected"),
+            "shell.about" => {
+                self.open_folder_window("About RetroShell", PathBuf::from("/"));
+            }
+            "shell.quit" => {
+                std::process::exit(0);
+            }
+            "finder.new_folder" => self.handle_new_folder(),
+            "finder.get_info" => self.handle_get_info(),
             _ => tracing::info!("Unhandled menu action: {action}"),
         }
+    }
+
+    fn handle_new_folder(&mut self) {
+        let Some(id) = self.active_window_id() else {
+            return;
+        };
+        let Some(index) = self.window_index(id) else {
+            return;
+        };
+        let Some(folder_path) = self.windows[index].folder_path.clone() else {
+            return;
+        };
+        let mut name = "untitled folder".to_string();
+        let mut counter = 1;
+        while folder_path.join(&name).exists() {
+            name = format!("untitled folder {counter}");
+            counter += 1;
+        }
+        if let Err(err) = fs::create_dir_all(folder_path.join(&name)) {
+            tracing::error!("Failed to create folder: {err}");
+            return;
+        }
+        self.refresh_active_folder_window();
+    }
+
+    fn handle_get_info(&mut self) {
+        let Some(id) = self.active_window_id() else {
+            return;
+        };
+        let Some(index) = self.window_index(id) else {
+            return;
+        };
+        let info = if let Some(ref path) = self.windows[index].folder_path {
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            format!("{} — Info", name)
+        } else {
+            self.windows[index].window.title().to_string()
+        };
+        let info_title = format!("{info} Info");
+        self.open_folder_window(&info_title, PathBuf::from("/"));
+    }
+
+    fn refresh_active_folder_window(&mut self) {
+        let Some(id) = self.active_window_id() else {
+            return;
+        };
+        let Some(index) = self.window_index(id) else {
+            return;
+        };
+        let Some(ref path) = self.windows[index].folder_path.clone() else {
+            return;
+        };
+        let mut files = retro_kit::icon_view::IconView::new();
+        files.icon_size = 76.0;
+        files.spacing = 10.0;
+        files.items = folder_items_for_path(path);
+        self.windows[index].window.set_content(Box::new(files));
+        self.layout_window(id);
     }
 
     fn move_window_to(&mut self, id: Uuid, point: Point, pointer_offset: Point) {
@@ -651,7 +719,12 @@ fn build_folder_window(title: &str, path: &PathBuf) -> Window {
 
 fn folder_items_for_path(path: &PathBuf) -> Vec<IconItem> {
     let Ok(entries) = fs::read_dir(path) else {
-        return Vec::new();
+        return vec![IconItem {
+            label: format!("⚠ Unable to read: {}", path.display()),
+            icon: Some("document".to_string()),
+            selected: false,
+            rect: Rect::ZERO,
+        }];
     };
 
     let mut entries = entries
@@ -673,7 +746,7 @@ fn folder_items_for_path(path: &PathBuf) -> Vec<IconItem> {
             .then_with(|| left.0.to_lowercase().cmp(&right.0.to_lowercase()))
     });
 
-    entries
+    let mut items: Vec<IconItem> = entries
         .into_iter()
         .map(|(label, is_dir)| IconItem {
             label,
@@ -681,7 +754,18 @@ fn folder_items_for_path(path: &PathBuf) -> Vec<IconItem> {
             selected: false,
             rect: Rect::ZERO,
         })
-        .collect()
+        .collect();
+
+    if items.is_empty() {
+        items.push(IconItem {
+            label: "This folder is empty".to_string(),
+            icon: Some("document".to_string()),
+            selected: false,
+            rect: Rect::ZERO,
+        });
+    }
+
+    items
 }
 
 fn home_dir() -> PathBuf {

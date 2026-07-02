@@ -750,18 +750,33 @@ impl<'a> Canvas<'a> {
                 cursor_y += 12.0;
                 continue;
             }
-            self.glyph(ch, cursor_x, cursor_y, color);
-            cursor_x += 7.0;
+            cursor_x += self.glyph(ch, cursor_x, cursor_y, color);
         }
     }
 
-    fn glyph(&mut self, ch: char, x: f32, y: f32, color: [f32; 4]) {
-        for (row, bits) in glyph_pattern(ch).iter().enumerate() {
-            for col in 0..5 {
-                if bits & (1 << (4 - col)) != 0 {
-                    self.rect(Rect::new(x + col as f32, y + row as f32, 1.0, 1.0), color);
+    fn glyph(&mut self, ch: char, x: f32, y: f32, color: [f32; 4]) -> f32 {
+        if let Some((data, w, h)) = retro_render::rasterize_char(ch, 11.0) {
+            for row in 0..h {
+                for col in 0..w {
+                    let idx = (row * w + col) as usize;
+                    let alpha = data[idx] as f32 / 255.0;
+                    if alpha > 0.05 {
+                        let mut c = color;
+                        c[3] *= alpha;
+                        self.rect(Rect::new(x + col as f32, y + row as f32, 1.0, 1.0), c);
+                    }
                 }
             }
+            (w as f32).max(4.0) + 1.0
+        } else {
+            for (row, bits) in glyph_pattern(ch).iter().enumerate() {
+                for col in 0..5 {
+                    if bits & (1 << (4 - col)) != 0 {
+                        self.rect(Rect::new(x + col as f32, y + row as f32, 1.0, 1.0), color);
+                    }
+                }
+            }
+            7.0
         }
     }
 
@@ -1205,9 +1220,9 @@ fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
         }
     }
 
-    let clock = "9:48 PM";
+    let clock = current_time_string();
     canvas.text(
-        clock,
+        &clock,
         rect.x + rect.width - clock.len() as f32 * 7.0 - 72.0,
         rect.y + 8.0,
         ui(rgb(8, 8, 8), rgb(232, 232, 228)),
@@ -1273,9 +1288,9 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
         }
     }
 
-    let clock = "9:48 PM";
+    let clock = current_time_string();
     canvas.text(
-        clock,
+        &clock,
         rect.x + rect.width - clock.len() as f32 * 7.0 - 72.0,
         rect.y + 8.0,
         ui(rgb(8, 8, 8), rgb(232, 232, 228)),
@@ -1475,6 +1490,24 @@ fn key_label(key: KeyCode) -> &'static str {
         KeyCode::ArrowRight => "Right",
         _ => "?",
     }
+}
+
+fn current_time_string() -> String {
+    let now = std::time::SystemTime::now();
+    let duration = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = duration.as_secs();
+    let local_secs = secs as i64;
+    let _seconds = local_secs % 60;
+    let minutes = (local_secs / 60) % 60;
+    let hours_24 = (local_secs / 3600) % 24;
+    let hour_12 = match hours_24 % 12 {
+        0 => 12,
+        h => h,
+    };
+    let am_pm = if hours_24 < 12 { "AM" } else { "PM" };
+    format!("{}:{:02} {}", hour_12, minutes, am_pm)
 }
 
 fn draw_status_glyph(canvas: &mut Canvas<'_>, x: f32, y: f32) {

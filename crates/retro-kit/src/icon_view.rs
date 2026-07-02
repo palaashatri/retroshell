@@ -78,32 +78,18 @@ impl Widget for IconView {
         let icon_size = self.icon_size;
         if is_desktop {
             let right_x = r.x + size.width - icon_size - 28.0;
-            let app_x = r.x + 24.0;
-            let mut app_index = 0usize;
+            let mut app_y = r.y + 28.0;
+            let trash_y = r.y + size.height - icon_size - 34.0;
             for item in &mut self.items {
-                let rect = match item.label.as_str() {
-                    "Hard Disk" => Rect::new(right_x, r.y + 28.0, icon_size, icon_size + 22.0),
-                    "Home" => Rect::new(right_x, r.y + 118.0, icon_size, icon_size + 22.0),
-                    "Applications" => Rect::new(right_x, r.y + 208.0, icon_size, icon_size + 22.0),
-                    "Trash" => Rect::new(
-                        right_x,
-                        r.y + size.height - icon_size - 34.0,
-                        icon_size,
-                        icon_size + 22.0,
-                    ),
+                let y = match item.label.as_str() {
+                    "Trash" => trash_y,
                     _ => {
-                        let col = app_index % 4;
-                        let row = app_index / 4;
-                        app_index += 1;
-                        Rect::new(
-                            app_x + col as f32 * (icon_size + 38.0),
-                            r.y + 36.0 + row as f32 * (icon_size + 38.0),
-                            icon_size,
-                            icon_size + 22.0,
-                        )
+                        let y = app_y;
+                        app_y += icon_size + 20.0;
+                        y
                     }
                 };
-                item.rect = rect;
+                item.rect = Rect::new(right_x, y, icon_size, icon_size + 22.0);
             }
         } else {
             let cell_w = 90.0;

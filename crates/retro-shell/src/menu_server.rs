@@ -65,19 +65,18 @@ impl MenuServer {
             },
         );
         system_menu.add_separator();
-        system_menu.add_action("Sleep");
-        system_menu.add_action("Restart...");
-        system_menu.add_action("Shut Down...");
-        system_menu.add_separator();
-        system_menu.add_action("Lock Screen").with_shortcut(
-            KeyCode::Q,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
+        system_menu
+            .add_action("Quit RetroShell")
+            .with_action("shell.quit")
+            .with_shortcut(
+                KeyCode::Q,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
         system_menu.add_action("Log Out...").with_shortcut(
             KeyCode::Q,
             Modifiers {
@@ -269,6 +268,18 @@ impl MenuServer {
 
         let mut file_menu = Menu::new("File");
         file_menu
+            .add_action("New Folder")
+            .with_action("finder.new_folder")
+            .with_shortcut(
+                KeyCode::N,
+                Modifiers {
+                    shift: true,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+        file_menu
             .add_action("New Window")
             .with_action("shell.new_finder_window")
             .with_shortcut(
@@ -280,6 +291,20 @@ impl MenuServer {
                     meta: true,
                 },
             );
+        file_menu.add_separator();
+        file_menu
+            .add_action("Get Info")
+            .with_action("finder.get_info")
+            .with_shortcut(
+                KeyCode::I,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+        file_menu.add_separator();
         file_menu
             .add_action("Close Window")
             .with_action("shell.close_finder_window")

@@ -40,6 +40,15 @@ sleep 2
 # Set WAYLAND_DISPLAY for clients after compositor started
 export WAYLAND_DISPLAY=wayland-0
 
+echo "=== Configuring labwc output mode ==="
+# Install wlr-randr if not present and set output to match Xvfb resolution
+if ! command -v wlr-randr &>/dev/null; then
+    apt-get update -qq && apt-get install -y -qq wlr-randr 2>/dev/null || true
+fi
+# Give labwc a moment to initialize the output
+sleep 1
+wlr-randr --output WL-1 --mode 1280x800 2>/dev/null || true
+
 echo "=== Ready ==="
 # Keep container running and execute commands passed to it, or sleep
 if [ $# -gt 0 ]; then

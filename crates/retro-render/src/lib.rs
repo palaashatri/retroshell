@@ -10,7 +10,7 @@ pub mod theme_renderer;
 pub mod windowing;
 
 pub use event_loop::{RetroAppHandler, RetroEventLoop};
-pub use font::Font;
+pub use font::{rasterize_char, RetroFont};
 pub use primitives::{DrawCommand, FocusRingStyle};
 pub use render_tree::{RenderNode, RenderTree};
 pub use renderer::Renderer;
