@@ -57,7 +57,6 @@ impl Widget for IconView {
             && self.items.iter().any(|item| item.label == "Hard Disk")
             && self.items.iter().any(|item| item.label == "Trash");
         let icon_size = self.icon_size;
-        let spacing = self.spacing;
         if is_desktop {
             let right_x = r.x + size.width - icon_size - 28.0;
             let app_x = r.x + 24.0;
@@ -88,13 +87,15 @@ impl Widget for IconView {
                 item.rect = rect;
             }
         } else {
-            let cols = (size.width / (icon_size + spacing)).max(1.0) as usize;
+            let cell_w = 90.0;
+            let cell_h = 90.0;
+            let cols = (size.width / cell_w).max(1.0) as usize;
             for (i, item) in self.items.iter_mut().enumerate() {
                 let col = i % cols;
                 let row = i / cols;
                 item.rect = Rect::new(
-                    r.x + col as f32 * (icon_size + spacing),
-                    r.y + row as f32 * (icon_size + spacing),
+                    r.x + col as f32 * cell_w + (cell_w - icon_size) * 0.5,
+                    r.y + row as f32 * cell_h + 10.0,
                     icon_size,
                     icon_size + 20.0,
                 );

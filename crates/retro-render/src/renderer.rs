@@ -37,14 +37,34 @@ impl Renderer {
             .await?;
 
         let capabilities = surface.get_capabilities(&adapter);
-        let format = capabilities.formats[0];
+        
+        // Dynamic HDR selection: prefer wide color formats like float16 or 10-bit formats
+        let format = capabilities
+            .formats
+            .iter()
+            .copied()
+            .find(|&f| {
+                f == wgpu::TextureFormat::Rgba16Float
+                    || f == wgpu::TextureFormat::Rgb10a2Unorm
+            })
+            .unwrap_or(capabilities.formats[0]);
+
+        // Dynamic VRR (Variable Refresh Rate) and low-latency modes selection:
+        // Prefer AutoVsync (freesync/g-sync adaptive sync) or Mailbox (low latency VSync-free)
+        let present_mode = if capabilities.present_modes.contains(&wgpu::PresentMode::AutoVsync) {
+            wgpu::PresentMode::AutoVsync
+        } else if capabilities.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else {
+            wgpu::PresentMode::Fifo
+        };
 
         let config = SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             width,
             height,
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,

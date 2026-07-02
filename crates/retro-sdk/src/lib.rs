@@ -1543,6 +1543,23 @@ fn draw_tree_node(
     }
 }
 
+fn truncate_label(label: &str, max_len: usize) -> String {
+    if label.len() <= max_len {
+        return label.to_string();
+    }
+    if max_len <= 4 {
+        return format!("{}...", &label[..max_len.max(3) - 3]);
+    }
+    if let Some(pos) = label.rfind('.') {
+        let ext = &label[pos..];
+        if ext.len() < max_len - 3 {
+            let base_len = max_len - 3 - ext.len();
+            return format!("{}...{}", &label[..base_len], ext);
+        }
+    }
+    format!("{}...", &label[..max_len - 3])
+}
+
 fn draw_icon_view(canvas: &mut Canvas<'_>, icon_view: &IconView) {
     let rect = icon_view.rect();
     let is_desktop = rect.width >= 600.0
@@ -1555,6 +1572,7 @@ fn draw_icon_view(canvas: &mut Canvas<'_>, icon_view: &IconView) {
         canvas.rect(rect, rgb(248, 248, 244));
     }
     for item in &icon_view.items {
+        let display_label = truncate_label(&item.label, 12);
         if item.selected {
             let sel_rect = Rect::new(
                 item.rect.x - 6.0,
@@ -1567,8 +1585,8 @@ fn draw_icon_view(canvas: &mut Canvas<'_>, icon_view: &IconView) {
         draw_desktop_icon(canvas, item);
         let label_y = item.rect.y + icon_view.icon_size + 6.0;
         canvas.text(
-            &item.label,
-            item.rect.x + (item.rect.width - item.label.len() as f32 * 6.0) * 0.5,
+            &display_label,
+            item.rect.x + (item.rect.width - display_label.len() as f32 * 6.0) * 0.5,
             label_y,
             if item.selected {
                 rgb(255, 255, 255)
