@@ -1,4 +1,5 @@
 use retro_sdk::build_menu;
+use retro_sdk::global_menu_mode_enabled;
 use retro_sdk::Application;
 use retro_sdk::MenuManifest;
 use std::fs;
@@ -22,6 +23,23 @@ fn test_app_initial_size_can_be_configured() {
 
     assert_eq!(app.initial_size.width, 1280.0);
     assert_eq!(app.initial_size.height, 800.0);
+}
+
+#[test]
+fn test_global_menu_mode_env_flag() {
+    std::env::remove_var("RETROSHELL_GLOBAL_MENU");
+    assert!(!global_menu_mode_enabled());
+
+    std::env::set_var("RETROSHELL_GLOBAL_MENU", "1");
+    assert!(global_menu_mode_enabled());
+
+    std::env::set_var("RETROSHELL_GLOBAL_MENU", "true");
+    assert!(global_menu_mode_enabled());
+
+    std::env::set_var("RETROSHELL_GLOBAL_MENU", "0");
+    assert!(!global_menu_mode_enabled());
+
+    std::env::remove_var("RETROSHELL_GLOBAL_MENU");
 }
 
 #[test]

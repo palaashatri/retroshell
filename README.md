@@ -66,13 +66,14 @@ Wayland / X11 Compositor today (labwc / Xvfb) -> Linux Kernel
 
 ## 5. Current Status
 
-RetroShell is currently a polished prototype shell, not a production desktop environment. The shell-owned menu bar is functional for internal shell/Finder windows and updates with the active shell window. Standalone SDK applications now publish their menu models into the runtime menu manifest directory, and the shell menu server can load those manifests; focus tracking and action dispatch are still not universal until RetroShell owns the compositor/session layer.
+RetroShell is currently a polished prototype shell, not a production desktop environment. The shell-owned menu bar is functional for internal shell/Finder windows and updates with the active shell window. Standalone SDK applications now publish their menu models into the runtime menu manifest directory, first-party apps launched by RetroShell run with local SDK menu bars suppressed, and the shell menu server can load those manifests; focus tracking and action dispatch are still not universal until RetroShell owns the compositor/session layer.
 
 Recent Phase 1 work:
 * VM startup now uses configurable `RETROSHELL_VM_WIDTH`, `RETROSHELL_VM_HEIGHT`, and `RETROSHELL_VM_DEPTH` values, starts labwc through its X11 backend explicitly, and configures the discovered wlroots output with `wlr-randr`.
 * Docker images install real font packages, and `retro-render` no longer embeds the invalid HTML file that previously pretended to be `DejaVuSans.ttf`.
 * Clipboard now persists through a runtime file so first-party apps can copy/paste across process boundaries. This is a practical bridge, not final Wayland `wl_data_device` integration.
 * SDK apps publish JSON menu manifests to `${RETROSHELL_MENU_MANIFEST_DIR}` or `${XDG_RUNTIME_DIR}/retroshell/menus`, and `retro-shell` can load those manifests into the shell menu server.
+* RetroShell sets `RETROSHELL_GLOBAL_MENU=1` for first-party SDK apps it launches, suppressing their duplicate local menu bars and switching the shell menu model to the launched app.
 
 Still not done:
 * RetroShell is not yet a compositor and does not manage external Wayland app surfaces itself.

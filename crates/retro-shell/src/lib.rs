@@ -236,19 +236,21 @@ impl ShellDesktop {
 
         if let Some(bundle_id) = item.icon.as_deref() {
             if self.bundle_ids.iter().any(|id| id == bundle_id) {
-                launch_app_binary(bundle_id);
+                let bundle_id = bundle_id.to_string();
+                self.launch_external_app(&bundle_id);
                 return;
             }
         }
 
         match item.label.as_str() {
             "Applications" => {
-                if let Some(bundle) = self
+                let bundle_id = self
                     .launch_services
                     .read()
                     .bundle_for_id("com.retro.finder")
-                {
-                    launch_app_binary(&bundle.bundle_id);
+                    .map(|bundle| bundle.bundle_id.clone());
+                if let Some(bundle_id) = bundle_id {
+                    self.launch_external_app(&bundle_id);
                 }
             }
             "Home" => {
@@ -417,6 +419,17 @@ impl ShellDesktop {
         self.menu_bar.menus = self.menu_server.read().menus.clone();
     }
 
+    fn activate_app_menu(&mut self, bundle_id: &str) {
+        self.menu_server.write().set_active_app_menus(bundle_id);
+        self.menu_bar.menus = self.menu_server.read().menus.clone();
+    }
+
+    fn launch_external_app(&mut self, bundle_id: &str) {
+        if launch_app_binary(bundle_id) {
+            self.activate_app_menu(bundle_id);
+        }
+    }
+
     fn active_window_id(&self) -> Option<Uuid> {
         self.windows.last().map(|window| window.id)
     }
@@ -516,9 +529,9 @@ impl ShellDesktop {
             "shell.open_computer" => {
                 self.open_folder_window("Hard Disk", PathBuf::from("/"));
             }
-            "shell.open_finder" => launch_app_binary("com.retro.finder"),
-            "shell.settings" => launch_app_binary("com.retro.settings"),
-            "shell.software_catalog" => launch_app_binary("com.retro.appstore"),
+            "shell.open_finder" => self.launch_external_app("com.retro.finder"),
+            "shell.settings" => self.launch_external_app("com.retro.settings"),
+            "shell.software_catalog" => self.launch_external_app("com.retro.appstore"),
             "shell.about" => {
                 self.open_folder_window("About RetroShell", PathBuf::from("/"));
             }
@@ -781,14 +794,14 @@ fn trash_dir() -> PathBuf {
         .join("Trash/files")
 }
 
-fn launch_app_binary(bundle_id: &str) {
+fn launch_app_binary(bundle_id: &str) -> bool {
     let binary = match bundle_id {
         "com.retro.finder" => "finder",
         "com.retro.settings" => "settings",
         "com.retro.textedit" => "textedit",
         "com.retro.terminal" => "terminal",
         "com.retro.appstore" => "appstore",
-        _ => return,
+        _ => return false,
     };
 
     let candidates = [
@@ -802,15 +815,21 @@ fn launch_app_binary(bundle_id: &str) {
 
     for candidate in candidates.into_iter().flatten() {
         if candidate.exists() {
-            match Command::new(&candidate).spawn() {
-                Ok(_) => tracing::info!("Launched {}", candidate.display()),
+            let mut command = Command::new(&candidate);
+            command.env("RETROSHELL_GLOBAL_MENU", "1");
+            match command.spawn() {
+                Ok(_) => {
+                    tracing::info!("Launched {}", candidate.display());
+                    return true;
+                }
                 Err(err) => tracing::error!("Failed to launch {}: {err}", candidate.display()),
             }
-            return;
+            return false;
         }
     }
 
     tracing::warn!("Could not find executable for {bundle_id}");
+    false
 }
 
 impl Widget for ShellDesktop {
@@ -1197,6 +1216,27 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(titles.contains(&"Finder"));
         assert!(titles.contains(&"Go"));
+    }
+
+    #[test]
+    fn shell_global_menu_switches_to_launched_sdk_app() {
+        let (mut desktop, _) = test_desktop();
+
+        desktop.activate_app_menu("com.retro.textedit");
+
+        let titles = desktop
+            .menu_bar
+            .menus
+            .iter()
+            .map(|menu| menu.title.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            desktop.menu_server.read().active_app.as_deref(),
+            Some("com.retro.textedit")
+        );
+        assert!(titles.contains(&"TextEdit"));
+        assert!(titles.contains(&"File"));
+        assert!(titles.contains(&"Edit"));
     }
 
     #[test]

@@ -67,6 +67,18 @@ pub fn menu_manifest_dir() -> Option<PathBuf> {
         })
 }
 
+pub fn global_menu_mode_enabled() -> bool {
+    std::env::var_os("RETROSHELL_GLOBAL_MENU")
+        .and_then(|value| value.into_string().ok())
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn sanitize_manifest_name(name: &str) -> String {
     name.chars()
         .map(|ch| {
@@ -200,7 +212,9 @@ impl Application {
         if let Err(err) = self.publish_menu_manifest() {
             tracing::warn!("failed to publish menu manifest: {err}");
         }
-        self.attach_menu_bar();
+        if !global_menu_mode_enabled() {
+            self.attach_menu_bar();
+        }
         self.running = true;
         tracing::info!("Application '{}' started", self.name);
 
