@@ -482,11 +482,7 @@ impl ShellDesktop {
             }
             "shell.open_finder" => launch_app_binary("com.retro.finder"),
             "shell.settings" => launch_app_binary("com.retro.settings"),
-            "shell.software_catalog" => {
-                tracing::info!(
-                    "Software Catalog selected; package manager app is not implemented yet"
-                );
-            }
+            "shell.software_catalog" => launch_app_binary("com.retro.appstore"),
             "shell.about" => tracing::info!("About RetroShell selected"),
             _ => tracing::info!("Unhandled menu action: {action}"),
         }
@@ -667,6 +663,7 @@ fn launch_app_binary(bundle_id: &str) {
         "com.retro.settings" => "settings",
         "com.retro.textedit" => "textedit",
         "com.retro.terminal" => "terminal",
+        "com.retro.appstore" => "appstore",
         _ => return,
     };
 

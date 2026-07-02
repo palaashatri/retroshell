@@ -1,0 +1,14 @@
+[package]
+name = "appstore"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "appstore"
+path = "src/main.rs"
+
+[dependencies]
+retro-sdk = { path = "../../crates/retro-sdk" }
+retro-kit = { path = "../../crates/retro-kit" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -46,6 +46,12 @@ Captured from a Linux VM/Xvfb smoke run after Terminal launched a real PTY-backe
 
 ![Current Terminal app](docs/screenshots/current-terminal.png)
 
+### App Store
+
+Captured from a Linux VM/Xvfb smoke run after App Store detected the host `APT` backend, ran a real package-manager search for `doom`, and rendered package results.
+
+![Current App Store app](docs/screenshots/current-appstore.png)
+
 ## Current State
 
 RetroShell currently builds and launches a native rendered desktop surface, menu strip, desktop icons, app bundle labels, first-party apps wired through RetroKit/RetroSDK, and first-pass managed shell windows with close, zoom, fullscreen, drag, and resize behavior. Desktop Home/Hard Disk/Trash icons open folder-backed shell windows, and folder icons inside managed shell windows open child folder windows.
@@ -58,19 +64,22 @@ Settings loads and saves `settings.conf` under `RETROSHELL_CONFIG_DIR` or `~/.co
 
 Terminal now launches a real PTY, propagates layout resize to the terminal grid and PTY, consumes async PTY output with runtime repaint, supports scrollback navigation, and wires Cmd-C/Cmd-V to the in-process clipboard baseline.
 
+App Store now launches as a first-party app, detects Linux/BSD package managers, and runs read-only package searches through the detected backend. Install/remove/update transactions and privilege handling remain future work.
+
 This is still foundation work, not a polished full desktop environment.
 
 ## Recent Verification
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (58 tests)
+- `cargo test --workspace -q` (61 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - Linux VM/Xvfb/Mesa smoke: `retro-shell` starts at 1280x800 and captures `docs/screenshots/current-retroshell-desktop.png`.
 - Linux VM/Xvfb/Mesa smoke: `finder` starts against a demo home directory, creates New Folder from the toolbar, refreshes path/status display, and captures `docs/screenshots/current-finder.png`.
 - Linux VM/Xvfb/Mesa smoke: `textedit` opens a document path and captures `docs/screenshots/current-textedit.png`.
 - Linux VM/Xvfb/Mesa smoke: `settings` clicks Dark appearance, verifies `appearance=dark`, and captures `docs/screenshots/current-settings.png`.
 - Linux VM/Xvfb/Mesa smoke: `terminal` launches a PTY-backed shell script, renders live output, and captures `docs/screenshots/current-terminal.png`.
+- Linux VM/Xvfb/Mesa smoke: `appstore` detects APT, searches for `doom`, renders package-manager results, and captures `docs/screenshots/current-appstore.png`.
 
 ## Visual Direction
 

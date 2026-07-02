@@ -12,6 +12,8 @@ Settings has its first real persistent workflow: Light/Dark/System appearance co
 
 Terminal has a real PTY-backed output path with async repaint, resize propagation, scrollback navigation, and baseline Cmd-C/Cmd-V clipboard behavior.
 
+App Store has a first native package-manager backed workflow: it detects host Linux/BSD package managers and runs read-only package searches against the detected backend.
+
 Definition of done remains a full desktop environment: working Finder, TextEdit, Settings, Terminal, package-manager backed App Store, native dark mode, compositor/session path, HDR, VRR, and real application/game validation including Doom video evidence with audio.
 
 ## Workspace
@@ -27,19 +29,20 @@ Definition of done remains a full desktop environment: working Finder, TextEdit,
 | Settings | `apps/settings/` | In progress: persistent Light/Dark/System appearance preference works; live shell theme application, input/display controls, HDR/VRR controls remain incomplete. |
 | TextEdit | `apps/textedit/` | In progress: opens optional document path, edits text, saves existing files, tracks dirty state; Save As, file dialogs, selection, clipboard, undo/redo remain incomplete. |
 | Terminal | `apps/terminal/` | In progress: PTY launch/output, resize propagation, scrollback navigation, and baseline clipboard shortcuts work; selection UI, persistent sessions, robust shell lifecycle, and polished tabs remain incomplete. |
-| App Store | Not started | Needs Linux/BSD package-manager backend abstraction, search/install/remove/update flows, and privilege handling. |
+| App Store | `apps/appstore/` | In progress: detects APT/DNF/Pacman/pkg/apk/zypper/brew, runs read-only package searches, and renders results; install/remove/update flows, privilege prompts, and transaction logs remain incomplete. |
 
 ## Recent Verification
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (58 tests)
+- `cargo test --workspace -q` (61 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - Linux VM/Xvfb/Mesa Vulkan llvmpipe smoke: `retro-shell` starts 1280x800, accepts pointer interaction, toggles active Finder-style managed shell window into fullscreen through the View menu, opens Home into a managed folder window, opens a child folder inside the initial managed folder window, and captures `docs/screenshots/current-retroshell-desktop.png`.
 - Linux VM/Xvfb/Mesa Vulkan llvmpipe smoke: `finder` starts against a demo home directory, renders visible Back/Forward/Up and file-operation controls, creates New Folder from the toolbar, refreshes path/status display, and captures `docs/screenshots/current-finder.png`.
 - Linux VM/Xvfb/Mesa Vulkan llvmpipe smoke: `textedit` opens a document path, renders document text with saved/path status, and captures `docs/screenshots/current-textedit.png`.
 - Linux VM/Xvfb/Mesa Vulkan llvmpipe smoke: `settings` clicks Dark appearance, verifies `appearance=dark`, renders selected mode/status UI, and captures `docs/screenshots/current-settings.png`.
 - Linux VM/Xvfb/Mesa Vulkan llvmpipe smoke: `terminal` launches a PTY-backed shell script, consumes async output, renders live terminal text, and captures `docs/screenshots/current-terminal.png`.
+- Linux VM/Xvfb/Mesa Vulkan llvmpipe smoke: `appstore` detects APT, searches for `doom`, renders package-manager results, and captures `docs/screenshots/current-appstore.png`.
 
 ## Next Milestones
 

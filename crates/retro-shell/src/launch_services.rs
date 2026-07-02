@@ -97,6 +97,12 @@ impl LaunchServices {
                 "0.1.0",
                 "/Applications/Terminal.app",
             ),
+            (
+                "com.retro.appstore",
+                "App Store",
+                "0.1.0",
+                "/Applications/App Store.app",
+            ),
         ];
         for (id, name, version, path) in builtins {
             self.register_bundle(AppBundle {

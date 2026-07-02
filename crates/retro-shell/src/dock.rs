@@ -94,6 +94,15 @@ impl Dock {
             is_folder: false,
             position: Rect::ZERO,
         });
+        self.items.push(DockItem {
+            app_id: "com.retro.appstore".into(),
+            label: "App Store".into(),
+            icon: Some("appstore".into()),
+            state: AppState::NotRunning,
+            is_trash: false,
+            is_folder: false,
+            position: Rect::ZERO,
+        });
     }
 
     pub fn add_item(&mut self, app_id: &str, label: &str) {
