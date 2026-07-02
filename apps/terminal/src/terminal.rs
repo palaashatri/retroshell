@@ -1,6 +1,6 @@
 use crate::vt_parser::VtHandler;
 use retro_kit::clipboard::Clipboard;
-use retro_kit::event::KeyCode;
+use retro_kit::event::{KeyCode, MouseButton};
 use retro_kit::theme::ThemeContext;
 use retro_kit::Color;
 use retro_kit::{
@@ -8,6 +8,12 @@ use retro_kit::{
     MonospaceView, Rect, Size, Widget, WidgetState,
 };
 use std::any::Any;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridPoint {
+    pub col: usize,
+    pub row: usize,
+}
 
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
@@ -52,6 +58,9 @@ pub struct Terminal {
     pub rx: Option<std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Vec<u8>>>>>,
     display: MonospaceView,
     pub scroll_offset: usize,
+    pub selection_start: Option<GridPoint>,
+    pub selection_end: Option<GridPoint>,
+    selecting: bool,
 }
 
 impl Terminal {
@@ -75,6 +84,9 @@ impl Terminal {
             rx: None,
             display: MonospaceView::new(cols, rows),
             scroll_offset: 0,
+            selection_start: None,
+            selection_end: None,
+            selecting: false,
         }
     }
 
@@ -92,6 +104,7 @@ impl Terminal {
         self.cursor_x = self.cursor_x.min(cols.saturating_sub(1));
         self.cursor_y = self.cursor_y.min(rows.saturating_sub(1));
         self.scroll_offset = self.scroll_offset.min(self.scrollback.len());
+        self.clear_selection();
         if let Some(ref pty) = self.pty {
             let _ = pty.resize(cols as u16, rows as u16);
         }
@@ -145,6 +158,54 @@ impl Terminal {
             .map(Self::row_text)
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.normalized_selection()?;
+        let rows = self.visible_rows();
+        let mut lines = Vec::new();
+
+        for row in start.row..=end.row {
+            let start_col = if row == start.row { start.col } else { 0 };
+            let end_col = if row == end.row {
+                end.col
+            } else {
+                self.cols.saturating_sub(1)
+            };
+
+            let Some(cells) = rows.get(row) else {
+                continue;
+            };
+
+            let mut text = String::new();
+            for col in start_col..=end_col.min(self.cols.saturating_sub(1)) {
+                if let Some(cell) = cells.get(col) {
+                    text.push(cell.c);
+                }
+            }
+            while text.ends_with(' ') {
+                text.pop();
+            }
+            lines.push(text);
+        }
+
+        Some(lines.join("\n"))
+    }
+
+    pub fn select_all_visible(&mut self) {
+        self.selection_start = Some(GridPoint { col: 0, row: 0 });
+        self.selection_end = Some(GridPoint {
+            col: self.cols.saturating_sub(1),
+            row: self.rows.saturating_sub(1),
+        });
+        self.selecting = false;
+        self.sync_display();
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection_start = None;
+        self.selection_end = None;
+        self.selecting = false;
     }
 
     fn visible_rows(&self) -> Vec<Vec<Cell>> {
@@ -217,11 +278,54 @@ impl Widget for Terminal {
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
         match event {
+            Event::MouseDown {
+                button: MouseButton::Left,
+                point,
+                ..
+            } => {
+                if let Some(cell) = self.point_to_cell(*point) {
+                    self.selection_start = Some(cell);
+                    self.selection_end = Some(cell);
+                    self.selecting = true;
+                    self.sync_display();
+                    return EventResult::Handled;
+                }
+                self.clear_selection();
+                self.sync_display();
+                EventResult::Ignored
+            }
+            Event::MouseMove { point, .. } | Event::Drag { point } => {
+                if self.selecting {
+                    if let Some(cell) = self.point_to_cell(*point) {
+                        self.selection_end = Some(cell);
+                        self.sync_display();
+                    }
+                    return EventResult::Handled;
+                }
+                EventResult::Ignored
+            }
+            Event::MouseUp {
+                button: MouseButton::Left,
+                point,
+                ..
+            }
+            | Event::DragEnd { point } => {
+                if self.selecting {
+                    if let Some(cell) = self.point_to_cell(*point) {
+                        self.selection_end = Some(cell);
+                    }
+                    self.selecting = false;
+                    self.sync_display();
+                    return EventResult::Handled;
+                }
+                EventResult::Ignored
+            }
             Event::KeyDown { key, modifiers } => {
                 if modifiers.meta {
                     match key {
                         KeyCode::C => {
-                            Clipboard::copy(&self.visible_text());
+                            let text = self.selected_text().unwrap_or_else(|| self.visible_text());
+                            Clipboard::copy(&text);
                             return EventResult::Handled;
                         }
                         KeyCode::V => {
@@ -235,7 +339,7 @@ impl Widget for Terminal {
                             return EventResult::Ignored;
                         }
                         KeyCode::A => {
-                            Clipboard::copy(&self.visible_text());
+                            self.select_all_visible();
                             return EventResult::Handled;
                         }
                         _ => {}
@@ -349,6 +453,7 @@ impl Widget for Terminal {
 
                     if !bytes.is_empty() {
                         let _ = pty.write(&bytes);
+                        self.clear_selection();
                         return EventResult::Handled;
                     }
                 }
@@ -360,6 +465,7 @@ impl Widget for Terminal {
                     let mut buf = [0u8; 4];
                     let s = character.encode_utf8(&mut buf);
                     let _ = pty.write(s.as_bytes());
+                    self.clear_selection();
                     return EventResult::Handled;
                 }
                 EventResult::Ignored
@@ -414,11 +520,49 @@ impl Widget for Terminal {
 }
 
 impl Terminal {
+    fn point_to_cell(&self, point: retro_kit::Point) -> Option<GridPoint> {
+        let rect = self.rect();
+        if !rect.contains(point) {
+            return None;
+        }
+
+        let col = ((point.x - rect.x) / self.display.cell_width).floor() as usize;
+        let row = ((point.y - rect.y) / self.display.cell_height).floor() as usize;
+        if col < self.cols && row < self.rows {
+            Some(GridPoint { col, row })
+        } else {
+            None
+        }
+    }
+
+    fn normalized_selection(&self) -> Option<(GridPoint, GridPoint)> {
+        let start = self.selection_start?;
+        let end = self.selection_end?;
+        let start_index = start.row * self.cols + start.col;
+        let end_index = end.row * self.cols + end.col;
+        if start_index <= end_index {
+            Some((start, end))
+        } else {
+            Some((end, start))
+        }
+    }
+
+    fn is_selected(&self, row: usize, col: usize) -> bool {
+        let Some((start, end)) = self.normalized_selection() else {
+            return false;
+        };
+        let index = row * self.cols + col;
+        let start_index = start.row * self.cols + start.col;
+        let end_index = end.row * self.cols + end.col;
+        index >= start_index && index <= end_index
+    }
+
     pub fn sync_display(&mut self) {
         let rows = self.visible_rows();
         for row in 0..self.rows {
             for col in 0..self.cols {
                 let index = row * self.cols + col;
+                let selected = self.is_selected(row, col);
                 if let Some(slot) = self.display.cells.get_mut(index) {
                     let cell = rows
                         .get(row)
@@ -427,8 +571,16 @@ impl Terminal {
                         .unwrap_or_default();
                     *slot = MonospaceCell {
                         ch: cell.c,
-                        fg: [cell.fg.r, cell.fg.g, cell.fg.b, cell.fg.a],
-                        bg: [cell.bg.r, cell.bg.g, cell.bg.b, cell.bg.a],
+                        fg: if selected {
+                            [1.0, 1.0, 1.0, 1.0]
+                        } else {
+                            [cell.fg.r, cell.fg.g, cell.fg.b, cell.fg.a]
+                        },
+                        bg: if selected {
+                            [0.22, 0.43, 0.68, 1.0]
+                        } else {
+                            [cell.bg.r, cell.bg.g, cell.bg.b, cell.bg.a]
+                        },
                     };
                 }
             }
@@ -595,5 +747,82 @@ mod tests {
 
         assert!(matches!(result, EventResult::Handled));
         assert!(Clipboard::paste().contains("copy me"));
+    }
+
+    #[test]
+    fn terminal_selected_text_copies_only_selection() {
+        Clipboard::clear();
+        let mut term = Terminal::new(12, 2);
+        for byte in b"alpha beta\r\nnext" {
+            term.write_byte(*byte);
+        }
+
+        term.selection_start = Some(GridPoint { col: 6, row: 0 });
+        term.selection_end = Some(GridPoint { col: 9, row: 0 });
+
+        let result = term.handle_event(&Event::KeyDown {
+            key: KeyCode::C,
+            modifiers: retro_kit::event::Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(Clipboard::paste(), "beta");
+    }
+
+    #[test]
+    fn terminal_mouse_drag_highlights_selected_cells() {
+        let mut term = Terminal::new(12, 2);
+        term.layout(LayoutConstraint::tight(Size::new(96.0, 32.0)));
+        for byte in b"select me" {
+            term.write_byte(*byte);
+        }
+
+        let down = term.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point: retro_kit::Point::new(0.0, 0.0),
+            modifiers: retro_kit::event::Modifiers::NONE,
+        });
+        let drag = term.handle_event(&Event::MouseMove {
+            point: retro_kit::Point::new(47.0, 0.0),
+            modifiers: retro_kit::event::Modifiers::NONE,
+        });
+        let up = term.handle_event(&Event::MouseUp {
+            button: MouseButton::Left,
+            point: retro_kit::Point::new(47.0, 0.0),
+            modifiers: retro_kit::event::Modifiers::NONE,
+        });
+
+        assert!(matches!(down, EventResult::Handled));
+        assert!(matches!(drag, EventResult::Handled));
+        assert!(matches!(up, EventResult::Handled));
+        assert_eq!(term.selected_text().as_deref(), Some("select"));
+        assert_eq!(term.display.cells[0].bg, [0.22, 0.43, 0.68, 1.0]);
+        assert_eq!(term.display.cells[5].bg, [0.22, 0.43, 0.68, 1.0]);
+    }
+
+    #[test]
+    fn terminal_meta_a_selects_visible_buffer() {
+        let mut term = Terminal::new(8, 2);
+        for byte in b"one\r\ntwo" {
+            term.write_byte(*byte);
+        }
+
+        let result = term.handle_event(&Event::KeyDown {
+            key: KeyCode::A,
+            modifiers: retro_kit::event::Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(term.selected_text().as_deref(), Some("one\ntwo"));
     }
 }

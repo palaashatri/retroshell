@@ -48,7 +48,7 @@ Captured from a Linux VM/Xvfb/Mesa smoke run after launching Settings with `appe
 
 ### Terminal
 
-Captured from a Linux VM/Xvfb smoke run after Terminal launched a real PTY-backed shell script, consumed asynchronous output, repainted the native terminal surface, and rendered live output.
+Captured from a Linux VM/Xvfb smoke run after Terminal launched a real PTY-backed shell script, consumed asynchronous output, repainted the native terminal surface, and rendered mouse-selected terminal text.
 
 ![Current Terminal app](docs/screenshots/current-terminal.png)
 
@@ -68,7 +68,7 @@ TextEdit opens an optional document path passed on the command line, edits throu
 
 Settings loads and saves `settings.conf` under `RETROSHELL_CONFIG_DIR` or `~/.config/retroshell`, exposes Light/Dark/System controls, persists changes immediately, and reports the active mode. RetroSDK consumes the same preference and renders shared native chrome/controls in dark appearance when `appearance=dark`.
 
-Terminal launches a real PTY, propagates layout resize to the terminal grid and PTY, consumes async PTY output through runtime repaint, supports scrollback navigation, and wires Cmd-C/Cmd-V to the in-process clipboard baseline.
+Terminal launches a real PTY, propagates layout resize to the terminal grid and PTY, consumes async PTY output through runtime repaint, supports scrollback navigation, renders mouse-drag text selection, copies selected text with Cmd-C, selects the visible buffer with Cmd-A, and wires Cmd-V to the in-process clipboard baseline.
 
 App Store launches as a first-party app, detects Linux/BSD package managers, and runs read-only package searches through the detected backend. Install/remove/update transactions and privilege handling remain future work.
 
@@ -78,14 +78,14 @@ This is still foundation work, not a polished full desktop environment.
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (68 tests)
+- `cargo test --workspace -q` (71 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - Linux VM/Xvfb/Mesa smoke: `retro-shell` renders the desktop, manages shell windows, handles menu interaction/window controls/drag/resize/fullscreen, and captures `docs/screenshots/current-retroshell-desktop.png`.
 - Linux VM/Xvfb smoke: `finder` starts against a demo home directory, selects a real file, triggers the `INFO` toolbar action, renders selected-file metadata in the status bar, and captures `docs/screenshots/current-finder.png`.
 - Linux VM/Xvfb smoke: `textedit` opens a document path, renders edit controls, and captures `docs/screenshots/current-textedit.png`.
 - Linux VM/Xvfb/Mesa smoke: `settings` clicks Dark appearance, verifies `appearance=dark`, renders selected mode/status UI, and captures `docs/screenshots/current-settings.png`.
 - Linux VM/Xvfb/Mesa smoke: `settings` launches with `appearance=dark`, renders dark native chrome/controls, and captures `docs/screenshots/current-dark-mode-settings.png`.
-- Linux VM/Xvfb smoke: `terminal` launches a PTY-backed shell script, renders live output, and captures `docs/screenshots/current-terminal.png`.
+- Linux VM/Xvfb smoke: `terminal` launches a PTY-backed shell script, renders live output, mouse-selects terminal text, and captures `docs/screenshots/current-terminal.png`.
 - Linux VM/Xvfb smoke: `appstore` detects APT, searches `doom`, renders package-manager results, and captures `docs/screenshots/current-appstore.png`.
 
 ## Visual Direction

@@ -12,7 +12,7 @@ Settings has the first persistent workflow: Light/Dark/System appearance control
 
 Native dark mode has its first runtime path: RetroSDK reads the same `settings.conf` preference and renders shared window chrome, menus, labels, buttons, text fields, lists, sidebars, split panels, toolbars, and status bars with dark-aware colors.
 
-Terminal has a real PTY-backed output path, async repaint, resize propagation, scrollback navigation, and baseline Cmd-C/Cmd-V clipboard behavior.
+Terminal has a real PTY-backed output path, async repaint, resize propagation, scrollback navigation, mouse-drag selection rendering, selected-text Cmd-C copy, visible-buffer Cmd-A selection, and baseline Cmd-V paste behavior.
 
 App Store has the first native package-manager backed workflow: it detects host Linux/BSD package managers and runs read-only package searches against the detected backend.
 
@@ -28,21 +28,21 @@ Definition of done remains a full desktop environment: working Finder, TextEdit,
 | Finder | `apps/finder/` | In progress: navigation history, visible navigation controls, file operation helpers, and Get Info status metadata exist; contextual menus, drag/drop, trash polish, desktop integration, and multi-window workflows remain incomplete. |
 | Settings | `apps/settings/` | In progress: persistent Light/Dark/System appearance preference works and SDK consumes it for native dark rendering; broader settings panes, input/display controls, HDR/VRR controls remain incomplete. |
 | TextEdit | `apps/textedit/` | In progress: opens optional document path, edits text, saves existing files, tracks dirty state, supports undo/redo and baseline whole-document clipboard commands; Save As, file dialogs, selection UI, platform clipboard, and text wrapping/scrolling polish remain incomplete. |
-| Terminal | `apps/terminal/` | In progress: PTY launch/output, resize propagation, scrollback navigation, and baseline clipboard shortcuts work; selection UI, persistent sessions, robust shell lifecycle, and polished tabs remain incomplete. |
+| Terminal | `apps/terminal/` | In progress: PTY launch/output, resize propagation, scrollback navigation, mouse selection UI, selected-text copy, visible-buffer select-all, and baseline paste shortcuts work; persistent sessions, robust shell lifecycle, and polished tabs remain incomplete. |
 | App Store | `apps/appstore/` | In progress: detects APT/DNF/Pacman/pkg/apk/zypper/brew, runs read-only package searches, and renders results; install/remove/update flows, privilege prompts, and transaction logs remain incomplete. |
 
 ## Recent Verification
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (68 tests)
+- `cargo test --workspace -q` (71 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - Linux VM/Xvfb/Mesa Vulkan llvmpipe smoke: `retro-shell` renders the desktop, handles menu interaction/window controls/drag/resize/fullscreen, opens a managed folder window, and captures `docs/screenshots/current-retroshell-desktop.png`.
 - Linux VM/Xvfb smoke: `finder` starts against a demo home directory, selects `note.txt`, triggers the `INFO` toolbar action, renders `INFO - FILE - NOTE.TXT - 5 BYTES` in the status bar, and captures `docs/screenshots/current-finder.png`.
 - Linux VM/Xvfb smoke: `textedit` opens a document path, renders edit controls, and captures `docs/screenshots/current-textedit.png`.
 - Linux VM/Xvfb/Mesa Vulkan llvmpipe smoke: `settings` clicks Dark appearance, verifies `appearance=dark`, renders selected mode/status UI, and captures `docs/screenshots/current-settings.png`.
 - Linux VM/Xvfb/Mesa Vulkan llvmpipe smoke: `settings` launches with `appearance=dark`, renders dark native chrome/controls, and captures `docs/screenshots/current-dark-mode-settings.png`.
-- Linux VM/Xvfb smoke: `terminal` launches a PTY-backed shell script, consumes async output, renders live terminal text, and captures `docs/screenshots/current-terminal.png`.
+- Linux VM/Xvfb smoke: `terminal` launches a PTY-backed shell script, consumes async output, renders live terminal text, mouse-selects terminal text, and captures `docs/screenshots/current-terminal.png`.
 - Linux VM/Xvfb smoke: `appstore` detects APT, searches for `doom`, renders package-manager results, and captures `docs/screenshots/current-appstore.png`.
 
 ## Next Milestones
