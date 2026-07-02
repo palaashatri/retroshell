@@ -1,9 +1,9 @@
-use ab_glyph::{FontArc, Font as AbFont, PxScale};
+use ab_glyph::{Font as AbFont, FontArc, PxScale, ScaleFont};
 use cosmic_text::{Family, FontSystem};
 use fontdb::{Query, Stretch, Style, Weight};
 use parking_lot::Mutex;
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::fs;
+use std::sync::{Arc, OnceLock};
 
 pub struct RetroFont {
     pub font_system: Arc<Mutex<FontSystem>>,
@@ -27,9 +27,18 @@ impl RetroFont {
     }
 }
 
-static AB_FONT: OnceLock<FontArc> = OnceLock::new();
+static AB_FONT: OnceLock<Option<FontArc>> = OnceLock::new();
 
-fn load_ab_font() -> FontArc {
+const SYSTEM_FONT_FALLBACKS: &[&str] = &[
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/System/Library/Fonts/Supplemental/Helvetica.ttf",
+    "/Library/Fonts/Arial.ttf",
+];
+
+fn load_ab_font() -> Option<FontArc> {
     let mut font_sys = FontSystem::new();
     let query = Query {
         families: &[Family::SansSerif],
@@ -41,30 +50,44 @@ fn load_ab_font() -> FontArc {
     if let Some(id) = font_id {
         if let Some(data) = font_sys.db().with_face_data(id, |data, _| data.to_vec()) {
             if let Ok(font) = FontArc::try_from_vec(data) {
-                return font;
+                return Some(font);
             }
         }
     }
-    FontArc::try_from_slice(include_bytes!(
-        "../../../assets/DejaVuSans.ttf"
-    ))
-    .expect("Failed to load embedded DejaVuSans.ttf font for ab_glyph rasterization")
+
+    for path in SYSTEM_FONT_FALLBACKS {
+        if let Ok(data) = fs::read(path) {
+            if let Ok(font) = FontArc::try_from_vec(data) {
+                return Some(font);
+            }
+        }
+    }
+
+    log::warn!("no usable system sans-serif font found; falling back to bitmap glyphs");
+    None
 }
 
-pub fn rasterize_char(ch: char, font_size: f32) -> Option<(Vec<u8>, u32, u32)> {
-    let font = AB_FONT.get_or_init(load_ab_font);
+pub fn rasterize_char(ch: char, font_size: f32) -> Option<(Vec<u8>, u32, u32, f32)> {
+    let font = AB_FONT.get_or_init(load_ab_font).as_ref()?;
     let glyph_id = AbFont::glyph_id(font, ch);
+    if ch.is_control() {
+        return None;
+    }
     if glyph_id.0 == 0 && !ch.is_control() {
         return None;
     }
     let px_scale = PxScale::from(font_size * 1.4);
+    let scaled_font = font.as_scaled(px_scale);
+    let advance = scaled_font.h_advance(glyph_id).max(font_size * 0.35);
     let glyph = glyph_id.with_scale(px_scale);
-    let outlined = AbFont::outline_glyph(font, glyph)?;
+    let Some(outlined) = AbFont::outline_glyph(font, glyph) else {
+        return Some((Vec::new(), 0, 0, advance));
+    };
     let bounds = outlined.px_bounds();
     let width = bounds.width().ceil() as u32;
     let height = bounds.height().ceil() as u32;
     if width == 0 || height == 0 {
-        return None;
+        return Some((Vec::new(), 0, 0, advance));
     }
     let mut data = vec![0u8; (width * height) as usize];
     outlined.draw(|x, y, coverage| {
@@ -74,5 +97,5 @@ pub fn rasterize_char(ch: char, font_size: f32) -> Option<(Vec<u8>, u32, u32)> {
             data[iy * width as usize + ix] = (coverage * 255.0) as u8;
         }
     });
-    Some((data, width, height))
+    Some((data, width, height, advance))
 }

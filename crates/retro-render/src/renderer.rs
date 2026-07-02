@@ -37,7 +37,7 @@ impl Renderer {
             .await?;
 
         let capabilities = surface.get_capabilities(&adapter);
-        
+
         // Dynamic HDR selection: prefer wide color formats like float16 or 10-bit formats
         // FIXME: Unconditionally selecting an HDR format (e.g. Rgba16Float) when supported without doing proper SDR-to-HDR
         // tonemapping/color scaling. SDR app colors (which are standard sRGB 8-bit) may appear washed out or incorrectly mapped.
@@ -46,8 +46,7 @@ impl Renderer {
             .iter()
             .copied()
             .find(|&f| {
-                f == wgpu::TextureFormat::Rgba16Float
-                    || f == wgpu::TextureFormat::Rgb10a2Unorm
+                f == wgpu::TextureFormat::Rgba16Float || f == wgpu::TextureFormat::Rgb10a2Unorm
             })
             .unwrap_or(capabilities.formats[0]);
 
@@ -55,9 +54,15 @@ impl Renderer {
         // Prefer AutoVsync (freesync/g-sync adaptive sync) or Mailbox (low latency VSync-free)
         // FIXME: Falling back directly to Mailbox or Fifo might cause visual tearing or frame pacing stutter
         // if the client rendering loop cannot maintain display refresh rate constraints.
-        let present_mode = if capabilities.present_modes.contains(&wgpu::PresentMode::AutoVsync) {
+        let present_mode = if capabilities
+            .present_modes
+            .contains(&wgpu::PresentMode::AutoVsync)
+        {
             wgpu::PresentMode::AutoVsync
-        } else if capabilities.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+        } else if capabilities
+            .present_modes
+            .contains(&wgpu::PresentMode::Mailbox)
+        {
             wgpu::PresentMode::Mailbox
         } else {
             wgpu::PresentMode::Fifo

@@ -13,6 +13,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libdbus-1-dev \
     libfontconfig-dev \
     libfreetype6-dev \
+    fontconfig \
+    fonts-dejavu-core \
     mesa-utils \
     cmake \
     libsystemd-dev \
@@ -56,7 +58,7 @@ RUN mkdir -p crates/retro-render/src crates/retro-kit/src crates/retro-shell/src
 COPY . .
 
 # Build everything
-RUN cargo check --workspace --all-targets 2>&1
+RUN cargo build --release --workspace
 
 FROM ubuntu:24.04 AS runtime
 
@@ -69,6 +71,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libdbus-1-3 \
     libfontconfig1 \
     libfreetype6 \
+    fontconfig \
+    fonts-dejavu-core \
     mesa-vulkan-drivers \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*

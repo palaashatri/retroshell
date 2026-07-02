@@ -13,12 +13,15 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libdbus-1-dev \
     libfontconfig-dev \
     libfreetype6-dev \
+    fontconfig \
+    fonts-dejavu-core \
     mesa-utils \
     cmake \
     libsystemd-dev \
     curl \
     git \
     xvfb \
+    xdotool \
     x11vnc \
     novnc \
     websockify \
@@ -28,6 +31,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     chocolate-doom \
     freedoom \
     labwc \
+    wlr-randr \
     dbus-x11 \
     libpipewire-0.3-dev \
     libspa-0.2-dev \

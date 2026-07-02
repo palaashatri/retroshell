@@ -2595,9 +2595,11 @@ dependencies = [
 name = "retro-render"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "bitflags 2.11.1",
  "bytemuck",
  "cosmic-text",
+ "fontdb",
  "image",
  "log",
  "parking_lot",

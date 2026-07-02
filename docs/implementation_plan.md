@@ -1,5 +1,8 @@
 # RetroShell: Honest Self-Review & Road to 10/10
 
+> [!NOTE]
+> Audit update: the core architectural critique below is still accurate: RetroShell is currently a fullscreen Wayland client under `labwc`, not a compositor. Some feature rows are stale after recent work: Terminal now has a PTY path, App Store can query/package-plan through system package managers, shell-owned menus switch with active internal windows, clipboard has a first-party runtime-file bridge, and font rendering now uses system font discovery plus `ab_glyph` rasterization with bitmap fallback.
+
 ## Executive Summary
 
 **Current Score: 2.5 / 10** as a production-grade desktop environment competing with KDE/GNOME.

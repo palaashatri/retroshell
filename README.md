@@ -1,8 +1,8 @@
 # RetroShell
 
-A native Rust desktop environment experiment inspired by Classic Mac OS, NeXTSTEP, and BeOS.
+A native Rust desktop environment project inspired by Classic Mac OS, NeXTSTEP, and BeOS.
 
-RetroShell is NOT a Linux desktop theme. It is a complete, self-contained desktop platform with its own window manager, native widget toolkit, GPU-accelerated rendering pipeline, first-party SDK, and application suite.
+RetroShell is not a Linux desktop theme. The current implementation is a native Rust shell and application suite running as a Wayland client under `labwc`; the long-term goal is a real desktop environment with its own compositor/session stack.
 
 ---
 
@@ -15,17 +15,17 @@ RetroSDK (Application wrapper, preference engine, appearance API)
     ↓
 RetroKit (Native widgets, custom Layout grids, Event dispatching)
     ↓
-RetroShell (Session manager, global menu bar, window workspace routing, Dock)
+RetroShell (shell client, global menu prototype, internal window workspace routing)
     ↓
 RetroRender (wgpu rendering engine, cosmic-text rasterizer, vulkan context)
     ↓
-Wayland / X11 Compositor (e.g., labwc / Xvfb) -> Linux Kernel
+Wayland / X11 Compositor today (labwc / Xvfb) -> Linux Kernel
 ```
 
 ### Core Components
-* **`retro-shell`**: The primary desktop compositor runtime, managing global menus, dock layouts, active workspaces, notification dispatch, and desktop/window management.
+* **`retro-shell`**: The primary shell client. It manages the desktop canvas, shell-owned global menus, internal windows, app launching, and workspace state. It is not yet a Wayland compositor.
 * **`retro-kit`**: A custom, lightweight native GUI toolkit written in Rust, defining widgets, scroll containers, list view behaviors, grids, and event handling.
-* **`retro-render`**: A fast graphics pipeline built on `wgpu`. Handles low-level pipeline setup, vertex shaders, and texture upload. Integrated with `cosmic-text` for glyph layout and rasterization.
+* **`retro-render`**: A graphics pipeline built on `wgpu`. It handles low-level pipeline setup and uses the system font database with `ab_glyph` rasterization for crisp glyphs while keeping a retro fallback path.
 * **`retro-sdk`**: The software development kit for RetroShell. Houses the native menu routing, configuration stores, and the common application entrypoint loops.
 * **`retro-bus`**: A low-level IPC implementation supporting service discovery, cross-process event propagation, and communication between apps and shell services.
 
@@ -36,7 +36,7 @@ Wayland / X11 Compositor (e.g., labwc / Xvfb) -> Linux Kernel
 * **Rendering API**: WebGPU (`wgpu` targeting Vulkan/Wayland/X11 backends)
 * **Text Rendering**: `cosmic-text` font database and rasterizer
 * **Audio**: PipeWire & PulseAudio
-* **Compositor integration**: Wayland client protocol + wlr-protocols (running nested or direct)
+* **Compositor integration**: Wayland client protocol today; planned Smithay compositor/session path for a real DE
 
 ---
 
@@ -64,9 +64,30 @@ Wayland / X11 Compositor (e.g., labwc / Xvfb) -> Linux Kernel
 
 ---
 
-## 5. Development & Verification VM
+## 5. Current Status
 
-RetroShell comes with a Docker-based visual environment (`retroshell-vm`) for visual development and automated testing in a sandboxed Wayland/X11 compositor.
+RetroShell is currently a polished prototype shell, not a production desktop environment. The shell-owned menu bar is functional for internal shell/Finder windows and updates with the active shell window; standalone SDK application windows still render local menus until menu publishing moves over `retro-bus`.
+
+Recent Phase 1 work:
+* VM startup now uses configurable `RETROSHELL_VM_WIDTH`, `RETROSHELL_VM_HEIGHT`, and `RETROSHELL_VM_DEPTH` values, starts labwc through its X11 backend explicitly, and configures the discovered wlroots output with `wlr-randr`.
+* Docker images install real font packages, and `retro-render` no longer embeds the invalid HTML file that previously pretended to be `DejaVuSans.ttf`.
+* Clipboard now persists through a runtime file so first-party apps can copy/paste across process boundaries. This is a practical bridge, not final Wayland `wl_data_device` integration.
+
+Still not done:
+* RetroShell is not yet a compositor and does not manage external Wayland app surfaces itself.
+* HDR and VRR are not complete. Current renderer code can see present modes/formats, but real HDR needs color management, tone mapping, output metadata, and compositor-level presentation control.
+* The global menu is not yet universal for standalone SDK/external app windows.
+* Screenshots should be refreshed in this README whenever a major visual/UI change is verified in the VM.
+
+### Latest VM Screenshot
+
+![RetroShell Phase 1 VM screenshot](docs/screenshots/phase1-vm.png)
+
+---
+
+## 6. Development & Verification VM
+
+RetroShell comes with a Docker-based visual environment (`retroshell-vm`) for visual development and automated testing in a sandboxed Wayland/X11 compositor. The VM defaults to `1280x800x24`; override with `RETROSHELL_VM_WIDTH`, `RETROSHELL_VM_HEIGHT`, and `RETROSHELL_VM_DEPTH`.
 
 ### Building and Running the VM
 1. **Build the container**:
@@ -89,7 +110,7 @@ docker exec -d retroshell-running env -u DISPLAY WAYLAND_DISPLAY=wayland-0 XDG_R
 
 ---
 
-## 6. Ubuntu Server Installation Guide
+## 7. Ubuntu Server Installation Guide
 
 To configure a bare Ubuntu Server machine to boot directly into RetroShell, follow these installation steps:
 
@@ -116,6 +137,8 @@ sudo apt install -y --no-install-recommends \
     libdbus-1-dev \
     libfontconfig-dev \
     libfreetype6-dev \
+    fontconfig \
+    fonts-dejavu-core \
     build-essential \
     pkg-config \
     git \
@@ -187,7 +210,7 @@ xinit /usr/bin/labwc
 
 ---
 
-## 7. Production-Grade Assessment & Self-Review
+## 8. Production-Grade Assessment & Self-Review
 
 ### Production Readiness Score: **3.5 / 10 (Prototype / Concept Stage)**
 
@@ -200,8 +223,8 @@ While RetroShell is a highly optimized, responsive, and visually appealing simul
    - *Production Requirement*: A true desktop shell compositor (like Mutter or Sway) acts as the display compositor itself, exposing Wayland surface sockets to independent client processes. In RetroShell, external applications cannot natively display their window surfaces unless they are fully rewritten as child sub-widgets in RetroShell's monolithic layout canvas.
 
 2. **Font Engine & Text Limitations**:
-   - *Current Implementation*: Uses a custom, bitmap-styled pixel glyph index (`glyph_pattern`) mapping all characters to their uppercase representations.
-   - *Production Requirement*: A production environment requires vectorized font engines (TTF/OTF via HarfBuzz/FreeType) that fully support international languages, font kerning, ligatures, and dynamic subpixel antialiasing.
+   - *Current Implementation*: Uses system font discovery plus per-glyph `ab_glyph` rasterization, with a bitmap fallback. It is visibly better than the original bitmap-only path but still lacks full shaping, fallback font runs, kerning, and subpixel policy.
+   - *Production Requirement*: A production environment requires a full text stack (HarfBuzz-style shaping, font fallback, international input, ligatures, and dynamic antialiasing policy).
 
 3. **Missing HiDPI / Display Scale Adaptability**:
    - *Current Implementation*: layouts (such as the 90x90px Finder grid) utilize hardcoded pixel offsets.
@@ -213,4 +236,3 @@ While RetroShell is a highly optimized, responsive, and visually appealing simul
 
 5. **Color/Presentation Tone Gaps**:
    - *Current Implementation*: Dynamically selects `Rgba16Float` or `Rgb10a2Unorm` color spaces if the surface reports support (HDR/VRR), but doesn't perform proper SDR-to-HDR color grading/tonemapping. SDR application textures can appear washed out or oversaturated depending on physical monitor calibration.
-
