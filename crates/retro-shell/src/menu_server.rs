@@ -1,5 +1,8 @@
 use retro_kit::event::{KeyCode, Modifiers};
 use retro_kit::menu::{Menu, MenuItem, MenuItemKind};
+use retro_sdk::MenuManifest;
+use std::fs;
+use std::path::Path;
 
 pub struct MenuServer {
     pub menus: Vec<Menu>,
@@ -234,6 +237,18 @@ impl MenuServer {
         }
     }
 
+    pub fn apply_menu_manifest(&mut self, manifest: MenuManifest) {
+        self.set_app_menus(&manifest.bundle_id, manifest.menus);
+    }
+
+    pub fn load_menu_manifest<P: AsRef<Path>>(&mut self, path: P) -> std::io::Result<()> {
+        let content = fs::read_to_string(path)?;
+        let manifest: MenuManifest =
+            serde_json::from_str(&content).map_err(std::io::Error::other)?;
+        self.apply_menu_manifest(manifest);
+        Ok(())
+    }
+
     pub fn reset_to_shell_menus(&mut self) {
         self.active_app = None;
         self.menus.clear();
@@ -463,4 +478,44 @@ fn find_shortcut_action(items: &[MenuItem], key: KeyCode, modifiers: Modifiers) 
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use retro_kit::menu::Menu;
+    use retro_sdk::MenuManifest;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn menu_server_loads_sdk_menu_manifest() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("retroshell_menu_manifest_{unique}.json"));
+
+        let mut file_menu = Menu::new("File");
+        file_menu.add_action("New").with_action("com.test.app.new");
+        let manifest = MenuManifest {
+            app_name: "TestApp".to_string(),
+            bundle_id: "com.test.app".to_string(),
+            menus: vec![file_menu],
+            updated_at_millis: 1,
+        };
+        fs::write(&path, serde_json::to_string(&manifest).unwrap()).unwrap();
+
+        let mut server = MenuServer::new();
+        server.load_menu_manifest(&path).unwrap();
+
+        assert_eq!(server.active_app.as_deref(), Some("com.test.app"));
+        assert!(server.menus.iter().any(|menu| menu.title == "File"));
+        assert!(server.menus.iter().any(|menu| {
+            menu.items
+                .iter()
+                .any(|item| item.action_id == "com.test.app.new")
+        }));
+
+        let _ = fs::remove_file(path);
+    }
 }

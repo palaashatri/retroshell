@@ -1,6 +1,7 @@
 use crate::event::{KeyCode, Modifiers};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MenuItemKind {
     Action,
     Submenu,
@@ -9,7 +10,7 @@ pub enum MenuItemKind {
     Radio,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MenuItem {
     pub label: String,
     pub kind: MenuItemKind,
@@ -68,7 +69,7 @@ impl MenuItem {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Menu {
     pub title: String,
     pub items: Vec<MenuItem>,

@@ -1,4 +1,8 @@
+use retro_sdk::build_menu;
 use retro_sdk::Application;
+use retro_sdk::MenuManifest;
+use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn test_app_creation() {
@@ -18,6 +22,36 @@ fn test_app_initial_size_can_be_configured() {
 
     assert_eq!(app.initial_size.width, 1280.0);
     assert_eq!(app.initial_size.height, 800.0);
+}
+
+#[test]
+fn test_app_publishes_menu_manifest() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("retroshell_menu_manifest_{unique}"));
+    std::env::set_var("RETROSHELL_MENU_MANIFEST_DIR", &dir);
+
+    let mut app = Application::new("TestApp", "com.test.app");
+    let mut file_menu = build_menu("File");
+    file_menu.add_action("New").with_action("test.new");
+    app.set_menus(vec![file_menu]);
+
+    let path = app
+        .publish_menu_manifest()
+        .expect("menu manifest publish should not fail")
+        .expect("apps with menus should publish a manifest");
+    let manifest: MenuManifest = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+
+    assert_eq!(manifest.app_name, "TestApp");
+    assert_eq!(manifest.bundle_id, "com.test.app");
+    assert_eq!(manifest.menus[0].title, "TestApp");
+    assert_eq!(manifest.menus[1].title, "File");
+    assert_eq!(manifest.menus[1].items[0].action_id, "test.new");
+
+    let _ = fs::remove_dir_all(&dir);
+    std::env::remove_var("RETROSHELL_MENU_MANIFEST_DIR");
 }
 
 #[test]

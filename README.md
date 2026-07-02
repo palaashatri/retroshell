@@ -66,17 +66,18 @@ Wayland / X11 Compositor today (labwc / Xvfb) -> Linux Kernel
 
 ## 5. Current Status
 
-RetroShell is currently a polished prototype shell, not a production desktop environment. The shell-owned menu bar is functional for internal shell/Finder windows and updates with the active shell window; standalone SDK application windows still render local menus until menu publishing moves over `retro-bus`.
+RetroShell is currently a polished prototype shell, not a production desktop environment. The shell-owned menu bar is functional for internal shell/Finder windows and updates with the active shell window. Standalone SDK applications now publish their menu models into the runtime menu manifest directory, and the shell menu server can load those manifests; focus tracking and action dispatch are still not universal until RetroShell owns the compositor/session layer.
 
 Recent Phase 1 work:
 * VM startup now uses configurable `RETROSHELL_VM_WIDTH`, `RETROSHELL_VM_HEIGHT`, and `RETROSHELL_VM_DEPTH` values, starts labwc through its X11 backend explicitly, and configures the discovered wlroots output with `wlr-randr`.
 * Docker images install real font packages, and `retro-render` no longer embeds the invalid HTML file that previously pretended to be `DejaVuSans.ttf`.
 * Clipboard now persists through a runtime file so first-party apps can copy/paste across process boundaries. This is a practical bridge, not final Wayland `wl_data_device` integration.
+* SDK apps publish JSON menu manifests to `${RETROSHELL_MENU_MANIFEST_DIR}` or `${XDG_RUNTIME_DIR}/retroshell/menus`, and `retro-shell` can load those manifests into the shell menu server.
 
 Still not done:
 * RetroShell is not yet a compositor and does not manage external Wayland app surfaces itself.
 * HDR and VRR are not complete. Current renderer code can see present modes/formats, but real HDR needs color management, tone mapping, output metadata, and compositor-level presentation control.
-* The global menu is not yet universal for standalone SDK/external app windows.
+* The global menu is not yet universal for standalone SDK/external app windows because labwc, not RetroShell, still owns real window focus and app surface management.
 * Screenshots should be refreshed in this README whenever a major visual/UI change is verified in the VM.
 
 ### Latest VM Screenshot

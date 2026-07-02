@@ -15,9 +15,12 @@ use retro_kit::toolbar::Toolbar;
 use retro_kit::tree_view::{TreeNode, TreeView};
 use retro_kit::window::Window;
 use retro_kit::{Color, LayoutConstraint, MonospaceView, Point, Rect, Size, Widget};
+use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use wgpu::util::DeviceExt;
 
 static RENDER_DARK_MODE: AtomicBool = AtomicBool::new(false);
@@ -55,6 +58,27 @@ fn parse_dark_mode_preference(content: &str) -> bool {
     })
 }
 
+pub fn menu_manifest_dir() -> Option<PathBuf> {
+    std::env::var_os("RETROSHELL_MENU_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("XDG_RUNTIME_DIR")
+                .map(|runtime| PathBuf::from(runtime).join("retroshell").join("menus"))
+        })
+}
+
+fn sanitize_manifest_name(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn ui(light: [f32; 4], dark: [f32; 4]) -> [f32; 4] {
     if render_dark_mode() {
         dark
@@ -71,6 +95,14 @@ pub struct Application {
     pub menus: Vec<Menu>,
     pub bus: Option<RetroBus>,
     pub running: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MenuManifest {
+    pub app_name: String,
+    pub bundle_id: String,
+    pub menus: Vec<Menu>,
+    pub updated_at_millis: u64,
 }
 
 impl Application {
@@ -103,6 +135,46 @@ impl Application {
         self.menus = menus;
     }
 
+    fn complete_menus(&self) -> Vec<Menu> {
+        let mut menus = self.menus.clone();
+        let mut app_menu = Menu::new(&self.name);
+        app_menu.add_action(format!("About {}", self.name));
+        app_menu.add_separator();
+        app_menu.add_action(format!("Hide {}", self.name));
+        app_menu.add_separator();
+        app_menu.add_action(format!("Quit {}", self.name));
+        menus.insert(0, app_menu);
+        menus
+    }
+
+    pub fn menu_manifest(&self) -> MenuManifest {
+        MenuManifest {
+            app_name: self.name.clone(),
+            bundle_id: self.bundle_id.clone(),
+            menus: self.complete_menus(),
+            updated_at_millis: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        }
+    }
+
+    pub fn publish_menu_manifest(&self) -> std::io::Result<Option<PathBuf>> {
+        if self.menus.is_empty() {
+            return Ok(None);
+        }
+
+        let Some(dir) = menu_manifest_dir() else {
+            return Ok(None);
+        };
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{}.json", sanitize_manifest_name(&self.bundle_id)));
+        let json =
+            serde_json::to_vec_pretty(&self.menu_manifest()).map_err(std::io::Error::other)?;
+        fs::write(&path, json)?;
+        Ok(Some(path))
+    }
+
     fn attach_menu_bar(&mut self) {
         let Some(mut window) = self.main_window.take() else {
             return;
@@ -112,14 +184,7 @@ impl Application {
             return;
         }
 
-        let mut menus = self.menus.clone();
-        let mut app_menu = Menu::new(&self.name);
-        app_menu.add_action(format!("About {}", self.name));
-        app_menu.add_separator();
-        app_menu.add_action(format!("Hide {}", self.name));
-        app_menu.add_separator();
-        app_menu.add_action(format!("Quit {}", self.name));
-        menus.insert(0, app_menu);
+        let menus = self.complete_menus();
 
         let content = window.content.take();
         let mut root = Layout::vertical(0.0);
@@ -132,6 +197,9 @@ impl Application {
     }
 
     pub fn run(&mut self) {
+        if let Err(err) = self.publish_menu_manifest() {
+            tracing::warn!("failed to publish menu manifest: {err}");
+        }
         self.attach_menu_bar();
         self.running = true;
         tracing::info!("Application '{}' started", self.name);

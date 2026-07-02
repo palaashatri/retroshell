@@ -1,4 +1,5 @@
 use crate::Point;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -69,7 +70,7 @@ pub enum MouseButton {
     Forward,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeyCode {
     A,
     B,
@@ -155,7 +156,7 @@ pub enum KeyCode {
     Slash,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Modifiers {
     pub shift: bool,
     pub control: bool,
