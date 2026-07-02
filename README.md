@@ -30,7 +30,7 @@ Captured from a Linux VM/Xvfb smoke run against a demo home directory after Find
 
 ### TextEdit
 
-Captured from a Linux VM/Xvfb smoke run after TextEdit opened a real document path, rendered editable document text, exposed New/Save actions, and showed saved/path status.
+Captured from a Linux VM/Xvfb smoke run after TextEdit opened a real document path, rendered editable document text, exposed New/Save/Undo/Redo/Copy/Paste actions, and showed saved/path status.
 
 ![Current TextEdit app](docs/screenshots/current-textedit.png)
 
@@ -64,13 +64,13 @@ RetroShell currently builds and launches a native rendered desktop surface, menu
 
 Finder has directory listing, folder entry, visible navigation controls, parent navigation, back/forward history, file-operation toolbar controls, New Folder/Duplicate/Trash helpers, and VM-smoked path/status display.
 
-TextEdit opens an optional document path passed on the command line, edits through a native multiline text field, saves back to disk, supports Cmd-N/Cmd-S and toolbar New/Save actions, and reports saved/edited status.
+TextEdit opens an optional document path passed on the command line, edits through a native multiline text field, saves back to disk, supports Cmd-N/Cmd-S, supports Cmd-Z/Shift-Cmd-Z undo/redo, exposes baseline whole-document copy/cut/paste/select-all shortcuts, and shows toolbar actions for New/Save/Undo/Redo/Copy/Paste.
 
-Settings loads and saves `settings.conf` under `RETROSHELL_CONFIG_DIR` or `~/.config/retroshell`, exposes Light/Dark/System controls, persists changes immediately, and reports the active mode. The SDK now consumes that same preference and renders shared native chrome/controls with a dark appearance when `appearance=dark`.
+Settings loads and saves `settings.conf` under `RETROSHELL_CONFIG_DIR` or `~/.config/retroshell`, exposes Light/Dark/System controls, persists changes immediately, and reports the active mode. The SDK consumes that same preference and renders shared native chrome/controls with a dark appearance when `appearance=dark`.
 
-Terminal now launches a real PTY, propagates layout resize to the terminal grid and PTY, consumes async PTY output with runtime repaint, supports scrollback navigation, and wires Cmd-C/Cmd-V to the in-process clipboard baseline.
+Terminal launches a real PTY, propagates layout resize to the terminal grid and PTY, consumes async PTY output with runtime repaint, supports scrollback navigation, and wires Cmd-C/Cmd-V to the in-process clipboard baseline.
 
-App Store now launches as a first-party app, detects Linux/BSD package managers, and runs read-only package searches through the detected backend. Install/remove/update transactions and privilege handling remain future work.
+App Store launches as a first-party app, detects Linux/BSD package managers, and runs read-only package searches through the detected backend. Install/remove/update transactions and privilege handling remain future work.
 
 This is still foundation work, not a polished full desktop environment.
 
@@ -78,11 +78,11 @@ This is still foundation work, not a polished full desktop environment.
 
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-targets`
-- `cargo test --workspace -q` (63 tests)
+- `cargo test --workspace -q` (65 tests)
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - Linux VM/Xvfb/Mesa smoke: `retro-shell` starts at 1280x800 and captures `docs/screenshots/current-retroshell-desktop.png`.
 - Linux VM/Xvfb/Mesa smoke: `finder` starts against a demo home directory, creates New Folder from the toolbar, refreshes path/status display, and captures `docs/screenshots/current-finder.png`.
-- Linux VM/Xvfb/Mesa smoke: `textedit` opens a document path and captures `docs/screenshots/current-textedit.png`.
+- Linux VM/Xvfb/Mesa smoke: `textedit` opens a document path, renders edit controls, and captures `docs/screenshots/current-textedit.png`.
 - Linux VM/Xvfb/Mesa smoke: `settings` clicks Dark appearance, verifies `appearance=dark`, and captures `docs/screenshots/current-settings.png`.
 - Linux VM/Xvfb/Mesa smoke: `settings` launches with `appearance=dark`, renders dark native chrome/controls, and captures `docs/screenshots/current-dark-mode-settings.png`.
 - Linux VM/Xvfb/Mesa smoke: `terminal` launches a PTY-backed shell script, renders live output, and captures `docs/screenshots/current-terminal.png`.

@@ -1,4 +1,5 @@
 use retro_kit::button::Button;
+use retro_kit::clipboard::Clipboard;
 use retro_kit::event::{KeyCode, Modifiers, MouseButton};
 use retro_kit::label::Label;
 use retro_kit::text_field::TextField;
@@ -154,6 +155,8 @@ struct TextEditView {
     saved_text: String,
     dirty: bool,
     last_error: Option<String>,
+    undo_stack: Vec<String>,
+    redo_stack: Vec<String>,
 }
 
 impl TextEditView {
@@ -172,6 +175,10 @@ impl TextEditView {
         let mut toolbar = Toolbar::new();
         toolbar.add(Box::new(Button::new("NEW")));
         toolbar.add(Box::new(Button::new("SAVE")));
+        toolbar.add(Box::new(Button::new("UNDO")));
+        toolbar.add(Box::new(Button::new("REDO")));
+        toolbar.add(Box::new(Button::new("COPY")));
+        toolbar.add(Box::new(Button::new("PASTE")));
 
         let mut editor = TextField::new();
         editor.set_multiline(true);
@@ -186,6 +193,8 @@ impl TextEditView {
             saved_text: text,
             dirty: false,
             last_error: error,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         };
         view.refresh_status();
         view
@@ -226,12 +235,87 @@ impl TextEditView {
         self.refresh_status();
     }
 
+    fn push_undo_snapshot(&mut self) {
+        let current = self.editor.text().to_string();
+        if self.undo_stack.last() != Some(&current) {
+            self.undo_stack.push(current);
+            if self.undo_stack.len() > 100 {
+                self.undo_stack.remove(0);
+            }
+        }
+        self.redo_stack.clear();
+    }
+
+    fn replace_editor_text(&mut self, text: String) {
+        self.editor.set_text(text);
+        self.mark_dirty_from_editor();
+    }
+
+    fn undo(&mut self) -> bool {
+        let Some(previous) = self.undo_stack.pop() else {
+            self.last_error = Some("Nothing to undo".to_string());
+            self.refresh_status();
+            return false;
+        };
+        self.redo_stack.push(self.editor.text().to_string());
+        self.replace_editor_text(previous);
+        true
+    }
+
+    fn redo(&mut self) -> bool {
+        let Some(next) = self.redo_stack.pop() else {
+            self.last_error = Some("Nothing to redo".to_string());
+            self.refresh_status();
+            return false;
+        };
+        self.undo_stack.push(self.editor.text().to_string());
+        self.replace_editor_text(next);
+        true
+    }
+
+    fn copy_document(&mut self) -> bool {
+        Clipboard::copy(self.editor.text());
+        self.last_error = None;
+        self.refresh_status();
+        true
+    }
+
+    fn cut_document(&mut self) -> bool {
+        if self.editor.text().is_empty() {
+            return self.copy_document();
+        }
+        self.push_undo_snapshot();
+        Clipboard::copy(self.editor.text());
+        self.replace_editor_text(String::new());
+        true
+    }
+
+    fn paste_document(&mut self) -> bool {
+        let pasted = Clipboard::paste();
+        if pasted.is_empty() {
+            self.last_error = Some("Clipboard empty".to_string());
+            self.refresh_status();
+            return false;
+        }
+        self.push_undo_snapshot();
+        let mut text = self.editor.text().to_string();
+        text.push_str(&pasted);
+        self.replace_editor_text(text);
+        true
+    }
+
+    fn select_all_document(&mut self) -> bool {
+        self.copy_document()
+    }
+
     fn new_document(&mut self) -> bool {
+        self.push_undo_snapshot();
         self.document_path = None;
         self.saved_text.clear();
         self.editor.set_text("");
         self.dirty = false;
         self.last_error = None;
+        self.redo_stack.clear();
         self.refresh_status();
         true
     }
@@ -272,6 +356,10 @@ impl TextEditView {
         match index {
             0 => self.new_document(),
             1 => self.save_document(),
+            2 => self.undo(),
+            3 => self.redo(),
+            4 => self.copy_document(),
+            5 => self.paste_document(),
             _ => false,
         }
     }
@@ -338,6 +426,30 @@ impl Widget for TextEditView {
                         self.save_document();
                         return EventResult::Handled;
                     }
+                    KeyCode::Z if modifiers.shift => {
+                        self.redo();
+                        return EventResult::Handled;
+                    }
+                    KeyCode::Z => {
+                        self.undo();
+                        return EventResult::Handled;
+                    }
+                    KeyCode::X => {
+                        self.cut_document();
+                        return EventResult::Handled;
+                    }
+                    KeyCode::C => {
+                        self.copy_document();
+                        return EventResult::Handled;
+                    }
+                    KeyCode::V => {
+                        self.paste_document();
+                        return EventResult::Handled;
+                    }
+                    KeyCode::A => {
+                        self.select_all_document();
+                        return EventResult::Handled;
+                    }
                     _ => {}
                 }
             }
@@ -354,8 +466,18 @@ impl Widget for TextEditView {
             }
         }
 
+        let before_edit = self.editor.text().to_string();
         let result = self.editor.handle_event(event);
         if matches!(result, EventResult::Handled) {
+            if self.editor.text() != before_edit {
+                if self.undo_stack.last() != Some(&before_edit) {
+                    self.undo_stack.push(before_edit);
+                    if self.undo_stack.len() > 100 {
+                        self.undo_stack.remove(0);
+                    }
+                }
+                self.redo_stack.clear();
+            }
             self.mark_dirty_from_editor();
         }
         result
@@ -474,5 +596,88 @@ mod tests {
         assert!(!view.dirty);
 
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn textedit_undo_and_redo_restore_editor_text() {
+        let mut view = TextEditView::open(None);
+        view.editor.set_text("hello");
+        view.saved_text = "hello".to_string();
+        view.dirty = false;
+
+        let _ = view.handle_event(&Event::Char { character: '!' });
+        assert_eq!(view.editor.text(), "hello!");
+
+        let undo = view.handle_event(&Event::KeyDown {
+            key: KeyCode::Z,
+            modifiers: Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+        assert!(matches!(undo, EventResult::Handled));
+        assert_eq!(view.editor.text(), "hello");
+        assert!(!view.dirty);
+
+        let redo = view.handle_event(&Event::KeyDown {
+            key: KeyCode::Z,
+            modifiers: Modifiers {
+                shift: true,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+        assert!(matches!(redo, EventResult::Handled));
+        assert_eq!(view.editor.text(), "hello!");
+        assert!(view.dirty);
+    }
+
+    #[test]
+    fn textedit_copy_cut_and_paste_use_clipboard() {
+        Clipboard::clear();
+        let mut view = TextEditView::open(None);
+        view.editor.set_text("clip");
+        view.saved_text.clear();
+        view.dirty = true;
+
+        let copy = view.handle_event(&Event::KeyDown {
+            key: KeyCode::C,
+            modifiers: Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+        assert!(matches!(copy, EventResult::Handled));
+        assert_eq!(Clipboard::paste(), "clip");
+
+        let cut = view.handle_event(&Event::KeyDown {
+            key: KeyCode::X,
+            modifiers: Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+        assert!(matches!(cut, EventResult::Handled));
+        assert_eq!(view.editor.text(), "");
+        assert_eq!(Clipboard::paste(), "clip");
+
+        let paste = view.handle_event(&Event::KeyDown {
+            key: KeyCode::V,
+            modifiers: Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+        assert!(matches!(paste, EventResult::Handled));
+        assert_eq!(view.editor.text(), "clip");
     }
 }
