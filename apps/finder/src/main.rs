@@ -155,6 +155,7 @@ pub struct FinderView {
     back_stack: Vec<PathBuf>,
     forward_stack: Vec<PathBuf>,
     info_text: Option<String>,
+    drag_source_path: Option<PathBuf>,
 }
 
 impl Default for FinderView {
@@ -209,6 +210,7 @@ impl FinderView {
             back_stack: Vec::new(),
             forward_stack: Vec::new(),
             info_text: None,
+            drag_source_path: None,
         };
         view.reload_directory();
         view
@@ -272,6 +274,84 @@ impl FinderView {
     fn selected_path(&self) -> Option<PathBuf> {
         self.selected_item()
             .map(|item| self.current_path.join(item.label))
+    }
+
+    fn item_at_point(&self, point: retro_kit::Point) -> Option<IconItem> {
+        self.file_grid
+            .items
+            .iter()
+            .find(|item| item.rect.contains(point))
+            .cloned()
+    }
+
+    fn start_drag_at(&mut self, point: retro_kit::Point) -> bool {
+        let Some(item) = self.item_at_point(point) else {
+            self.drag_source_path = None;
+            return false;
+        };
+
+        let path = self.current_path.join(item.label);
+        self.drag_source_path = Some(path.clone());
+        self.info_text = Some(format!(
+            "DRAGGING - {}",
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string())
+        ));
+        self.refresh_status_bar();
+        true
+    }
+
+    fn finish_drag_at(&mut self, point: retro_kit::Point) -> bool {
+        let Some(source) = self.drag_source_path.take() else {
+            return false;
+        };
+
+        let Some(target_item) = self.item_at_point(point) else {
+            self.info_text = Some("MOVE CANCELLED".to_string());
+            self.refresh_status_bar();
+            return false;
+        };
+
+        if target_item.icon.as_deref() != Some("folder") {
+            self.info_text = Some("MOVE CANCELLED - DROP ON A FOLDER".to_string());
+            self.refresh_status_bar();
+            return false;
+        }
+
+        let target_dir = self.current_path.join(&target_item.label);
+        if source == target_dir || source.starts_with(&target_dir) {
+            self.info_text = Some("MOVE CANCELLED - INVALID TARGET".to_string());
+            self.refresh_status_bar();
+            return false;
+        }
+
+        let Some(file_name) = source.file_name() else {
+            self.info_text = Some("MOVE FAILED - INVALID SOURCE".to_string());
+            self.refresh_status_bar();
+            return false;
+        };
+        let destination = target_dir.join(file_name);
+        if destination.exists() {
+            self.info_text = Some("MOVE CANCELLED - NAME ALREADY EXISTS".to_string());
+            self.refresh_status_bar();
+            return false;
+        }
+
+        let moved_name = file_name.to_string_lossy().into_owned();
+        match file_ops::move_file(&source, &destination) {
+            Ok(()) => {
+                self.reload_directory();
+                self.info_text = Some(format!("MOVED - {moved_name} TO {}", target_item.label));
+                self.refresh_status_bar();
+                true
+            }
+            Err(err) => {
+                self.info_text = Some(format!("MOVE FAILED - {err}"));
+                self.refresh_status_bar();
+                false
+            }
+        }
     }
 
     fn set_current_path(&mut self, path: PathBuf) {
@@ -551,6 +631,20 @@ impl Widget for FinderView {
             }
         }
 
+        match event {
+            Event::DragStart { point } => {
+                if self.start_drag_at(*point) {
+                    return EventResult::Handled;
+                }
+            }
+            Event::DragEnd { point } | Event::Drop { point } => {
+                if self.finish_drag_at(*point) {
+                    return EventResult::Handled;
+                }
+            }
+            _ => {}
+        }
+
         if let Event::MouseDown {
             button: MouseButton::Left,
             point,
@@ -648,6 +742,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("retroshell_finder_view_{unique}_{sequence}"));
         let _ = fs::remove_dir_all(&root);
         root
+    }
+
+    fn rect_center(rect: Rect) -> retro_kit::Point {
+        retro_kit::Point::new(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5)
     }
 
     #[test]
@@ -886,6 +984,107 @@ mod tests {
         assert_eq!(
             view.status_bar.items[0].text,
             "INFO - FOLDER - Folder - FOLDER"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finder_dragging_file_onto_folder_moves_it() {
+        let root = temp_finder_root();
+        fs::create_dir_all(root.join("Folder")).unwrap();
+        fs::write(root.join("note.txt"), "hello").unwrap();
+
+        let mut view = FinderView::new();
+        view.set_current_path(root.clone());
+        view.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+
+        let note_rect = view
+            .file_grid
+            .items
+            .iter()
+            .find(|item| item.label == "note.txt")
+            .expect("note is listed")
+            .rect;
+        let folder_rect = view
+            .file_grid
+            .items
+            .iter()
+            .find(|item| item.label == "Folder")
+            .expect("folder is listed")
+            .rect;
+
+        assert!(matches!(
+            view.handle_event(&Event::DragStart {
+                point: rect_center(note_rect)
+            }),
+            EventResult::Handled
+        ));
+        assert!(matches!(
+            view.handle_event(&Event::DragEnd {
+                point: rect_center(folder_rect)
+            }),
+            EventResult::Handled
+        ));
+
+        assert!(!root.join("note.txt").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("Folder").join("note.txt")).unwrap(),
+            "hello"
+        );
+        assert_eq!(view.status_bar.items[0].text, "MOVED - note.txt TO Folder");
+        assert!(!view
+            .file_grid
+            .items
+            .iter()
+            .any(|item| item.label == "note.txt"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finder_dragging_to_non_folder_cancels_move() {
+        let root = temp_finder_root();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("note.txt"), "hello").unwrap();
+        fs::write(root.join("target.txt"), "target").unwrap();
+
+        let mut view = FinderView::new();
+        view.set_current_path(root.clone());
+        view.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+
+        let note_rect = view
+            .file_grid
+            .items
+            .iter()
+            .find(|item| item.label == "note.txt")
+            .expect("note is listed")
+            .rect;
+        let target_rect = view
+            .file_grid
+            .items
+            .iter()
+            .find(|item| item.label == "target.txt")
+            .expect("target is listed")
+            .rect;
+
+        assert!(matches!(
+            view.handle_event(&Event::DragStart {
+                point: rect_center(note_rect)
+            }),
+            EventResult::Handled
+        ));
+        assert!(matches!(
+            view.handle_event(&Event::DragEnd {
+                point: rect_center(target_rect)
+            }),
+            EventResult::Ignored
+        ));
+
+        assert_eq!(fs::read_to_string(root.join("note.txt")).unwrap(), "hello");
+        assert_eq!(
+            view.status_bar.items[0].text,
+            "MOVE CANCELLED - DROP ON A FOLDER"
         );
 
         fs::remove_dir_all(root).unwrap();

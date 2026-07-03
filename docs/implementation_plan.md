@@ -10,6 +10,8 @@
 > 2026-07-03 Doom evidence update: `run_doom_showcase.sh` now locates Chocolate Doom/Freedoom, records VM x11grab video and PulseAudio monitor audio, exercises windowed, fullscreen-sized window, and fullscreen-request modes, and validates video/audio streams with `ffprobe`. A short VM smoke run produced a valid audio/video MP4 and `docs/screenshots/current-doom-smoke.png`; final long-form evidence video remains open.
 >
 > 2026-07-03 Notification Center update: shell-owned notifications are no longer dormant data only. App launches record notifications, the Retro menu exposes Notification Center and Clear Notifications actions, and VM verification refreshed `docs/screenshots/current-notification-center.png`. Freedesktop notification daemon integration remains future compositor/session work.
+
+> 2026-07-03 Finder DnD update: Finder now supports internal drag-to-folder moves inside its icon grid, including invalid-target and name-collision refusal, with local and VM tests covering the behavior and VM screenshot `docs/screenshots/current-finder-dnd.png`. Toolkit-level Wayland `wl_data_device` DnD remains future compositor/session work.
 >
 > 2026-07-03 Workspace update: shell-owned workspaces are now functional in the current client architecture. The Window menu exposes previous/next/direct workspace actions, active SDK app Window menus retain those controls, shell-managed windows are filtered per active workspace, and VM verification refreshed `docs/screenshots/current-workspace-switch.png`.
 >
@@ -47,7 +49,7 @@ The entire "desktop environment" is a **single Wayland client application** (`re
 |---------|--------|---------|
 | Desktop backdrop (dithered pattern) | ✅ Works | Pixel-accurate classic Mac OS |
 | Desktop icons (Hard Disk, Home, Apps, Trash) | ✅ Works | Functional double-click to open |
-| Internal "Finder" folder windows | ✅ Works | Can browse filesystem, open folders |
+| Internal "Finder" folder windows | ✅ Works | Can browse filesystem, open folders, move items into folders via internal drag/drop |
 | Menu bar (File, Edit, View, Go, Window, Help) | ✅ Works | Visual only — menus open/close but actions are mostly no-ops |
 | Titlebar chrome (close, minimize, zoom) | ✅ Works | Visually correct, close works, minimize/zoom partial |
 | Window dragging | ✅ Works | Functional |
@@ -65,7 +67,7 @@ The entire "desktop environment" is a **single Wayland client application** (`re
 | Component | File | Reality |
 |-----------|------|---------|
 | **Clipboard** | `clipboard.rs` (22 lines) | Empty struct, `copy()`/`paste()` are no-ops |
-| **Drag & Drop** | `dnd.rs` (26 lines) | Empty struct, all methods are no-ops |
+| **Drag & Drop** | `dnd.rs` plus Finder event handling | Finder has internal icon-grid drag-to-folder moves; toolkit/protocol-level DnD remains stubbed |
 | **Accessibility** | `accessibility.rs` (97 lines) | Stub with hardcoded data, no AT-SPI integration |
 | **Progress Bar** | `progress_bar.rs` (66 lines) | Data struct only, never rendered |
 | **Slider** | `slider.rs` (65 lines) | Data struct only, never rendered |
@@ -96,7 +98,7 @@ The entire "desktop environment" is a **single Wayland client application** (`re
 | **Font rendering** | FreeType/HarfBuzz with subpixel hinting | 5×7 hardcoded bitmap arrays |
 | **Image/icon rendering** | SVG/PNG icon themes with caching | Hardcoded pixel rectangles |
 | **Clipboard** | wl_data_device protocol | Empty stub |
-| **Drag and drop** | wl_data_device DnD protocol | Empty stub |
+| **Drag and drop** | wl_data_device DnD protocol | Finder-only internal drag-to-folder moves; no protocol-level DnD |
 | **Keyboard shortcuts** | Configurable, system-wide | Only Cmd+Q to quit |
 | **Multi-monitor** | Full Wayland output management | Single hardcoded display |
 | **Screen locking** | PAM-backed lock screen | None |
