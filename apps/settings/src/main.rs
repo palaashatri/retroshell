@@ -1,6 +1,7 @@
 use retro_kit::button::Button;
 use retro_kit::event::{KeyCode, Modifiers, MouseButton};
 use retro_kit::label::Label;
+use retro_kit::slider::Slider;
 use retro_kit::window::Window;
 use retro_kit::{
     AccessibilityNode, Event, EventResult, LayoutConstraint, Point, Rect, Size, ThemeContext,
@@ -254,9 +255,11 @@ struct SettingsState {
     hdr_requested: bool,
     vrr_adaptive: bool,
     sound_effects: bool,
+    volume_percent: u8,
     network_profile: String,
     keyboard_repeat: String,
     natural_scroll: bool,
+    pointer_speed: u8,
     assistive_ui: bool,
     privacy_mode: String,
     notifications: bool,
@@ -271,9 +274,11 @@ impl Default for SettingsState {
             hdr_requested: false,
             vrr_adaptive: false,
             sound_effects: true,
+            volume_percent: 75,
             network_profile: "dhcp".to_string(),
             keyboard_repeat: "fast".to_string(),
             natural_scroll: false,
+            pointer_speed: 50,
             assistive_ui: false,
             privacy_mode: "standard".to_string(),
             notifications: true,
@@ -374,8 +379,9 @@ impl SettingsState {
                 if self.vrr_adaptive { "ADAPTIVE" } else { "OFF" }
             ),
             Category::Sound => format!(
-                "SOUND - EFFECTS {}",
-                if self.sound_effects { "ON" } else { "OFF" }
+                "SOUND - EFFECTS {} / VOLUME {}%",
+                if self.sound_effects { "ON" } else { "OFF" },
+                self.volume_percent
             ),
             Category::Network => {
                 format!("NETWORK - {}", self.network_profile.to_ascii_uppercase())
@@ -387,8 +393,9 @@ impl SettingsState {
                 )
             }
             Category::Mouse => format!(
-                "MOUSE - NATURAL SCROLL {}",
-                if self.natural_scroll { "ON" } else { "OFF" }
+                "MOUSE - NATURAL SCROLL {} / SPEED {}%",
+                if self.natural_scroll { "ON" } else { "OFF" },
+                self.pointer_speed
             ),
             Category::Accessibility => format!(
                 "ACCESSIBILITY - ASSISTIVE UI {}",
@@ -454,6 +461,9 @@ impl SettingsStore {
                 "hdr_requested" => state.hdr_requested = parse_bool(value, state.hdr_requested),
                 "vrr_adaptive" => state.vrr_adaptive = parse_bool(value, state.vrr_adaptive),
                 "sound_effects" => state.sound_effects = parse_bool(value, state.sound_effects),
+                "volume_percent" => {
+                    state.volume_percent = parse_percent(value, state.volume_percent)
+                }
                 "network_profile" if matches!(value, "offline" | "dhcp") => {
                     state.network_profile = value.to_string();
                 }
@@ -461,6 +471,7 @@ impl SettingsStore {
                     state.keyboard_repeat = value.to_string();
                 }
                 "natural_scroll" => state.natural_scroll = parse_bool(value, state.natural_scroll),
+                "pointer_speed" => state.pointer_speed = parse_percent(value, state.pointer_speed),
                 "assistive_ui" => state.assistive_ui = parse_bool(value, state.assistive_ui),
                 "privacy_mode" if matches!(value, "standard" | "strict") => {
                     state.privacy_mode = value.to_string();
@@ -486,9 +497,11 @@ impl SettingsStore {
                     "hdr_requested={}\n",
                     "vrr_adaptive={}\n",
                     "sound_effects={}\n",
+                    "volume_percent={}\n",
                     "network_profile={}\n",
                     "keyboard_repeat={}\n",
                     "natural_scroll={}\n",
+                    "pointer_speed={}\n",
                     "assistive_ui={}\n",
                     "privacy_mode={}\n",
                     "notifications={}\n"
@@ -499,9 +512,11 @@ impl SettingsStore {
                 state.hdr_requested,
                 state.vrr_adaptive,
                 state.sound_effects,
+                state.volume_percent,
                 state.network_profile,
                 state.keyboard_repeat,
                 state.natural_scroll,
+                state.pointer_speed,
                 state.assistive_ui,
                 state.privacy_mode,
                 state.notifications
@@ -518,6 +533,14 @@ fn parse_bool(value: &str, fallback: bool) -> bool {
     }
 }
 
+fn parse_percent(value: &str, fallback: u8) -> u8 {
+    value
+        .trim()
+        .parse::<u8>()
+        .map(|value| value.min(100))
+        .unwrap_or(fallback)
+}
+
 struct SettingsView {
     state: WidgetState,
     category_buttons: Vec<Button>,
@@ -525,6 +548,10 @@ struct SettingsView {
     description: Label,
     status: Label,
     option_buttons: Vec<Button>,
+    volume_label: Label,
+    volume_slider: Slider,
+    pointer_speed_label: Label,
+    pointer_speed_slider: Slider,
     selected_category: Category,
     settings: SettingsState,
     store: SettingsStore,
@@ -544,6 +571,10 @@ impl SettingsView {
             description: Label::new("Choose how RetroShell draws native windows and apps."),
             status: Label::new(""),
             option_buttons: Vec::new(),
+            volume_label: Label::new("VOLUME"),
+            volume_slider: Slider::new(),
+            pointer_speed_label: Label::new("POINTER SPEED"),
+            pointer_speed_slider: Slider::new(),
             selected_category: Category::Appearance,
             settings,
             store,
@@ -571,6 +602,20 @@ impl SettingsView {
                 button
             })
             .collect();
+
+        self.volume_label.text = format!("VOLUME {}%", self.settings.volume_percent);
+        self.volume_slider.min = 0.0;
+        self.volume_slider.max = 100.0;
+        self.volume_slider.step = 5.0;
+        self.volume_slider
+            .set_value(self.settings.volume_percent as f32);
+
+        self.pointer_speed_label.text = format!("POINTER SPEED {}%", self.settings.pointer_speed);
+        self.pointer_speed_slider.min = 0.0;
+        self.pointer_speed_slider.max = 100.0;
+        self.pointer_speed_slider.step = 5.0;
+        self.pointer_speed_slider
+            .set_value(self.settings.pointer_speed as f32);
 
         for (button, category) in self
             .category_buttons
@@ -622,6 +667,33 @@ impl SettingsView {
         }
     }
 
+    fn save_slider_value(&mut self) -> bool {
+        match self.selected_category {
+            Category::Sound => {
+                self.settings.volume_percent = self.volume_slider.value.round() as u8
+            }
+            Category::Mouse => {
+                self.settings.pointer_speed = self.pointer_speed_slider.value.round() as u8
+            }
+            _ => return false,
+        }
+
+        match self.store.save(&self.settings) {
+            Ok(()) => {
+                self.last_error = None;
+                self.refresh_labels();
+                self.relayout_if_visible();
+                true
+            }
+            Err(err) => {
+                self.last_error = Some(format!("SAVE FAILED {err}"));
+                self.refresh_labels();
+                self.relayout_if_visible();
+                false
+            }
+        }
+    }
+
     fn relayout_if_visible(&mut self) {
         let rect = self.rect();
         if rect.width > 0.0 && rect.height > 0.0 {
@@ -651,6 +723,20 @@ impl SettingsView {
         };
         let choice = self.selected_category.choices()[index].0;
         self.apply_choice(choice)
+    }
+
+    fn handle_slider_event(&mut self, event: &Event) -> bool {
+        let handled = match self.selected_category {
+            Category::Sound => self.volume_slider.handle_event(event),
+            Category::Mouse => self.pointer_speed_slider.handle_event(event),
+            _ => EventResult::Ignored,
+        };
+
+        if matches!(handled, EventResult::Handled) {
+            return self.save_slider_value();
+        }
+
+        false
     }
 }
 
@@ -704,6 +790,39 @@ impl Widget for SettingsView {
             let _ = button.layout(LayoutConstraint::tight(Size::new(button_w, 28.0)));
         }
 
+        let slider_y = content_y + ((self.option_buttons.len() + 1) / 2) as f32 * 38.0 + 12.0;
+        match self.selected_category {
+            Category::Sound => {
+                self.volume_label
+                    .set_rect(Rect::new(content_x, slider_y, 180.0, 24.0));
+                let _ = self
+                    .volume_label
+                    .layout(LayoutConstraint::tight(Size::new(180.0, 24.0)));
+                self.volume_slider
+                    .set_rect(Rect::new(content_x + 190.0, slider_y, 190.0, 24.0));
+                let _ = self
+                    .volume_slider
+                    .layout(LayoutConstraint::tight(Size::new(190.0, 24.0)));
+            }
+            Category::Mouse => {
+                self.pointer_speed_label
+                    .set_rect(Rect::new(content_x, slider_y, 180.0, 24.0));
+                let _ = self
+                    .pointer_speed_label
+                    .layout(LayoutConstraint::tight(Size::new(180.0, 24.0)));
+                self.pointer_speed_slider.set_rect(Rect::new(
+                    content_x + 190.0,
+                    slider_y,
+                    190.0,
+                    24.0,
+                ));
+                let _ = self
+                    .pointer_speed_slider
+                    .layout(LayoutConstraint::tight(Size::new(190.0, 24.0)));
+            }
+            _ => {}
+        }
+
         self.status.set_rect(Rect::new(
             content_x,
             rect.y + rect.height - 36.0,
@@ -726,10 +845,25 @@ impl Widget for SettingsView {
         for button in &self.option_buttons {
             button.draw(theme);
         }
+        match self.selected_category {
+            Category::Sound => {
+                self.volume_label.draw(theme);
+                self.volume_slider.draw(theme);
+            }
+            Category::Mouse => {
+                self.pointer_speed_label.draw(theme);
+                self.pointer_speed_slider.draw(theme);
+            }
+            _ => {}
+        }
         self.status.draw(theme);
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
+        if self.handle_slider_event(event) {
+            return EventResult::Handled;
+        }
+
         if let Event::MouseDown {
             button: MouseButton::Left,
             point,
@@ -752,6 +886,10 @@ impl Widget for SettingsView {
         for button in &mut self.option_buttons {
             button.update();
         }
+        self.volume_label.update();
+        self.volume_slider.update();
+        self.pointer_speed_label.update();
+        self.pointer_speed_slider.update();
         self.status.update();
     }
 
@@ -769,6 +907,17 @@ impl Widget for SettingsView {
         for button in &self.option_buttons {
             children.push(button);
         }
+        match self.selected_category {
+            Category::Sound => {
+                children.push(&self.volume_label);
+                children.push(&self.volume_slider);
+            }
+            Category::Mouse => {
+                children.push(&self.pointer_speed_label);
+                children.push(&self.pointer_speed_slider);
+            }
+            _ => {}
+        }
         children.push(&self.status);
         children
     }
@@ -782,6 +931,17 @@ impl Widget for SettingsView {
         children.push(&mut self.description);
         for button in &mut self.option_buttons {
             children.push(button);
+        }
+        match self.selected_category {
+            Category::Sound => {
+                children.push(&mut self.volume_label);
+                children.push(&mut self.volume_slider);
+            }
+            Category::Mouse => {
+                children.push(&mut self.pointer_speed_label);
+                children.push(&mut self.pointer_speed_slider);
+            }
+            _ => {}
         }
         children.push(&mut self.status);
         children
@@ -844,9 +1004,11 @@ mod tests {
             hdr_requested: true,
             vrr_adaptive: true,
             sound_effects: false,
+            volume_percent: 35,
             network_profile: "offline".to_string(),
             keyboard_repeat: "slow".to_string(),
             natural_scroll: true,
+            pointer_speed: 85,
             assistive_ui: true,
             privacy_mode: "strict".to_string(),
             notifications: false,
@@ -897,5 +1059,26 @@ mod tests {
         let loaded = SettingsStore::new(path).load();
         assert!(loaded.hdr_requested);
         assert!(view.status.text.contains("HDR REQUESTED"));
+    }
+
+    #[test]
+    fn settings_sound_slider_updates_and_saves_volume() {
+        let path = temp_settings_path();
+        let store = SettingsStore::new(path.clone());
+        let mut view = SettingsView::load(store);
+        view.select_category(Category::Sound);
+        view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
+        view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
+
+        let slider = view.volume_slider.rect();
+        assert_handled(view.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point: Point::new(slider.x + slider.width - 9.0, slider.y + 12.0),
+            modifiers: Modifiers::NONE,
+        }));
+
+        let loaded = SettingsStore::new(path).load();
+        assert_eq!(loaded.volume_percent, 100);
+        assert!(view.status.text.contains("VOLUME 100%"));
     }
 }

@@ -73,6 +73,7 @@ Recent Phase 1 work:
 * Docker images install real font packages, and `retro-render` no longer embeds the invalid HTML file that previously pretended to be `DejaVuSans.ttf`.
 * Clipboard now persists through a runtime file so first-party apps can copy/paste across process boundaries. This is a practical bridge, not final Wayland `wl_data_device` integration.
 * Finder now supports internal drag-to-folder moves for files/folders within its own icon grid, with collision and invalid-target refusal. This is app-level file movement, not final Wayland protocol DnD.
+* Settings now includes rendered, mouse-draggable native sliders for persisted Sound volume and Mouse pointer speed preferences.
 * SDK apps publish JSON menu manifests to `${RETROSHELL_MENU_MANIFEST_DIR}` or `${XDG_RUNTIME_DIR}/retroshell/menus`, and `retro-shell` can load those manifests into the shell menu server.
 * RetroShell sets `RETROSHELL_GLOBAL_MENU=1` for first-party SDK apps it launches, suppressing their duplicate local menu bars and switching the shell menu model to the launched app.
 
@@ -89,6 +90,8 @@ Still not done:
 ![RetroShell Finder drag-to-folder verification](docs/screenshots/current-finder-dnd.png)
 
 ![RetroShell Settings Display pane](docs/screenshots/current-settings.png)
+
+![RetroShell Settings Sound slider](docs/screenshots/current-settings-sliders.png)
 
 ![RetroShell App Store package search](docs/screenshots/current-appstore.png)
 

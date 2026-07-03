@@ -5,6 +5,8 @@
 >
 > 2026-07-03 Settings update: Settings now has functional category panes across General, Appearance, Desktop & Dock, Display, Sound, Network, Keyboard, Mouse, Accessibility, Privacy & Security, and Notifications. Settings persist to `settings.conf`; HDR/VRR are exposed as honest session preferences, not compositor-level output control.
 >
+> 2026-07-03 Settings sliders update: `retro-kit::Slider` now handles mouse drag input and `retro-sdk` renders classic recessed slider controls. Settings uses persisted sliders for Sound volume and Mouse pointer speed, with VM verification refreshed in `docs/screenshots/current-settings-sliders.png`.
+>
 > 2026-07-03 App Store update: App Store package-manager integration now annotates search rows with installed/available/unknown state through each detected backend's read-only package query, while package-changing transactions remain explicitly gated.
 >
 > 2026-07-03 Doom evidence update: `run_doom_showcase.sh` now locates Chocolate Doom/Freedoom, records VM x11grab video and PulseAudio monitor audio, exercises windowed, fullscreen-sized window, and fullscreen-request modes, and validates video/audio streams with `ffprobe`. A short VM smoke run produced a valid audio/video MP4 and `docs/screenshots/current-doom-smoke.png`; final long-form evidence video remains open.
@@ -70,7 +72,7 @@ The entire "desktop environment" is a **single Wayland client application** (`re
 | **Drag & Drop** | `dnd.rs` plus Finder event handling | Finder has internal icon-grid drag-to-folder moves; toolkit/protocol-level DnD remains stubbed |
 | **Accessibility** | `accessibility.rs` (97 lines) | Stub with hardcoded data, no AT-SPI integration |
 | **Progress Bar** | `progress_bar.rs` (66 lines) | Data struct only, never rendered |
-| **Slider** | `slider.rs` (65 lines) | Data struct only, never rendered |
+| **Slider** | `slider.rs` + SDK renderer | Rendered and interactive in Settings for Sound volume and Mouse pointer speed; broader toolkit adoption remains incomplete |
 | **Tab View** | `tab_view.rs` (166 lines) | Data struct only, never rendered |
 | **Popup Button** | `popup_button.rs` (95 lines) | Data struct only, never rendered |
 | **Dialog** | `dialog.rs` (64 lines) | Data struct only, never rendered |

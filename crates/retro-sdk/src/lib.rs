@@ -8,6 +8,7 @@ use retro_kit::list_view::ListView;
 use retro_kit::menu::{Menu, MenuItem, MenuItemKind};
 use retro_kit::menu_bar::MenuBar;
 use retro_kit::scroll_view::ScrollView;
+use retro_kit::slider::Slider;
 use retro_kit::split_view::SplitView;
 use retro_kit::status_bar::StatusBar;
 use retro_kit::text_field::TextField;
@@ -1185,6 +1186,31 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
             rect.y + 8.0,
             ui(rgb(25, 25, 25), rgb(232, 232, 228)),
         );
+    } else if let Some(slider) = widget.as_any().downcast_ref::<Slider>() {
+        let track = Rect::new(
+            rect.x + 9.0,
+            rect.y + rect.height * 0.5 - 3.0,
+            rect.width - 18.0,
+            6.0,
+        );
+        canvas.rect(track, ui(rgb(196, 196, 190), rgb(30, 32, 34)));
+        canvas.stroke(track, ui(rgb(104, 104, 98), rgb(112, 114, 116)));
+        let filled = Rect::new(
+            track.x + 1.0,
+            track.y + 1.0,
+            (track.width - 2.0) * slider.normalized_value(),
+            track.height - 2.0,
+        );
+        canvas.rect(filled, ui(rgb(92, 122, 176), rgb(120, 150, 208)));
+        let thumb_x = track.x + track.width * slider.normalized_value() - 5.0;
+        let thumb = Rect::new(thumb_x, rect.y + 3.0, 10.0, rect.height - 6.0);
+        let thumb_bg = if slider.dragging {
+            ui(rgb(236, 240, 246), rgb(78, 84, 92))
+        } else {
+            ui(rgb(226, 226, 220), rgb(58, 60, 64))
+        };
+        canvas.rect(thumb, thumb_bg);
+        draw_beveled_rect(canvas, thumb, thumb_bg, true);
     } else if let Some(tree) = widget.as_any().downcast_ref::<TreeView>() {
         draw_tree(canvas, rect, tree);
     } else if let Some(icon_view) = widget.as_any().downcast_ref::<IconView>() {
