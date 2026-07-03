@@ -1366,7 +1366,10 @@ impl Widget for ShellDesktop {
 mod tests {
     use super::*;
     use retro_kit::event::Modifiers;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static MENU_MANIFEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_shell_root() -> PathBuf {
         let unique = SystemTime::now()
@@ -1537,6 +1540,8 @@ mod tests {
 
     #[test]
     fn shell_global_menu_switches_to_launched_sdk_app() {
+        let _guard = MENU_MANIFEST_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("RETROSHELL_MENU_MANIFEST_DIR");
         let (mut desktop, _) = test_desktop();
 
         desktop.activate_app_menu("com.retro.textedit");
@@ -1558,6 +1563,7 @@ mod tests {
 
     #[test]
     fn shell_global_menu_uses_loaded_sdk_manifest_for_active_app() {
+        let _guard = MENU_MANIFEST_ENV_LOCK.lock().unwrap();
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1607,6 +1613,7 @@ mod tests {
 
     #[test]
     fn loaded_sdk_menu_action_opens_visible_dispatch_status() {
+        let _guard = MENU_MANIFEST_ENV_LOCK.lock().unwrap();
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

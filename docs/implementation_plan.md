@@ -3,6 +3,8 @@
 > [!NOTE]
 > 2026-07-03 verification update: VM visual verification now uses the rebuilt `retroshell-vm` image with `xrandr`/`wlr-randr` present, 1280x800 output fills the frame without black bars, and internal Finder minimize collapses/restores as a real shell state. Compositor-level HDR, VRR, exclusive fullscreen, universal external-app global menus, and Doom showcase video remain future architecture work.
 >
+> 2026-07-03 Settings update: Settings now has functional category panes across General, Appearance, Desktop & Dock, Display, Sound, Network, Keyboard, Mouse, Accessibility, Privacy & Security, and Notifications. Settings persist to `settings.conf`; HDR/VRR are exposed as honest session preferences, not compositor-level output control.
+>
 > 2026-07-03 coverage update: desktop icon right-column layout and minute-precision menu clock formatting now have automated tests, reducing the remaining Tier 1 uncertainty to visual/style polish rather than unverified behavior.
 >
 > 2026-07-03 SDK menu update: first-party SDK menu manifests now auto-fill stable bundle-scoped action IDs for action items that apps define without explicit IDs. VM runtime verification confirmed TextEdit publishes routable app/File menu actions such as `com.retro.textedit.file.save_as`.

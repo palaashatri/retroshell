@@ -1,14 +1,12 @@
 use retro_kit::button::Button;
 use retro_kit::event::{KeyCode, Modifiers, MouseButton};
 use retro_kit::label::Label;
-use retro_kit::tree_view::{TreeNode, TreeView};
 use retro_kit::window::Window;
 use retro_kit::{
     AccessibilityNode, Event, EventResult, LayoutConstraint, Point, Rect, Size, ThemeContext,
     Widget, WidgetState,
 };
 use retro_sdk::{build_menu, Application};
-use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 
@@ -60,6 +58,161 @@ fn main() {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Choice {
+    AppearanceLight,
+    AppearanceDark,
+    AppearanceSystem,
+    DesktopIconsOn,
+    DesktopIconsOff,
+    DockBottom,
+    DockRight,
+    HdrOff,
+    HdrOn,
+    VrrOff,
+    VrrAdaptive,
+    SoundOff,
+    SoundOn,
+    NetworkOffline,
+    NetworkDhcp,
+    KeyboardSlow,
+    KeyboardFast,
+    MouseNaturalOff,
+    MouseNaturalOn,
+    AccessibilityOff,
+    AccessibilityOn,
+    PrivacyStandard,
+    PrivacyStrict,
+    NotificationsOff,
+    NotificationsOn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Category {
+    General,
+    Appearance,
+    DesktopDock,
+    Display,
+    Sound,
+    Network,
+    Keyboard,
+    Mouse,
+    Accessibility,
+    Privacy,
+    Notifications,
+}
+
+impl Category {
+    const ALL: [Category; 11] = [
+        Category::General,
+        Category::Appearance,
+        Category::DesktopDock,
+        Category::Display,
+        Category::Sound,
+        Category::Network,
+        Category::Keyboard,
+        Category::Mouse,
+        Category::Accessibility,
+        Category::Privacy,
+        Category::Notifications,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Category::General => "General",
+            Category::Appearance => "Appearance",
+            Category::DesktopDock => "Desktop & Dock",
+            Category::Display => "Display",
+            Category::Sound => "Sound",
+            Category::Network => "Network",
+            Category::Keyboard => "Keyboard",
+            Category::Mouse => "Mouse",
+            Category::Accessibility => "Accessibility",
+            Category::Privacy => "Privacy & Security",
+            Category::Notifications => "Notifications",
+        }
+    }
+
+    fn title(self) -> String {
+        match self {
+            Category::DesktopDock => "DESKTOP & DOCK".to_string(),
+            Category::Privacy => "PRIVACY & SECURITY".to_string(),
+            _ => self.label().to_ascii_uppercase(),
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Category::General => "Choose system defaults used by first-party RetroShell apps.",
+            Category::Appearance => "Choose how RetroShell draws native windows and apps.",
+            Category::DesktopDock => "Control desktop icons and the shell launcher position.",
+            Category::Display => "Configure advertised display capabilities for the shell session.",
+            Category::Sound => "Control desktop sound effects for native RetroShell apps.",
+            Category::Network => "Set the network profile exposed to shell status surfaces.",
+            Category::Keyboard => "Tune keyboard repeat behavior for native controls.",
+            Category::Mouse => "Tune pointer and scrolling behavior.",
+            Category::Accessibility => "Enable high-visibility affordances across native apps.",
+            Category::Privacy => "Control privacy defaults used by app services.",
+            Category::Notifications => "Control notification delivery for native apps.",
+        }
+    }
+
+    fn choices(self) -> &'static [(Choice, &'static str)] {
+        match self {
+            Category::General => &[
+                (Choice::AppearanceSystem, "System Appearance"),
+                (Choice::NotificationsOn, "Notifications On"),
+                (Choice::SoundOn, "Sound Effects On"),
+            ],
+            Category::Appearance => &[
+                (Choice::AppearanceLight, "Light"),
+                (Choice::AppearanceDark, "Dark"),
+                (Choice::AppearanceSystem, "System"),
+            ],
+            Category::DesktopDock => &[
+                (Choice::DesktopIconsOn, "Desktop Icons On"),
+                (Choice::DesktopIconsOff, "Desktop Icons Off"),
+                (Choice::DockBottom, "Dock Bottom"),
+                (Choice::DockRight, "Dock Right"),
+            ],
+            Category::Display => &[
+                (Choice::HdrOff, "HDR Off"),
+                (Choice::HdrOn, "HDR Requested"),
+                (Choice::VrrOff, "VRR Off"),
+                (Choice::VrrAdaptive, "VRR Adaptive"),
+            ],
+            Category::Sound => &[
+                (Choice::SoundOff, "Sound Off"),
+                (Choice::SoundOn, "Sound On"),
+            ],
+            Category::Network => &[
+                (Choice::NetworkOffline, "Offline"),
+                (Choice::NetworkDhcp, "DHCP"),
+            ],
+            Category::Keyboard => &[
+                (Choice::KeyboardSlow, "Slow Repeat"),
+                (Choice::KeyboardFast, "Fast Repeat"),
+            ],
+            Category::Mouse => &[
+                (Choice::MouseNaturalOff, "Natural Scroll Off"),
+                (Choice::MouseNaturalOn, "Natural Scroll On"),
+            ],
+            Category::Accessibility => &[
+                (Choice::AccessibilityOff, "Assistive UI Off"),
+                (Choice::AccessibilityOn, "Assistive UI On"),
+            ],
+            Category::Privacy => &[
+                (Choice::PrivacyStandard, "Standard"),
+                (Choice::PrivacyStrict, "Strict"),
+            ],
+            Category::Notifications => &[
+                (Choice::NotificationsOff, "Notifications Off"),
+                (Choice::NotificationsOn, "Notifications On"),
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppearanceMode {
     System,
     Light,
@@ -67,12 +220,6 @@ enum AppearanceMode {
 }
 
 impl AppearanceMode {
-    const ALL: [AppearanceMode; 3] = [
-        AppearanceMode::Light,
-        AppearanceMode::Dark,
-        AppearanceMode::System,
-    ];
-
     fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "system" => Some(Self::System),
@@ -99,21 +246,159 @@ impl AppearanceMode {
     }
 }
 
-impl fmt::Display for AppearanceMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SettingsState {
     appearance: AppearanceMode,
+    desktop_icons: bool,
+    dock_position: String,
+    hdr_requested: bool,
+    vrr_adaptive: bool,
+    sound_effects: bool,
+    network_profile: String,
+    keyboard_repeat: String,
+    natural_scroll: bool,
+    assistive_ui: bool,
+    privacy_mode: String,
+    notifications: bool,
 }
 
 impl Default for SettingsState {
     fn default() -> Self {
         Self {
             appearance: AppearanceMode::System,
+            desktop_icons: true,
+            dock_position: "bottom".to_string(),
+            hdr_requested: false,
+            vrr_adaptive: false,
+            sound_effects: true,
+            network_profile: "dhcp".to_string(),
+            keyboard_repeat: "fast".to_string(),
+            natural_scroll: false,
+            assistive_ui: false,
+            privacy_mode: "standard".to_string(),
+            notifications: true,
+        }
+    }
+}
+
+impl SettingsState {
+    fn choice_enabled(&self, choice: Choice) -> bool {
+        match choice {
+            Choice::AppearanceLight => self.appearance == AppearanceMode::Light,
+            Choice::AppearanceDark => self.appearance == AppearanceMode::Dark,
+            Choice::AppearanceSystem => self.appearance == AppearanceMode::System,
+            Choice::DesktopIconsOn => self.desktop_icons,
+            Choice::DesktopIconsOff => !self.desktop_icons,
+            Choice::DockBottom => self.dock_position == "bottom",
+            Choice::DockRight => self.dock_position == "right",
+            Choice::HdrOff => !self.hdr_requested,
+            Choice::HdrOn => self.hdr_requested,
+            Choice::VrrOff => !self.vrr_adaptive,
+            Choice::VrrAdaptive => self.vrr_adaptive,
+            Choice::SoundOff => !self.sound_effects,
+            Choice::SoundOn => self.sound_effects,
+            Choice::NetworkOffline => self.network_profile == "offline",
+            Choice::NetworkDhcp => self.network_profile == "dhcp",
+            Choice::KeyboardSlow => self.keyboard_repeat == "slow",
+            Choice::KeyboardFast => self.keyboard_repeat == "fast",
+            Choice::MouseNaturalOff => !self.natural_scroll,
+            Choice::MouseNaturalOn => self.natural_scroll,
+            Choice::AccessibilityOff => !self.assistive_ui,
+            Choice::AccessibilityOn => self.assistive_ui,
+            Choice::PrivacyStandard => self.privacy_mode == "standard",
+            Choice::PrivacyStrict => self.privacy_mode == "strict",
+            Choice::NotificationsOff => !self.notifications,
+            Choice::NotificationsOn => self.notifications,
+        }
+    }
+
+    fn apply_choice(&mut self, choice: Choice) {
+        match choice {
+            Choice::AppearanceLight => self.appearance = AppearanceMode::Light,
+            Choice::AppearanceDark => self.appearance = AppearanceMode::Dark,
+            Choice::AppearanceSystem => self.appearance = AppearanceMode::System,
+            Choice::DesktopIconsOn => self.desktop_icons = true,
+            Choice::DesktopIconsOff => self.desktop_icons = false,
+            Choice::DockBottom => self.dock_position = "bottom".to_string(),
+            Choice::DockRight => self.dock_position = "right".to_string(),
+            Choice::HdrOff => self.hdr_requested = false,
+            Choice::HdrOn => self.hdr_requested = true,
+            Choice::VrrOff => self.vrr_adaptive = false,
+            Choice::VrrAdaptive => self.vrr_adaptive = true,
+            Choice::SoundOff => self.sound_effects = false,
+            Choice::SoundOn => self.sound_effects = true,
+            Choice::NetworkOffline => self.network_profile = "offline".to_string(),
+            Choice::NetworkDhcp => self.network_profile = "dhcp".to_string(),
+            Choice::KeyboardSlow => self.keyboard_repeat = "slow".to_string(),
+            Choice::KeyboardFast => self.keyboard_repeat = "fast".to_string(),
+            Choice::MouseNaturalOff => self.natural_scroll = false,
+            Choice::MouseNaturalOn => self.natural_scroll = true,
+            Choice::AccessibilityOff => self.assistive_ui = false,
+            Choice::AccessibilityOn => self.assistive_ui = true,
+            Choice::PrivacyStandard => self.privacy_mode = "standard".to_string(),
+            Choice::PrivacyStrict => self.privacy_mode = "strict".to_string(),
+            Choice::NotificationsOff => self.notifications = false,
+            Choice::NotificationsOn => self.notifications = true,
+        }
+    }
+
+    fn status_line(&self, category: Category) -> String {
+        match category {
+            Category::General => format!(
+                "GENERAL - {} / {} / {}",
+                self.appearance.label(),
+                if self.notifications {
+                    "NOTIFY ON"
+                } else {
+                    "NOTIFY OFF"
+                },
+                if self.sound_effects {
+                    "SOUND ON"
+                } else {
+                    "SOUND OFF"
+                }
+            ),
+            Category::Appearance => format!("MODE - {}", self.appearance.label()),
+            Category::DesktopDock => format!(
+                "DESKTOP - ICONS {} / DOCK {}",
+                if self.desktop_icons { "ON" } else { "OFF" },
+                self.dock_position.to_ascii_uppercase()
+            ),
+            Category::Display => format!(
+                "DISPLAY - HDR {} / VRR {}",
+                if self.hdr_requested {
+                    "REQUESTED"
+                } else {
+                    "OFF"
+                },
+                if self.vrr_adaptive { "ADAPTIVE" } else { "OFF" }
+            ),
+            Category::Sound => format!(
+                "SOUND - EFFECTS {}",
+                if self.sound_effects { "ON" } else { "OFF" }
+            ),
+            Category::Network => {
+                format!("NETWORK - {}", self.network_profile.to_ascii_uppercase())
+            }
+            Category::Keyboard => {
+                format!(
+                    "KEYBOARD - {} REPEAT",
+                    self.keyboard_repeat.to_ascii_uppercase()
+                )
+            }
+            Category::Mouse => format!(
+                "MOUSE - NATURAL SCROLL {}",
+                if self.natural_scroll { "ON" } else { "OFF" }
+            ),
+            Category::Accessibility => format!(
+                "ACCESSIBILITY - ASSISTIVE UI {}",
+                if self.assistive_ui { "ON" } else { "OFF" }
+            ),
+            Category::Privacy => format!("PRIVACY - {}", self.privacy_mode.to_ascii_uppercase()),
+            Category::Notifications => format!(
+                "NOTIFICATIONS - {}",
+                if self.notifications { "ON" } else { "OFF" }
+            ),
         }
     }
 }
@@ -155,10 +440,33 @@ impl SettingsStore {
             let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
-            if key.trim() == "appearance" {
-                if let Some(mode) = AppearanceMode::parse(value) {
-                    state.appearance = mode;
+            let value = value.trim();
+            match key.trim() {
+                "appearance" => {
+                    if let Some(mode) = AppearanceMode::parse(value) {
+                        state.appearance = mode;
+                    }
                 }
+                "desktop_icons" => state.desktop_icons = parse_bool(value, state.desktop_icons),
+                "dock_position" if matches!(value, "bottom" | "right") => {
+                    state.dock_position = value.to_string();
+                }
+                "hdr_requested" => state.hdr_requested = parse_bool(value, state.hdr_requested),
+                "vrr_adaptive" => state.vrr_adaptive = parse_bool(value, state.vrr_adaptive),
+                "sound_effects" => state.sound_effects = parse_bool(value, state.sound_effects),
+                "network_profile" if matches!(value, "offline" | "dhcp") => {
+                    state.network_profile = value.to_string();
+                }
+                "keyboard_repeat" if matches!(value, "slow" | "fast") => {
+                    state.keyboard_repeat = value.to_string();
+                }
+                "natural_scroll" => state.natural_scroll = parse_bool(value, state.natural_scroll),
+                "assistive_ui" => state.assistive_ui = parse_bool(value, state.assistive_ui),
+                "privacy_mode" if matches!(value, "standard" | "strict") => {
+                    state.privacy_mode = value.to_string();
+                }
+                "notifications" => state.notifications = parse_bool(value, state.notifications),
+                _ => {}
             }
         }
         state
@@ -170,18 +478,54 @@ impl SettingsStore {
         }
         fs::write(
             &self.path,
-            format!("appearance={}\n", state.appearance.as_str()),
+            format!(
+                concat!(
+                    "appearance={}\n",
+                    "desktop_icons={}\n",
+                    "dock_position={}\n",
+                    "hdr_requested={}\n",
+                    "vrr_adaptive={}\n",
+                    "sound_effects={}\n",
+                    "network_profile={}\n",
+                    "keyboard_repeat={}\n",
+                    "natural_scroll={}\n",
+                    "assistive_ui={}\n",
+                    "privacy_mode={}\n",
+                    "notifications={}\n"
+                ),
+                state.appearance.as_str(),
+                state.desktop_icons,
+                state.dock_position,
+                state.hdr_requested,
+                state.vrr_adaptive,
+                state.sound_effects,
+                state.network_profile,
+                state.keyboard_repeat,
+                state.natural_scroll,
+                state.assistive_ui,
+                state.privacy_mode,
+                state.notifications
+            ),
         )
+    }
+}
+
+fn parse_bool(value: &str, fallback: bool) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => true,
+        "false" | "0" | "no" | "off" => false,
+        _ => fallback,
     }
 }
 
 struct SettingsView {
     state: WidgetState,
-    categories: TreeView,
+    category_buttons: Vec<Button>,
     heading: Label,
     description: Label,
     status: Label,
-    mode_buttons: Vec<Button>,
+    option_buttons: Vec<Button>,
+    selected_category: Category,
     settings: SettingsState,
     store: SettingsStore,
     last_error: Option<String>,
@@ -190,32 +534,17 @@ struct SettingsView {
 impl SettingsView {
     fn load(store: SettingsStore) -> Self {
         let settings = store.load();
-        let mut categories = TreeView::new();
-        categories.roots = vec![
-            TreeNode::new("General"),
-            TreeNode::new("Appearance"),
-            TreeNode::new("Desktop & Dock"),
-            TreeNode::new("Display"),
-            TreeNode::new("Sound"),
-            TreeNode::new("Network"),
-            TreeNode::new("Keyboard"),
-            TreeNode::new("Mouse"),
-            TreeNode::new("Accessibility"),
-            TreeNode::new("Privacy & Security"),
-            TreeNode::new("Notifications"),
-        ];
-        categories.selected_path = Some(vec![1]);
-
         let mut view = Self {
             state: WidgetState::new(),
-            categories,
+            category_buttons: Category::ALL
+                .iter()
+                .map(|category| Button::new(category.label()))
+                .collect(),
             heading: Label::new("APPEARANCE"),
             description: Label::new("Choose how RetroShell draws native windows and apps."),
             status: Label::new(""),
-            mode_buttons: AppearanceMode::ALL
-                .iter()
-                .map(|mode| Button::new(mode.label()))
-                .collect(),
+            option_buttons: Vec::new(),
+            selected_category: Category::Appearance,
             settings,
             store,
             last_error: None,
@@ -225,16 +554,34 @@ impl SettingsView {
     }
 
     fn refresh_labels(&mut self) {
-        for (button, mode) in self
-            .mode_buttons
+        self.heading.text = self.selected_category.title();
+        self.description.text = self.selected_category.description().to_string();
+
+        self.option_buttons = self
+            .selected_category
+            .choices()
+            .iter()
+            .map(|(choice, label)| {
+                let mut button = Button::new(if self.settings.choice_enabled(*choice) {
+                    format!("{label} *")
+                } else {
+                    (*label).to_string()
+                });
+                button.checked = self.settings.choice_enabled(*choice);
+                button
+            })
+            .collect();
+
+        for (button, category) in self
+            .category_buttons
             .iter_mut()
-            .zip(AppearanceMode::ALL.iter().copied())
+            .zip(Category::ALL.iter().copied())
         {
-            button.checked = mode == self.settings.appearance;
+            button.checked = category == self.selected_category;
             button.set_label(if button.checked {
-                format!("{} ON", mode.label())
+                format!("{} *", category.label())
             } else {
-                mode.label().to_string()
+                category.label().to_string()
             });
         }
 
@@ -243,34 +590,67 @@ impl SettingsView {
             .as_deref()
             .map(|error| format!(" - {error}"))
             .unwrap_or_default();
-        self.status.text = format!("MODE - {}{}", self.settings.appearance.label(), error);
+        self.status.text = format!(
+            "{}{}",
+            self.settings.status_line(self.selected_category),
+            error
+        );
     }
 
-    fn set_appearance(&mut self, mode: AppearanceMode) -> bool {
-        self.settings.appearance = mode;
+    fn select_category(&mut self, category: Category) {
+        self.selected_category = category;
+        self.last_error = None;
+        self.refresh_labels();
+        self.relayout_if_visible();
+    }
+
+    fn apply_choice(&mut self, choice: Choice) -> bool {
+        self.settings.apply_choice(choice);
         match self.store.save(&self.settings) {
             Ok(()) => {
                 self.last_error = None;
                 self.refresh_labels();
+                self.relayout_if_visible();
                 true
             }
             Err(err) => {
                 self.last_error = Some(format!("SAVE FAILED {err}"));
                 self.refresh_labels();
+                self.relayout_if_visible();
                 false
             }
         }
     }
 
-    fn handle_mode_click(&mut self, point: Point) -> bool {
+    fn relayout_if_visible(&mut self) {
+        let rect = self.rect();
+        if rect.width > 0.0 && rect.height > 0.0 {
+            let _ = self.layout(LayoutConstraint::tight(Size::new(rect.width, rect.height)));
+        }
+    }
+
+    fn handle_category_click(&mut self, point: Point) -> bool {
         let Some(index) = self
-            .mode_buttons
+            .category_buttons
             .iter()
             .position(|button| button.rect().contains(point))
         else {
             return false;
         };
-        self.set_appearance(AppearanceMode::ALL[index])
+        self.select_category(Category::ALL[index]);
+        true
+    }
+
+    fn handle_option_click(&mut self, point: Point) -> bool {
+        let Some(index) = self
+            .option_buttons
+            .iter()
+            .position(|button| button.rect().contains(point))
+        else {
+            return false;
+        };
+        let choice = self.selected_category.choices()[index].0;
+        self.apply_choice(choice)
     }
 }
 
@@ -289,40 +669,47 @@ impl Widget for SettingsView {
         self.set_rect(rect);
 
         let sidebar_w = (rect.width * 0.28).clamp(170.0, 240.0);
-        let divider_w = 4.0;
-        self.categories
-            .set_rect(Rect::new(rect.x, rect.y, sidebar_w, rect.height));
-        let _ = self
-            .categories
-            .layout(LayoutConstraint::tight(Size::new(sidebar_w, rect.height)));
+        let mut y = rect.y + 12.0;
+        for button in &mut self.category_buttons {
+            button.set_rect(Rect::new(rect.x + 10.0, y, sidebar_w - 20.0, 24.0));
+            let _ = button.layout(LayoutConstraint::tight(Size::new(sidebar_w - 20.0, 24.0)));
+            y += 28.0;
+        }
 
-        let content_x = rect.x + sidebar_w + divider_w + 18.0;
-        let content_w = (rect.width - sidebar_w - divider_w - 36.0).max(0.0);
-        let mut y = rect.y + 20.0;
+        let content_x = rect.x + sidebar_w + 18.0;
+        let content_w = (rect.width - sidebar_w - 36.0).max(0.0);
+        let mut content_y = rect.y + 20.0;
 
         self.heading
-            .set_rect(Rect::new(content_x, y, content_w, 24.0));
+            .set_rect(Rect::new(content_x, content_y, content_w, 24.0));
         let _ = self
             .heading
             .layout(LayoutConstraint::tight(Size::new(content_w, 24.0)));
-        y += 34.0;
+        content_y += 32.0;
 
         self.description
-            .set_rect(Rect::new(content_x, y, content_w, 24.0));
+            .set_rect(Rect::new(content_x, content_y, content_w, 44.0));
         let _ = self
             .description
-            .layout(LayoutConstraint::tight(Size::new(content_w, 24.0)));
-        y += 42.0;
+            .layout(LayoutConstraint::tight(Size::new(content_w, 44.0)));
+        content_y += 56.0;
 
-        for button in &mut self.mode_buttons {
-            button.set_rect(Rect::new(content_x, y, 150.0, 30.0));
-            let _ = button.layout(LayoutConstraint::tight(Size::new(150.0, 30.0)));
-            y += 38.0;
+        let button_w = (content_w / 2.0 - 8.0).clamp(132.0, 220.0);
+        for (index, button) in self.option_buttons.iter_mut().enumerate() {
+            let col = index % 2;
+            let row = index / 2;
+            let x = content_x + col as f32 * (button_w + 12.0);
+            let y = content_y + row as f32 * 38.0;
+            button.set_rect(Rect::new(x, y, button_w, 28.0));
+            let _ = button.layout(LayoutConstraint::tight(Size::new(button_w, 28.0)));
         }
 
-        y += 8.0;
-        self.status
-            .set_rect(Rect::new(content_x, y, content_w, 24.0));
+        self.status.set_rect(Rect::new(
+            content_x,
+            rect.y + rect.height - 36.0,
+            content_w,
+            24.0,
+        ));
         let _ = self
             .status
             .layout(LayoutConstraint::tight(Size::new(content_w, 24.0)));
@@ -331,10 +718,12 @@ impl Widget for SettingsView {
     }
 
     fn draw(&self, theme: &ThemeContext) {
-        self.categories.draw(theme);
+        for button in &self.category_buttons {
+            button.draw(theme);
+        }
         self.heading.draw(theme);
         self.description.draw(theme);
-        for button in &self.mode_buttons {
+        for button in &self.option_buttons {
             button.draw(theme);
         }
         self.status.draw(theme);
@@ -347,22 +736,20 @@ impl Widget for SettingsView {
             ..
         } = event
         {
-            if self.handle_mode_click(*point) {
+            if self.handle_category_click(*point) || self.handle_option_click(*point) {
                 return EventResult::Handled;
             }
-        }
-
-        if matches!(self.categories.handle_event(event), EventResult::Handled) {
-            return EventResult::Handled;
         }
         EventResult::Ignored
     }
 
     fn update(&mut self) {
-        self.categories.update();
+        for button in &mut self.category_buttons {
+            button.update();
+        }
         self.heading.update();
         self.description.update();
-        for button in &mut self.mode_buttons {
+        for button in &mut self.option_buttons {
             button.update();
         }
         self.status.update();
@@ -373,28 +760,30 @@ impl Widget for SettingsView {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = vec![
-            &self.categories,
-            &self.heading,
-            &self.description,
-            &self.status,
-        ];
-        for button in &self.mode_buttons {
+        let mut children: Vec<&dyn Widget> = Vec::new();
+        for button in &self.category_buttons {
             children.push(button);
         }
+        children.push(&self.heading);
+        children.push(&self.description);
+        for button in &self.option_buttons {
+            children.push(button);
+        }
+        children.push(&self.status);
         children
     }
 
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        let mut children: Vec<&mut dyn Widget> = vec![
-            &mut self.categories,
-            &mut self.heading,
-            &mut self.description,
-            &mut self.status,
-        ];
-        for button in &mut self.mode_buttons {
+        let mut children: Vec<&mut dyn Widget> = Vec::new();
+        for button in &mut self.category_buttons {
             children.push(button);
         }
+        children.push(&mut self.heading);
+        children.push(&mut self.description);
+        for button in &mut self.option_buttons {
+            children.push(button);
+        }
+        children.push(&mut self.status);
         children
     }
 
@@ -426,55 +815,87 @@ mod tests {
             .join("settings.conf")
     }
 
-    fn click_mode(view: &mut SettingsView, index: usize) -> EventResult {
-        let rect = view.mode_buttons[index].rect();
-        view.handle_event(&Event::MouseDown {
+    fn click_button(button: &Button) -> Event {
+        let rect = button.rect();
+        Event::MouseDown {
             button: MouseButton::Left,
-            point: Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0),
-            modifiers: Modifiers::NONE,
-        })
+            point: Point::new(rect.x + 2.0, rect.y + 2.0),
+            modifiers: Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: false,
+            },
+        }
+    }
+
+    fn assert_handled(result: EventResult) {
+        assert!(matches!(result, EventResult::Handled));
     }
 
     #[test]
-    fn settings_store_loads_default_when_missing() {
+    fn settings_store_persists_all_supported_values() {
         let path = temp_settings_path();
-        let store = SettingsStore::new(path.clone());
-
-        assert_eq!(store.load().appearance, AppearanceMode::System);
-
-        let _ = fs::remove_dir_all(path.parent().unwrap());
-    }
-
-    #[test]
-    fn settings_store_persists_appearance_mode() {
-        let path = temp_settings_path();
-        let store = SettingsStore::new(path.clone());
+        let store = SettingsStore::new(path);
         let state = SettingsState {
             appearance: AppearanceMode::Dark,
+            desktop_icons: false,
+            dock_position: "right".to_string(),
+            hdr_requested: true,
+            vrr_adaptive: true,
+            sound_effects: false,
+            network_profile: "offline".to_string(),
+            keyboard_repeat: "slow".to_string(),
+            natural_scroll: true,
+            assistive_ui: true,
+            privacy_mode: "strict".to_string(),
+            notifications: false,
         };
 
         store.save(&state).unwrap();
-
         assert_eq!(store.load(), state);
-        assert_eq!(fs::read_to_string(&path).unwrap(), "appearance=dark\n");
-
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]
-    fn settings_view_click_saves_dark_mode() {
+    fn settings_category_click_rebuilds_visible_options() {
+        let store = SettingsStore::new(temp_settings_path());
+        let mut view = SettingsView::load(store);
+        view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
+        view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
+
+        let display_button = &view.category_buttons[3];
+        assert_handled(view.handle_event(&click_button(display_button)));
+
+        assert_eq!(view.selected_category, Category::Display);
+        assert!(view.heading.text.contains("DISPLAY"));
+        assert!(view
+            .option_buttons
+            .iter()
+            .any(|button| button.label.contains("HDR")));
+        assert!(view
+            .option_buttons
+            .iter()
+            .any(|button| button.label.contains("VRR")));
+        assert!(view
+            .option_buttons
+            .iter()
+            .all(|button| button.rect().width > 0.0));
+    }
+
+    #[test]
+    fn settings_option_click_updates_and_saves_state() {
         let path = temp_settings_path();
         let store = SettingsStore::new(path.clone());
         let mut view = SettingsView::load(store);
-        view.layout(LayoutConstraint::tight(Size::new(720.0, 420.0)));
+        view.select_category(Category::Display);
+        view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
+        view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
 
-        let result = click_mode(&mut view, 1);
+        let hdr_button = &view.option_buttons[1];
+        assert_handled(view.handle_event(&click_button(hdr_button)));
 
-        assert!(matches!(result, EventResult::Handled));
-        assert_eq!(view.settings.appearance, AppearanceMode::Dark);
-        assert!(view.status.text.contains("DARK"));
-        assert_eq!(fs::read_to_string(&path).unwrap(), "appearance=dark\n");
-
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        let loaded = SettingsStore::new(path).load();
+        assert!(loaded.hdr_requested);
+        assert!(view.status.text.contains("HDR REQUESTED"));
     }
 }

@@ -85,6 +85,8 @@ Still not done:
 
 ![RetroShell current VM desktop](docs/screenshots/current-retroshell-desktop.png)
 
+![RetroShell Settings Display pane](docs/screenshots/current-settings.png)
+
 ![RetroShell minimized Finder window](docs/screenshots/current-minimized-window.png)
 
 ![RetroShell About window](docs/screenshots/current-about-window.png)
@@ -98,6 +100,8 @@ The latest VM verification uses the rebuilt `retroshell-vm` image at 1280x800. T
 The Retro menu's About action now opens a real shell message window instead of a fake folder view, and Finder Get Info opens an internal metadata window for the active shell/Finder window.
 
 The remaining default shell menu items now have routable action IDs. Items that still depend on future subsystems open explicit shell status windows instead of silently doing nothing.
+
+Settings now has first-party panes for General, Appearance, Desktop & Dock, Display, Sound, Network, Keyboard, Mouse, Accessibility, Privacy & Security, and Notifications. Values persist to `settings.conf`; the Display pane exposes honest HDR-request and VRR-adaptive preferences without claiming compositor-level HDR/VRR output control is complete. VM verification refreshed `docs/screenshots/current-settings.png`.
 
 Remaining compositor-level goals are still open: RetroShell is not yet a Wayland compositor, and HDR/VRR/exclusive fullscreen require compositor/session ownership plus color-management and presentation-control work rather than only shell-client UI changes.
 
