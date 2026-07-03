@@ -7,6 +7,8 @@
 >
 > 2026-07-03 App Store update: App Store package-manager integration now annotates search rows with installed/available/unknown state through each detected backend's read-only package query, while package-changing transactions remain explicitly gated.
 >
+> 2026-07-03 Doom evidence update: `run_doom_showcase.sh` now locates Chocolate Doom/Freedoom, records VM x11grab video and PulseAudio monitor audio, exercises windowed, fullscreen-sized window, and fullscreen-request modes, and validates video/audio streams with `ffprobe`. A short VM smoke run produced a valid audio/video MP4 and `docs/screenshots/current-doom-smoke.png`; final long-form evidence video remains open.
+>
 > 2026-07-03 coverage update: desktop icon right-column layout and minute-precision menu clock formatting now have automated tests, reducing the remaining Tier 1 uncertainty to visual/style polish rather than unverified behavior.
 >
 > 2026-07-03 SDK menu update: first-party SDK menu manifests now auto-fill stable bundle-scoped action IDs for action items that apps define without explicit IDs. VM runtime verification confirmed TextEdit publishes routable app/File menu actions such as `com.retro.textedit.file.save_as`.

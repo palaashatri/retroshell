@@ -91,6 +91,10 @@ Still not done:
 
 App Store search rows now include package installed state from the detected package manager, with package-changing transactions still gated by `RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES=1`.
 
+![RetroShell Doom smoke frame](docs/screenshots/current-doom-smoke.png)
+
+Doom showcase capture now has a VM-smoked script path that records x11grab video plus PulseAudio monitor audio and validates both streams with `ffprobe`; the final long-form windowed/borderless/exclusive evidence video remains a release gate.
+
 ![RetroShell minimized Finder window](docs/screenshots/current-minimized-window.png)
 
 ![RetroShell About window](docs/screenshots/current-about-window.png)
