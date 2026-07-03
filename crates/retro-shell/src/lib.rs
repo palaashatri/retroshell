@@ -23,10 +23,15 @@ pub use workspace_manager::WorkspaceManager;
 use parking_lot::RwLock;
 use retro_kit::event::MouseButton;
 use retro_kit::icon_view::{IconItem, IconView};
+use retro_kit::label::Label;
+use retro_kit::layout::LayoutView;
+use retro_kit::menu::{Menu, MenuItemKind};
 use retro_kit::menu_bar::MenuBar;
 use retro_kit::theme::ThemeContext;
 use retro_kit::window::Window;
-use retro_kit::{Event, EventResult, LayoutConstraint, Point, Rect, Size, Widget, WidgetState};
+use retro_kit::{
+    Event, EventResult, Layout, LayoutConstraint, Point, Rect, Size, Widget, WidgetState,
+};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -141,6 +146,7 @@ struct FolderOpenTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellWindowMode {
     Normal,
+    Minimized,
     Zoomed,
     Fullscreen,
 }
@@ -313,6 +319,39 @@ impl ShellDesktop {
         id
     }
 
+    fn open_message_window<S: Into<String>>(
+        &mut self,
+        title: S,
+        lines: impl IntoIterator<Item = String>,
+    ) -> Uuid {
+        let title = title.into();
+        let rect = clamp_window_rect(
+            Rect::new(
+                self.content_bounds().x + 112.0,
+                self.content_bounds().y + 72.0,
+                540.0,
+                240.0,
+            ),
+            self.content_bounds(),
+        );
+        let mut window = build_message_window(&title, lines);
+        window.set_rect(rect);
+        let id = self
+            .window_manager
+            .write()
+            .create_window("com.retro.shell", window.title(), rect);
+        self.windows.push(ShellWindow {
+            id,
+            window,
+            folder_path: None,
+            restore_rect: None,
+            mode: ShellWindowMode::Normal,
+        });
+        self.focus_window(id);
+        self.layout_window(id);
+        id
+    }
+
     fn close_active_window(&mut self) {
         let Some(id) = self.active_window_id() else {
             return;
@@ -341,6 +380,11 @@ impl ShellDesktop {
             return;
         };
 
+        if self.windows[index].mode == ShellWindowMode::Minimized {
+            self.restore_minimized_window(id);
+            return;
+        }
+
         if self.windows[index].mode == ShellWindowMode::Zoomed {
             let Some(restore_rect) = self.windows[index].restore_rect.take() else {
                 return;
@@ -361,10 +405,49 @@ impl ShellDesktop {
         self.layout_window(id);
     }
 
+    fn toggle_window_minimized(&mut self, id: Uuid) {
+        let Some(index) = self.window_index(id) else {
+            return;
+        };
+
+        if self.windows[index].mode == ShellWindowMode::Minimized {
+            self.restore_minimized_window(id);
+            return;
+        }
+
+        let current = self.windows[index].window.rect();
+        let minimized_rect = minimized_window_rect(self.content_bounds(), index);
+        self.windows[index].restore_rect = Some(current);
+        self.windows[index].mode = ShellWindowMode::Minimized;
+        self.windows[index].window.set_rect(minimized_rect);
+        self.window_manager.write().minimize_window(id);
+        self.layout_window(id);
+    }
+
+    fn restore_minimized_window(&mut self, id: Uuid) {
+        let Some(index) = self.window_index(id) else {
+            return;
+        };
+        let restore_rect = self.windows[index]
+            .restore_rect
+            .take()
+            .unwrap_or_else(|| default_finder_rect(self.rect()));
+        let restore_rect = clamp_window_rect(restore_rect, self.content_bounds());
+        self.windows[index].window.set_rect(restore_rect);
+        self.windows[index].mode = ShellWindowMode::Normal;
+        self.window_manager.write().restore_window(id);
+        self.layout_window(id);
+    }
+
     fn toggle_window_fullscreen(&mut self, id: Uuid) {
         let Some(index) = self.window_index(id) else {
             return;
         };
+
+        if self.windows[index].mode == ShellWindowMode::Minimized {
+            self.restore_minimized_window(id);
+            return;
+        }
 
         if self.windows[index].mode == ShellWindowMode::Fullscreen {
             let Some(restore_rect) = self.windows[index].restore_rect.take() else {
@@ -412,6 +495,7 @@ impl ShellDesktop {
         });
 
         if let Some(app_id) = active_app {
+            self.refresh_menu_manifests();
             self.menu_server.write().set_active_app_menus(&app_id);
         } else {
             self.menu_server.write().reset_to_shell_menus();
@@ -420,8 +504,18 @@ impl ShellDesktop {
     }
 
     fn activate_app_menu(&mut self, bundle_id: &str) {
+        self.refresh_menu_manifests();
         self.menu_server.write().set_active_app_menus(bundle_id);
         self.menu_bar.menus = self.menu_server.read().menus.clone();
+    }
+
+    fn refresh_menu_manifests(&mut self) {
+        let Some(dir) = retro_sdk::menu_manifest_dir() else {
+            return;
+        };
+        if let Err(err) = self.menu_server.write().load_menu_manifests_from_dir(dir) {
+            tracing::warn!("failed to load menu manifests: {err}");
+        }
     }
 
     fn launch_external_app(&mut self, bundle_id: &str) {
@@ -491,6 +585,8 @@ impl ShellDesktop {
             let rect = self.windows[index].window.rect();
             let rect = if self.windows[index].mode == ShellWindowMode::Fullscreen {
                 fullscreen_window_rect(bounds)
+            } else if self.windows[index].mode == ShellWindowMode::Minimized {
+                minimized_window_rect(bounds, index)
             } else if self.windows[index].mode == ShellWindowMode::Zoomed {
                 zoomed_window_rect(bounds, self.windows.len())
             } else if rect.width <= 1.0 || rect.height <= 1.0 {
@@ -533,15 +629,93 @@ impl ShellDesktop {
             "shell.settings" => self.launch_external_app("com.retro.settings"),
             "shell.software_catalog" => self.launch_external_app("com.retro.appstore"),
             "shell.about" => {
-                self.open_folder_window("About RetroShell", PathBuf::from("/"));
+                self.open_about_window();
             }
+            "shell.recent_items" => self.open_shell_status_window(
+                "Recent Items",
+                [
+                    "Recent item tracking is not populated yet.".to_string(),
+                    "Finder and app launches will be recorded here once session history is wired."
+                        .to_string(),
+                ],
+            ),
+            "shell.force_quit" => self.open_force_quit_window(),
+            "shell.log_out" => self.open_shell_status_window(
+                "Log Out",
+                [
+                    "RetroShell session logout is not active in this prototype.".to_string(),
+                    "Close the VM/container or quit RetroShell to end this lab session."
+                        .to_string(),
+                ],
+            ),
+            "shell.save" => self.open_shell_status_window(
+                "Save",
+                ["The active shell window has no document to save.".to_string()],
+            ),
+            "shell.print" => self.open_shell_status_window(
+                "Print",
+                ["Printing is not connected to a system print service yet.".to_string()],
+            ),
+            "shell.undo" | "shell.redo" | "shell.cut" | "shell.copy" | "shell.paste"
+            | "shell.select_all" => self.open_shell_status_window(
+                "Edit",
+                ["This edit command is only available inside document-aware apps.".to_string()],
+            ),
+            "shell.show_toolbar" => self.open_shell_status_window(
+                "Toolbar",
+                [
+                    "Finder toolbar controls are already visible in shell folder windows."
+                        .to_string(),
+                ],
+            ),
+            "shell.show_sidebar" => self.open_shell_status_window(
+                "Sidebar",
+                ["The internal shell Finder view does not have a sidebar yet.".to_string()],
+            ),
+            "shell.help_search" => self.open_shell_status_window(
+                "Help",
+                [
+                    "Help search is not indexed yet.".to_string(),
+                    "Use the README and docs/implementation_plan.md for current status."
+                        .to_string(),
+                ],
+            ),
             "shell.quit" => {
                 std::process::exit(0);
             }
             "finder.new_folder" => self.handle_new_folder(),
             "finder.get_info" => self.handle_get_info(),
+            _ if self.handle_sdk_app_menu_action(action) => {}
             _ => tracing::info!("Unhandled menu action: {action}"),
         }
+    }
+
+    fn handle_sdk_app_menu_action(&mut self, action: &str) -> bool {
+        let active_app = self.menu_server.read().active_app.clone();
+        let Some(active_app) = active_app else {
+            return false;
+        };
+        if !action.starts_with(&format!("{active_app}.")) {
+            return false;
+        }
+
+        let action_label = menu_action_label(&self.menu_bar.menus, action).unwrap_or_else(|| {
+            action
+                .rsplit('.')
+                .next()
+                .unwrap_or(action)
+                .replace('_', " ")
+        });
+        self.open_shell_status_window(
+            "Application Menu Action",
+            [
+                format!("Application: {active_app}"),
+                format!("Action: {action_label}"),
+                format!("Identifier: {action}"),
+                "Cross-process dispatch requires session/compositor IPC.".to_string(),
+            ],
+        );
+        true
     }
 
     fn handle_new_folder(&mut self) {
@@ -574,17 +748,50 @@ impl ShellDesktop {
         let Some(index) = self.window_index(id) else {
             return;
         };
-        let info = if let Some(ref path) = self.windows[index].folder_path {
-            let name = path
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            format!("{} — Info", name)
+        let title = self.windows[index].window.title().to_string();
+        let lines = if let Some(ref path) = self.windows[index].folder_path {
+            folder_info_lines(&title, path)
         } else {
-            self.windows[index].window.title().to_string()
+            vec![
+                format!("Name: {title}"),
+                "Kind: RetroShell window".to_string(),
+                "Location: Internal shell workspace".to_string(),
+            ]
         };
-        let info_title = format!("{info} Info");
-        self.open_folder_window(&info_title, PathBuf::from("/"));
+        self.open_message_window(format!("{title} Info"), lines);
+    }
+
+    fn open_about_window(&mut self) {
+        self.open_message_window(
+            "About RetroShell",
+            [
+                "RetroShell".to_string(),
+                "Classic desktop shell prototype".to_string(),
+                "Built in Rust with RetroKit, RetroSDK, and wgpu.".to_string(),
+                "This is currently a shell client under labwc, not a compositor.".to_string(),
+            ],
+        );
+    }
+
+    fn open_force_quit_window(&mut self) {
+        let mut lines = vec!["Running shell-managed windows:".to_string()];
+        if self.windows.is_empty() {
+            lines.push("No shell-managed windows are open.".to_string());
+        } else {
+            for window in &self.windows {
+                lines.push(format!("- {}", window.window.title()));
+            }
+        }
+        lines.push("External app force-quit needs compositor ownership.".to_string());
+        self.open_message_window("Force Quit", lines);
+    }
+
+    fn open_shell_status_window<S: Into<String>>(
+        &mut self,
+        title: S,
+        lines: impl IntoIterator<Item = String>,
+    ) {
+        self.open_message_window(title, lines);
     }
 
     fn refresh_active_folder_window(&mut self) {
@@ -609,6 +816,9 @@ impl ShellDesktop {
         let Some(index) = self.window_index(id) else {
             return;
         };
+        if self.windows[index].mode == ShellWindowMode::Minimized {
+            return;
+        }
         self.windows[index].restore_rect = None;
         self.windows[index].mode = ShellWindowMode::Normal;
         self.window_manager.write().restore_window(id);
@@ -628,6 +838,9 @@ impl ShellDesktop {
         let Some(index) = self.window_index(id) else {
             return;
         };
+        if self.windows[index].mode == ShellWindowMode::Minimized {
+            return;
+        }
         self.windows[index].restore_rect = None;
         self.windows[index].mode = ShellWindowMode::Normal;
         self.window_manager.write().restore_window(id);
@@ -703,6 +916,15 @@ fn fullscreen_window_rect(bounds: Rect) -> Rect {
     )
 }
 
+fn minimized_window_rect(bounds: Rect, slot: usize) -> Rect {
+    let width = bounds.width.clamp(220.0, 360.0);
+    let height = 24.0;
+    let gap = 8.0;
+    let x = bounds.x + gap + (slot as f32 * (width + gap)) % (bounds.width - width - gap).max(1.0);
+    let y = bounds.y + bounds.height - height - gap;
+    Rect::new(x, y, width, height)
+}
+
 fn clamp_window_rect(rect: Rect, bounds: Rect) -> Rect {
     let min_width = rect.width.min(bounds.width.max(1.0));
     let min_height = rect.height.min(bounds.height.max(1.0));
@@ -728,6 +950,78 @@ fn build_folder_window(title: &str, path: &PathBuf) -> Window {
     let mut window = Window::new(title);
     window.set_content(Box::new(files));
     window
+}
+
+fn build_message_window(title: &str, lines: impl IntoIterator<Item = String>) -> Window {
+    let mut layout = Layout::vertical(8.0);
+    for line in lines {
+        layout.add(Box::new(Label::new(line)));
+    }
+
+    let mut window = Window::new(title);
+    window.set_content(Box::new(LayoutView::new(layout)));
+    window
+}
+
+fn folder_info_lines(title: &str, path: &PathBuf) -> Vec<String> {
+    let item_count = fs::read_dir(path)
+        .map(|entries| entries.filter_map(|entry| entry.ok()).count())
+        .ok();
+    let metadata = fs::metadata(path).ok();
+    let kind = metadata
+        .as_ref()
+        .map(|metadata| {
+            if metadata.is_dir() {
+                "Folder"
+            } else if metadata.is_file() {
+                "Document"
+            } else {
+                "Filesystem item"
+            }
+        })
+        .unwrap_or("Unavailable");
+    let writable = metadata
+        .as_ref()
+        .map(|metadata| {
+            if metadata.permissions().readonly() {
+                "No"
+            } else {
+                "Yes"
+            }
+        })
+        .unwrap_or("Unknown");
+
+    vec![
+        format!("Name: {title}"),
+        format!("Kind: {kind}"),
+        format!("Location: {}", path.display()),
+        format!(
+            "Items: {}",
+            item_count
+                .map(|count| count.to_string())
+                .unwrap_or_else(|| "Unavailable".to_string())
+        ),
+        format!("Writable: {writable}"),
+    ]
+}
+
+fn menu_action_label(menus: &[Menu], action_id: &str) -> Option<String> {
+    for menu in menus {
+        for item in &menu.items {
+            if item.action_id == action_id {
+                return Some(item.label.clone());
+            }
+            if matches!(item.kind, MenuItemKind::Submenu) {
+                if let Some(submenu) = &item.submenu {
+                    if let Some(label) = menu_action_label(std::slice::from_ref(submenu), action_id)
+                    {
+                        return Some(label);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn folder_items_for_path(path: &PathBuf) -> Vec<IconItem> {
@@ -923,7 +1217,7 @@ impl Widget for ShellDesktop {
                 }
 
                 if minimize_box_rect(window_rect).contains(*point) {
-                    self.window_manager.write().minimize_window(window_id);
+                    self.toggle_window_minimized(window_id);
                     return EventResult::Handled;
                 }
 
@@ -1101,6 +1395,29 @@ mod tests {
         assert_eq!(actual.height, expected.height);
     }
 
+    fn message_window_lines(window: &ShellWindow) -> Vec<String> {
+        let layout_view = window
+            .window
+            .content
+            .as_ref()
+            .and_then(|content| content.as_any().downcast_ref::<LayoutView>())
+            .expect("message window uses layout view");
+        let Layout::Vertical { children, .. } = &layout_view.layout else {
+            panic!("message window uses vertical layout");
+        };
+        children
+            .iter()
+            .map(|child| {
+                child
+                    .as_any()
+                    .downcast_ref::<Label>()
+                    .expect("message line is label")
+                    .text
+                    .clone()
+            })
+            .collect()
+    }
+
     fn icon_item_center(window: &ShellWindow, label: &str) -> Point {
         let icon_view = window
             .window
@@ -1240,6 +1557,96 @@ mod tests {
     }
 
     #[test]
+    fn shell_global_menu_uses_loaded_sdk_manifest_for_active_app() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("retroshell_menu_manifest_shell_{unique}"));
+        fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("RETROSHELL_MENU_MANIFEST_DIR", &dir);
+
+        let mut textedit_file = retro_kit::menu::Menu::new("File");
+        textedit_file
+            .add_action("Save As...")
+            .with_action("com.retro.textedit.file.save_as");
+        let manifest = retro_sdk::MenuManifest {
+            app_name: "TextEdit".to_string(),
+            bundle_id: "com.retro.textedit".to_string(),
+            menus: vec![textedit_file],
+            updated_at_millis: 1,
+        };
+        fs::write(
+            dir.join("com_retro_textedit.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let (mut desktop, _) = test_desktop();
+        desktop.activate_app_menu("com.retro.textedit");
+
+        assert_eq!(
+            desktop.menu_server.read().active_app.as_deref(),
+            Some("com.retro.textedit")
+        );
+        assert_eq!(
+            desktop
+                .menu_bar
+                .menus
+                .iter()
+                .find(|menu| menu.title == "File")
+                .unwrap()
+                .items[0]
+                .action_id,
+            "com.retro.textedit.file.save_as"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        std::env::remove_var("RETROSHELL_MENU_MANIFEST_DIR");
+    }
+
+    #[test]
+    fn loaded_sdk_menu_action_opens_visible_dispatch_status() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("retroshell_menu_action_shell_{unique}"));
+        fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("RETROSHELL_MENU_MANIFEST_DIR", &dir);
+
+        let mut textedit_file = retro_kit::menu::Menu::new("File");
+        textedit_file
+            .add_action("Save As...")
+            .with_action("com.retro.textedit.file.save_as");
+        let manifest = retro_sdk::MenuManifest {
+            app_name: "TextEdit".to_string(),
+            bundle_id: "com.retro.textedit".to_string(),
+            menus: vec![textedit_file],
+            updated_at_millis: 1,
+        };
+        fs::write(
+            dir.join("com_retro_textedit.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let (mut desktop, _) = test_desktop();
+        desktop.activate_app_menu("com.retro.textedit");
+        desktop.handle_menu_action("com.retro.textedit.file.save_as");
+
+        let active = desktop.windows.last().expect("dispatch status window");
+        assert_eq!(active.window.title(), "Application Menu Action");
+        let lines = message_window_lines(active);
+        assert!(lines.contains(&"Application: com.retro.textedit".to_string()));
+        assert!(lines.contains(&"Action: Save As...".to_string()));
+        assert!(lines.contains(&"Identifier: com.retro.textedit.file.save_as".to_string()));
+
+        let _ = fs::remove_dir_all(&dir);
+        std::env::remove_var("RETROSHELL_MENU_MANIFEST_DIR");
+    }
+
+    #[test]
     fn shell_global_menu_resets_when_last_window_closes() {
         let (mut desktop, _) = test_desktop();
         let ids = desktop
@@ -1345,6 +1752,72 @@ mod tests {
     }
 
     #[test]
+    fn about_menu_opens_real_message_window() {
+        let (mut desktop, window_manager) = test_desktop();
+
+        desktop.handle_menu_action("shell.about");
+
+        let active = desktop.windows.last().expect("about window");
+        assert_eq!(active.window.title(), "About RetroShell");
+        assert_eq!(active.folder_path, None);
+        assert_eq!(window_manager.read().active_window, Some(active.id));
+        let lines = message_window_lines(active);
+        assert_eq!(lines[0], "RetroShell");
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("shell client under labwc")));
+    }
+
+    #[test]
+    fn get_info_menu_opens_folder_metadata_window() {
+        let root = temp_shell_root();
+        fs::write(root.join("note.txt"), "hello").unwrap();
+        let (mut desktop, window_manager) = test_desktop();
+        desktop.open_folder_window("Root", root.clone());
+
+        desktop.handle_menu_action("finder.get_info");
+
+        let active = desktop.windows.last().expect("info window");
+        assert_eq!(active.window.title(), "Root Info");
+        assert_eq!(active.folder_path, None);
+        assert_eq!(window_manager.read().active_window, Some(active.id));
+        let lines = message_window_lines(active);
+        assert!(lines.contains(&"Name: Root".to_string()));
+        assert!(lines.contains(&"Kind: Folder".to_string()));
+        assert!(lines.contains(&format!("Location: {}", root.display())));
+        assert!(lines.contains(&"Items: 1".to_string()));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn force_quit_menu_opens_running_window_list() {
+        let (mut desktop, window_manager) = test_desktop();
+
+        desktop.handle_menu_action("shell.force_quit");
+
+        let active = desktop.windows.last().expect("force quit window");
+        assert_eq!(active.window.title(), "Force Quit");
+        assert_eq!(active.folder_path, None);
+        assert_eq!(window_manager.read().active_window, Some(active.id));
+        let lines = message_window_lines(active);
+        assert_eq!(lines[0], "Running shell-managed windows:");
+        assert!(lines.iter().any(|line| line == "- Retro HD"));
+    }
+
+    #[test]
+    fn help_search_menu_opens_status_window() {
+        let (mut desktop, _) = test_desktop();
+
+        desktop.handle_menu_action("shell.help_search");
+
+        let active = desktop.windows.last().expect("help window");
+        assert_eq!(active.window.title(), "Help");
+        let lines = message_window_lines(active);
+        assert!(lines.iter().any(|line| line.contains("not indexed yet")));
+    }
+
+    #[test]
     fn focusing_window_raises_it_to_front() {
         let (mut desktop, window_manager) = test_desktop();
         let first_id = desktop.windows[0].id;
@@ -1412,6 +1885,46 @@ mod tests {
         });
 
         assert!(matches!(result, EventResult::Handled));
+        assert!(desktop.windows[0].restore_rect.is_none());
+        assert_eq!(
+            window_manager.read().windows[&id].state,
+            window_manager::WindowState::Normal
+        );
+        assert_rect_eq(desktop.windows[0].window.rect(), original);
+    }
+
+    #[test]
+    fn minimize_box_collapses_and_restores_managed_window() {
+        let (mut desktop, window_manager) = test_desktop();
+        let id = desktop.windows[0].id;
+        let original = desktop.windows[0].window.rect();
+        let point = Point::new(original.x + 28.0, original.y + 12.0);
+
+        let result = desktop.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point,
+            modifiers: retro_kit::event::Modifiers::NONE,
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(desktop.windows[0].mode, ShellWindowMode::Minimized);
+        assert_rect_eq(desktop.windows[0].restore_rect.unwrap(), original);
+        assert_eq!(
+            window_manager.read().windows[&id].state,
+            window_manager::WindowState::Minimized
+        );
+        assert_eq!(desktop.windows[0].window.rect().height, 24.0);
+
+        let minimized = desktop.windows[0].window.rect();
+        let restore_point = Point::new(minimized.x + 28.0, minimized.y + 12.0);
+        let result = desktop.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point: restore_point,
+            modifiers: retro_kit::event::Modifiers::NONE,
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(desktop.windows[0].mode, ShellWindowMode::Normal);
         assert!(desktop.windows[0].restore_rect.is_none());
         assert_eq!(
             window_manager.read().windows[&id].state,
@@ -1504,6 +2017,19 @@ mod tests {
     #[test]
     fn default_shell_menus_have_routable_action_ids() {
         let server = MenuServer::new();
+        for menu in &server.menus {
+            for item in &menu.items {
+                if matches!(item.kind, retro_kit::menu::MenuItemKind::Action) {
+                    assert!(
+                        !item.action_id.is_empty(),
+                        "{} > {} has no action id",
+                        menu.title,
+                        item.label
+                    );
+                }
+            }
+        }
+
         let file = server
             .menus
             .iter()

@@ -156,6 +156,7 @@ impl Application {
         app_menu.add_separator();
         app_menu.add_action(format!("Quit {}", self.name));
         menus.insert(0, app_menu);
+        assign_default_menu_actions(&mut menus, &self.bundle_id);
         menus
     }
 
@@ -523,6 +524,42 @@ pub trait AppDelegate {
 
 pub fn build_menu(title: &str) -> Menu {
     Menu::new(title)
+}
+
+fn assign_default_menu_actions(menus: &mut [Menu], bundle_id: &str) {
+    for menu in menus {
+        let menu_slug = action_slug(&menu.title);
+        for item in &mut menu.items {
+            if matches!(item.kind, MenuItemKind::Action) && item.action_id.is_empty() {
+                item.action_id = format!("{bundle_id}.{}.{}", menu_slug, action_slug(&item.label));
+            }
+            if let Some(submenu) = &mut item.submenu {
+                assign_default_menu_actions(std::slice::from_mut(submenu), bundle_id);
+            }
+        }
+    }
+}
+
+fn action_slug(label: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_separator = false;
+    for ch in label.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch);
+            last_was_separator = false;
+        } else if !last_was_separator && !slug.is_empty() {
+            slug.push('_');
+            last_was_separator = true;
+        }
+    }
+    while slug.ends_with('_') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        "action".to_string()
+    } else {
+        slug
+    }
 }
 
 pub fn menu_item(label: &str, action: &str) -> MenuItem {
@@ -1575,11 +1612,13 @@ fn current_time_string() -> String {
     let duration = now
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let secs = duration.as_secs();
-    let local_secs = secs as i64;
-    let _seconds = local_secs % 60;
-    let minutes = (local_secs / 60) % 60;
-    let hours_24 = (local_secs / 3600) % 24;
+    format_clock_from_seconds(duration.as_secs())
+}
+
+fn format_clock_from_seconds(seconds_since_epoch: u64) -> String {
+    let local_secs = seconds_since_epoch as i64;
+    let minutes = (local_secs / 60).rem_euclid(60);
+    let hours_24 = (local_secs / 3600).rem_euclid(24);
     let hour_12 = match hours_24 % 12 {
         0 => 12,
         h => h,
@@ -2280,7 +2319,7 @@ fn distance_squared(a: Point, b: Point) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_dark_mode_preference;
+    use super::{format_clock_from_seconds, parse_dark_mode_preference};
 
     #[test]
     fn parses_dark_appearance_preference() {
@@ -2293,5 +2332,14 @@ mod tests {
         assert!(!parse_dark_mode_preference("appearance=light\n"));
         assert!(!parse_dark_mode_preference("appearance=system\n"));
         assert!(!parse_dark_mode_preference("other=dark\n"));
+    }
+
+    #[test]
+    fn formats_menu_clock_with_minute_precision() {
+        assert_eq!(format_clock_from_seconds(0), "12:00 AM");
+        assert_eq!(format_clock_from_seconds(60), "12:01 AM");
+        assert_eq!(format_clock_from_seconds(11 * 3600 + 59 * 60), "11:59 AM");
+        assert_eq!(format_clock_from_seconds(12 * 3600), "12:00 PM");
+        assert_eq!(format_clock_from_seconds(23 * 3600 + 5 * 60), "11:05 PM");
     }
 }

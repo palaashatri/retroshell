@@ -24,6 +24,7 @@ echo "=== Starting Xvfb ==="
 Xvfb :99 -screen 0 "${RETROSHELL_VM_WIDTH}x${RETROSHELL_VM_HEIGHT}x${RETROSHELL_VM_DEPTH}" &
 sleep 1
 export DISPLAY=:99
+xrandr --query 2>/dev/null | awk '/current/ { print "Xvfb", $8 "x" $10 }' || true
 
 echo "=== Starting x11vnc ==="
 x11vnc -display :99 -nopw -forever -listen 0.0.0.0 -rfbport 5900 &

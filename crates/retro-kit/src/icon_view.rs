@@ -159,3 +159,57 @@ impl Widget for IconView {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn desktop_item(label: &str) -> IconItem {
+        IconItem {
+            label: label.to_string(),
+            icon: None,
+            selected: false,
+            rect: Rect::ZERO,
+        }
+    }
+
+    #[test]
+    fn desktop_layout_uses_right_aligned_column_with_bottom_trash() {
+        let mut icons = IconView::new();
+        icons.icon_size = 56.0;
+        icons.items = vec![
+            desktop_item("Hard Disk"),
+            desktop_item("Home"),
+            desktop_item("Applications"),
+            desktop_item("TextEdit"),
+            desktop_item("Trash"),
+        ];
+        icons.set_rect(Rect::new(0.0, 24.0, 1280.0, 776.0));
+
+        icons.layout(LayoutConstraint::tight(Size::new(1280.0, 776.0)));
+
+        let expected_x = 1280.0 - icons.icon_size - 28.0;
+        for item in &icons.items {
+            assert_eq!(item.rect.x, expected_x);
+            assert!(item.rect.x + item.rect.width <= icons.rect().x + icons.rect().width);
+            assert!(item.rect.y >= icons.rect().y);
+            assert!(item.rect.y + item.rect.height <= icons.rect().y + icons.rect().height);
+        }
+
+        let trash = icons
+            .items
+            .iter()
+            .find(|item| item.label == "Trash")
+            .expect("trash icon exists");
+        assert_eq!(
+            trash.rect.y,
+            icons.rect().y + icons.rect().height - icons.icon_size - 34.0
+        );
+        let textedit = icons
+            .items
+            .iter()
+            .find(|item| item.label == "TextEdit")
+            .expect("textedit icon exists");
+        assert!(textedit.rect.y < trash.rect.y);
+    }
+}

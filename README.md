@@ -81,9 +81,25 @@ Still not done:
 * The global menu is not yet universal for standalone SDK/external app windows because labwc, not RetroShell, still owns real window focus and app surface management.
 * Screenshots should be refreshed in this README whenever a major visual/UI change is verified in the VM.
 
-### Latest VM Screenshot
+### Latest VM Screenshots
 
-![RetroShell Phase 1 VM screenshot](docs/screenshots/phase1-vm.png)
+![RetroShell current VM desktop](docs/screenshots/current-retroshell-desktop.png)
+
+![RetroShell minimized Finder window](docs/screenshots/current-minimized-window.png)
+
+![RetroShell About window](docs/screenshots/current-about-window.png)
+
+![RetroShell Force Quit window](docs/screenshots/current-force-quit-window.png)
+
+### Verified UI Update
+
+The latest VM verification uses the rebuilt `retroshell-vm` image at 1280x800. The display fills the full VM frame without black bars, and internal Finder minimize is no longer a placeholder: clicking the titlebar minimize control collapses the window into a bottom titlebar tab, and clicking the same control restores it.
+
+The Retro menu's About action now opens a real shell message window instead of a fake folder view, and Finder Get Info opens an internal metadata window for the active shell/Finder window.
+
+The remaining default shell menu items now have routable action IDs. Items that still depend on future subsystems open explicit shell status windows instead of silently doing nothing.
+
+Remaining compositor-level goals are still open: RetroShell is not yet a Wayland compositor, and HDR/VRR/exclusive fullscreen require compositor/session ownership plus color-management and presentation-control work rather than only shell-client UI changes.
 
 ---
 

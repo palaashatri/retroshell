@@ -73,6 +73,40 @@ fn test_app_publishes_menu_manifest() {
 }
 
 #[test]
+fn test_app_menu_manifest_generates_missing_action_ids() {
+    let mut app = Application::new("TextEdit", "com.retro.textedit");
+    let mut file_menu = build_menu("File");
+    file_menu.add_action("Save As...");
+    file_menu
+        .add_action("Explicit")
+        .with_action("com.retro.textedit.file.explicit");
+    app.set_menus(vec![file_menu]);
+
+    let manifest = app.menu_manifest();
+
+    assert_eq!(
+        manifest.menus[0].items[0].action_id,
+        "com.retro.textedit.textedit.about_textedit"
+    );
+    assert_eq!(
+        manifest.menus[0].items[2].action_id,
+        "com.retro.textedit.textedit.hide_textedit"
+    );
+    assert_eq!(
+        manifest.menus[0].items[4].action_id,
+        "com.retro.textedit.textedit.quit_textedit"
+    );
+    assert_eq!(
+        manifest.menus[1].items[0].action_id,
+        "com.retro.textedit.file.save_as"
+    );
+    assert_eq!(
+        manifest.menus[1].items[1].action_id,
+        "com.retro.textedit.file.explicit"
+    );
+}
+
+#[test]
 fn test_mouse_button_mapping() {
     assert_eq!(
         retro_sdk::winit_to_retro_mouse_button(winit::event::MouseButton::Left),

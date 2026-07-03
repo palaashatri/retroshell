@@ -1,6 +1,15 @@
 # RetroShell: Honest Self-Review & Road to 10/10
 
 > [!NOTE]
+> 2026-07-03 verification update: VM visual verification now uses the rebuilt `retroshell-vm` image with `xrandr`/`wlr-randr` present, 1280x800 output fills the frame without black bars, and internal Finder minimize collapses/restores as a real shell state. Compositor-level HDR, VRR, exclusive fullscreen, universal external-app global menus, and Doom showcase video remain future architecture work.
+>
+> 2026-07-03 coverage update: desktop icon right-column layout and minute-precision menu clock formatting now have automated tests, reducing the remaining Tier 1 uncertainty to visual/style polish rather than unverified behavior.
+>
+> 2026-07-03 SDK menu update: first-party SDK menu manifests now auto-fill stable bundle-scoped action IDs for action items that apps define without explicit IDs. VM runtime verification confirmed TextEdit publishes routable app/File menu actions such as `com.retro.textedit.file.save_as`.
+>
+> 2026-07-03 shell menu registry update: `retro-shell` now scans the SDK menu manifest directory, stores loaded menus by bundle id, and uses those menus when the matching app becomes active instead of falling back to generic hardcoded menus.
+
+> [!NOTE]
 > Audit update: the core architectural critique below is still accurate: RetroShell is currently a fullscreen Wayland client under `labwc`, not a compositor. Some feature rows are stale after recent work: Terminal now has a PTY path, App Store can query/package-plan through system package managers, shell-owned menus switch with active internal windows, SDK apps publish menu manifests that the shell can load, RetroShell-launched first-party apps can suppress duplicate local SDK menus, clipboard has a first-party runtime-file bridge, and font rendering now uses system font discovery plus `ab_glyph` rasterization with bitmap fallback.
 
 ## Executive Summary

@@ -1,6 +1,7 @@
 use retro_kit::event::{KeyCode, Modifiers};
 use retro_kit::menu::{Menu, MenuItem, MenuItemKind};
 use retro_sdk::MenuManifest;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -9,6 +10,7 @@ pub struct MenuServer {
     pub active_app: Option<String>,
     pub status_items: Vec<StatusItem>,
     pub keyboard_shortcuts: Vec<ShortcutBinding>,
+    pub app_menus: HashMap<String, Vec<Menu>>,
 }
 
 pub struct StatusItem {
@@ -38,6 +40,7 @@ impl MenuServer {
             active_app: None,
             status_items: vec![],
             keyboard_shortcuts: vec![],
+            app_menus: HashMap::new(),
         };
         server.setup_default_menus();
         server
@@ -56,17 +59,22 @@ impl MenuServer {
             .add_action("Software Catalog...")
             .with_action("shell.software_catalog");
         system_menu.add_separator();
-        system_menu.add_action("Recent Items").with_action("recent");
+        system_menu
+            .add_action("Recent Items")
+            .with_action("shell.recent_items");
         system_menu.add_separator();
-        system_menu.add_action("Force Quit...").with_shortcut(
-            KeyCode::Escape,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: true,
-                meta: true,
-            },
-        );
+        system_menu
+            .add_action("Force Quit...")
+            .with_action("shell.force_quit")
+            .with_shortcut(
+                KeyCode::Escape,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: true,
+                    meta: true,
+                },
+            );
         system_menu.add_separator();
         system_menu
             .add_action("Quit RetroShell")
@@ -80,15 +88,18 @@ impl MenuServer {
                     meta: true,
                 },
             );
-        system_menu.add_action("Log Out...").with_shortcut(
-            KeyCode::Q,
-            Modifiers {
-                shift: true,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
+        system_menu
+            .add_action("Log Out...")
+            .with_action("shell.log_out")
+            .with_shortcut(
+                KeyCode::Q,
+                Modifiers {
+                    shift: true,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
 
         let mut file_menu = Menu::new("File");
         file_menu
@@ -127,86 +138,114 @@ impl MenuServer {
                     meta: true,
                 },
             );
-        file_menu.add_action("Save").with_shortcut(
-            KeyCode::S,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
+        file_menu
+            .add_action("Save")
+            .with_action("shell.save")
+            .with_shortcut(
+                KeyCode::S,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
         file_menu.add_separator();
-        file_menu.add_action("Print...").with_shortcut(
-            KeyCode::P,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
+        file_menu
+            .add_action("Print...")
+            .with_action("shell.print")
+            .with_shortcut(
+                KeyCode::P,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
 
         let mut edit_menu = Menu::new("Edit");
-        edit_menu.add_action("Undo").with_shortcut(
-            KeyCode::Z,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
-        edit_menu.add_action("Redo").with_shortcut(
-            KeyCode::Z,
-            Modifiers {
-                shift: true,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
+        edit_menu
+            .add_action("Undo")
+            .with_action("shell.undo")
+            .with_shortcut(
+                KeyCode::Z,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+        edit_menu
+            .add_action("Redo")
+            .with_action("shell.redo")
+            .with_shortcut(
+                KeyCode::Z,
+                Modifiers {
+                    shift: true,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
         edit_menu.add_separator();
-        edit_menu.add_action("Cut").with_shortcut(
-            KeyCode::X,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
-        edit_menu.add_action("Copy").with_shortcut(
-            KeyCode::C,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
-        edit_menu.add_action("Paste").with_shortcut(
-            KeyCode::V,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
-        edit_menu.add_action("Select All").with_shortcut(
-            KeyCode::A,
-            Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: true,
-            },
-        );
+        edit_menu
+            .add_action("Cut")
+            .with_action("shell.cut")
+            .with_shortcut(
+                KeyCode::X,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+        edit_menu
+            .add_action("Copy")
+            .with_action("shell.copy")
+            .with_shortcut(
+                KeyCode::C,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+        edit_menu
+            .add_action("Paste")
+            .with_action("shell.paste")
+            .with_shortcut(
+                KeyCode::V,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+        edit_menu
+            .add_action("Select All")
+            .with_action("shell.select_all")
+            .with_shortcut(
+                KeyCode::A,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
 
         let mut view_menu = Menu::new("View");
-        view_menu.add_action("Show Toolbar");
-        view_menu.add_action("Show Sidebar");
+        view_menu
+            .add_action("Show Toolbar")
+            .with_action("shell.show_toolbar");
+        view_menu
+            .add_action("Show Sidebar")
+            .with_action("shell.show_sidebar");
         view_menu.add_separator();
         view_menu
             .add_action("Enter Fullscreen")
@@ -222,7 +261,9 @@ impl MenuServer {
             );
 
         let mut help_menu = Menu::new("Help");
-        help_menu.add_action("Search");
+        help_menu
+            .add_action("Search")
+            .with_action("shell.help_search");
 
         self.menus = vec![system_menu, file_menu, edit_menu, view_menu, help_menu];
     }
@@ -238,7 +279,12 @@ impl MenuServer {
     }
 
     pub fn apply_menu_manifest(&mut self, manifest: MenuManifest) {
-        self.set_app_menus(&manifest.bundle_id, manifest.menus);
+        let bundle_id = manifest.bundle_id;
+        let menus = manifest.menus;
+        self.app_menus.insert(bundle_id.clone(), menus.clone());
+        if self.active_app.as_deref() == Some(bundle_id.as_str()) {
+            self.set_app_menus(&bundle_id, menus);
+        }
     }
 
     pub fn load_menu_manifest<P: AsRef<Path>>(&mut self, path: P) -> std::io::Result<()> {
@@ -249,6 +295,28 @@ impl MenuServer {
         Ok(())
     }
 
+    pub fn load_menu_manifests_from_dir<P: AsRef<Path>>(
+        &mut self,
+        dir: P,
+    ) -> std::io::Result<usize> {
+        let dir = dir.as_ref();
+        if !dir.exists() {
+            return Ok(0);
+        }
+
+        let mut loaded = 0;
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            self.load_menu_manifest(&path)?;
+            loaded += 1;
+        }
+        Ok(loaded)
+    }
+
     pub fn reset_to_shell_menus(&mut self) {
         self.active_app = None;
         self.menus.clear();
@@ -256,6 +324,11 @@ impl MenuServer {
     }
 
     pub fn set_active_app_menus(&mut self, app_id: &str) {
+        if let Some(menus) = self.app_menus.get(app_id).cloned() {
+            self.set_app_menus(app_id, menus);
+            return;
+        }
+
         let title = match app_id {
             "com.retro.finder" => "Finder",
             "com.retro.textedit" => "TextEdit",
@@ -507,6 +580,11 @@ mod tests {
 
         let mut server = MenuServer::new();
         server.load_menu_manifest(&path).unwrap();
+
+        assert_eq!(server.active_app, None);
+        assert!(server.app_menus.contains_key("com.test.app"));
+
+        server.set_active_app_menus("com.test.app");
 
         assert_eq!(server.active_app.as_deref(), Some("com.test.app"));
         assert!(server.menus.iter().any(|menu| menu.title == "File"));
