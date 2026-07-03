@@ -14,7 +14,7 @@ pub use desktop_manager::DesktopManager;
 pub use dock::Dock;
 pub use launch_services::LaunchServices;
 pub use menu_server::MenuServer;
-pub use notification_center::NotificationCenter;
+pub use notification_center::{NotificationCenter, NotificationPriority};
 pub use session_manager::SessionManager;
 pub use theme_manager::ThemeManager;
 pub use window_manager::WindowManager;
@@ -108,6 +108,7 @@ impl RetroShell {
             self.menu_server.clone(),
             self.launch_services.clone(),
             self.window_manager.clone(),
+            self.notification_center.clone(),
         );
 
         let mut window = Window::new("RetroShell Desktop");
@@ -127,6 +128,7 @@ struct ShellDesktop {
     menu_server: Arc<RwLock<MenuServer>>,
     launch_services: Arc<RwLock<LaunchServices>>,
     window_manager: Arc<RwLock<WindowManager>>,
+    notification_center: Arc<RwLock<NotificationCenter>>,
     bundle_ids: Vec<String>,
 }
 
@@ -169,6 +171,7 @@ impl ShellDesktop {
         menu_server: Arc<RwLock<MenuServer>>,
         launch_services: Arc<RwLock<LaunchServices>>,
         window_manager: Arc<RwLock<WindowManager>>,
+        notification_center: Arc<RwLock<NotificationCenter>>,
     ) -> Self {
         let mut desktop = IconView::new();
         desktop.icon_size = 56.0;
@@ -228,6 +231,7 @@ impl ShellDesktop {
             menu_server,
             launch_services,
             window_manager,
+            notification_center,
             bundle_ids,
         };
         shell.open_finder_window();
@@ -521,6 +525,12 @@ impl ShellDesktop {
     fn launch_external_app(&mut self, bundle_id: &str) {
         if launch_app_binary(bundle_id) {
             self.activate_app_menu(bundle_id);
+            self.record_notification(
+                bundle_id,
+                "Application Launched",
+                "RetroShell started the application process.",
+                NotificationPriority::Normal,
+            );
         }
     }
 
@@ -631,6 +641,8 @@ impl ShellDesktop {
             "shell.about" => {
                 self.open_about_window();
             }
+            "shell.notification_center" => self.open_notification_center_window(),
+            "shell.clear_notifications" => self.clear_notifications(),
             "shell.recent_items" => self.open_shell_status_window(
                 "Recent Items",
                 [
@@ -770,6 +782,50 @@ impl ShellDesktop {
                 "Built in Rust with RetroKit, RetroSDK, and wgpu.".to_string(),
                 "This is currently a shell client under labwc, not a compositor.".to_string(),
             ],
+        );
+    }
+
+    fn record_notification(
+        &mut self,
+        app_id: &str,
+        title: &str,
+        message: &str,
+        priority: NotificationPriority,
+    ) -> String {
+        self.notification_center
+            .write()
+            .post(app_id, title, message, priority)
+    }
+
+    fn open_notification_center_window(&mut self) {
+        let visible = self
+            .notification_center
+            .read()
+            .visible()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut lines = vec!["Notification Center".to_string()];
+        if visible.is_empty() {
+            lines.push("No active notifications.".to_string());
+        } else {
+            for notification in visible {
+                lines.push(format!(
+                    "{} - {} ({:?})",
+                    notification.id, notification.title, notification.priority
+                ));
+                lines.push(format!("  App: {}", notification.app_id));
+                lines.push(format!("  {}", notification.message));
+            }
+        }
+        self.open_message_window("Notification Center", lines);
+    }
+
+    fn clear_notifications(&mut self) {
+        self.notification_center.write().dismiss_all();
+        self.open_message_window(
+            "Notification Center",
+            ["All active notifications dismissed.".to_string()],
         );
     }
 
@@ -1386,7 +1442,13 @@ mod tests {
         let menu_server = Arc::new(RwLock::new(MenuServer::new()));
         let launch_services = Arc::new(RwLock::new(LaunchServices::new()));
         let window_manager = Arc::new(RwLock::new(WindowManager::new()));
-        let mut desktop = ShellDesktop::new(menu_server, launch_services, window_manager.clone());
+        let notification_center = Arc::new(RwLock::new(NotificationCenter::new()));
+        let mut desktop = ShellDesktop::new(
+            menu_server,
+            launch_services,
+            window_manager.clone(),
+            notification_center,
+        );
         desktop.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
         (desktop, window_manager)
     }
@@ -1773,6 +1835,40 @@ mod tests {
         assert!(lines
             .iter()
             .any(|line| line.contains("shell client under labwc")));
+    }
+
+    #[test]
+    fn notification_center_lists_and_clears_active_notifications() {
+        let (mut desktop, _) = test_desktop();
+
+        let id = desktop.record_notification(
+            "com.retro.textedit",
+            "Document Saved",
+            "note.txt was written to disk.",
+            NotificationPriority::Normal,
+        );
+
+        assert_eq!(id, "notif-0");
+        assert_eq!(desktop.notification_center.read().visible().len(), 1);
+
+        desktop.handle_menu_action("shell.notification_center");
+        let active = desktop.windows.last().expect("notification center window");
+        assert_eq!(active.window.title(), "Notification Center");
+        let lines = message_window_lines(active);
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("notif-0 - Document Saved")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("App: com.retro.textedit")));
+
+        desktop.handle_menu_action("shell.clear_notifications");
+        assert!(desktop.notification_center.read().visible().is_empty());
+        let active = desktop.windows.last().expect("clear confirmation");
+        assert_eq!(active.window.title(), "Notification Center");
+        assert!(message_window_lines(active)
+            .iter()
+            .any(|line| line.contains("dismissed")));
     }
 
     #[test]

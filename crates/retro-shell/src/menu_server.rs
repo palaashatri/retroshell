@@ -62,6 +62,12 @@ impl MenuServer {
         system_menu
             .add_action("Recent Items")
             .with_action("shell.recent_items");
+        system_menu
+            .add_action("Notification Center...")
+            .with_action("shell.notification_center");
+        system_menu
+            .add_action("Clear Notifications")
+            .with_action("shell.clear_notifications");
         system_menu.add_separator();
         system_menu
             .add_action("Force Quit...")
