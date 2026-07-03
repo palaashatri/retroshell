@@ -106,6 +106,33 @@ impl PackageManager {
         }
     }
 
+    fn installed_query_command(self, package: &str) -> (&'static str, Vec<String>) {
+        match self {
+            Self::Apt => (
+                "dpkg-query",
+                vec!["-W".into(), "-f=${Status}".into(), package.into()],
+            ),
+            Self::Dnf => ("rpm", vec!["-q".into(), package.into()]),
+            Self::Pacman => ("pacman", vec!["-Q".into(), package.into()]),
+            Self::Pkg => ("pkg", vec!["info".into(), package.into()]),
+            Self::Apk => ("apk", vec!["info".into(), "-e".into(), package.into()]),
+            Self::Zypper => (
+                "zypper",
+                vec![
+                    "--non-interactive".into(),
+                    "se".into(),
+                    "-i".into(),
+                    "-x".into(),
+                    package.into(),
+                ],
+            ),
+            Self::Brew => (
+                "brew",
+                vec!["list".into(), "--versions".into(), package.into()],
+            ),
+        }
+    }
+
     fn transaction_command(self, action: PackageAction, package: &str) -> Vec<String> {
         match (self, action) {
             (Self::Apt, PackageAction::Install) => {
@@ -178,6 +205,23 @@ impl PackageAction {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PackageInstallState {
+    Installed,
+    Available,
+    Unknown,
+}
+
+impl PackageInstallState {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Installed => "INSTALLED",
+            Self::Available => "AVAILABLE",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TransactionPlan {
     action: PackageAction,
@@ -243,7 +287,7 @@ impl PackageBackend {
         } else {
             String::from_utf8_lossy(&output.stderr).to_string()
         };
-        let results = parse_search_results(&text, 12);
+        let results = annotate_search_results(manager, parse_search_results(&text, 12));
         if results.is_empty() {
             Ok(vec![format!(
                 "NO RESULTS FOR {}",
@@ -339,7 +383,46 @@ fn parse_search_results(output: &str, limit: usize) -> Vec<String> {
         .collect()
 }
 
+fn annotate_search_results(manager: PackageManager, results: Vec<String>) -> Vec<String> {
+    results
+        .into_iter()
+        .map(|line| {
+            let state = package_name_from_result(&line)
+                .map(|package| package_state_for_manager(manager, &package))
+                .unwrap_or(PackageInstallState::Unknown);
+            format!("[{}] {}", state.label(), line)
+        })
+        .collect()
+}
+
+fn package_state_for_manager(manager: PackageManager, package: &str) -> PackageInstallState {
+    let (binary, args) = manager.installed_query_command(package);
+    let Ok(output) = Command::new(binary).args(args).output() else {
+        return PackageInstallState::Unknown;
+    };
+
+    if !output.status.success() {
+        return PackageInstallState::Available;
+    }
+
+    if manager == PackageManager::Apt {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.contains("install ok installed") {
+            PackageInstallState::Installed
+        } else {
+            PackageInstallState::Available
+        }
+    } else {
+        PackageInstallState::Installed
+    }
+}
+
 fn package_name_from_result(result: &str) -> Option<String> {
+    let result = result
+        .strip_prefix("[INSTALLED] ")
+        .or_else(|| result.strip_prefix("[AVAILABLE] "))
+        .or_else(|| result.strip_prefix("[UNKNOWN] "))
+        .unwrap_or(result);
     let first = result.split_whitespace().next()?.trim();
     let name = first
         .rsplit_once('/')
@@ -737,6 +820,18 @@ mod tests {
     }
 
     #[test]
+    fn package_manager_builds_installed_query_command() {
+        let (binary, args) = PackageManager::Apt.installed_query_command("doom");
+
+        assert_eq!(binary, "dpkg-query");
+        assert_eq!(args, vec!["-W", "-f=${Status}", "doom"]);
+
+        let (binary, args) = PackageManager::Pacman.installed_query_command("doom");
+        assert_eq!(binary, "pacman");
+        assert_eq!(args, vec!["-Q", "doom"]);
+    }
+
+    #[test]
     fn appstore_search_reports_missing_backend() {
         let view = AppStoreView::new(PackageBackend { manager: None });
 
@@ -766,6 +861,22 @@ mod tests {
             package_name_from_result("freedoom - data files").as_deref(),
             Some("freedoom")
         );
+        assert_eq!(
+            package_name_from_result("[INSTALLED] doom - game").as_deref(),
+            Some("doom")
+        );
+    }
+
+    #[test]
+    fn annotate_search_results_adds_package_state_prefix() {
+        let results = annotate_search_results(
+            PackageManager::Apt,
+            vec!["definitely-not-installed-retroshell-test-package - demo".to_string()],
+        );
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].starts_with("[AVAILABLE] ") || results[0].starts_with("[UNKNOWN] "));
+        assert!(results[0].contains("definitely-not-installed-retroshell-test-package"));
     }
 
     #[test]

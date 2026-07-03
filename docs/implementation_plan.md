@@ -5,6 +5,8 @@
 >
 > 2026-07-03 Settings update: Settings now has functional category panes across General, Appearance, Desktop & Dock, Display, Sound, Network, Keyboard, Mouse, Accessibility, Privacy & Security, and Notifications. Settings persist to `settings.conf`; HDR/VRR are exposed as honest session preferences, not compositor-level output control.
 >
+> 2026-07-03 App Store update: App Store package-manager integration now annotates search rows with installed/available/unknown state through each detected backend's read-only package query, while package-changing transactions remain explicitly gated.
+>
 > 2026-07-03 coverage update: desktop icon right-column layout and minute-precision menu clock formatting now have automated tests, reducing the remaining Tier 1 uncertainty to visual/style polish rather than unverified behavior.
 >
 > 2026-07-03 SDK menu update: first-party SDK menu manifests now auto-fill stable bundle-scoped action IDs for action items that apps define without explicit IDs. VM runtime verification confirmed TextEdit publishes routable app/File menu actions such as `com.retro.textedit.file.save_as`.

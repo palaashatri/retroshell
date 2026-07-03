@@ -87,6 +87,10 @@ Still not done:
 
 ![RetroShell Settings Display pane](docs/screenshots/current-settings.png)
 
+![RetroShell App Store package search](docs/screenshots/current-appstore.png)
+
+App Store search rows now include package installed state from the detected package manager, with package-changing transactions still gated by `RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES=1`.
+
 ![RetroShell minimized Finder window](docs/screenshots/current-minimized-window.png)
 
 ![RetroShell About window](docs/screenshots/current-about-window.png)
