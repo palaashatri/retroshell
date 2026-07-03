@@ -109,6 +109,7 @@ impl RetroShell {
             self.launch_services.clone(),
             self.window_manager.clone(),
             self.notification_center.clone(),
+            self.workspace_manager.clone(),
         );
 
         let mut window = Window::new("RetroShell Desktop");
@@ -129,6 +130,7 @@ struct ShellDesktop {
     launch_services: Arc<RwLock<LaunchServices>>,
     window_manager: Arc<RwLock<WindowManager>>,
     notification_center: Arc<RwLock<NotificationCenter>>,
+    workspace_manager: Arc<RwLock<WorkspaceManager>>,
     bundle_ids: Vec<String>,
 }
 
@@ -138,6 +140,7 @@ struct ShellWindow {
     folder_path: Option<PathBuf>,
     restore_rect: Option<Rect>,
     mode: ShellWindowMode,
+    workspace: usize,
 }
 
 struct FolderOpenTarget {
@@ -172,6 +175,7 @@ impl ShellDesktop {
         launch_services: Arc<RwLock<LaunchServices>>,
         window_manager: Arc<RwLock<WindowManager>>,
         notification_center: Arc<RwLock<NotificationCenter>>,
+        workspace_manager: Arc<RwLock<WorkspaceManager>>,
     ) -> Self {
         let mut desktop = IconView::new();
         desktop.icon_size = 56.0;
@@ -232,6 +236,7 @@ impl ShellDesktop {
             launch_services,
             window_manager,
             notification_center,
+            workspace_manager,
             bundle_ids,
         };
         shell.open_finder_window();
@@ -302,21 +307,28 @@ impl ShellDesktop {
         self.open_folder_window("Retro HD", PathBuf::from("/"))
     }
 
+    fn active_workspace(&self) -> usize {
+        self.workspace_manager.read().active
+    }
+
     fn open_folder_window<S: Into<String>>(&mut self, title: S, path: PathBuf) -> Uuid {
         let rect = self.next_finder_rect();
         let title = title.into();
         let mut window = build_folder_window(&title, &path);
         window.set_rect(rect);
+        let workspace = self.active_workspace();
         let id =
             self.window_manager
                 .write()
                 .create_window("com.retro.finder", window.title(), rect);
+        self.window_manager.write().assign_workspace(id, workspace);
         self.windows.push(ShellWindow {
             id,
             window,
             folder_path: Some(path),
             restore_rect: None,
             mode: ShellWindowMode::Normal,
+            workspace,
         });
         self.focus_window(id);
         self.layout_window(id);
@@ -340,16 +352,19 @@ impl ShellDesktop {
         );
         let mut window = build_message_window(&title, lines);
         window.set_rect(rect);
+        let workspace = self.active_workspace();
         let id = self
             .window_manager
             .write()
             .create_window("com.retro.shell", window.title(), rect);
+        self.window_manager.write().assign_workspace(id, workspace);
         self.windows.push(ShellWindow {
             id,
             window,
             folder_path: None,
             restore_rect: None,
             mode: ShellWindowMode::Normal,
+            workspace,
         });
         self.focus_window(id);
         self.layout_window(id);
@@ -522,6 +537,67 @@ impl ShellDesktop {
         }
     }
 
+    fn switch_workspace(&mut self, workspace: usize) -> bool {
+        if !self.workspace_manager.write().switch_to(workspace) {
+            return false;
+        }
+        let active_workspace = self.active_workspace();
+        for shell_window in &mut self.windows {
+            shell_window.window.is_active = false;
+        }
+        let active_id = self
+            .windows
+            .iter()
+            .rev()
+            .find(|window| window.workspace == active_workspace)
+            .map(|window| window.id);
+        if let Some(id) = active_id {
+            if let Some(index) = self.window_index(id) {
+                self.windows[index].window.is_active = true;
+            }
+            self.window_manager.write().focus_window(id);
+        } else {
+            self.window_manager.write().active_window = None;
+        }
+        self.open_workspace_status_window();
+        true
+    }
+
+    fn switch_to_next_workspace(&mut self) {
+        self.workspace_manager.write().next();
+        let active = self.active_workspace();
+        let _ = self.switch_workspace(active);
+    }
+
+    fn switch_to_previous_workspace(&mut self) {
+        self.workspace_manager.write().previous();
+        let active = self.active_workspace();
+        let _ = self.switch_workspace(active);
+    }
+
+    fn open_workspace_status_window(&mut self) {
+        let manager = self.workspace_manager.read();
+        let active = manager.active;
+        let name = manager
+            .active_workspace()
+            .map(|workspace| workspace.name.clone())
+            .unwrap_or_else(|| format!("Desktop {}", active + 1));
+        drop(manager);
+        let visible_count = self
+            .windows
+            .iter()
+            .filter(|window| window.workspace == active)
+            .count();
+        self.open_message_window(
+            "Workspace",
+            [
+                format!("Active: {name}"),
+                format!("Index: {}", active + 1),
+                format!("Visible shell windows: {visible_count}"),
+            ],
+        );
+    }
+
     fn launch_external_app(&mut self, bundle_id: &str) {
         if launch_app_binary(bundle_id) {
             self.activate_app_menu(bundle_id);
@@ -535,7 +611,12 @@ impl ShellDesktop {
     }
 
     fn active_window_id(&self) -> Option<Uuid> {
-        self.windows.last().map(|window| window.id)
+        let active_workspace = self.active_workspace();
+        self.windows
+            .iter()
+            .rev()
+            .find(|window| window.workspace == active_workspace)
+            .map(|window| window.id)
     }
 
     fn window_index(&self, id: Uuid) -> Option<usize> {
@@ -543,11 +624,14 @@ impl ShellDesktop {
     }
 
     fn top_window_index_at(&self, point: Point) -> Option<usize> {
+        let active_workspace = self.active_workspace();
         self.windows
             .iter()
             .enumerate()
             .rev()
-            .find(|(_, window)| window.window.rect().contains(point))
+            .find(|(_, window)| {
+                window.workspace == active_workspace && window.window.rect().contains(point)
+            })
             .map(|(index, _)| index)
     }
 
@@ -692,6 +776,16 @@ impl ShellDesktop {
                         .to_string(),
                 ],
             ),
+            "workspace.previous" => self.switch_to_previous_workspace(),
+            "workspace.next" => self.switch_to_next_workspace(),
+            action if action.starts_with("workspace.switch.") => {
+                if let Some(index) = action
+                    .strip_prefix("workspace.switch.")
+                    .and_then(|value| value.parse::<usize>().ok())
+                {
+                    let _ = self.switch_workspace(index);
+                }
+            }
             "shell.quit" => {
                 std::process::exit(0);
             }
@@ -1224,12 +1318,24 @@ impl Widget for ShellDesktop {
 
     fn draw(&self, theme: &ThemeContext) {
         self.desktop.draw(theme);
+        let active_workspace = self.active_workspace();
         // Draw non-active windows first
-        for shell_window in self.windows.iter().rev().skip(1) {
+        for shell_window in self
+            .windows
+            .iter()
+            .filter(|window| window.workspace == active_workspace)
+            .rev()
+            .skip(1)
+        {
             shell_window.window.draw(theme);
         }
         // Draw active window last (on top)
-        if let Some(active) = self.windows.last() {
+        if let Some(active) = self
+            .windows
+            .iter()
+            .rev()
+            .find(|window| window.workspace == active_workspace)
+        {
             active.window.draw(theme);
         }
         self.menu_bar.draw(theme);
@@ -1391,8 +1497,11 @@ impl Widget for ShellDesktop {
     fn children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = Vec::with_capacity(self.windows.len() + 2);
         children.push(&self.desktop);
+        let active_workspace = self.active_workspace();
         for shell_window in &self.windows {
-            children.push(&shell_window.window);
+            if shell_window.workspace == active_workspace {
+                children.push(&shell_window.window);
+            }
         }
         children.push(&self.menu_bar);
         children
@@ -1402,8 +1511,11 @@ impl Widget for ShellDesktop {
         let capacity = self.windows.len() + 2;
         let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(capacity);
         children.push(&mut self.desktop);
+        let active_workspace = self.workspace_manager.read().active;
         for shell_window in &mut self.windows {
-            children.push(&mut shell_window.window);
+            if shell_window.workspace == active_workspace {
+                children.push(&mut shell_window.window);
+            }
         }
         children.push(&mut self.menu_bar);
         children
@@ -1443,11 +1555,13 @@ mod tests {
         let launch_services = Arc::new(RwLock::new(LaunchServices::new()));
         let window_manager = Arc::new(RwLock::new(WindowManager::new()));
         let notification_center = Arc::new(RwLock::new(NotificationCenter::new()));
+        let workspace_manager = Arc::new(RwLock::new(WorkspaceManager::new()));
         let mut desktop = ShellDesktop::new(
             menu_server,
             launch_services,
             window_manager.clone(),
             notification_center,
+            workspace_manager,
         );
         desktop.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
         (desktop, window_manager)
@@ -1458,6 +1572,13 @@ mod tests {
         assert_eq!(actual.y, expected.y);
         assert_eq!(actual.width, expected.width);
         assert_eq!(actual.height, expected.height);
+    }
+
+    fn rect_eq(left: Rect, right: Rect) -> bool {
+        left.x == right.x
+            && left.y == right.y
+            && left.width == right.width
+            && left.height == right.height
     }
 
     fn message_window_lines(window: &ShellWindow) -> Vec<String> {
@@ -1818,6 +1939,48 @@ mod tests {
         assert_eq!(desktop.windows.len(), 1);
         assert_eq!(desktop.windows[0].id, first_id);
         assert_eq!(window_manager.read().active_window, Some(first_id));
+    }
+
+    #[test]
+    fn workspace_switch_hides_windows_from_other_workspaces() {
+        let (mut desktop, window_manager) = test_desktop();
+        let first_id = desktop.windows[0].id;
+
+        assert_eq!(desktop.active_workspace(), 0);
+        assert_eq!(desktop.children().len(), 3);
+
+        desktop.handle_menu_action("workspace.switch.1");
+        assert_eq!(desktop.active_workspace(), 1);
+        assert_ne!(desktop.active_window_id(), Some(first_id));
+        assert_eq!(
+            window_manager.read().active_window,
+            Some(desktop.windows.last().unwrap().id)
+        );
+        assert_eq!(desktop.windows.last().unwrap().window.title(), "Workspace");
+        assert_eq!(desktop.windows.last().unwrap().workspace, 1);
+        assert!(desktop
+            .children()
+            .iter()
+            .any(|child| rect_eq(child.rect(), desktop.windows.last().unwrap().window.rect())));
+
+        desktop.handle_menu_action("workspace.switch.0");
+        assert_eq!(desktop.active_workspace(), 0);
+        assert!(desktop.windows.iter().any(|window| window.id == first_id));
+        assert!(desktop
+            .children()
+            .iter()
+            .any(|child| rect_eq(child.rect(), desktop.windows[0].window.rect())));
+    }
+
+    #[test]
+    fn workspace_shortcut_actions_cycle_active_workspace() {
+        let (mut desktop, _) = test_desktop();
+
+        desktop.handle_menu_action("workspace.next");
+        assert_eq!(desktop.active_workspace(), 1);
+
+        desktop.handle_menu_action("workspace.previous");
+        assert_eq!(desktop.active_workspace(), 0);
     }
 
     #[test]

@@ -11,6 +11,8 @@
 >
 > 2026-07-03 Notification Center update: shell-owned notifications are no longer dormant data only. App launches record notifications, the Retro menu exposes Notification Center and Clear Notifications actions, and VM verification refreshed `docs/screenshots/current-notification-center.png`. Freedesktop notification daemon integration remains future compositor/session work.
 >
+> 2026-07-03 Workspace update: shell-owned workspaces are now functional in the current client architecture. The Window menu exposes previous/next/direct workspace actions, active SDK app Window menus retain those controls, shell-managed windows are filtered per active workspace, and VM verification refreshed `docs/screenshots/current-workspace-switch.png`.
+>
 > 2026-07-03 coverage update: desktop icon right-column layout and minute-precision menu clock formatting now have automated tests, reducing the remaining Tier 1 uncertainty to visual/style polish rather than unverified behavior.
 >
 > 2026-07-03 SDK menu update: first-party SDK menu manifests now auto-fill stable bundle-scoped action IDs for action items that apps define without explicit IDs. VM runtime verification confirmed TextEdit publishes routable app/File menu actions such as `com.retro.textedit.file.save_as`.

@@ -10,7 +10,20 @@ fn test_shell_startup() {
 #[test]
 fn test_menu_server() {
     let server = MenuServer::new();
-    assert_eq!(server.menus.len(), 5);
+    assert_eq!(server.menus.len(), 6);
+    let window_menu = server
+        .menus
+        .iter()
+        .find(|menu| menu.title == "Window")
+        .expect("window menu");
+    assert!(window_menu
+        .items
+        .iter()
+        .any(|item| item.action_id == "workspace.next"));
+    assert!(window_menu
+        .items
+        .iter()
+        .any(|item| item.action_id == "workspace.switch.0"));
 }
 
 #[test]

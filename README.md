@@ -95,6 +95,10 @@ App Store search rows now include package installed state from the detected pack
 
 Notification Center now lists shell-owned notifications such as first-party app launches and supports clearing them from the Retro menu; freedesktop notification-daemon integration remains future compositor/session work.
 
+![RetroShell Workspace Switch](docs/screenshots/current-workspace-switch.png)
+
+Window menu now exposes workspace switching controls across shell and active SDK app menus; shell-managed windows are filtered per active workspace.
+
 ![RetroShell Doom smoke frame](docs/screenshots/current-doom-smoke.png)
 
 Doom showcase capture now has a VM-smoked script path that records x11grab video plus PulseAudio monitor audio and validates both streams with `ffprobe`; the final long-form windowed/borderless/exclusive evidence video remains a release gate.

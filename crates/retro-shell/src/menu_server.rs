@@ -266,12 +266,21 @@ impl MenuServer {
                 },
             );
 
+        let window_menu = workspace_window_menu();
+
         let mut help_menu = Menu::new("Help");
         help_menu
             .add_action("Search")
             .with_action("shell.help_search");
 
-        self.menus = vec![system_menu, file_menu, edit_menu, view_menu, help_menu];
+        self.menus = vec![
+            system_menu,
+            file_menu,
+            edit_menu,
+            view_menu,
+            window_menu,
+            help_menu,
+        ];
     }
 
     pub fn set_app_menus(&mut self, app_id: &str, menus: Vec<Menu>) {
@@ -279,6 +288,7 @@ impl MenuServer {
         while self.menus.len() > 1 {
             self.menus.pop();
         }
+        let menus = ensure_workspace_window_menu(menus);
         for menu in menus {
             self.menus.push(menu);
         }
@@ -540,6 +550,77 @@ impl MenuServer {
     }
 }
 
+fn ensure_workspace_window_menu(mut menus: Vec<Menu>) -> Vec<Menu> {
+    if let Some(window_menu) = menus.iter_mut().find(|menu| menu.title == "Window") {
+        if !window_menu
+            .items
+            .iter()
+            .any(|item| item.action_id == "workspace.next")
+        {
+            window_menu.add_separator();
+            append_workspace_items(window_menu);
+        }
+    } else {
+        menus.push(workspace_window_menu());
+    }
+    menus
+}
+
+fn workspace_window_menu() -> Menu {
+    let mut window_menu = Menu::new("Window");
+    append_workspace_items(&mut window_menu);
+    window_menu
+}
+
+fn append_workspace_items(window_menu: &mut Menu) {
+    window_menu
+        .add_action("Previous Workspace")
+        .with_action("workspace.previous")
+        .with_shortcut(
+            KeyCode::ArrowLeft,
+            Modifiers {
+                shift: false,
+                control: true,
+                alt: true,
+                meta: false,
+            },
+        );
+    window_menu
+        .add_action("Next Workspace")
+        .with_action("workspace.next")
+        .with_shortcut(
+            KeyCode::ArrowRight,
+            Modifiers {
+                shift: false,
+                control: true,
+                alt: true,
+                meta: false,
+            },
+        );
+    window_menu.add_separator();
+    for index in 0..4 {
+        let key = match index {
+            0 => KeyCode::Key1,
+            1 => KeyCode::Key2,
+            2 => KeyCode::Key3,
+            _ => KeyCode::Key4,
+        };
+        let action = format!("workspace.switch.{}", index);
+        window_menu
+            .add_action(format!("Desktop {}", index + 1))
+            .with_action(&action)
+            .with_shortcut(
+                key,
+                Modifiers {
+                    shift: false,
+                    control: true,
+                    alt: true,
+                    meta: false,
+                },
+            );
+    }
+}
+
 fn find_shortcut_action(items: &[MenuItem], key: KeyCode, modifiers: Modifiers) -> Option<String> {
     for item in items {
         if !item.enabled {
@@ -600,6 +681,19 @@ mod tests {
                 .any(|item| item.action_id == "com.test.app.new")
         }));
 
+        let window_menu = server
+            .menus
+            .iter()
+            .find(|menu| menu.title == "Window")
+            .expect("workspace window menu");
+        assert!(window_menu
+            .items
+            .iter()
+            .any(|item| item.action_id == "workspace.next"));
+        assert!(window_menu
+            .items
+            .iter()
+            .any(|item| item.action_id == "workspace.switch.0"));
         let _ = fs::remove_file(path);
     }
 }
