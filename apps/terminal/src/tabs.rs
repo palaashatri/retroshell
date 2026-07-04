@@ -167,6 +167,34 @@ impl Widget for TabManager {
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
+        if let Event::KeyDown { key, modifiers } = event {
+            if modifiers.meta {
+                match key {
+                    retro_kit::event::KeyCode::T => {
+                        let _ = self.open_tab(80, 24);
+                        return EventResult::Handled;
+                    }
+                    retro_kit::event::KeyCode::W if modifiers.shift => {
+                        if !self.tabs.is_empty() {
+                            let idx = self.active_tab_index;
+                            self.close_tab(idx);
+                        }
+                        return EventResult::Handled;
+                    }
+                    retro_kit::event::KeyCode::Key1 => { self.switch_tab(0); return EventResult::Handled; }
+                    retro_kit::event::KeyCode::Key2 => { self.switch_tab(1); return EventResult::Handled; }
+                    retro_kit::event::KeyCode::Key3 => { self.switch_tab(2); return EventResult::Handled; }
+                    retro_kit::event::KeyCode::Key4 => { self.switch_tab(3); return EventResult::Handled; }
+                    retro_kit::event::KeyCode::Key5 => { self.switch_tab(4); return EventResult::Handled; }
+                    retro_kit::event::KeyCode::Key6 => { self.switch_tab(5); return EventResult::Handled; }
+                    retro_kit::event::KeyCode::Key7 => { self.switch_tab(6); return EventResult::Handled; }
+                    retro_kit::event::KeyCode::Key8 => { self.switch_tab(7); return EventResult::Handled; }
+                    retro_kit::event::KeyCode::Key9 => { self.switch_tab(8); return EventResult::Handled; }
+                    _ => {}
+                }
+            }
+        }
+
         if let Some(tab) = self.active_tab_mut() {
             tab.term.handle_event(event)
         } else {
