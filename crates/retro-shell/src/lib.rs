@@ -30,7 +30,7 @@ use retro_kit::menu_bar::MenuBar;
 use retro_kit::theme::ThemeContext;
 use retro_kit::window::Window;
 use retro_kit::{
-    Event, EventResult, Layout, LayoutConstraint, Point, Rect, Size, Widget, WidgetState,
+    Event, EventResult, Layout, LayoutConstraint, Point, Rect, Size, Widget, WidgetState, DockView,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -110,6 +110,7 @@ impl RetroShell {
             self.window_manager.clone(),
             self.notification_center.clone(),
             self.workspace_manager.clone(),
+            self.dock.clone(),
         );
 
         let mut window = Window::new("RetroShell Desktop");
@@ -131,6 +132,8 @@ struct ShellDesktop {
     window_manager: Arc<RwLock<WindowManager>>,
     notification_center: Arc<RwLock<NotificationCenter>>,
     workspace_manager: Arc<RwLock<WorkspaceManager>>,
+    dock: Arc<RwLock<Dock>>,
+    dock_view: DockView,
     bundle_ids: Vec<String>,
 }
 
@@ -176,6 +179,7 @@ impl ShellDesktop {
         window_manager: Arc<RwLock<WindowManager>>,
         notification_center: Arc<RwLock<NotificationCenter>>,
         workspace_manager: Arc<RwLock<WorkspaceManager>>,
+        dock: Arc<RwLock<Dock>>,
     ) -> Self {
         let mut desktop = IconView::new();
         desktop.icon_size = 56.0;
@@ -237,6 +241,8 @@ impl ShellDesktop {
             window_manager,
             notification_center,
             workspace_manager,
+            dock: dock.clone(),
+            dock_view: DockView::new(),
             bundle_ids,
         };
         shell.open_finder_window();
@@ -282,11 +288,12 @@ impl ShellDesktop {
     }
 
     fn content_bounds(&self) -> Rect {
+        let dock_height = 64.0;
         Rect::new(
             self.rect().x,
             self.rect().y + 24.0,
             self.rect().width,
-            (self.rect().height - 24.0).max(0.0),
+            (self.rect().height - 24.0 - dock_height).max(0.0),
         )
     }
 
@@ -1304,12 +1311,20 @@ impl Widget for ShellDesktop {
             self.rect().x,
             self.rect().y + 24.0,
             size.width,
-            (size.height - 24.0).max(0.0),
+            (size.height - 24.0 - 64.0).max(0.0),
         ));
         let _ = self.desktop.layout(LayoutConstraint::tight(Size::new(
             size.width,
-            (size.height - 24.0).max(0.0),
+            (size.height - 24.0 - 64.0).max(0.0),
         )));
+
+        self.dock_view.set_rect(Rect::new(
+            self.rect().x,
+            self.rect().y + size.height - 64.0,
+            size.width,
+            64.0,
+        ));
+        let _ = self.dock_view.layout(LayoutConstraint::tight(Size::new(size.width, 64.0)));
 
         self.layout_windows();
 
@@ -1338,6 +1353,7 @@ impl Widget for ShellDesktop {
         {
             active.window.draw(theme);
         }
+        self.dock_view.draw(theme);
         self.menu_bar.draw(theme);
     }
 
@@ -1364,6 +1380,27 @@ impl Widget for ShellDesktop {
                 point,
                 ..
             } => {
+                let dock_rect = self.dock_view.rect();
+                if dock_rect.contains(*point) {
+                    let item_size = 48.0;
+                    let padding = 8.0;
+                    let item_spacing = 6.0;
+                    let items_count = self.dock_view.items.len();
+                    let total_width = items_count as f32 * (item_size + item_spacing) - item_spacing + padding * 2.0;
+                    let dock_x = dock_rect.x + (dock_rect.width - total_width) * 0.5;
+                    let click_offset_x = point.x - dock_x - padding;
+                    if click_offset_x >= 0.0 {
+                        let item_idx = (click_offset_x / (item_size + item_spacing)) as usize;
+                        if item_idx < items_count {
+                            let app_id = self.dock.write().launch_app(item_idx);
+                            if let Some(app_id) = app_id {
+                                self.launch_external_app(&app_id);
+                            }
+                        }
+                    }
+                    return EventResult::Handled;
+                }
+
                 let Some(index) = self.top_window_index_at(*point) else {
                     return self.desktop.handle_event(event);
                 };
@@ -1492,10 +1529,23 @@ impl Widget for ShellDesktop {
             tracing::info!("Menu action: {action}");
             self.handle_menu_action(&action);
         }
+
+        // Sync DockView items from shared Dock
+        let dock_read = self.dock.read();
+        let mut dock_view_items = Vec::new();
+        for item in &dock_read.items {
+            dock_view_items.push(retro_kit::dock_view::DockViewItem {
+                label: item.label.clone(),
+                icon: item.icon.clone().unwrap_or_default(),
+                is_focused: item.state == crate::dock::AppState::Focused,
+                is_running: item.state == crate::dock::AppState::Running || item.state == crate::dock::AppState::Focused,
+            });
+        }
+        self.dock_view.items = dock_view_items;
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = Vec::with_capacity(self.windows.len() + 2);
+        let mut children: Vec<&dyn Widget> = Vec::with_capacity(self.windows.len() + 3);
         children.push(&self.desktop);
         let active_workspace = self.active_workspace();
         for shell_window in &self.windows {
@@ -1503,12 +1553,13 @@ impl Widget for ShellDesktop {
                 children.push(&shell_window.window);
             }
         }
+        children.push(&self.dock_view);
         children.push(&self.menu_bar);
         children
     }
 
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        let capacity = self.windows.len() + 2;
+        let capacity = self.windows.len() + 3;
         let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(capacity);
         children.push(&mut self.desktop);
         let active_workspace = self.workspace_manager.read().active;
@@ -1517,6 +1568,7 @@ impl Widget for ShellDesktop {
                 children.push(&mut shell_window.window);
             }
         }
+        children.push(&mut self.dock_view);
         children.push(&mut self.menu_bar);
         children
     }
@@ -1556,12 +1608,14 @@ mod tests {
         let window_manager = Arc::new(RwLock::new(WindowManager::new()));
         let notification_center = Arc::new(RwLock::new(NotificationCenter::new()));
         let workspace_manager = Arc::new(RwLock::new(WorkspaceManager::new()));
+        let dock = Arc::new(RwLock::new(Dock::new()));
         let mut desktop = ShellDesktop::new(
             menu_server,
             launch_services,
             window_manager.clone(),
             notification_center,
             workspace_manager,
+            dock,
         );
         desktop.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
         (desktop, window_manager)
@@ -1947,7 +2001,7 @@ mod tests {
         let first_id = desktop.windows[0].id;
 
         assert_eq!(desktop.active_workspace(), 0);
-        assert_eq!(desktop.children().len(), 3);
+        assert_eq!(desktop.children().len(), 4);
 
         desktop.handle_menu_action("workspace.switch.1");
         assert_eq!(desktop.active_workspace(), 1);

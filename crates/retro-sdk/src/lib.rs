@@ -9,6 +9,9 @@ use retro_kit::menu::{Menu, MenuItem, MenuItemKind};
 use retro_kit::menu_bar::MenuBar;
 use retro_kit::scroll_view::ScrollView;
 use retro_kit::slider::Slider;
+use retro_kit::progress_bar::ProgressBar;
+use retro_kit::tab_view::TabView;
+use retro_kit::dock_view::DockView;
 use retro_kit::split_view::SplitView;
 use retro_kit::status_bar::StatusBar;
 use retro_kit::text_field::TextField;
@@ -999,6 +1002,27 @@ fn draw_window(canvas: &mut Canvas<'_>, window: &Window) {
         return;
     }
 
+    // Draw high-quality window drop shadows
+    if window.is_active {
+        for i in 1..=6 {
+            let offset = i as f32 * 1.5;
+            let alpha = 0.07 * (7 - i) as f32 / 6.0;
+            canvas.rect(
+                Rect::new(rect.x + offset, rect.y + offset, rect.width, rect.height),
+                [0.0, 0.0, 0.0, alpha],
+            );
+        }
+    } else {
+        for i in 1..=3 {
+            let offset = i as f32 * 1.0;
+            let alpha = 0.04 * (4 - i) as f32 / 3.0;
+            canvas.rect(
+                Rect::new(rect.x + offset, rect.y + offset, rect.width, rect.height),
+                [0.0, 0.0, 0.0, alpha],
+            );
+        }
+    }
+
     canvas.rect(rect, ui(rgb(236, 235, 229), rgb(32, 34, 36)));
     draw_beveled_rect(canvas, rect, ui(rgb(238, 238, 232), rgb(38, 40, 42)), true);
 
@@ -1282,6 +1306,15 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
             );
             x += item.width.max(item.text.len() as f32 * 7.0 + 12.0);
         }
+    } else if let Some(pb) = widget.as_any().downcast_ref::<ProgressBar>() {
+        draw_progress_bar(canvas, rect, pb);
+        return;
+    } else if let Some(tv) = widget.as_any().downcast_ref::<TabView>() {
+        draw_tab_view(canvas, rect, tv);
+        return;
+    } else if let Some(dock) = widget.as_any().downcast_ref::<DockView>() {
+        draw_dock_view(canvas, rect, dock);
+        return;
     } else if let Some(layout_view) = widget.as_any().downcast_ref::<LayoutView>() {
         draw_layout(canvas, &layout_view.layout);
         return;
@@ -1296,6 +1329,112 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
                 draw_menu_bar_widget(canvas, menu_bar.rect(), menu_bar);
             }
         }
+    }
+}
+
+fn draw_progress_bar(canvas: &mut Canvas<'_>, rect: Rect, pb: &ProgressBar) {
+    canvas.rect(rect, ui(rgb(236, 236, 232), rgb(24, 26, 28)));
+    canvas.stroke(rect, ui(rgb(145, 145, 140), rgb(92, 94, 96)));
+    let ratio = if pb.max > 0.0 { pb.value / pb.max } else { 0.0 };
+    let fill_width = (rect.width - 4.0) * ratio.clamp(0.0, 1.0);
+    if fill_width > 0.0 {
+        let fill = Rect::new(rect.x + 2.0, rect.y + 2.0, fill_width, rect.height - 4.0);
+        canvas.rect(fill, ui(rgb(90, 140, 220), rgb(110, 160, 240)));
+    }
+}
+
+fn draw_tab_view(canvas: &mut Canvas<'_>, rect: Rect, tv: &TabView) {
+    let header_height = 30.0;
+    let divider_y = rect.y + header_height - 1.0;
+    canvas.rect(
+        Rect::new(rect.x, divider_y, rect.width, 1.0),
+        ui(rgb(150, 150, 145), rgb(96, 98, 100)),
+    );
+    let mut current_x = rect.x + 8.0;
+    for (i, tab) in tv.tabs.iter().enumerate() {
+        let tab_width = tab.title.len() as f32 * 7.0 + 24.0;
+        let tab_rect = Rect::new(current_x, rect.y + 4.0, tab_width, 25.0);
+        let is_selected = tv.selected_tab_index == i;
+        if is_selected {
+            canvas.rect(tab_rect, ui(rgb(236, 235, 229), rgb(48, 50, 52)));
+            draw_beveled_rect(canvas, tab_rect, ui(rgb(238, 238, 232), rgb(52, 54, 56)), true);
+            canvas.rect(
+                Rect::new(tab_rect.x + 1.0, divider_y, tab_rect.width - 2.0, 1.0),
+                ui(rgb(238, 238, 232), rgb(52, 54, 56)),
+            );
+        } else {
+            let inactive_bg = ui(rgb(210, 210, 204), rgb(32, 34, 36));
+            canvas.rect(tab_rect, inactive_bg);
+            draw_beveled_rect(canvas, tab_rect, inactive_bg, false);
+        }
+        canvas.text(
+            &tab.title,
+            tab_rect.x + 12.0,
+            tab_rect.y + 8.0,
+            if is_selected {
+                ui(rgb(24, 24, 24), rgb(240, 240, 235))
+            } else {
+                ui(rgb(100, 100, 95), rgb(140, 140, 135))
+            },
+        );
+        current_x += tab_width + 4.0;
+    }
+    if let Some(content) = tv.selected_content() {
+        draw_widget(canvas, content);
+    }
+}
+
+fn draw_dock_view(canvas: &mut Canvas<'_>, rect: Rect, dock: &DockView) {
+    if dock.items.is_empty() {
+        return;
+    }
+    
+    let item_size = 48.0;
+    let padding = 8.0;
+    let item_spacing = 6.0;
+    let total_width = dock.items.len() as f32 * (item_size + item_spacing) - item_spacing + padding * 2.0;
+    
+    let dock_x = rect.x + (rect.width - total_width) * 0.5;
+    let dock_y = rect.y + rect.height - item_size - padding * 2.0;
+    let dock_rect = Rect::new(dock_x, dock_y, total_width, item_size + padding * 2.0);
+    
+    let bg_color = ui(rgb(230, 230, 226), rgb(28, 30, 32));
+    canvas.rect(dock_rect, bg_color);
+    draw_beveled_rect(canvas, dock_rect, bg_color, true);
+    
+    let mut current_x = dock_x + padding;
+    for item in &dock.items {
+        let item_rect = Rect::new(current_x, dock_y + padding, item_size, item_size);
+        
+        if item.is_focused {
+            let highlight_rect = Rect::new(item_rect.x - 2.0, item_rect.y - 2.0, item_rect.width + 4.0, item_rect.height + 4.0);
+            canvas.rect(highlight_rect, ui(rgb(180, 200, 240), rgb(60, 80, 120)));
+            draw_beveled_rect(canvas, highlight_rect, ui(rgb(180, 200, 240), rgb(60, 80, 120)), false);
+        }
+        
+        let icon_bg = ui(rgb(250, 250, 246), rgb(44, 46, 50));
+        canvas.rect(item_rect, icon_bg);
+        draw_beveled_rect(canvas, item_rect, icon_bg, true);
+        
+        let symbol_x = item_rect.x + (item_size - 32.0) * 0.5;
+        let symbol_y = item_rect.y + (item_size - 32.0) * 0.5 - 2.0;
+        
+        match item.label.as_str() {
+            "Finder" => draw_app_icon(canvas, symbol_x - 6.0, symbol_y - 6.0),
+            "Settings" => draw_drive_icon(canvas, symbol_x - 6.0, symbol_y - 6.0),
+            "TextEdit" => draw_document_icon(canvas, symbol_x - 6.0, symbol_y - 6.0),
+            "Trash" => draw_trash_icon(canvas, symbol_x - 6.0, symbol_y - 6.0),
+            _ => draw_app_icon(canvas, symbol_x - 6.0, symbol_y - 6.0),
+        }
+        
+        if item.is_running {
+            canvas.rect(
+                Rect::new(item_rect.x + item_rect.width * 0.5 - 2.0, item_rect.y + item_rect.height - 5.0, 4.0, 4.0),
+                ui(rgb(60, 60, 55), rgb(200, 200, 195)),
+            );
+        }
+        
+        current_x += item_size + item_spacing;
     }
 }
 
@@ -1883,66 +2022,94 @@ fn draw_desktop_icon(canvas: &mut Canvas<'_>, item: &IconItem) {
 }
 
 fn draw_document_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    // Page body
     draw_beveled_rect(
         canvas,
         Rect::new(x + 8.0, y + 4.0, 28.0, 36.0),
-        rgb(252, 252, 248),
+        rgb(255, 255, 252),
         true,
     );
-    canvas.rect(Rect::new(x + 12.0, y + 12.0, 20.0, 2.0), rgb(120, 120, 116));
-    canvas.rect(Rect::new(x + 12.0, y + 18.0, 16.0, 2.0), rgb(120, 120, 116));
-    canvas.rect(Rect::new(x + 12.0, y + 24.0, 18.0, 2.0), rgb(120, 120, 116));
-    canvas.rect(Rect::new(x + 24.0, y + 4.0, 8.0, 8.0), rgb(236, 236, 232));
-    canvas.stroke(Rect::new(x + 24.0, y + 4.0, 8.0, 8.0), rgb(120, 120, 116));
+    // Page content lines (blue left margin line, gray text lines)
+    canvas.rect(Rect::new(x + 13.0, y + 12.0, 1.0, 20.0), rgb(140, 140, 220));
+    canvas.rect(Rect::new(x + 16.0, y + 15.0, 14.0, 1.0), rgb(160, 160, 155));
+    canvas.rect(Rect::new(x + 16.0, y + 21.0, 16.0, 1.0), rgb(160, 160, 155));
+    canvas.rect(Rect::new(x + 16.0, y + 27.0, 12.0, 1.0), rgb(160, 160, 155));
+    
+    // Top right folded corner
+    canvas.rect(Rect::new(x + 29.0, y + 4.0, 7.0, 7.0), rgb(210, 210, 205));
+    canvas.rect(Rect::new(x + 29.0, y + 11.0, 8.0, 1.0), rgb(130, 130, 125));
+    canvas.rect(Rect::new(x + 28.0, y + 4.0, 1.0, 8.0), rgb(130, 130, 125));
 }
 
 fn draw_drive_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    // Disk casing
     draw_beveled_rect(
         canvas,
-        Rect::new(x, y + 7.0, 42.0, 30.0),
-        rgb(218, 218, 214),
+        Rect::new(x, y + 8.0, 44.0, 28.0),
+        rgb(210, 210, 205),
         true,
     );
-    canvas.rect(Rect::new(x + 5.0, y + 12.0, 32.0, 4.0), rgb(96, 96, 96));
-    canvas.rect(Rect::new(x + 7.0, y + 14.0, 28.0, 1.0), rgb(210, 210, 210));
-    canvas.rect(Rect::new(x + 30.0, y + 27.0, 6.0, 4.0), rgb(92, 154, 82));
+    // Disc slot
+    canvas.rect(Rect::new(x + 6.0, y + 14.0, 32.0, 3.0), rgb(50, 50, 50));
+    // LED Dot
+    canvas.rect(Rect::new(x + 34.0, y + 26.0, 4.0, 4.0), rgb(80, 220, 80));
 }
 
 fn draw_folder_icon(canvas: &mut Canvas<'_>, x: f32, y: f32, color: [f32; 4]) {
-    canvas.rect(Rect::new(x + 3.0, y + 11.0, 15.0, 6.0), rgb(206, 194, 120));
-    draw_beveled_rect(canvas, Rect::new(x, y + 16.0, 44.0, 25.0), color, true);
-    canvas.rect(Rect::new(x + 2.0, y + 18.0, 40.0, 2.0), rgb(244, 236, 178));
+    // Back tab
+    canvas.rect(Rect::new(x + 3.0, y + 10.0, 16.0, 6.0), rgb(180, 160, 90));
+    canvas.rect(Rect::new(x + 4.0, y + 9.0, 14.0, 1.0), rgb(230, 220, 160));
+    // Front body
+    draw_beveled_rect(canvas, Rect::new(x, y + 15.0, 44.0, 26.0), color, true);
+    // Folder accent highlights
+    canvas.rect(Rect::new(x + 1.0, y + 16.0, 42.0, 1.0), rgb(250, 245, 210));
+    canvas.rect(Rect::new(x, y + 40.0, 44.0, 1.0), rgb(120, 110, 60));
 }
 
 fn draw_app_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    // Monitor frame
     draw_beveled_rect(
         canvas,
-        Rect::new(x + 5.0, y + 4.0, 34.0, 38.0),
-        rgb(226, 226, 222),
+        Rect::new(x + 4.0, y + 4.0, 36.0, 32.0),
+        rgb(220, 220, 216),
         true,
     );
+    // Screen area
     canvas.rect(
-        Rect::new(x + 10.0, y + 10.0, 24.0, 19.0),
-        rgb(154, 174, 196),
+        Rect::new(x + 8.0, y + 8.0, 28.0, 20.0),
+        rgb(40, 44, 52),
     );
-    canvas.rect(
-        Rect::new(x + 12.0, y + 12.0, 20.0, 15.0),
-        rgb(232, 238, 240),
-    );
-    canvas.rect(Rect::new(x + 12.0, y + 33.0, 20.0, 2.0), rgb(80, 80, 80));
+    // Stand/base
+    canvas.rect(Rect::new(x + 14.0, y + 36.0, 16.0, 4.0), rgb(180, 180, 175));
+    canvas.rect(Rect::new(x + 10.0, y + 40.0, 24.0, 2.0), rgb(140, 140, 135));
+    
+    // Stylized logo graphic
+    let logo_color = rgb(90, 160, 240);
+    canvas.rect(Rect::new(x + 20.0, y + 12.0, 4.0, 3.0), logo_color);
+    canvas.rect(Rect::new(x + 17.0, y + 15.0, 4.0, 9.0), logo_color);
+    canvas.rect(Rect::new(x + 23.0, y + 15.0, 4.0, 9.0), logo_color);
+    canvas.rect(Rect::new(x + 17.0, y + 18.0, 10.0, 3.0), logo_color);
 }
 
 fn draw_trash_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    canvas.rect(Rect::new(x + 7.0, y + 6.0, 28.0, 4.0), rgb(70, 70, 70));
-    canvas.rect(Rect::new(x + 11.0, y + 2.0, 20.0, 4.0), rgb(110, 110, 110));
-    draw_beveled_rect(
-        canvas,
-        Rect::new(x + 10.0, y + 10.0, 24.0, 34.0),
-        rgb(216, 216, 212),
-        true,
-    );
-    for offset in [15.0, 21.0, 27.0] {
-        canvas.rect(Rect::new(x + offset, y + 14.0, 1.0, 26.0), rgb(98, 98, 98));
+    let lid_color = rgb(190, 190, 185);
+    let body_color = rgb(170, 170, 165);
+    let shadow_color = rgb(110, 110, 105);
+    
+    // Handle
+    canvas.rect(Rect::new(x + 18.0, y + 2.0, 8.0, 3.0), lid_color);
+    canvas.rect(Rect::new(x + 19.0, y + 1.0, 6.0, 1.0), rgb(240, 240, 240));
+    
+    // Lid rim
+    draw_beveled_rect(canvas, Rect::new(x + 6.0, y + 5.0, 32.0, 5.0), lid_color, true);
+    
+    // Can body
+    draw_beveled_rect(canvas, Rect::new(x + 9.0, y + 10.0, 26.0, 34.0), body_color, true);
+    
+    // Rib highlights
+    for offset in [14.0, 20.0, 26.0, 32.0] {
+        canvas.rect(Rect::new(x + offset, y + 14.0, 1.0, 26.0), shadow_color);
+        canvas.rect(Rect::new(x + offset + 1.0, y + 14.0, 1.0, 26.0), rgb(220, 220, 215));
     }
 }
 
