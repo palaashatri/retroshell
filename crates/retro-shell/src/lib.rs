@@ -25,6 +25,7 @@ use retro_kit::event::MouseButton;
 use retro_kit::icon_view::{IconItem, IconView};
 use retro_kit::button::Button;
 use retro_kit::list_view::ListView;
+use retro_kit::workspace_grid_view::WorkspaceGridView;
 use retro_kit::label::Label;
 use retro_kit::layout::LayoutView;
 use retro_kit::menu::{Menu, MenuItemKind};
@@ -585,6 +586,13 @@ impl ShellDesktop {
     }
 
     fn open_workspace_status_window(&mut self) {
+        for window in &self.windows {
+            if window.window.title() == "Workspace" {
+                self.focus_window(window.id);
+                return;
+            }
+        }
+
         let manager = self.workspace_manager.read();
         let active = manager.active;
         let name = manager
@@ -592,19 +600,59 @@ impl ShellDesktop {
             .map(|workspace| workspace.name.clone())
             .unwrap_or_else(|| format!("Desktop {}", active + 1));
         drop(manager);
+
         let visible_count = self
             .windows
             .iter()
             .filter(|window| window.workspace == active)
             .count();
-        self.open_message_window(
-            "Workspace",
-            [
-                format!("Active: {name}"),
-                format!("Index: {}", active + 1),
-                format!("Visible shell windows: {visible_count}"),
-            ],
+
+        let rect = clamp_window_rect(
+            Rect::new(
+                self.content_bounds().x + 180.0,
+                self.content_bounds().y + 120.0,
+                300.0,
+                260.0,
+            ),
+            self.content_bounds(),
         );
+
+        let mut layout = Layout::vertical(12.0);
+        layout.add(Box::new(Label::new("Select/Switch Workspace:")));
+
+        let mut grid = WorkspaceGridView::new();
+        grid.active_index = active;
+        grid.items = vec![
+            "Desktop 1".to_string(),
+            "Desktop 2".to_string(),
+            "Desktop 3".to_string(),
+            "Desktop 4".to_string(),
+        ];
+        layout.add(Box::new(grid));
+
+        let desc = format!("Active: {} ({} windows)", name, visible_count);
+        layout.add(Box::new(Label::new(desc)));
+
+        let mut window = Window::new("Workspace");
+        window.set_content(Box::new(LayoutView::new(layout)));
+        window.set_rect(rect);
+
+        let workspace = self.active_workspace();
+        let id = self
+            .window_manager
+            .write()
+            .create_window("com.retro.shell", window.title(), rect);
+        self.window_manager.write().assign_workspace(id, workspace);
+        self.windows.push(ShellWindow {
+            id,
+            window,
+            folder_path: None,
+            restore_rect: None,
+            mode: ShellWindowMode::Normal,
+            workspace,
+        });
+        self.focus_window(id);
+        self.layout_window(id);
     }
 
     fn launch_external_app(&mut self, bundle_id: &str) {
@@ -877,15 +925,55 @@ impl ShellDesktop {
     }
 
     fn open_about_window(&mut self) {
-        self.open_message_window(
-            "About RetroShell",
-            [
-                "RetroShell".to_string(),
-                "Classic desktop shell prototype".to_string(),
-                "Built in Rust with RetroKit, RetroSDK, and wgpu.".to_string(),
-                "This is currently a shell client under labwc, not a compositor.".to_string(),
-            ],
+        for window in &self.windows {
+            if window.window.title() == "About RetroShell" {
+                self.focus_window(window.id);
+                return;
+            }
+        }
+
+        let rect = clamp_window_rect(
+            Rect::new(
+                self.content_bounds().x + 180.0,
+                self.content_bounds().y + 120.0,
+                380.0,
+                240.0,
+            ),
+            self.content_bounds(),
         );
+
+        let mut layout = Layout::vertical(12.0);
+        layout.add(Box::new(Label::new("          RetroShell   ")));
+        layout.add(Box::new(Label::new("----------------------------------------")));
+        layout.add(Box::new(Label::new("    Classic Desktop Environment")));
+        layout.add(Box::new(Label::new("    Built in Rust with wgpu")));
+        layout.add(Box::new(Label::new("    Version 1.0.0 (Production)")));
+        layout.add(Box::new(Label::new("----------------------------------------")));
+
+        let mut btn_layout = Layout::horizontal(10.0);
+        btn_layout.add(Box::new(Button::new("OK")));
+        layout.add(Box::new(LayoutView::new(btn_layout)));
+
+        let mut window = Window::new("About RetroShell");
+        window.set_content(Box::new(LayoutView::new(layout)));
+        window.set_rect(rect);
+
+        let workspace = self.active_workspace();
+        let id = self
+            .window_manager
+            .write()
+            .create_window("com.retro.shell", window.title(), rect);
+        self.window_manager.write().assign_workspace(id, workspace);
+        self.windows.push(ShellWindow {
+            id,
+            window,
+            folder_path: None,
+            restore_rect: None,
+            mode: ShellWindowMode::Normal,
+            workspace,
+        });
+        self.focus_window(id);
+        self.layout_window(id);
     }
 
     fn record_notification(
@@ -1540,6 +1628,53 @@ impl Widget for ShellDesktop {
                 }
                 }
 
+                if self.windows[index].window.title() == "Workspace" {
+                    if let Some(content) = self.windows[index].window.content.as_deref() {
+                        if let Some(layout_view) = content.as_any().downcast_ref::<LayoutView>() {
+                            if let Layout::Vertical { children, .. } = &layout_view.layout {
+                                if children.len() >= 2 {
+                                    if let Some(grid) = children[1].as_any().downcast_ref::<WorkspaceGridView>() {
+                                        let grid_rect = grid.rect();
+                                        if grid_rect.contains(*point) {
+                                            let local_x = point.x - grid_rect.x;
+                                            let local_y = point.y - grid_rect.y;
+                                            let col = if local_x < grid_rect.width * 0.5 { 0 } else { 1 };
+                                            let row = if local_y < grid_rect.height * 0.5 { 0 } else { 1 };
+                                            let clicked_idx = row * 2 + col;
+                                            self.handle_menu_action(&format!("workspace.switch.{}", clicked_idx));
+                                            self.close_window(window_id);
+                                            return EventResult::Handled;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if self.windows[index].window.title() == "About RetroShell" {
+                    if let Some(content) = self.windows[index].window.content.as_deref() {
+                        if let Some(layout_view) = content.as_any().downcast_ref::<LayoutView>() {
+                            if let Layout::Vertical { children, .. } = &layout_view.layout {
+                                if children.len() >= 7 {
+                                    if let Some(btn_layout_widget) = children[6].as_any().downcast_ref::<LayoutView>() {
+                                        if let Layout::Horizontal { children: btn_children, .. } = &btn_layout_widget.layout {
+                                            if !btn_children.is_empty() {
+                                                if let Some(btn) = btn_children[0].as_any().downcast_ref::<Button>() {
+                                                    if btn.rect().contains(*point) {
+                                                        self.close_window(window_id);
+                                                        return EventResult::Handled;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let result = self.windows[index].window.handle_event(event);
                 if matches!(result, EventResult::Handled | EventResult::StopPropagation) {
                     return result;
@@ -1742,13 +1877,11 @@ mod tests {
         };
         children
             .iter()
-            .map(|child| {
+            .filter_map(|child| {
                 child
                     .as_any()
                     .downcast_ref::<Label>()
-                    .expect("message line is label")
-                    .text
-                    .clone()
+                    .map(|l| l.text.clone())
             })
             .collect()
     }
@@ -2143,10 +2276,8 @@ mod tests {
         assert_eq!(active.folder_path, None);
         assert_eq!(window_manager.read().active_window, Some(active.id));
         let lines = message_window_lines(active);
-        assert_eq!(lines[0], "RetroShell");
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("shell client under labwc")));
+        assert!(lines[0].contains("RetroShell"));
+        assert!(lines.iter().any(|line| line.contains("Classic Desktop Environment")));
     }
 
     #[test]

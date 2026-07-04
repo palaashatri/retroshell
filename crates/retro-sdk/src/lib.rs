@@ -12,6 +12,7 @@ use retro_kit::slider::Slider;
 use retro_kit::progress_bar::ProgressBar;
 use retro_kit::tab_view::TabView;
 use retro_kit::dock_view::DockView;
+use retro_kit::workspace_grid_view::WorkspaceGridView;
 use retro_kit::split_view::SplitView;
 use retro_kit::status_bar::StatusBar;
 use retro_kit::text_field::TextField;
@@ -1315,6 +1316,9 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
     } else if let Some(dock) = widget.as_any().downcast_ref::<DockView>() {
         draw_dock_view(canvas, rect, dock);
         return;
+    } else if let Some(grid) = widget.as_any().downcast_ref::<WorkspaceGridView>() {
+        draw_workspace_grid_view(canvas, rect, grid);
+        return;
     } else if let Some(layout_view) = widget.as_any().downcast_ref::<LayoutView>() {
         draw_layout(canvas, &layout_view.layout);
         return;
@@ -1340,6 +1344,60 @@ fn draw_progress_bar(canvas: &mut Canvas<'_>, rect: Rect, pb: &ProgressBar) {
     if fill_width > 0.0 {
         let fill = Rect::new(rect.x + 2.0, rect.y + 2.0, fill_width, rect.height - 4.0);
         canvas.rect(fill, ui(rgb(90, 140, 220), rgb(110, 160, 240)));
+    }
+}
+
+fn draw_workspace_grid_view(canvas: &mut Canvas<'_>, rect: Rect, grid: &WorkspaceGridView) {
+    let margin = 8.0;
+    let grid_rect = Rect::new(
+        rect.x + margin,
+        rect.y + margin,
+        rect.width - margin * 2.0,
+        rect.height - margin * 2.0,
+    );
+
+    let cell_w = (grid_rect.width - 6.0) / 2.0;
+    let cell_h = (grid_rect.height - 6.0) / 2.0;
+
+    for i in 0..4 {
+        let row = i / 2;
+        let col = i % 2;
+        let cell_x = grid_rect.x + col as f32 * (cell_w + 6.0);
+        let cell_y = grid_rect.y + row as f32 * (cell_h + 6.0);
+        let cell_r = Rect::new(cell_x, cell_y, cell_w, cell_h);
+
+        let bg_color = if i == grid.active_index {
+            ui(rgb(204, 221, 240), rgb(48, 70, 96))
+        } else {
+            ui(rgb(240, 240, 236), rgb(38, 40, 42))
+        };
+        canvas.rect(cell_r, bg_color);
+
+        let border_color = if i == grid.active_index {
+            ui(rgb(10, 80, 160), rgb(140, 180, 240))
+        } else {
+            ui(rgb(140, 140, 135), rgb(80, 82, 84))
+        };
+        
+        canvas.stroke(cell_r, border_color);
+        if i == grid.active_index {
+            canvas.stroke(
+                Rect::new(cell_r.x + 1.0, cell_r.y + 1.0, cell_r.width - 2.0, cell_r.height - 2.0),
+                border_color,
+            );
+        }
+
+        let label = grid.items.get(i).cloned().unwrap_or_else(|| format!("Desktop {}", i + 1));
+        canvas.text(
+            &label,
+            cell_x + (cell_w - label.len() as f32 * 7.0) * 0.5,
+            cell_y + (cell_h - 12.0) * 0.5 + 2.0,
+            if i == grid.active_index {
+                ui(rgb(10, 40, 80), rgb(230, 240, 255))
+            } else {
+                ui(rgb(40, 40, 40), rgb(200, 200, 200))
+            },
+        );
     }
 }
 

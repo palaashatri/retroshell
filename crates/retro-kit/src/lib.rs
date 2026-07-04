@@ -25,6 +25,7 @@ pub mod toolbar;
 pub mod tree_view;
 pub mod widget;
 pub mod window;
+pub mod workspace_grid_view;
 
 pub use accessibility::{AccessibilityNode, AccessibilityRole, AccessibilityState};
 pub use button::Button;
@@ -32,6 +33,7 @@ pub use clipboard::Clipboard;
 pub use dialog::Dialog;
 pub use dnd::{DragData, DragSession, DragSource, DropTarget};
 pub use dock_view::{DockView, DockViewItem};
+pub use workspace_grid_view::WorkspaceGridView;
 pub use event::{Event, EventHandler, EventResult};
 pub use icon_view::IconView;
 pub use label::Label;
