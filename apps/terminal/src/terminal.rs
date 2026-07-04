@@ -61,6 +61,8 @@ pub struct Terminal {
     pub selection_start: Option<GridPoint>,
     pub selection_end: Option<GridPoint>,
     selecting: bool,
+    pub scroll_top: usize,
+    pub scroll_bottom: usize,
 }
 
 impl Terminal {
@@ -87,6 +89,8 @@ impl Terminal {
             selection_start: None,
             selection_end: None,
             selecting: false,
+            scroll_top: 0,
+            scroll_bottom: rows - 1,
         }
     }
 
@@ -105,6 +109,8 @@ impl Terminal {
         self.cursor_y = self.cursor_y.min(rows.saturating_sub(1));
         self.scroll_offset = self.scroll_offset.min(self.scrollback.len());
         self.clear_selection();
+        self.scroll_top = 0;
+        self.scroll_bottom = rows - 1;
         if let Some(ref pty) = self.pty {
             let _ = pty.resize(cols as u16, rows as u16);
         }
@@ -134,13 +140,26 @@ impl Terminal {
     }
 
     pub fn scroll_up(&mut self) {
-        let first_row = self.grid[0..self.cols].to_vec();
-        if self.scrollback.len() >= self.max_scrollback {
-            self.scrollback.remove(0);
+        let top = self.scroll_top;
+        let bottom = self.scroll_bottom;
+        if top == 0 && bottom == self.rows - 1 {
+            let first_row = self.grid[0..self.cols].to_vec();
+            if self.scrollback.len() >= self.max_scrollback {
+                self.scrollback.remove(0);
+            }
+            self.scrollback.push(first_row);
+            self.grid.drain(0..self.cols);
+            self.grid.extend(vec![Cell::default(); self.cols]);
+        } else if top < bottom && bottom < self.rows {
+            for r in top..bottom {
+                for c in 0..self.cols {
+                    self.grid[r * self.cols + c] = self.grid[(r + 1) * self.cols + c].clone();
+                }
+            }
+            for c in 0..self.cols {
+                self.grid[bottom * self.cols + c] = Cell::default();
+            }
         }
-        self.scrollback.push(first_row);
-        self.grid.drain(0..self.cols);
-        self.grid.extend(vec![Cell::default(); self.cols]);
     }
 
     pub fn scroll_lines(&mut self, lines: isize) {
