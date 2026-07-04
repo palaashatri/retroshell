@@ -23,6 +23,8 @@ pub use workspace_manager::WorkspaceManager;
 use parking_lot::RwLock;
 use retro_kit::event::MouseButton;
 use retro_kit::icon_view::{IconItem, IconView};
+use retro_kit::button::Button;
+use retro_kit::list_view::ListView;
 use retro_kit::label::Label;
 use retro_kit::layout::LayoutView;
 use retro_kit::menu::{Menu, MenuItemKind};
@@ -931,16 +933,63 @@ impl ShellDesktop {
     }
 
     fn open_force_quit_window(&mut self) {
-        let mut lines = vec!["Running shell-managed windows:".to_string()];
-        if self.windows.is_empty() {
-            lines.push("No shell-managed windows are open.".to_string());
-        } else {
-            for window in &self.windows {
-                lines.push(format!("- {}", window.window.title()));
+        for window in &self.windows {
+            if window.window.title() == "Force Quit" {
+                self.focus_window(window.id);
+                return;
             }
         }
-        lines.push("External app force-quit needs compositor ownership.".to_string());
-        self.open_message_window("Force Quit", lines);
+
+        let rect = clamp_window_rect(
+            Rect::new(
+                self.content_bounds().x + 150.0,
+                self.content_bounds().y + 100.0,
+                400.0,
+                300.0,
+            ),
+            self.content_bounds(),
+        );
+
+        let mut layout = Layout::vertical(10.0);
+        layout.add(Box::new(Label::new("Select an application window to force quit:")));
+
+        let mut items = Vec::new();
+        for w in &self.windows {
+            if w.window.title() != "RetroShell Desktop" && w.window.title() != "Force Quit" {
+                items.push(w.window.title().to_string());
+            }
+        }
+
+        let mut list_view = ListView::new();
+        list_view.items = items;
+        list_view.selected_index = if list_view.items.is_empty() { None } else { Some(0) };
+        layout.add(Box::new(list_view));
+
+        let mut btn_layout = Layout::horizontal(10.0);
+        btn_layout.add(Box::new(Button::new("Cancel")));
+        btn_layout.add(Box::new(Button::new("Force Quit")));
+        layout.add(Box::new(LayoutView::new(btn_layout)));
+
+        let mut window = Window::new("Force Quit");
+        window.set_content(Box::new(LayoutView::new(layout)));
+        window.set_rect(rect);
+
+        let workspace = self.active_workspace();
+        let id = self
+            .window_manager
+            .write()
+            .create_window("com.retro.shell", window.title(), rect);
+        self.window_manager.write().assign_workspace(id, workspace);
+        self.windows.push(ShellWindow {
+            id,
+            window,
+            folder_path: None,
+            restore_rect: None,
+            mode: ShellWindowMode::Normal,
+            workspace,
+        });
+        self.focus_window(id);
+        self.layout_window(id);
     }
 
     fn open_shell_status_window<S: Into<String>>(
@@ -1443,6 +1492,52 @@ impl Widget for ShellDesktop {
                         ),
                     });
                     return EventResult::Handled;
+                }
+
+                if self.windows[index].window.title() == "Force Quit" {
+                    if let Some(content) = self.windows[index].window.content.as_deref() {
+                        if let Some(layout_view) = content.as_any().downcast_ref::<LayoutView>() {
+                        if let Layout::Vertical { children, .. } = &layout_view.layout {
+                            if children.len() >= 3 {
+                                let list_view = children[1].as_any().downcast_ref::<ListView>();
+                                if let Some(btn_layout_widget) = children[2].as_any().downcast_ref::<LayoutView>() {
+                                    if let Layout::Horizontal { children: btn_children, .. } = &btn_layout_widget.layout {
+                                        if btn_children.len() >= 2 {
+                                            let cancel_btn = btn_children[0].as_any().downcast_ref::<Button>();
+                                            let force_quit_btn = btn_children[1].as_any().downcast_ref::<Button>();
+                                            
+                                            if let Some(btn) = cancel_btn {
+                                                if btn.rect().contains(*point) {
+                                                    self.close_window(window_id);
+                                                    return EventResult::Handled;
+                                                }
+                                            }
+                                            if let Some(btn) = force_quit_btn {
+                                                if btn.rect().contains(*point) {
+                                                    let mut target_window_id = None;
+                                                    if let Some(list) = list_view {
+                                                        if let Some(sel_idx) = list.selected_index {
+                                                            if let Some(target_title) = list.items.get(sel_idx) {
+                                                                target_window_id = self.windows.iter()
+                                                                    .find(|w| w.window.title() == target_title)
+                                                                    .map(|w| w.id);
+                                                            }
+                                                        }
+                                                    }
+                                                    if let Some(tid) = target_window_id {
+                                                        self.close_window(tid);
+                                                    }
+                                                    self.close_window(window_id);
+                                                    return EventResult::Handled;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 }
 
                 let result = self.windows[index].window.handle_event(event);
@@ -2120,9 +2215,18 @@ mod tests {
         assert_eq!(active.window.title(), "Force Quit");
         assert_eq!(active.folder_path, None);
         assert_eq!(window_manager.read().active_window, Some(active.id));
-        let lines = message_window_lines(active);
-        assert_eq!(lines[0], "Running shell-managed windows:");
-        assert!(lines.iter().any(|line| line == "- Retro HD"));
+        
+        let layout_view = active.window.content.as_deref()
+            .and_then(|c| c.as_any().downcast_ref::<LayoutView>())
+            .expect("uses layout view");
+        if let Layout::Vertical { children, .. } = &layout_view.layout {
+            let label = children[0].as_any().downcast_ref::<Label>().expect("label");
+            assert_eq!(label.text, "Select an application window to force quit:");
+            let list = children[1].as_any().downcast_ref::<ListView>().expect("list");
+            assert!(list.items.iter().any(|item| item == "Retro HD"));
+        } else {
+            panic!("not vertical layout");
+        }
     }
 
     #[test]
