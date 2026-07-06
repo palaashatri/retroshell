@@ -140,7 +140,8 @@ struct ShellDesktop {
     bundle_ids: Vec<String>,
     /// Notification banner pop-up windows, rebuilt each update() from visible notifications.
     notification_popup_windows: Vec<Window>,
-    /// Last application-launch error, if any. Displayed in the status bar.
+    /// Last application-launch error, if any. Set by `launch_external_app` on failure.
+    /// Intended for display in the status bar (rendering integration pending).
     last_error: Option<String>,
 }
 
@@ -1426,20 +1427,19 @@ fn launch_app_binary(bundle_id: &str) -> std::result::Result<(), String> {
         if candidate.exists() {
             let mut command = Command::new(&candidate);
             command.env("RETROSHELL_GLOBAL_MENU", "1");
-            return match command.spawn() {
+            match command.spawn() {
                 Ok(_) => {
                     tracing::info!("Launched {}", candidate.display());
-                    Ok(())
+                    return Ok(());
                 }
                 Err(err) => {
-                    let msg = format!(
-                        "Failed to spawn '{}': {err}",
+                    tracing::error!(
+                        "Failed to spawn '{}': {err} — trying next candidate",
                         candidate.display()
                     );
-                    tracing::error!("{msg}");
-                    Err(msg)
+                    // continue loop to try next candidate
                 }
-            };
+            }
         }
     }
 

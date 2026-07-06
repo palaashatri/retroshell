@@ -221,7 +221,7 @@ pub fn register_at_spi_app(app_name: &str) -> Result<(), Box<dyn std::error::Err
         Ok(_conn) => {
             tracing::info!(
                 app = app_name,
-                "AT-SPI2 D-Bus session connected; application registered"
+                "AT-SPI2 D-Bus session available (stub registration — no registry call made)"
             );
             Ok(())
         }
