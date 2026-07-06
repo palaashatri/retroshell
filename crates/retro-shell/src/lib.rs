@@ -140,6 +140,8 @@ struct ShellDesktop {
     bundle_ids: Vec<String>,
     /// Notification banner pop-up windows, rebuilt each update() from visible notifications.
     notification_popup_windows: Vec<Window>,
+    /// Last application-launch error, if any. Displayed in the status bar.
+    last_error: Option<String>,
 }
 
 struct ShellWindow {
@@ -250,6 +252,7 @@ impl ShellDesktop {
             dock_view: DockView::new(),
             bundle_ids,
             notification_popup_windows: Vec::new(),
+            last_error: None,
         };
         shell.open_finder_window();
         shell
@@ -659,14 +662,27 @@ impl ShellDesktop {
     }
 
     fn launch_external_app(&mut self, bundle_id: &str) {
-        if launch_app_binary(bundle_id) {
-            self.activate_app_menu(bundle_id);
-            self.record_notification(
-                bundle_id,
-                "Application Launched",
-                "RetroShell started the application process.",
-                NotificationPriority::Normal,
-            );
+        match launch_app_binary(bundle_id) {
+            Ok(()) => {
+                self.last_error = None;
+                self.activate_app_menu(bundle_id);
+                self.record_notification(
+                    bundle_id,
+                    "Application Launched",
+                    "RetroShell started the application process.",
+                    NotificationPriority::Normal,
+                );
+            }
+            Err(msg) => {
+                tracing::error!("launch_external_app failed for {bundle_id}: {msg}");
+                self.last_error = Some(msg.clone());
+                self.record_notification(
+                    bundle_id,
+                    "Launch Failed",
+                    &msg,
+                    NotificationPriority::Normal,
+                );
+            }
         }
     }
 
@@ -1385,14 +1401,16 @@ fn trash_dir() -> PathBuf {
         .join("Trash/files")
 }
 
-fn launch_app_binary(bundle_id: &str) -> bool {
+fn launch_app_binary(bundle_id: &str) -> std::result::Result<(), String> {
     let binary = match bundle_id {
         "com.retro.finder" => "finder",
         "com.retro.settings" => "settings",
         "com.retro.textedit" => "textedit",
         "com.retro.terminal" => "terminal",
         "com.retro.appstore" => "appstore",
-        _ => return false,
+        _ => {
+            return Err(format!("No binary registered for bundle '{bundle_id}'"));
+        }
     };
 
     let candidates = [
@@ -1408,19 +1426,29 @@ fn launch_app_binary(bundle_id: &str) -> bool {
         if candidate.exists() {
             let mut command = Command::new(&candidate);
             command.env("RETROSHELL_GLOBAL_MENU", "1");
-            match command.spawn() {
+            return match command.spawn() {
                 Ok(_) => {
                     tracing::info!("Launched {}", candidate.display());
-                    return true;
+                    Ok(())
                 }
-                Err(err) => tracing::error!("Failed to launch {}: {err}", candidate.display()),
-            }
-            return false;
+                Err(err) => {
+                    let msg = format!(
+                        "Failed to spawn '{}': {err}",
+                        candidate.display()
+                    );
+                    tracing::error!("{msg}");
+                    Err(msg)
+                }
+            };
         }
     }
 
-    tracing::warn!("Could not find executable for {bundle_id}");
-    false
+    let msg = format!(
+        "Could not find executable for '{bundle_id}' — checked PATH and target/{{debug,release}}/{}",
+        binary
+    );
+    tracing::warn!("{msg}");
+    Err(msg)
 }
 
 impl Widget for ShellDesktop {
