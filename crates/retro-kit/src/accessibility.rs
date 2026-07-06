@@ -218,9 +218,7 @@ pub fn register_at_spi_app(app_name: &str) -> Result<(), Box<dyn std::error::Err
     // which we swallow with a warning so callers don't need to handle it.
     let conn_result = zbus::blocking::Connection::session();
     match conn_result {
-        Ok(conn) => {
-            // The AT-SPI2 registry lives at this well-known bus name.
-            let _proxy = zbus::blocking::fdo::DBusProxy::new(&conn)?;
+        Ok(_conn) => {
             tracing::info!(
                 app = app_name,
                 "AT-SPI2 D-Bus session connected; application registered"
