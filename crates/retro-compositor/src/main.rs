@@ -37,9 +37,13 @@ mod linux {
                 KeyboardKeyEvent, PointerButtonEvent, PointerMotionAbsoluteEvent,
             },
             renderer::{
-                Bind, Color32F, Frame, Renderer,
+                Bind, Color32F, Frame, Renderer, ImportAll,
+                element::{
+                    Kind,
+                    surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+                },
                 gles::GlesRenderer,
-                utils::on_commit_buffer_handler,
+                utils::{on_commit_buffer_handler, draw_render_elements},
             },
             x11::{X11Backend, X11Event, X11Input, X11Surface, WindowBuilder},
         },
@@ -241,6 +245,25 @@ mod linux {
         fn render_frame(&mut self) {
             self.prune_dead_windows();
 
+            // Collect SHM render elements for each window BEFORE binding the render target.
+            // render_elements_from_surface_tree() borrows &mut self.renderer, which must be
+            // done before renderer.bind() / renderer.render() take over the borrow.
+            let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = self
+                .windows
+                .iter()
+                .flat_map(|w| {
+                    let loc = Point::<i32, Physical>::from((w.position.x, w.position.y));
+                    render_elements_from_surface_tree(
+                        &mut self.renderer,
+                        w.toplevel.wl_surface(),
+                        loc,
+                        1.0_f64,
+                        1.0_f32,
+                        Kind::Unspecified,
+                    )
+                })
+                .collect();
+
             // Acquire the next buffer from the X11 swapchain
             let (mut dmabuf, _age) = match self.x11_surface.buffer() {
                 Ok(pair) => pair,
@@ -285,20 +308,34 @@ mod linux {
                 eprintln!("[render] clear failed: {e}");
             }
 
-            // Draw a solid colored placeholder rectangle for each mapped window
-            let windows: Vec<_> = self.windows.iter().enumerate().map(|(i, w)| {
-                let color_idx = i % WIN_COLORS.len();
-                let (r, g, b) = WIN_COLORS[color_idx];
-                let rect = Rectangle::from_loc_and_size(
-                    Point::<i32, Physical>::from((w.position.x, w.position.y)),
-                    Size::<i32, Physical>::from((w.size.w, w.size.h)),
-                );
-                (rect, Color32F::from([r, g, b, 1.0_f32]))
-            }).collect();
+            // Render actual SHM buffer content for windows that have committed a buffer.
+            // If no surface elements were collected (client hasn't committed yet), fall back
+            // to solid colored placeholder rectangles so the compositor always shows something.
+            if !surface_elements.is_empty() {
+                if let Err(e) = draw_render_elements::<GlesRenderer, _, _>(
+                    &mut frame,
+                    1.0_f64,
+                    &surface_elements,
+                    &[full_screen],
+                ) {
+                    eprintln!("[render] draw_render_elements failed: {e}");
+                }
+            } else {
+                // Fallback: draw solid colored placeholder rectangles for each mapped window
+                let windows: Vec<_> = self.windows.iter().enumerate().map(|(i, w)| {
+                    let color_idx = i % WIN_COLORS.len();
+                    let (r, g, b) = WIN_COLORS[color_idx];
+                    let rect = Rectangle::from_loc_and_size(
+                        Point::<i32, Physical>::from((w.position.x, w.position.y)),
+                        Size::<i32, Physical>::from((w.size.w, w.size.h)),
+                    );
+                    (rect, Color32F::from([r, g, b, 1.0_f32]))
+                }).collect();
 
-            for (rect, color) in &windows {
-                if let Err(e) = frame.clear(*color, &[*rect]) {
-                    eprintln!("[render] window clear failed: {e}");
+                for (rect, color) in &windows {
+                    if let Err(e) = frame.clear(*color, &[*rect]) {
+                        eprintln!("[render] window clear failed: {e}");
+                    }
                 }
             }
 

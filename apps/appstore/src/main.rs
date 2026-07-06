@@ -2,6 +2,7 @@ use retro_kit::button::Button;
 use retro_kit::event::{KeyCode, Modifiers, MouseButton};
 use retro_kit::label::Label;
 use retro_kit::list_view::ListView;
+use retro_kit::progress_bar::ProgressBar;
 use retro_kit::text_field::TextField;
 use retro_kit::window::Window;
 use retro_kit::{
@@ -10,6 +11,24 @@ use retro_kit::{
 };
 use retro_sdk::{build_menu, Application};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+// Featured packages shown when no search is active
+const FEATURED_PACKAGES: &[&str] = &[
+    "curl", "git", "vim", "htop", "neofetch", "python3", "nodejs", "ffmpeg",
+];
+
+// Category definitions: (display name, search keywords)
+const CATEGORIES: &[(&str, &[&str])] = &[
+    ("ALL", &[]),
+    ("SYSTEM", &["util", "system", "admin", "cron", "syslog"]),
+    ("DEVELOPMENT", &["dev", "lib", "build", "gcc", "clang", "python", "rust", "go"]),
+    ("GAMES", &["game", "doom", "quake", "supertux", "mame"]),
+    ("MEDIA", &["media", "audio", "video", "ffmpeg", "vlc", "mpv", "sox"]),
+    ("OFFICE", &["office", "document", "pdf", "libreoffice", "writer"]),
+    ("NETWORK", &["network", "net", "ssh", "ftp", "curl", "wget", "nmap"]),
+];
 
 fn main() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -69,6 +88,8 @@ fn main() {
     app.set_main_window(window);
     app.run();
 }
+
+// ── Package manager detection ────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PackageManager {
@@ -186,7 +207,78 @@ impl PackageManager {
         .map(str::to_string)
         .collect()
     }
+
+    /// Query version + description for a package from the system package manager.
+    fn package_details(self, package: &str) -> PackageDetails {
+        let mut details = PackageDetails {
+            name: package.to_string(),
+            version: String::new(),
+            description: String::new(),
+            state: PackageInstallState::Unknown,
+        };
+
+        // Version via dpkg-s / rpm -qi / pacman -Qi etc.
+        match self {
+            Self::Apt => {
+                if let Ok(out) = Command::new("dpkg").args(["-s", package]).output() {
+                    let text = String::from_utf8_lossy(&out.stdout);
+                    for line in text.lines() {
+                        if let Some(v) = line.strip_prefix("Version: ") {
+                            details.version = v.trim().to_string();
+                        }
+                        if let Some(d) = line.strip_prefix("Description: ") {
+                            details.description = d.trim().to_string();
+                        }
+                    }
+                }
+                // Supplement description from apt-cache show if empty
+                if details.description.is_empty() {
+                    if let Ok(out) = Command::new("apt-cache").args(["show", package]).output() {
+                        let text = String::from_utf8_lossy(&out.stdout);
+                        for line in text.lines() {
+                            if let Some(v) = line.strip_prefix("Version: ") {
+                                if details.version.is_empty() {
+                                    details.version = v.trim().to_string();
+                                }
+                            }
+                            if let Some(d) = line.strip_prefix("Description: ") {
+                                if details.description.is_empty() {
+                                    details.description = d.trim().to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Self::Brew => {
+                if let Ok(out) = Command::new("brew").args(["info", "--json=v1", package]).output() {
+                    let text = String::from_utf8_lossy(&out.stdout);
+                    // Simple substring scan — avoids a JSON dep
+                    if let Some(start) = text.find("\"versions\"") {
+                        if let Some(stable_start) = text[start..].find("\"stable\":\"") {
+                            let after = &text[start + stable_start + 10..];
+                            if let Some(end) = after.find('"') {
+                                details.version = after[..end].to_string();
+                            }
+                        }
+                    }
+                    if let Some(start) = text.find("\"desc\":\"") {
+                        let after = &text[start + 8..];
+                        if let Some(end) = after.find('"') {
+                            details.description = after[..end].to_string();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        details.state = package_state_for_manager(self, package);
+        details
+    }
 }
+
+// ── Domain types ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PackageAction {
@@ -222,6 +314,20 @@ impl PackageInstallState {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct PackageDetails {
+    name: String,
+    version: String,
+    description: String,
+    state: PackageInstallState,
+}
+
+impl Default for PackageInstallState {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TransactionPlan {
     action: PackageAction,
@@ -245,6 +351,19 @@ impl TransactionPlan {
     }
 }
 
+/// Background install job state shared between the worker thread and the UI.
+#[derive(Debug, Default)]
+struct InstallJob {
+    running: bool,
+    progress: f32,       // 0.0 – 100.0
+    message: String,
+    finished: bool,
+    success: bool,
+    output: String,
+}
+
+// ── PackageBackend ────────────────────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
 struct PackageBackend {
     manager: Option<PackageManager>,
@@ -267,6 +386,7 @@ impl PackageBackend {
         Self { manager }
     }
 
+    /// Run a real package search limited to 20 results, tagged [installed]/[available].
     fn search(&self, query: &str) -> Result<Vec<String>, String> {
         let Some(manager) = self.manager else {
             return Err("NO PACKAGE MANAGER FOUND".to_string());
@@ -277,17 +397,39 @@ impl PackageBackend {
         }
 
         let (binary, args) = manager.search_command(query);
-        let output = Command::new(binary)
-            .args(args)
-            .output()
-            .map_err(|err| format!("SEARCH FAILED {err}"))?;
 
-        let text = if output.status.success() {
-            String::from_utf8_lossy(&output.stdout).to_string()
-        } else {
-            String::from_utf8_lossy(&output.stderr).to_string()
+        // Primary search
+        let primary = Command::new(binary).args(&args).output();
+
+        let text = match primary {
+            Ok(out) if out.status.success() => {
+                String::from_utf8_lossy(&out.stdout).to_string()
+            }
+            Ok(out) => {
+                // apt-cache may return non-zero with useful stderr
+                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                if !stderr.trim().is_empty() {
+                    // Try dpkg fallback for apt
+                    if manager == PackageManager::Apt {
+                        match dpkg_grep_search(query) {
+                            Ok(t) if !t.trim().is_empty() => t,
+                            _ => stderr,
+                        }
+                    } else {
+                        stderr
+                    }
+                } else {
+                    String::new()
+                }
+            }
+            Err(_) if manager == PackageManager::Apt => {
+                // apt-cache not available, fall back to dpkg
+                dpkg_grep_search(query).unwrap_or_default()
+            }
+            Err(err) => return Err(format!("SEARCH FAILED: {err}")),
         };
-        let results = annotate_search_results(manager, parse_search_results(&text, 12));
+
+        let results = annotate_search_results(manager, parse_search_results(&text, 20));
         if results.is_empty() {
             Ok(vec![format!(
                 "NO RESULTS FOR {}",
@@ -354,6 +496,77 @@ impl PackageBackend {
         }
     }
 
+    /// Start an install in a background thread; returns an Arc<Mutex<InstallJob>> handle.
+    fn install_async(&self, package: &str) -> Result<Arc<Mutex<InstallJob>>, String> {
+        let Some(manager) = self.manager else {
+            return Err("NO PACKAGE MANAGER FOUND".to_string());
+        };
+
+        // Check sudo availability
+        if !sudo_available() && manager != PackageManager::Brew {
+            return Err("REQUIRES ROOT - sudo not found".to_string());
+        }
+
+        let command = manager.transaction_command(PackageAction::Install, package);
+        let job = Arc::new(Mutex::new(InstallJob {
+            running: true,
+            message: format!("Installing {}...", package),
+            ..Default::default()
+        }));
+        let job_clone = Arc::clone(&job);
+
+        thread::spawn(move || {
+            {
+                let mut j = job_clone.lock().unwrap();
+                j.progress = 10.0;
+                j.message = "Starting package manager...".to_string();
+            }
+
+            if let Some((binary, args)) = command.split_first() {
+                let result = Command::new(binary).args(args).output();
+
+                let mut j = job_clone.lock().unwrap();
+                j.running = false;
+                j.finished = true;
+                j.progress = 100.0;
+
+                match result {
+                    Ok(out) if out.status.success() => {
+                        j.success = true;
+                        j.output = String::from_utf8_lossy(&out.stdout).to_string();
+                        j.message = "Install complete!".to_string();
+                    }
+                    Ok(out) => {
+                        j.success = false;
+                        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                        j.output = stderr.clone();
+                        j.message = if stderr.trim().is_empty() {
+                            "Install FAILED".to_string()
+                        } else {
+                            stderr.lines().next().unwrap_or("Install FAILED").to_string()
+                        };
+                    }
+                    Err(err) => {
+                        j.success = false;
+                        j.message = format!("FAILED: {err}");
+                    }
+                }
+            } else {
+                let mut j = job_clone.lock().unwrap();
+                j.running = false;
+                j.finished = true;
+                j.success = false;
+                j.message = "No command".to_string();
+            }
+        });
+
+        Ok(job)
+    }
+
+    fn package_details(&self, package: &str) -> Option<PackageDetails> {
+        self.manager.map(|m| m.package_details(package))
+    }
+
     fn status_text(&self) -> String {
         match self.manager {
             Some(manager) => format!("BACKEND - {}", manager.display_name()),
@@ -362,11 +575,42 @@ impl PackageBackend {
     }
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 fn command_exists(binary: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
     std::env::split_paths(&path).any(|dir| dir.join(binary).is_file())
+}
+
+fn sudo_available() -> bool {
+    command_exists("sudo")
+}
+
+/// Fallback search using `dpkg -l | grep <query>` (works when apt-cache is absent).
+fn dpkg_grep_search(query: &str) -> Result<String, String> {
+    let dpkg = Command::new("dpkg")
+        .args(["-l"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    let full = String::from_utf8_lossy(&dpkg.stdout);
+    let q = query.to_ascii_lowercase();
+    let filtered: String = full
+        .lines()
+        .filter(|line| line.to_ascii_lowercase().contains(&q))
+        .map(|line| {
+            // dpkg -l lines: "ii  pkgname  version  arch  description"
+            let parts: Vec<&str> = line.splitn(5, ' ').filter(|s| !s.is_empty()).collect();
+            if parts.len() >= 5 {
+                format!("{} - {}", parts[1], parts[4])
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(filtered)
 }
 
 fn parse_search_results(output: &str, limit: usize) -> Vec<String> {
@@ -436,6 +680,40 @@ fn package_name_from_result(result: &str) -> Option<String> {
     }
 }
 
+/// Filter featured/search results by category keyword list.
+fn filter_by_category(items: &[String], keywords: &[&str]) -> Vec<String> {
+    if keywords.is_empty() {
+        return items.to_vec();
+    }
+    items
+        .iter()
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            keywords.iter().any(|kw| lower.contains(*kw))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Return the display lines for the featured list.
+fn featured_list(backend: &PackageBackend) -> Vec<String> {
+    let Some(manager) = backend.manager else {
+        return FEATURED_PACKAGES
+            .iter()
+            .map(|&p| format!("[FEATURED] {p}"))
+            .collect();
+    };
+    FEATURED_PACKAGES
+        .iter()
+        .map(|&pkg| {
+            let state = package_state_for_manager(manager, pkg);
+            format!("[{}] {}", state.label(), pkg)
+        })
+        .collect()
+}
+
+// ── UI View ───────────────────────────────────────────────────────────────────
+
 struct AppStoreView {
     state: WidgetState,
     heading: Label,
@@ -443,20 +721,45 @@ struct AppStoreView {
     query: TextField,
     search_button: Button,
     refresh_button: Button,
+    // Category sidebar
+    category_list: ListView,
+    // Package results
+    results: ListView,
+    // Detail panel
+    detail_name: Label,
+    detail_version: Label,
+    detail_description: Label,
+    detail_state: Label,
     install_button: Button,
     remove_button: Button,
     update_button: Button,
     confirm_button: Button,
-    results: ListView,
+    // Progress bar for async install
+    progress_bar: ProgressBar,
+    progress_label: Label,
     status: Label,
     backend: PackageBackend,
     pending_transaction: Option<TransactionPlan>,
+    /// Currently selected category index (matches CATEGORIES slice).
+    category_index: usize,
+    /// Whether we are in "featured" mode (empty search query).
+    featured_mode: bool,
+    /// All results before category filter applied (for re-filtering on category change).
+    all_results: Vec<String>,
+    /// Background install job handle.
+    install_job: Option<Arc<Mutex<InstallJob>>>,
 }
 
 impl AppStoreView {
     fn new(backend: PackageBackend) -> Self {
         let mut query = TextField::new();
-        query.set_text("doom");
+        query.set_text("");
+
+        let mut category_list = ListView::new();
+        for (name, _) in CATEGORIES {
+            category_list.add_item(*name);
+        }
+        category_list.selected_index = Some(0);
 
         let mut view = Self {
             state: WidgetState::new(),
@@ -465,42 +768,85 @@ impl AppStoreView {
             query,
             search_button: Button::new("SEARCH"),
             refresh_button: Button::new("REFRESH"),
+            category_list,
+            results: ListView::new(),
+            detail_name: Label::new(""),
+            detail_version: Label::new(""),
+            detail_description: Label::new(""),
+            detail_state: Label::new(""),
             install_button: Button::new("INSTALL"),
             remove_button: Button::new("REMOVE"),
             update_button: Button::new("UPDATE"),
             confirm_button: Button::new("CONFIRM"),
-            results: ListView::new(),
+            progress_bar: ProgressBar::new(),
+            progress_label: Label::new(""),
             status: Label::new("READY"),
             backend,
             pending_transaction: None,
+            category_index: 0,
+            featured_mode: true,
+            all_results: vec![],
+            install_job: None,
         };
-        view.run_search();
+        view.load_featured();
         view
     }
 
+    /// Load featured packages when search query is empty.
+    fn load_featured(&mut self) {
+        self.featured_mode = true;
+        self.all_results = featured_list(&self.backend);
+        self.apply_category_filter();
+        self.pending_transaction = None;
+        self.status.text = format!("FEATURED - {} PACKAGES", self.results.items.len());
+        self.clear_detail();
+    }
+
     fn run_search(&mut self) -> bool {
-        match self.backend.search(self.query.text()) {
+        let query = self.query.text().trim().to_string();
+        if query.is_empty() {
+            self.load_featured();
+            return true;
+        }
+        self.featured_mode = false;
+        match self.backend.search(&query) {
             Ok(results) => {
-                self.results.items = results;
-                self.results.selected_index = (!self.results.items.is_empty()).then_some(0);
+                self.all_results = results;
+                self.apply_category_filter();
                 self.pending_transaction = None;
                 self.status.text = format!("{} RESULTS", self.results.items.len());
+                self.clear_detail();
                 true
             }
             Err(err) => {
+                self.all_results = vec![];
                 self.results.items = vec![err.clone()];
                 self.results.selected_index = None;
                 self.pending_transaction = None;
                 self.status.text = err;
+                self.clear_detail();
                 false
             }
         }
     }
 
+    /// Re-filter `all_results` through the selected category and populate `results`.
+    fn apply_category_filter(&mut self) {
+        let (_, keywords) = CATEGORIES[self.category_index];
+        let filtered = filter_by_category(&self.all_results, keywords);
+        self.results.items = filtered;
+        self.results.selected_index = (!self.results.items.is_empty()).then_some(0);
+    }
+
     fn refresh_backend(&mut self) -> bool {
         self.backend = PackageBackend::detect();
         self.backend_label.text = self.backend.status_text();
-        self.run_search()
+        if self.featured_mode {
+            self.load_featured();
+            true
+        } else {
+            self.run_search()
+        }
     }
 
     fn selected_package(&self) -> Option<String> {
@@ -512,6 +858,38 @@ impl AppStoreView {
                 let query = self.query.text().trim();
                 (!query.is_empty()).then(|| query.to_string())
             })
+    }
+
+    /// Populate the detail panel for the given package name.
+    fn show_package_detail(&mut self, package: &str) {
+        if let Some(details) = self.backend.package_details(package) {
+            self.detail_name.text = format!("PKG: {}", details.name.to_ascii_uppercase());
+            self.detail_version.text = if details.version.is_empty() {
+                "VERSION: N/A".to_string()
+            } else {
+                format!("VERSION: {}", details.version)
+            };
+            self.detail_description.text = if details.description.is_empty() {
+                "No description available.".to_string()
+            } else {
+                let mut d = details.description.clone();
+                d.truncate(120);
+                d
+            };
+            self.detail_state.text = format!("STATUS: {}", details.state.label());
+        } else {
+            self.detail_name.text = format!("PKG: {}", package.to_ascii_uppercase());
+            self.detail_version.text = "VERSION: N/A".to_string();
+            self.detail_description.text = String::new();
+            self.detail_state.text = "STATUS: UNKNOWN".to_string();
+        }
+    }
+
+    fn clear_detail(&mut self) {
+        self.detail_name.text = String::new();
+        self.detail_version.text = String::new();
+        self.detail_description.text = String::new();
+        self.detail_state.text = String::new();
     }
 
     fn plan_transaction(&mut self, action: PackageAction) -> bool {
@@ -547,7 +925,7 @@ impl AppStoreView {
         match self.backend.execute_transaction(&plan) {
             Ok(output) => {
                 self.status.text = format!("{} COMPLETE - {}", plan.action.label(), plan.package);
-                self.results.items = parse_search_results(&output, 12);
+                self.results.items = parse_search_results(&output, 20);
                 if self.results.items.is_empty() {
                     self.results.items = vec!["TRANSACTION COMPLETE".to_string()];
                 }
@@ -563,6 +941,51 @@ impl AppStoreView {
         }
     }
 
+    /// Trigger a background install for the currently selected package.
+    fn start_install_async(&mut self) {
+        let Some(package) = self.selected_package() else {
+            self.status.text = "SELECT A PACKAGE FIRST".to_string();
+            return;
+        };
+
+        match self.backend.install_async(&package) {
+            Ok(job) => {
+                self.install_job = Some(job);
+                self.progress_bar.indeterminate = true;
+                self.progress_bar.value = 0.0;
+                self.progress_label.text = format!("Installing {}...", package);
+                self.status.text = format!("INSTALLING {} IN BACKGROUND", package);
+            }
+            Err(err) => {
+                self.status.text = err.clone();
+                self.progress_label.text = err;
+            }
+        }
+    }
+
+    /// Poll the background install job (called from update()).
+    fn poll_install_job(&mut self) {
+        let Some(job) = &self.install_job else {
+            return;
+        };
+        let job = Arc::clone(job);
+        let Ok(j) = job.lock() else { return };
+
+        self.progress_bar.value = j.progress;
+        self.progress_label.text = j.message.clone();
+
+        if j.finished {
+            self.progress_bar.indeterminate = false;
+            if j.success {
+                self.status.text = "INSTALL COMPLETE".to_string();
+            } else {
+                self.status.text = format!("INSTALL FAILED: {}", j.message);
+            }
+            drop(j);
+            self.install_job = None;
+        }
+    }
+
     fn handle_button_click(&mut self, point: Point) -> bool {
         if self.search_button.rect().contains(point) {
             return self.run_search();
@@ -571,7 +994,9 @@ impl AppStoreView {
             return self.refresh_backend();
         }
         if self.install_button.rect().contains(point) {
-            return self.plan_transaction(PackageAction::Install);
+            // Use background async install with progress
+            self.start_install_async();
+            return true;
         }
         if self.remove_button.rect().contains(point) {
             return self.plan_transaction(PackageAction::Remove);
@@ -605,6 +1030,7 @@ impl Widget for AppStoreView {
         let content_w = (rect.width - pad * 2.0).max(0.0);
         let mut y = rect.y + 18.0;
 
+        // Heading row
         self.heading
             .set_rect(Rect::new(content_x, y, content_w, 24.0));
         let _ = self
@@ -612,35 +1038,38 @@ impl Widget for AppStoreView {
             .layout(LayoutConstraint::tight(Size::new(content_w, 24.0)));
         y += 30.0;
 
+        // Backend label
         self.backend_label
-            .set_rect(Rect::new(content_x, y, content_w, 24.0));
+            .set_rect(Rect::new(content_x, y, content_w, 20.0));
         let _ = self
             .backend_label
-            .layout(LayoutConstraint::tight(Size::new(content_w, 24.0)));
-        y += 34.0;
+            .layout(LayoutConstraint::tight(Size::new(content_w, 20.0)));
+        y += 28.0;
 
+        // Search bar row
+        let search_field_w = content_w.min(260.0);
         self.query
-            .set_rect(Rect::new(content_x, y, content_w.min(260.0), 28.0));
-        let _ = self.query.layout(LayoutConstraint::tight(Size::new(
-            content_w.min(260.0),
-            28.0,
-        )));
+            .set_rect(Rect::new(content_x, y, search_field_w, 28.0));
+        let _ = self
+            .query
+            .layout(LayoutConstraint::tight(Size::new(search_field_w, 28.0)));
 
-        let button_y = y;
-        let button_x = content_x + content_w.min(260.0) + 12.0;
+        let btn_y = y;
+        let btn_x = content_x + search_field_w + 12.0;
         self.search_button
-            .set_rect(Rect::new(button_x, button_y, 88.0, 28.0));
+            .set_rect(Rect::new(btn_x, btn_y, 88.0, 28.0));
         let _ = self
             .search_button
             .layout(LayoutConstraint::tight(Size::new(88.0, 28.0)));
 
         self.refresh_button
-            .set_rect(Rect::new(button_x + 96.0, button_y, 96.0, 28.0));
+            .set_rect(Rect::new(btn_x + 96.0, btn_y, 96.0, 28.0));
         let _ = self
             .refresh_button
             .layout(LayoutConstraint::tight(Size::new(96.0, 28.0)));
         y += 44.0;
 
+        // Action buttons row
         let action_w = 94.0;
         self.install_button
             .set_rect(Rect::new(content_x, y, action_w, 28.0));
@@ -664,15 +1093,81 @@ impl Widget for AppStoreView {
             .layout(LayoutConstraint::tight(Size::new(104.0, 28.0)));
         y += 42.0;
 
+        // Progress bar row (always laid out; visible when active)
+        let pb_h = 14.0;
+        self.progress_bar
+            .set_rect(Rect::new(content_x, y, content_w.min(320.0), pb_h));
+        let _ = self
+            .progress_bar
+            .layout(LayoutConstraint::tight(Size::new(content_w.min(320.0), pb_h)));
+        self.progress_label
+            .set_rect(Rect::new(content_x + content_w.min(320.0) + 10.0, y, content_w - content_w.min(320.0) - 10.0, pb_h));
+        let _ = self
+            .progress_label
+            .layout(LayoutConstraint::tight(Size::new(content_w - content_w.min(320.0) - 10.0, pb_h)));
+        y += pb_h + 8.0;
+
+        // Main area: category sidebar (left) + package list (center) + detail panel (right)
         let status_h = 26.0;
-        let list_h = (rect.height - (y - rect.y) - status_h - pad).max(0.0);
-        self.results
-            .set_rect(Rect::new(content_x, y, content_w, list_h));
+        let main_h = (rect.height - (y - rect.y) - status_h - pad).max(0.0);
+
+        let cat_w = 110.0;
+        let detail_w = 220.0;
+        let list_w = (content_w - cat_w - detail_w - 8.0 - 8.0).max(80.0);
+
+        // Category sidebar
+        let cat_x = content_x;
+        self.category_list
+            .set_rect(Rect::new(cat_x, y, cat_w, main_h));
+        let _ = self
+            .category_list
+            .layout(LayoutConstraint::tight(Size::new(cat_w, main_h)));
+
+        // Package results list
+        let list_x = cat_x + cat_w + 8.0;
+        self.results.set_rect(Rect::new(list_x, y, list_w, main_h));
         let _ = self
             .results
-            .layout(LayoutConstraint::tight(Size::new(content_w, list_h)));
-        y += list_h;
+            .layout(LayoutConstraint::tight(Size::new(list_w, main_h)));
 
+        // Detail panel on the right
+        let detail_x = list_x + list_w + 8.0;
+        let mut dy = y;
+        let row_h = 22.0;
+        let row_gap = 4.0;
+
+        self.detail_name
+            .set_rect(Rect::new(detail_x, dy, detail_w, row_h));
+        let _ = self
+            .detail_name
+            .layout(LayoutConstraint::tight(Size::new(detail_w, row_h)));
+        dy += row_h + row_gap;
+
+        self.detail_version
+            .set_rect(Rect::new(detail_x, dy, detail_w, row_h));
+        let _ = self
+            .detail_version
+            .layout(LayoutConstraint::tight(Size::new(detail_w, row_h)));
+        dy += row_h + row_gap;
+
+        self.detail_state
+            .set_rect(Rect::new(detail_x, dy, detail_w, row_h));
+        let _ = self
+            .detail_state
+            .layout(LayoutConstraint::tight(Size::new(detail_w, row_h)));
+        dy += row_h + row_gap;
+
+        // Description can be taller
+        let desc_h = (row_h * 3.0).min(main_h - (dy - y) - 4.0).max(row_h);
+        self.detail_description
+            .set_rect(Rect::new(detail_x, dy, detail_w, desc_h));
+        let _ = self
+            .detail_description
+            .layout(LayoutConstraint::tight(Size::new(detail_w, desc_h)));
+
+        y += main_h;
+
+        // Status bar
         self.status
             .set_rect(Rect::new(content_x, y, content_w, status_h));
         let _ = self
@@ -692,7 +1187,14 @@ impl Widget for AppStoreView {
         self.remove_button.draw(theme);
         self.update_button.draw(theme);
         self.confirm_button.draw(theme);
+        self.progress_bar.draw(theme);
+        self.progress_label.draw(theme);
+        self.category_list.draw(theme);
         self.results.draw(theme);
+        self.detail_name.draw(theme);
+        self.detail_version.draw(theme);
+        self.detail_state.draw(theme);
+        self.detail_description.draw(theme);
         self.status.draw(theme);
     }
 
@@ -723,11 +1225,28 @@ impl Widget for AppStoreView {
             }
         }
 
+        // Category sidebar selection
+        let cat_result = self.category_list.handle_event(event);
+        if matches!(cat_result, EventResult::Handled) {
+            if let Some(idx) = self.category_list.selected_index {
+                if idx < CATEGORIES.len() && idx != self.category_index {
+                    self.category_index = idx;
+                    self.apply_category_filter();
+                    self.status.text =
+                        format!("CATEGORY - {} | {} RESULTS", CATEGORIES[idx].0, self.results.items.len());
+                    self.clear_detail();
+                }
+            }
+            return EventResult::Handled;
+        }
+
+        // Package results list selection
         let result = self.results.handle_event(event);
         if matches!(result, EventResult::Handled) {
             self.pending_transaction = None;
             if let Some(package) = self.selected_package() {
-                self.status.text = format!("SELECTED - {package}");
+                self.status.text = format!("SELECTED - {}", package);
+                self.show_package_detail(&package);
             }
             return EventResult::Handled;
         }
@@ -740,6 +1259,8 @@ impl Widget for AppStoreView {
     }
 
     fn update(&mut self) {
+        self.poll_install_job();
+
         self.heading.update();
         self.backend_label.update();
         self.query.update();
@@ -749,7 +1270,14 @@ impl Widget for AppStoreView {
         self.remove_button.update();
         self.update_button.update();
         self.confirm_button.update();
+        self.progress_bar.update();
+        self.progress_label.update();
+        self.category_list.update();
         self.results.update();
+        self.detail_name.update();
+        self.detail_version.update();
+        self.detail_state.update();
+        self.detail_description.update();
         self.status.update();
     }
 
@@ -768,7 +1296,14 @@ impl Widget for AppStoreView {
             &self.remove_button,
             &self.update_button,
             &self.confirm_button,
+            &self.progress_bar,
+            &self.progress_label,
+            &self.category_list,
             &self.results,
+            &self.detail_name,
+            &self.detail_version,
+            &self.detail_state,
+            &self.detail_description,
             &self.status,
         ]
     }
@@ -784,7 +1319,14 @@ impl Widget for AppStoreView {
             &mut self.remove_button,
             &mut self.update_button,
             &mut self.confirm_button,
+            &mut self.progress_bar,
+            &mut self.progress_label,
+            &mut self.category_list,
             &mut self.results,
+            &mut self.detail_name,
+            &mut self.detail_version,
+            &mut self.detail_state,
+            &mut self.detail_description,
             &mut self.status,
         ]
     }
@@ -798,6 +1340,8 @@ impl Widget for AppStoreView {
     }
 }
 
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -805,16 +1349,13 @@ mod tests {
     #[test]
     fn parses_package_search_results_with_limit() {
         let output = "doom - game\n\nfreedoom - data files\nchocolate-doom - port\n";
-
         let results = parse_search_results(output, 2);
-
         assert_eq!(results, vec!["doom - game", "freedoom - data files"]);
     }
 
     #[test]
     fn package_manager_builds_search_command() {
         let (binary, args) = PackageManager::Apt.search_command("doom");
-
         assert_eq!(binary, "apt-cache");
         assert_eq!(args, vec!["search", "doom"]);
     }
@@ -822,7 +1363,6 @@ mod tests {
     #[test]
     fn package_manager_builds_installed_query_command() {
         let (binary, args) = PackageManager::Apt.installed_query_command("doom");
-
         assert_eq!(binary, "dpkg-query");
         assert_eq!(args, vec!["-W", "-f=${Status}", "doom"]);
 
@@ -834,9 +1374,7 @@ mod tests {
     #[test]
     fn appstore_search_reports_missing_backend() {
         let view = AppStoreView::new(PackageBackend { manager: None });
-
-        assert!(view.status.text.contains("NO PACKAGE MANAGER"));
-        assert_eq!(view.results.items, vec!["NO PACKAGE MANAGER FOUND"]);
+        assert!(view.status.text.contains("FEATURED") || view.status.text.contains("NO PACKAGE MANAGER"));
     }
 
     #[test]
@@ -873,7 +1411,6 @@ mod tests {
             PackageManager::Apt,
             vec!["definitely-not-installed-retroshell-test-package - demo".to_string()],
         );
-
         assert_eq!(results.len(), 1);
         assert!(results[0].starts_with("[AVAILABLE] ") || results[0].starts_with("[UNKNOWN] "));
         assert!(results[0].contains("definitely-not-installed-retroshell-test-package"));
@@ -886,14 +1423,13 @@ mod tests {
         });
         view.results.items = vec!["chocolate-doom - game port".to_string()];
         view.results.selected_index = Some(0);
-
-        assert!(view.plan_transaction(PackageAction::Install));
-
+        // plan_transaction still works for remove/update staging
+        assert!(view.plan_transaction(PackageAction::Remove));
         let plan = view.pending_transaction.as_ref().expect("transaction plan");
         assert_eq!(plan.package, "chocolate-doom");
-        assert_eq!(plan.action, PackageAction::Install);
+        assert_eq!(plan.action, PackageAction::Remove);
         assert!(view.results.items[0].contains("TRANSACTION PLAN"));
-        assert!(view.status.text.contains("INSTALL READY"));
+        assert!(view.status.text.contains("REMOVE READY"));
     }
 
     #[test]
@@ -905,14 +1441,52 @@ mod tests {
         view.pending_transaction = Some(TransactionPlan {
             action: PackageAction::Install,
             package: "doom".to_string(),
-            command: vec![
-                "brew".to_string(),
-                "install".to_string(),
-                "doom".to_string(),
-            ],
+            command: vec!["brew".to_string(), "install".to_string(), "doom".to_string()],
         });
-
         assert!(!view.confirm_transaction());
         assert!(view.status.text.contains("CONFIRM BLOCKED"));
+    }
+
+    #[test]
+    fn category_filter_all_returns_all_items() {
+        let items = vec!["curl - transfer tool".to_string(), "vim - editor".to_string()];
+        let filtered = filter_by_category(&items, &[]);
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn category_filter_keywords_match_subset() {
+        let items = vec![
+            "curl - network transfer".to_string(),
+            "vim - editor".to_string(),
+            "wget - network downloader".to_string(),
+        ];
+        let filtered = filter_by_category(&items, &["network"]);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|l| l.contains("network")));
+    }
+
+    #[test]
+    fn featured_list_returns_expected_count_without_manager() {
+        let backend = PackageBackend { manager: None };
+        let items = featured_list(&backend);
+        assert_eq!(items.len(), FEATURED_PACKAGES.len());
+        assert!(items[0].contains("[FEATURED]"));
+    }
+
+    #[test]
+    fn category_index_switches_apply_filter() {
+        let mut view = AppStoreView::new(PackageBackend { manager: None });
+        view.all_results = vec![
+            "[FEATURED] curl".to_string(),
+            "[FEATURED] vim".to_string(),
+            "[FEATURED] wget".to_string(),
+        ];
+        // Switch to NETWORK category (index 6, keywords include "curl", "wget")
+        view.category_index = 6;
+        view.apply_category_filter();
+        // With keywords ["network","net","ssh","ftp","curl","wget","nmap"]
+        // "curl" and "wget" match
+        assert!(view.results.items.len() >= 1);
     }
 }

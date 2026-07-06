@@ -63,6 +63,16 @@ pub struct Terminal {
     selecting: bool,
     pub scroll_top: usize,
     pub scroll_bottom: usize,
+    // Alternate screen buffer (CSI ? 1049 h / l)
+    pub alt_grid: Option<Vec<Cell>>,
+    pub alt_cursor_x: usize,
+    pub alt_cursor_y: usize,
+    pub using_alt_screen: bool,
+    // Mouse reporting (CSI ? 1000 h / l)
+    pub mouse_reporting: bool,
+    // Window title set via OSC sequences
+    pub window_title: Option<String>,
+    pub title_changed: bool,
 }
 
 impl Terminal {
@@ -91,6 +101,61 @@ impl Terminal {
             selecting: false,
             scroll_top: 0,
             scroll_bottom: rows - 1,
+            alt_grid: None,
+            alt_cursor_x: 0,
+            alt_cursor_y: 0,
+            using_alt_screen: false,
+            mouse_reporting: false,
+            window_title: None,
+            title_changed: false,
+        }
+    }
+
+    /// Activate alternate screen buffer (CSI ? 1049 h)
+    pub fn enter_alt_screen(&mut self) {
+        if !self.using_alt_screen {
+            // Save primary cursor position and grid
+            self.alt_cursor_x = self.cursor_x;
+            self.alt_cursor_y = self.cursor_y;
+            self.alt_grid = Some(self.grid.clone());
+            // Fill screen with blank cells
+            self.grid.fill(Cell::default());
+            self.cursor_x = 0;
+            self.cursor_y = 0;
+            self.using_alt_screen = true;
+        }
+    }
+
+    /// Return to primary screen buffer (CSI ? 1049 l)
+    pub fn leave_alt_screen(&mut self) {
+        if self.using_alt_screen {
+            if let Some(saved) = self.alt_grid.take() {
+                self.grid = saved;
+            }
+            self.cursor_x = self.alt_cursor_x;
+            self.cursor_y = self.alt_cursor_y;
+            self.using_alt_screen = false;
+        }
+    }
+
+    /// Set the window title from an OSC sequence
+    pub fn set_window_title(&mut self, title: String) {
+        self.window_title = Some(title);
+        self.title_changed = true;
+    }
+
+    /// Send a mouse button event to the PTY (X10/X11 basic mouse reporting)
+    pub fn send_mouse_event(&mut self, col: usize, row: usize, button: u8, pressed: bool) {
+        if !self.mouse_reporting {
+            return;
+        }
+        // CSI M Cb Cx Cy — 1-based, add 32 offset per X10 protocol
+        let cb = button + 32 + if !pressed { 3 } else { 0 };
+        let cx = (col + 1 + 32).min(255) as u8;
+        let cy = (row + 1 + 32).min(255) as u8;
+        let seq = [0x1b, b'[', b'M', cb, cx, cy];
+        if let Some(ref mut pty) = self.pty {
+            let _ = pty.write(&seq);
         }
     }
 
@@ -303,6 +368,10 @@ impl Widget for Terminal {
                 ..
             } => {
                 if let Some(cell) = self.point_to_cell(*point) {
+                    if self.mouse_reporting {
+                        self.send_mouse_event(cell.col, cell.row, 0, true);
+                        return EventResult::Handled;
+                    }
                     self.selection_start = Some(cell);
                     self.selection_end = Some(cell);
                     self.selecting = true;
@@ -329,6 +398,12 @@ impl Widget for Terminal {
                 ..
             }
             | Event::DragEnd { point } => {
+                if self.mouse_reporting {
+                    if let Some(cell) = self.point_to_cell(*point) {
+                        self.send_mouse_event(cell.col, cell.row, 0, false);
+                        return EventResult::Handled;
+                    }
+                }
                 if self.selecting {
                     if let Some(cell) = self.point_to_cell(*point) {
                         self.selection_end = Some(cell);
@@ -588,13 +663,22 @@ impl Terminal {
                         .and_then(|row| row.get(col))
                         .cloned()
                         .unwrap_or_default();
+                    let base_fg = if selected {
+                        [1.0_f32, 1.0, 1.0, 1.0]
+                    } else if cell.bold {
+                        // Brighten foreground by 1.3x when bold, clamped to 1.0
+                        [
+                            (cell.fg.r * 1.3).min(1.0),
+                            (cell.fg.g * 1.3).min(1.0),
+                            (cell.fg.b * 1.3).min(1.0),
+                            cell.fg.a,
+                        ]
+                    } else {
+                        [cell.fg.r, cell.fg.g, cell.fg.b, cell.fg.a]
+                    };
                     *slot = MonospaceCell {
                         ch: cell.c,
-                        fg: if selected {
-                            [1.0, 1.0, 1.0, 1.0]
-                        } else {
-                            [cell.fg.r, cell.fg.g, cell.fg.b, cell.fg.a]
-                        },
+                        fg: base_fg,
                         bg: if selected {
                             [0.22, 0.43, 0.68, 1.0]
                         } else {

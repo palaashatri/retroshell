@@ -53,6 +53,14 @@ impl TextField {
         self.text = text.into();
         self.cursor_position = self.text.len();
     }
+
+    pub fn cursor_position(&self) -> usize {
+        self.cursor_position
+    }
+
+    pub fn set_cursor_position(&mut self, pos: usize) {
+        self.cursor_position = pos.min(self.text.len());
+    }
 }
 
 impl Widget for TextField {

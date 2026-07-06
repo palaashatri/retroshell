@@ -114,6 +114,7 @@ impl RetroShell {
             self.notification_center.clone(),
             self.workspace_manager.clone(),
             self.dock.clone(),
+            self.session_manager.clone(),
         );
 
         let mut window = Window::new("RetroShell Desktop");
@@ -136,6 +137,7 @@ struct ShellDesktop {
     notification_center: Arc<RwLock<NotificationCenter>>,
     workspace_manager: Arc<RwLock<WorkspaceManager>>,
     dock: Arc<RwLock<Dock>>,
+    session_manager: Arc<RwLock<SessionManager>>,
     dock_view: DockView,
     bundle_ids: Vec<String>,
     /// Notification banner pop-up windows, rebuilt each update() from visible notifications.
@@ -143,6 +145,10 @@ struct ShellDesktop {
     /// Last application-launch error, if any. Set by `launch_external_app` on failure.
     /// Intended for display in the status bar (rendering integration pending).
     last_error: Option<String>,
+    /// Whether the screen is currently locked.
+    locked: bool,
+    /// Lock screen overlay widget, shown when `locked` is true.
+    lock_screen_widget: Window,
 }
 
 struct ShellWindow {
@@ -188,6 +194,7 @@ impl ShellDesktop {
         notification_center: Arc<RwLock<NotificationCenter>>,
         workspace_manager: Arc<RwLock<WorkspaceManager>>,
         dock: Arc<RwLock<Dock>>,
+        session_manager: Arc<RwLock<SessionManager>>,
     ) -> Self {
         let mut desktop = IconView::new();
         desktop.icon_size = 56.0;
@@ -238,6 +245,7 @@ impl ShellDesktop {
         }
 
         let menus = menu_server.read().menus.clone();
+        let lock_screen_widget = build_lock_screen_window();
         let mut shell = Self {
             state: WidgetState::new(),
             menu_bar: MenuBar::new(menus),
@@ -250,10 +258,13 @@ impl ShellDesktop {
             notification_center,
             workspace_manager,
             dock: dock.clone(),
+            session_manager,
             dock_view: DockView::new(),
             bundle_ids,
             notification_popup_windows: Vec::new(),
             last_error: None,
+            locked: false,
+            lock_screen_widget,
         };
         shell.open_finder_window();
         shell
@@ -813,6 +824,10 @@ impl ShellDesktop {
                 ],
             ),
             "shell.force_quit" => self.open_force_quit_window(),
+            "shell.lock" => {
+                self.session_manager.write().lock_screen();
+                self.locked = true;
+            }
             "shell.log_out" => self.open_shell_status_window(
                 "Log Out",
                 [
@@ -868,6 +883,8 @@ impl ShellDesktop {
             }
             "finder.new_folder" => self.handle_new_folder(),
             "finder.get_info" => self.handle_get_info(),
+            "finder.rename" => self.handle_rename(),
+            "finder.move_to_trash" => self.handle_move_to_trash(),
             _ if self.handle_sdk_app_menu_action(action) => {}
             _ => tracing::info!("Unhandled menu action: {action}"),
         }
@@ -932,7 +949,19 @@ impl ShellDesktop {
             return;
         };
         let title = self.windows[index].window.title().to_string();
-        let lines = if let Some(ref path) = self.windows[index].folder_path {
+        // Try to get info for the selected file first; fall back to the folder window itself.
+        let selected_name = self.selected_file_name(index);
+        let lines = if let Some(ref sel) = selected_name {
+            if let Some(ref folder_path) = self.windows[index].folder_path.clone() {
+                folder_info_lines(sel, &folder_path.join(sel))
+            } else {
+                vec![
+                    format!("Name: {sel}"),
+                    "Kind: RetroShell window".to_string(),
+                    "Location: Internal shell workspace".to_string(),
+                ]
+            }
+        } else if let Some(ref path) = self.windows[index].folder_path.clone() {
             folder_info_lines(&title, path)
         } else {
             vec![
@@ -941,7 +970,155 @@ impl ShellDesktop {
                 "Location: Internal shell workspace".to_string(),
             ]
         };
-        self.open_message_window(format!("{title} Info"), lines);
+        let info_title = selected_name.unwrap_or(title);
+        self.open_message_window(format!("{info_title} Info"), lines);
+    }
+
+    /// Returns the label of the currently selected icon item in the active folder window, if any.
+    fn selected_file_name(&self, window_index: usize) -> Option<String> {
+        let shell_window = self.windows.get(window_index)?;
+        let icon_view = shell_window
+            .window
+            .content
+            .as_ref()
+            .and_then(|content| content.as_any().downcast_ref::<IconView>())?;
+        icon_view
+            .items
+            .iter()
+            .find(|item| item.selected)
+            .map(|item| item.label.clone())
+    }
+
+    fn handle_rename(&mut self) {
+        let Some(id) = self.active_window_id() else {
+            return;
+        };
+        let Some(index) = self.window_index(id) else {
+            return;
+        };
+        let folder_path_opt = self.windows[index].folder_path.clone();
+        let Some(folder_path) = folder_path_opt else {
+            self.open_shell_status_window(
+                "Rename",
+                ["Select a file in a folder window first.".to_string()],
+            );
+            return;
+        };
+        let Some(old_name) = self.selected_file_name(index) else {
+            self.open_shell_status_window(
+                "Rename",
+                ["No file selected. Click a file icon to select it, then choose Rename.".to_string()],
+            );
+            return;
+        };
+
+        // Derive a new name: append " copy" or increment a counter if "copy" already present.
+        let new_name = derive_rename_suggestion(&old_name);
+        let old_path = folder_path.join(&old_name);
+        let new_path = folder_path.join(&new_name);
+
+        match fs::rename(&old_path, &new_path) {
+            Ok(()) => {
+                tracing::info!("Renamed '{}' -> '{}'", old_path.display(), new_path.display());
+                self.refresh_active_folder_window();
+                self.open_shell_status_window(
+                    "Rename",
+                    [
+                        format!("Renamed: {old_name}"),
+                        format!("New name: {new_name}"),
+                        "Note: a text-input prompt is not yet available; a suggested name was applied automatically.".to_string(),
+                    ],
+                );
+            }
+            Err(err) => {
+                tracing::error!("Rename failed: {err}");
+                self.open_shell_status_window(
+                    "Rename Failed",
+                    [
+                        format!("Could not rename '{old_name}'."),
+                        format!("Error: {err}"),
+                    ],
+                );
+            }
+        }
+    }
+
+    fn handle_move_to_trash(&mut self) {
+        let Some(id) = self.active_window_id() else {
+            return;
+        };
+        let Some(index) = self.window_index(id) else {
+            return;
+        };
+        let folder_path_opt = self.windows[index].folder_path.clone();
+        let Some(folder_path) = folder_path_opt else {
+            self.open_shell_status_window(
+                "Move to Trash",
+                ["Select a file in a folder window first.".to_string()],
+            );
+            return;
+        };
+        let Some(file_name) = self.selected_file_name(index) else {
+            self.open_shell_status_window(
+                "Move to Trash",
+                ["No file selected. Click a file icon to select it, then choose Move to Trash.".to_string()],
+            );
+            return;
+        };
+
+        let trash = trash_dir();
+        if let Err(err) = fs::create_dir_all(&trash) {
+            tracing::error!("Could not create trash directory: {err}");
+            self.open_shell_status_window(
+                "Move to Trash",
+                [
+                    format!("Could not create Trash directory: {err}"),
+                ],
+            );
+            return;
+        }
+
+        let src = folder_path.join(&file_name);
+        // Avoid overwriting existing trash items with the same name.
+        let mut dest = trash.join(&file_name);
+        let mut counter = 1u32;
+        while dest.exists() {
+            let stem = std::path::Path::new(&file_name)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&file_name);
+            let ext = std::path::Path::new(&file_name)
+                .extension()
+                .and_then(|s| s.to_str());
+            let candidate = if let Some(ext) = ext {
+                format!("{stem} {counter}.{ext}")
+            } else {
+                format!("{stem} {counter}")
+            };
+            dest = trash.join(&candidate);
+            counter += 1;
+        }
+
+        match fs::rename(&src, &dest) {
+            Ok(()) => {
+                tracing::info!("Moved '{}' to trash ('{}')", src.display(), dest.display());
+                self.refresh_active_folder_window();
+                self.open_shell_status_window(
+                    "Move to Trash",
+                    [format!("'{file_name}' moved to Trash.")],
+                );
+            }
+            Err(err) => {
+                tracing::error!("Move to trash failed: {err}");
+                self.open_shell_status_window(
+                    "Move to Trash Failed",
+                    [
+                        format!("Could not move '{file_name}' to Trash."),
+                        format!("Error: {err}"),
+                    ],
+                );
+            }
+        }
     }
 
     fn open_about_window(&mut self) {
@@ -956,11 +1133,36 @@ impl ShellDesktop {
             Rect::new(
                 self.content_bounds().x + 180.0,
                 self.content_bounds().y + 120.0,
-                380.0,
-                240.0,
+                400.0,
+                320.0,
             ),
             self.content_bounds(),
         );
+
+        // Gather live system info
+        let host = session_manager::hostname();
+        let uptime = format_uptime(session_manager::uptime_seconds());
+        let (used_kb, total_kb) = session_manager::memory_usage();
+        let mem_line = if total_kb > 0 {
+            format!(
+                "Memory: {} / {}",
+                format_mem_gb(used_kb),
+                format_mem_gb(total_kb)
+            )
+        } else {
+            "Memory: Not available".to_string()
+        };
+        let battery_line = match session_manager::battery_percentage() {
+            Some(pct) => {
+                let status = if session_manager::is_on_battery() {
+                    "Discharging"
+                } else {
+                    "Charging"
+                };
+                format!("Battery: {}% ({})", pct, status)
+            }
+            None => "Battery: Not available".to_string(),
+        };
 
         let mut layout = Layout::vertical(12.0);
         layout.add(Box::new(Label::new("          RetroShell   ")));
@@ -969,6 +1171,10 @@ impl ShellDesktop {
         layout.add(Box::new(Label::new("    Built in Rust with wgpu")));
         layout.add(Box::new(Label::new("    Version 1.0.0 (Production)")));
         layout.add(Box::new(Label::new("----------------------------------------")));
+        layout.add(Box::new(Label::new(format!("Hostname: {host}"))));
+        layout.add(Box::new(Label::new(format!("Uptime: {uptime}"))));
+        layout.add(Box::new(Label::new(mem_line)));
+        layout.add(Box::new(Label::new(battery_line)));
 
         let mut btn_layout = Layout::horizontal(10.0);
         btn_layout.add(Box::new(Button::new("OK")));
@@ -1266,6 +1472,15 @@ fn build_folder_window(title: &str, path: &PathBuf) -> Window {
     window
 }
 
+fn build_lock_screen_window() -> Window {
+    let mut layout = Layout::vertical(24.0);
+    layout.add(Box::new(Label::new("RetroShell")));
+    layout.add(Box::new(Label::new("Press any key to unlock")));
+    let mut window = Window::new("Lock Screen");
+    window.set_content(Box::new(LayoutView::new(layout)));
+    window
+}
+
 fn build_message_window(title: &str, lines: impl IntoIterator<Item = String>) -> Window {
     let mut layout = Layout::vertical(8.0);
     for line in lines {
@@ -1278,26 +1493,34 @@ fn build_message_window(title: &str, lines: impl IntoIterator<Item = String>) ->
 }
 
 fn folder_info_lines(title: &str, path: &PathBuf) -> Vec<String> {
-    let item_count = fs::read_dir(path)
-        .map(|entries| entries.filter_map(|entry| entry.ok()).count())
-        .ok();
     let metadata = fs::metadata(path).ok();
+    let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+
+    let item_count = if is_dir {
+        fs::read_dir(path)
+            .map(|entries| entries.filter_map(|entry| entry.ok()).count())
+            .ok()
+    } else {
+        None
+    };
+
     let kind = metadata
         .as_ref()
-        .map(|metadata| {
-            if metadata.is_dir() {
+        .map(|m| {
+            if m.is_dir() {
                 "Folder"
-            } else if metadata.is_file() {
+            } else if m.is_file() {
                 "Document"
             } else {
                 "Filesystem item"
             }
         })
         .unwrap_or("Unavailable");
+
     let writable = metadata
         .as_ref()
-        .map(|metadata| {
-            if metadata.permissions().readonly() {
+        .map(|m| {
+            if m.permissions().readonly() {
                 "No"
             } else {
                 "Yes"
@@ -1305,18 +1528,73 @@ fn folder_info_lines(title: &str, path: &PathBuf) -> Vec<String> {
         })
         .unwrap_or("Unknown");
 
-    vec![
+    let file_size = metadata
+        .as_ref()
+        .filter(|m| m.is_file())
+        .map(|m| human_readable_size(m.len()));
+
+    let mut lines = vec![
         format!("Name: {title}"),
         format!("Kind: {kind}"),
         format!("Location: {}", path.display()),
-        format!(
-            "Items: {}",
-            item_count
-                .map(|count| count.to_string())
-                .unwrap_or_else(|| "Unavailable".to_string())
-        ),
-        format!("Writable: {writable}"),
-    ]
+    ];
+
+    if let Some(size) = file_size {
+        lines.push(format!("Size: {size}"));
+    }
+
+    if let Some(count) = item_count {
+        lines.push(format!("Items: {count}"));
+    }
+
+    lines.push(format!("Writable: {writable}"));
+    lines
+}
+
+fn human_readable_size(bytes: u64) -> String {
+    const KB: u64 = 1_024;
+    const MB: u64 = 1_024 * KB;
+    const GB: u64 = 1_024 * MB;
+
+    if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+fn derive_rename_suggestion(name: &str) -> String {
+    let path = std::path::Path::new(name);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name);
+    let ext = path.extension().and_then(|s| s.to_str());
+
+    // If the stem already ends with " copy N", increment N.
+    // Otherwise append " copy".
+    let new_stem = if let Some(idx) = stem.rfind(" copy") {
+        let suffix = &stem[idx + 5..];
+        if suffix.is_empty() {
+            format!("{} copy 2", &stem[..idx])
+        } else if let Ok(n) = suffix.trim().parse::<u32>() {
+            format!("{} copy {}", &stem[..idx], n + 1)
+        } else {
+            format!("{stem} copy")
+        }
+    } else {
+        format!("{stem} copy")
+    };
+
+    if let Some(ext) = ext {
+        format!("{new_stem}.{ext}")
+    } else {
+        new_stem
+    }
 }
 
 fn menu_action_label(menus: &[Menu], action_id: &str) -> Option<String> {
@@ -1387,6 +1665,33 @@ fn folder_items_for_path(path: &PathBuf) -> Vec<IconItem> {
     }
 
     items
+}
+
+/// Format uptime seconds as a human-readable string like "2d 4h" or "1h 23m".
+fn format_uptime(secs: u64) -> String {
+    let minutes = secs / 60;
+    let hours = minutes / 60;
+    let days = hours / 24;
+    if days > 0 {
+        format!("{}d {}h", days, hours % 24)
+    } else if hours > 0 {
+        format!("{}h {}m", hours, minutes % 60)
+    } else {
+        format!("{}m", minutes)
+    }
+}
+
+/// Format a kilobyte count as a GB string (e.g. "2.1 GB") or MB if small.
+fn format_mem_gb(kb: u64) -> String {
+    const MB: u64 = 1024;
+    const GB: u64 = 1024 * MB;
+    if kb >= GB {
+        format!("{:.1} GB", kb as f64 / GB as f64)
+    } else if kb >= MB {
+        format!("{:.0} MB", kb as f64 / MB as f64)
+    } else {
+        format!("{} KB", kb)
+    }
 }
 
 fn home_dir() -> PathBuf {
@@ -1469,6 +1774,19 @@ impl Widget for ShellDesktop {
             size.height,
         ));
 
+        // Always keep the lock screen widget sized to fill the desktop
+        self.lock_screen_widget.set_rect(Rect::new(
+            self.rect().x,
+            self.rect().y,
+            size.width,
+            size.height,
+        ));
+        let _ = self.lock_screen_widget.layout(LayoutConstraint::tight(Size::new(size.width, size.height)));
+
+        if self.locked {
+            return size;
+        }
+
         self.menu_bar
             .set_rect(Rect::new(self.rect().x, self.rect().y, size.width, 24.0));
         let _ = self
@@ -1500,6 +1818,10 @@ impl Widget for ShellDesktop {
     }
 
     fn draw(&self, theme: &ThemeContext) {
+        if self.locked {
+            self.lock_screen_widget.draw(theme);
+            return;
+        }
         self.desktop.draw(theme);
         let active_workspace = self.active_workspace();
         // Draw non-active windows first
@@ -1530,6 +1852,17 @@ impl Widget for ShellDesktop {
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
+        // When locked, any key press unlocks the screen
+        if self.locked {
+            if let Event::KeyDown { .. } = event {
+                self.session_manager.write().unlock();
+                self.locked = false;
+                return EventResult::Handled;
+            }
+            // Swallow all other events while locked
+            return EventResult::Handled;
+        }
+
         let result = self.menu_bar.handle_event(event);
         if matches!(result, EventResult::Handled | EventResult::StopPropagation) {
             return result;
@@ -1726,8 +2059,8 @@ impl Widget for ShellDesktop {
                     if let Some(content) = self.windows[index].window.content.as_deref() {
                         if let Some(layout_view) = content.as_any().downcast_ref::<LayoutView>() {
                             if let Layout::Vertical { children, .. } = &layout_view.layout {
-                                if children.len() >= 7 {
-                                    if let Some(btn_layout_widget) = children[6].as_any().downcast_ref::<LayoutView>() {
+                                if children.len() >= 11 {
+                                    if let Some(btn_layout_widget) = children[10].as_any().downcast_ref::<LayoutView>() {
                                         if let Layout::Horizontal { children: btn_children, .. } = &btn_layout_widget.layout {
                                             if !btn_children.is_empty() {
                                                 if let Some(btn) = btn_children[0].as_any().downcast_ref::<Button>() {
@@ -1823,6 +2156,11 @@ impl Widget for ShellDesktop {
     }
 
     fn update(&mut self) {
+        // Sync lock state from SessionManager
+        if self.session_manager.read().state == session_manager::SessionState::Locked && !self.locked {
+            self.locked = true;
+        }
+
         self.menu_bar.menus = self.menu_server.read().menus.clone();
 
         if let Some(action) = self.menu_bar.last_action.take() {
@@ -1886,6 +2224,9 @@ impl Widget for ShellDesktop {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
+        if self.locked {
+            return vec![&self.lock_screen_widget as &dyn Widget];
+        }
         let capacity = self.windows.len() + 3 + self.notification_popup_windows.len();
         let mut children: Vec<&dyn Widget> = Vec::with_capacity(capacity);
         children.push(&self.desktop);
@@ -1905,6 +2246,9 @@ impl Widget for ShellDesktop {
     }
 
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
+        if self.locked {
+            return vec![&mut self.lock_screen_widget as &mut dyn Widget];
+        }
         let capacity = self.windows.len() + 3 + self.notification_popup_windows.len();
         let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(capacity);
         children.push(&mut self.desktop);
@@ -1959,6 +2303,7 @@ mod tests {
         let notification_center = Arc::new(RwLock::new(NotificationCenter::new()));
         let workspace_manager = Arc::new(RwLock::new(WorkspaceManager::new()));
         let dock = Arc::new(RwLock::new(Dock::new()));
+        let session_manager = Arc::new(RwLock::new(SessionManager::new()));
         let mut desktop = ShellDesktop::new(
             menu_server,
             launch_services,
@@ -1966,6 +2311,7 @@ mod tests {
             notification_center,
             workspace_manager,
             dock,
+            session_manager,
         );
         desktop.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
         (desktop, window_manager)

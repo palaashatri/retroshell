@@ -76,6 +76,7 @@ impl SessionManager {
             self.locked = true;
             self.state = SessionState::Locked;
             self.pending_action = Some(SessionAction::Lock);
+            self.save_state();
         }
     }
 
@@ -189,4 +190,80 @@ fn unix_now() -> u64 {
 
 fn escape_toml_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Read the battery charge level (0–100) from the system.
+/// Returns `None` on desktop machines, VMs, or any system without a battery.
+pub fn battery_percentage() -> Option<u8> {
+    let capacity = std::fs::read_to_string("/sys/class/power_supply/BAT0/capacity").ok()?;
+    capacity.trim().parse::<u8>().ok()
+}
+
+/// Returns `true` when the system is running on battery (i.e. not plugged in).
+pub fn is_on_battery() -> bool {
+    std::fs::read_to_string("/sys/class/power_supply/BAT0/status")
+        .ok()
+        .map(|status| status.trim().eq_ignore_ascii_case("Discharging"))
+        .unwrap_or(false)
+}
+
+/// Returns the machine hostname, falling back to `"retroshell"` if unavailable.
+pub fn hostname() -> String {
+    std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "retroshell".to_string())
+}
+
+/// Returns the system uptime in whole seconds by reading `/proc/uptime`.
+/// Returns 0 when the file is not available (non-Linux systems).
+pub fn uptime_seconds() -> u64 {
+    std::fs::read_to_string("/proc/uptime")
+        .ok()
+        .and_then(|content| {
+            content
+                .split_whitespace()
+                .next()
+                .and_then(|first| first.parse::<f64>().ok())
+        })
+        .map(|secs| secs as u64)
+        .unwrap_or(0)
+}
+
+/// Returns `(used_kb, total_kb)` by parsing `/proc/meminfo`.
+/// Both values are 0 when the file is not available.
+pub fn memory_usage() -> (u64, u64) {
+    let content = match std::fs::read_to_string("/proc/meminfo") {
+        Ok(c) => c,
+        Err(_) => return (0, 0),
+    };
+
+    let mut total_kb: u64 = 0;
+    let mut free_kb: u64 = 0;
+    let mut buffers_kb: u64 = 0;
+    let mut cached_kb: u64 = 0;
+    let mut sreclaimable_kb: u64 = 0;
+
+    for line in content.lines() {
+        let mut parts = line.split_whitespace();
+        let key = parts.next().unwrap_or("");
+        let value: u64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        match key {
+            "MemTotal:" => total_kb = value,
+            "MemFree:" => free_kb = value,
+            "Buffers:" => buffers_kb = value,
+            "Cached:" => cached_kb = value,
+            "SReclaimable:" => sreclaimable_kb = value,
+            _ => {}
+        }
+    }
+
+    let used_kb = total_kb
+        .saturating_sub(free_kb)
+        .saturating_sub(buffers_kb)
+        .saturating_sub(cached_kb)
+        .saturating_sub(sreclaimable_kb);
+
+    (used_kb, total_kb)
 }

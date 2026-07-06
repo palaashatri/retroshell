@@ -1,234 +1,293 @@
 # RetroShell
 
-A native Rust desktop environment project inspired by Classic Mac OS, NeXTSTEP, and BeOS.
+A native Rust desktop environment inspired by Classic Mac OS, NeXTSTEP, and BeOS.
 
-RetroShell is not a Linux desktop theme. The current implementation is a native Rust shell and application suite running as a Wayland client under `labwc`; the long-term goal is a real desktop environment with its own compositor/session stack.
+RetroShell is not a Linux desktop theme. It is a custom GUI toolkit, application
+framework, and shell client written entirely in Rust. The shell renders its own windows
+using a wgpu graphics pipeline, ships a suite of first-party applications, and runs as
+a Wayland client today. The long-term goal is a real desktop environment driven by a
+custom Smithay compositor.
 
 ---
 
-## 1. System Architecture
+## Features
+
+### What works
+
+- [x] Desktop with spatial icon grid (Hard Disk, Home, Applications, Trash)
+- [x] Shell-managed windows — move, resize, close, minimize, zoom, fullscreen
+- [x] Window stacking / click-to-raise / z-order
+- [x] System menu bar with keyboard shortcuts
+- [x] Global menu bar — first-party apps publish menus; shell shows them system-wide
+- [x] Four virtual workspaces with per-workspace window filtering
+- [x] Dock bar at bottom with clickable app-launch items
+- [x] Notification Center — post, query, clear notifications
+- [x] Lock screen
+- [x] Force Quit dialog with live window list
+- [x] About window, workspace switcher overlay
+- [x] Finder — filesystem browser, New Folder, Move to Trash, Get Info, Rename,
+      internal drag-to-folder moves
+- [x] TextEdit — multi-line text editor with dirty-state tracking and disk I/O
+- [x] Terminal — PTY-backed emulator with VT100/VT220, 256-color SGR, true-color
+      SGR, erase-in-line, scroll margins, tab management, scrollback, selection copy/paste
+- [x] Settings — 11 preference panes (General, Appearance, Desktop & Dock, Display,
+      Sound, Network, Keyboard, Mouse, Accessibility, Privacy & Security, Notifications)
+      with persistent `settings.conf` writes
+- [x] App Store — reads system package indices (APT), shows install state per package,
+      search with package-change gate
+- [x] Five color themes: Classic, Dark, Grape, Blueberry, Strawberry
+- [x] Dark mode with per-token palette switching
+- [x] TrueType font rendering via ab_glyph with system font discovery and bitmap fallback
+- [x] File-based clipboard persistence across process boundaries
+- [x] Drop shadows, pixel art icons, custom window chrome
+- [x] Docker VM with noVNC browser access for visual development
+
+### In progress / planned
+
+- [ ] retro-compositor — Smithay-based Wayland compositor (skeleton only)
+- [ ] Universal global menu for external apps (requires compositor session ownership)
+- [ ] Wayland wl_data_device protocol drag-and-drop between apps
+- [ ] Notification banners as floating visual overlays
+- [ ] HiDPI / display scale (UI uses logical pixels; no scale-factor tree yet)
+- [ ] HDR / VRR output control (preferences stored; compositor work required)
+- [ ] AT-SPI accessibility protocol integration
+- [ ] Multi-monitor support
+- [ ] Power management (UPower)
+- [ ] Screen recording / screenshot service
+
+---
+
+## Architecture
 
 ```
-Applications (Finder, Settings, TextEdit, Terminal, App Store)
-    ↓ (linked statically or dynamically via SDK)
-RetroSDK (Application wrapper, preference engine, appearance API)
-    ↓
-RetroKit (Native widgets, custom Layout grids, Event dispatching)
-    ↓
-RetroShell (shell client, global menu prototype, internal window workspace routing)
-    ↓
-RetroRender (wgpu rendering engine, cosmic-text rasterizer, vulkan context)
-    ↓
-Wayland / X11 Compositor today (labwc / Xvfb) -> Linux Kernel
+  ┌─────────────────────────────────────────────────────┐
+  │  First-Party Applications                           │
+  │  Finder  TextEdit  Terminal  Settings  App Store    │
+  └──────────────────┬──────────────────────────────────┘
+                     │ links
+  ┌──────────────────▼──────────────────────────────────┐
+  │  retro-sdk  (Application framework, menu manifests, │
+  │             preference engine, draw helpers)        │
+  └────┬────────────────────────────┬───────────────────┘
+       │ links                      │ links
+  ┌────▼────────┐            ┌──────▼──────────────────┐
+  │  retro-kit  │            │  retro-bus              │
+  │  (Widgets,  │            │  (IPC, service registry,│
+  │   toolkit,  │            │   D-Bus transport)      │
+  │   themes)   │            └─────────────────────────┘
+  └────┬────────┘
+       │ links
+  ┌────▼──────────────────────────────────────────────────┐
+  │  retro-render  (wgpu pipeline, text rasterization,    │
+  │                Canvas, NDC translation)               │
+  └────┬──────────────────────────────────────────────────┘
+       │
+  ┌────▼───────────────────────────────────────────┐
+  │  wgpu  →  Vulkan / Wayland / X11 backend       │
+  └────┬───────────────────────────────────────────┘
+       │
+  ┌────▼───────────────────────────────────────────┐
+  │  labwc (Wayland compositor, today)             │
+  │  retro-compositor  (Smithay, future)           │
+  └────┬───────────────────────────────────────────┘
+       │
+  Linux kernel  DRM / KMS
 ```
 
-### Core Components
-* **`retro-shell`**: The primary shell client. It manages the desktop canvas, shell-owned global menus, internal windows, app launching, and workspace state. It is not yet a Wayland compositor.
-* **`retro-kit`**: A custom, lightweight native GUI toolkit written in Rust, defining widgets, scroll containers, list view behaviors, grids, and event handling.
-* **`retro-render`**: A graphics pipeline built on `wgpu`. It handles low-level pipeline setup and uses the system font database with `ab_glyph` rasterization for crisp glyphs while keeping a retro fallback path.
-* **`retro-sdk`**: The software development kit for RetroShell. Houses the native menu routing, configuration stores, and the common application entrypoint loops.
-* **`retro-bus`**: A low-level IPC implementation supporting service discovery, cross-process event propagation, and communication between apps and shell services.
+**retro-shell** (the shell process) also links retro-sdk, retro-kit, retro-render, and
+retro-bus. It is the root process that manages internal windows, the dock, workspaces,
+the menu server, and app launch.
 
 ---
 
-## 2. Technology Stack & Specs
-* **Language**: Rust (edition 2021)
-* **Rendering API**: WebGPU (`wgpu` targeting Vulkan/Wayland/X11 backends)
-* **Text Rendering**: `cosmic-text` font database and rasterizer
-* **Audio**: PipeWire & PulseAudio
-* **Compositor integration**: Wayland client protocol today; planned Smithay compositor/session path for a real DE
+## Quick Start (Docker)
 
----
+The fastest way to see RetroShell running is the Docker VM with browser VNC access.
 
-## 3. Visual & Coding Standards
-
-### Design Guidelines (Style Guide)
-* **Metaphor Consistency**: Retain a compact, highly dense, classic desktop visual metaphor (Mac OS System 7 to OS 9 style).
-* **Color Palette**: Calm, low-saturation gray tones (Platinum) by default. Use token-based colors to avoid ad-hoc values.
-* **No Web Noise**: Avoid rounded borders exceeding 4px, heavy drop shadows, or high-contrast modern web visual noise.
-* **Native Dark Mode**: Support dark mode natively using system theme preference stores. Color selection dynamically switches based on appearance keys.
-
-### Coding Standards
-* **Rust Idioms**: Avoid unnecessary `unsafe` blocks. Prefer clear ownership boundaries and leverage type systems for state machines.
-* **Widget Structure**: All widgets must inherit from base layouts and pass rendering tasks back to the active `Canvas` using NDC coordinate translation.
-* **Portability**: Keep the core crates decoupled from OS-specific backends where possible to facilitate future portability to custom kernels.
-
----
-
-## 4. First-Party Application Suite
-* **Finder**: The file and spatial navigation shell. Displays directory items in grids, manages file operations (New Folder, Duplicate, Delete), and shows file metadata (`INFO`).
-* **Settings**: Manages system state. Allows toggling appearance (Light/Dark) and writing `settings.conf`.
-* **TextEdit**: Lightweight text editor supporting multi-line text fields, dirty-state tracking, and disk I/O.
-* **Terminal**: PTY-backed terminal emulator supporting interactive shells, selection copy/paste, and custom scrollback.
-* **App Store**: Package manager front-end querying system package indices (e.g. `APT`) and running package searches.
-
----
-
-## 5. Current Status
-
-RetroShell is currently a polished prototype shell, not a production desktop environment. The shell-owned menu bar is functional for internal shell/Finder windows and updates with the active shell window. Standalone SDK applications now publish their menu models into the runtime menu manifest directory, first-party apps launched by RetroShell run with local SDK menu bars suppressed, and the shell menu server can load those manifests; focus tracking and action dispatch are still not universal until RetroShell owns the compositor/session layer.
-
-Recent Phase 1 work:
-* VM startup now uses configurable `RETROSHELL_VM_WIDTH`, `RETROSHELL_VM_HEIGHT`, and `RETROSHELL_VM_DEPTH` values, starts labwc through its X11 backend explicitly, and configures the discovered wlroots output with `wlr-randr`.
-* Docker images install real font packages, and `retro-render` no longer embeds the invalid HTML file that previously pretended to be `DejaVuSans.ttf`.
-* Clipboard now persists through a runtime file so first-party apps can copy/paste across process boundaries. This is a practical bridge, not final Wayland `wl_data_device` integration.
-* Finder now supports internal drag-to-folder moves for files/folders within its own icon grid, with collision and invalid-target refusal. This is app-level file movement, not final Wayland protocol DnD.
-* Settings now includes rendered, mouse-draggable native sliders for persisted Sound volume and Mouse pointer speed preferences.
-* SDK apps publish JSON menu manifests to `${RETROSHELL_MENU_MANIFEST_DIR}` or `${XDG_RUNTIME_DIR}/retroshell/menus`, and `retro-shell` can load those manifests into the shell menu server.
-* RetroShell sets `RETROSHELL_GLOBAL_MENU=1` for first-party SDK apps it launches, suppressing their duplicate local menu bars and switching the shell menu model to the launched app.
-
-Still not done:
-* RetroShell is not yet a compositor and does not manage external Wayland app surfaces itself.
-* HDR and VRR are not complete. Current renderer code can see present modes/formats, but real HDR needs color management, tone mapping, output metadata, and compositor-level presentation control.
-* The global menu is not yet universal for standalone SDK/external app windows because labwc, not RetroShell, still owns real window focus and app surface management.
-* Screenshots should be refreshed in this README whenever a major visual/UI change is verified in the VM.
-
-### Latest VM Screenshots
-
-![RetroShell current VM desktop](docs/screenshots/current-retroshell-desktop.png)
-
-![RetroShell Finder drag-to-folder verification](docs/screenshots/current-finder-dnd.png)
-
-![RetroShell Settings Display pane](docs/screenshots/current-settings.png)
-
-![RetroShell Settings Sound slider](docs/screenshots/current-settings-sliders.png)
-
-![RetroShell App Store package search](docs/screenshots/current-appstore.png)
-
-App Store search rows now include package installed state from the detected package manager, with package-changing transactions still gated by `RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES=1`.
-
-![RetroShell Notification Center](docs/screenshots/current-notification-center.png)
-
-Notification Center now lists shell-owned notifications such as first-party app launches and supports clearing them from the Retro menu; freedesktop notification-daemon integration remains future compositor/session work.
-
-![RetroShell Workspace Switch](docs/screenshots/current-workspace-switch.png)
-
-Window menu now exposes workspace switching controls across shell and active SDK app menus; shell-managed windows are filtered per active workspace.
-
-![RetroShell Doom smoke frame](docs/screenshots/current-doom-smoke.png)
-
-Doom showcase capture now has a VM-smoked script path that records x11grab video plus PulseAudio monitor audio and validates both streams with `ffprobe`; the final long-form windowed/borderless/exclusive evidence video remains a release gate.
-
-![RetroShell minimized Finder window](docs/screenshots/current-minimized-window.png)
-
-![RetroShell About window](docs/screenshots/current-about-window.png)
-
-![RetroShell Force Quit window](docs/screenshots/current-force-quit-window.png)
-
-### Verified UI Update
-
-The latest VM verification uses the rebuilt `retroshell-vm` image at 1280x800. The display fills the full VM frame without black bars, and internal Finder minimize is no longer a placeholder: clicking the titlebar minimize control collapses the window into a bottom titlebar tab, and clicking the same control restores it.
-
-The Retro menu's About action now opens a real shell message window instead of a fake folder view, and Finder Get Info opens an internal metadata window for the active shell/Finder window.
-
-The remaining default shell menu items now have routable action IDs. Items that still depend on future subsystems open explicit shell status windows instead of silently doing nothing.
-
-Settings now has first-party panes for General, Appearance, Desktop & Dock, Display, Sound, Network, Keyboard, Mouse, Accessibility, Privacy & Security, and Notifications. Values persist to `settings.conf`; the Display pane exposes honest HDR-request and VRR-adaptive preferences without claiming compositor-level HDR/VRR output control is complete. VM verification refreshed `docs/screenshots/current-settings.png`.
-
-Remaining compositor-level goals are still open: RetroShell is not yet a Wayland compositor, and HDR/VRR/exclusive fullscreen require compositor/session ownership plus color-management and presentation-control work rather than only shell-client UI changes.
-
----
-
-## 6. Development & Verification VM
-
-RetroShell comes with a Docker-based visual environment (`retroshell-vm`) for visual development and automated testing in a sandboxed Wayland/X11 compositor. The VM defaults to `1280x800x24`; override with `RETROSHELL_VM_WIDTH`, `RETROSHELL_VM_HEIGHT`, and `RETROSHELL_VM_DEPTH`.
-
-### Building and Running the VM
-1. **Build the container**:
-   ```bash
-   docker build -f Dockerfile.vm -t retroshell-vm .
-   ```
-2. **Start the environment**:
-   ```bash
-   docker run -d -p 6080:6080 -v "$(pwd):/app" --name retroshell-running retroshell-vm
-   ```
-3. **Connect to the Desktop**:
-   Open a browser and navigate to `http://localhost:6080/vnc.html` to access the desktop session.
-
-### Running Applications inside the VM
-Compile the workspace and launch the desktop shell:
 ```bash
+# Build the VM image (first time, ~5 min)
+docker build -f Dockerfile.vm -t retroshell-vm .
+
+# Start the VM
+docker run -d -p 6080:6080 -v "$(pwd):/app" --name retroshell-running retroshell-vm
+
+# Build and launch the shell inside the VM
 docker exec -t retroshell-running cargo build --release
-docker exec -d retroshell-running env -u DISPLAY WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/tmp/runtime-root /app/target-docker/release/retro-shell
+docker exec -d retroshell-running \
+  env -u DISPLAY WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/tmp/runtime-root \
+  /app/target-docker/release/retro-shell
+
+# Open http://localhost:6080/vnc.html in your browser
+```
+
+Override the display resolution with environment variables:
+
+```bash
+docker run -d -p 6080:6080 \
+  -e RETROSHELL_VM_WIDTH=1920 \
+  -e RETROSHELL_VM_HEIGHT=1080 \
+  -v "$(pwd):/app" --name retroshell-running retroshell-vm
 ```
 
 ---
 
-## 7. Ubuntu Server Installation Guide
-
-To configure a bare Ubuntu Server machine to boot directly into RetroShell, follow these installation steps:
+## Development Setup
 
 ### Prerequisites
-1. **Graphics Card**: A GPU compatible with Vulkan 1.2+ (Intel, AMD, or NVIDIA).
-2. **Base Packages**: Ensure your system is updated:
-   ```bash
-   sudo apt update && sudo apt upgrade -y
-   ```
 
-### Step 1: Install Display Server, Compositor, and Audio Services
-Since Ubuntu Server lacks a graphical display server, install Xorg, a lightweight Wayland compositor (`labwc`), seat management, DBus, and audio servers:
+- Rust toolchain (stable, edition 2021): install via [rustup.rs](https://rustup.rs)
+- Vulkan-capable GPU drivers
+- System libraries: `libwayland-dev`, `libxkbcommon-dev`, `libdbus-1-dev`,
+  `libfontconfig-dev`, `libfreetype6-dev`
+
+On Ubuntu/Debian:
+
 ```bash
-sudo apt install -y --no-install-recommends \
-    xserver-xorg-core \
-    xinit \
-    labwc \
-    dbus-x11 \
-    pipewire \
-    pipewire-audio-client-libraries \
-    pulseaudio-utils \
-    libwayland-dev \
-    libxkbcommon-dev \
-    libdbus-1-dev \
-    libfontconfig-dev \
-    libfreetype6-dev \
-    fontconfig \
-    fonts-dejavu-core \
-    build-essential \
-    pkg-config \
-    git \
-    curl
+sudo apt install -y \
+  libwayland-dev libxkbcommon-dev libdbus-1-dev \
+  libfontconfig-dev libfreetype6-dev \
+  fonts-dejavu-core build-essential pkg-config
 ```
 
-### Step 2: Install Rust Toolchain
-Install the standard Rust compiler toolchain:
+### Build
+
+```bash
+# Development build
+cargo build
+
+# Release build
+cargo build --release
+
+# Run the shell (requires a running Wayland compositor such as labwc)
+env -u DISPLAY WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/$(id -u) \
+  ./target/release/retro-shell
+
+# Run a first-party app standalone
+./target/release/finder
+./target/release/terminal
+./target/release/settings
+```
+
+### Tests
+
+```bash
+cargo test
+```
+
+Tests cover: clipboard persistence, icon layout, menu clock formatting, bus message
+serialization, VT parser escape sequences, Finder file operations, and compositor stubs.
+
+### Docker builds
+
+```bash
+# VM image (visual development, noVNC)
+docker build -f Dockerfile.vm -t retroshell-vm .
+
+# QA image (automated headless testing)
+docker build -f Dockerfile.qa -t retroshell-qa .
+```
+
+---
+
+## Keyboard Shortcuts
+
+### Shell (global)
+
+| Shortcut          | Action                         |
+|-------------------|--------------------------------|
+| Cmd+N             | New Finder window              |
+| Cmd+W             | Close front window             |
+| Cmd+Tab           | Cycle windows (same workspace) |
+| Cmd+F             | Toggle fullscreen              |
+| Cmd+Q             | Quit RetroShell                |
+| Cmd+Shift+Q       | Log Out                        |
+| Ctrl+Cmd+L        | Lock Screen                    |
+| Cmd+Alt+Escape    | Force Quit dialog              |
+
+### Terminal
+
+| Shortcut          | Action                         |
+|-------------------|--------------------------------|
+| Cmd+T             | New tab                        |
+| Cmd+Shift+W       | Close tab                      |
+| Cmd+W             | Close window                   |
+| Cmd+C             | Copy selection                 |
+| Cmd+V             | Paste                          |
+
+Full keyboard reference: [docs/KEYBOARD_SHORTCUTS.md](docs/KEYBOARD_SHORTCUTS.md)
+
+---
+
+## Themes
+
+Set the `theme` key in `~/.config/retroshell/settings.conf` or use Settings > Appearance.
+
+| Theme       | Mode  | Character                                     |
+|-------------|-------|-----------------------------------------------|
+| `classic`   | Light | Mac OS 7–9 Platinum, blue accent. Default.    |
+| `dark`      | Dark  | Dark Platinum with blue accent                |
+| `grape`     | Dark  | Purple-tinted dark theme                      |
+| `blueberry` | Dark  | Deep navy dark theme                          |
+| `strawberry`| Light | Warm red-orange accent on light gray          |
+
+---
+
+## Configuration
+
+Configuration file: `~/.config/retroshell/settings.conf`
+
+| Key                 | Values                                            | Default   |
+|---------------------|---------------------------------------------------|-----------|
+| `theme`             | `classic` `dark` `grape` `blueberry` `strawberry` | `classic` |
+| `appearance`        | `light` `dark`                                    | `light`   |
+| `sound_volume`      | `0`–`100`                                         | `50`      |
+| `mouse_speed`       | `0`–`100`                                         | `50`      |
+| `hdr_request`       | `true` `false`                                    | `false`   |
+| `vrr_adaptive`      | `true` `false`                                    | `false`   |
+| `do_not_disturb`    | `true` `false`                                    | `false`   |
+
+Full configuration reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
+
+---
+
+## Ubuntu Server Installation
+
+To configure a bare Ubuntu Server to boot into RetroShell:
+
+### 1. Install system dependencies
+
+```bash
+sudo apt install -y --no-install-recommends \
+  xserver-xorg-core xinit labwc dbus-x11 \
+  pipewire pipewire-audio-client-libraries pulseaudio-utils \
+  libwayland-dev libxkbcommon-dev libdbus-1-dev \
+  libfontconfig-dev libfreetype6-dev fontconfig fonts-dejavu-core \
+  build-essential pkg-config git curl
+```
+
+### 2. Install Rust
+
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 ```
 
-### Step 3: Clone and Compile RetroShell
-Clone the repository, compile the release binaries, and build the application bundles:
+### 3. Clone and build
+
 ```bash
 git clone https://github.com/palaashatri/retroshell.git
 cd retroshell
 cargo build --release
-
-# Create the applications bundle directories
-mkdir -p target/release/Applications
-for app in finder settings textedit terminal appstore; do
-    if [ "$app" = "finder" ]; then APP_NAME="Finder"; fi
-    if [ "$app" = "settings" ]; then APP_NAME="Settings"; fi
-    if [ "$app" = "textedit" ]; then APP_NAME="TextEdit"; fi
-    if [ "$app" = "terminal" ]; then APP_NAME="Terminal"; fi
-    if [ "$app" = "appstore" ]; then APP_NAME="App Store"; fi
-    
-    BUNDLE_DIR="target/release/Applications/$APP_NAME.app"
-    mkdir -p "$BUNDLE_DIR/Executable" "$BUNDLE_DIR/Resources" "$BUNDLE_DIR/Assets"
-    [ -f "apps/$app/App.toml" ] && cp "apps/$app/App.toml" "$BUNDLE_DIR/App.toml"
-    [ -f "target/release/$app" ] && cp "target/release/$app" "$BUNDLE_DIR/Executable/$app"
-done
 ```
 
-### Step 4: Configure Autostart for the Compositor
-Set up `labwc` to run without decorations and immediately start RetroShell on login:
+### 4. Configure labwc autostart
+
 ```bash
 mkdir -p ~/.config/labwc
 cat << 'EOF' > ~/.config/labwc/rc.xml
 <?xml version="1.0" encoding="utf-8"?>
 <labwc_config>
-  <theme>
-    <decoration>none</decoration>
-  </theme>
+  <theme><decoration>none</decoration></theme>
   <windowRules>
     <windowRule identifier="com.retro.shell">
       <action name="Maximize"/>
@@ -238,45 +297,132 @@ cat << 'EOF' > ~/.config/labwc/rc.xml
 EOF
 
 cat << 'EOF' > ~/.config/labwc/autostart
-# Start Pipewire Audio
 pipewire &
-# Launch RetroShell Client
-env -u DISPLAY WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/$(id -u) ~/retroshell/target/release/retro-shell &
+env -u DISPLAY WAYLAND_DISPLAY=wayland-0 XDG_RUNTIME_DIR=/run/user/$(id -u) \
+  ~/retroshell/target/release/retro-shell &
 EOF
 chmod +x ~/.config/labwc/autostart
 ```
 
-### Step 5: Start the Desktop Environment
-Start the X11 server running the labwc compositor, which will load RetroShell:
+### 5. Start
+
 ```bash
 xinit /usr/bin/labwc
 ```
 
 ---
 
-## 8. Production-Grade Assessment & Self-Review
+## Progress
 
-### Production Readiness Score: **3.5 / 10 (Prototype / Concept Stage)**
+| Milestone        | Score | Notes                                                  |
+|------------------|-------|--------------------------------------------------------|
+| Initial prototype| 2.5   | Single wgpu canvas, bitmap font, no real widgets       |
+| Phase 1 complete | 4.40  | PTY terminal, real font rendering, Settings, workspaces, SDK menus, Finder DnD, clipboard |
+| Current          | 5.9   | Drop shadows, pixel art icons, dock, tab switching, VT parser expansion, workspace grid view, polished window chrome |
+| Target           | 10.0  | Full Smithay compositor, HiDPI, universal global menu, AT-SPI, protocol DnD |
 
-While RetroShell is a highly optimized, responsive, and visually appealing simulation of classic visual metaphors, it is not yet a production-grade desktop environment.
+The gap between the current score and 10 is primarily architectural: RetroShell is a
+Wayland client, not a compositor. Closing that gap requires implementing
+`retro-compositor` with Smithay, which is tracked as long-term milestone work.
 
-### Architectural Gaps (Why it is not Production Grade)
+---
 
-1. **Nested Composite Window Drawing (Lack of true Wayland Compositing)**:
-   - *Current Implementation*: RetroShell runs as a single Wayland client, and draws "windows" inside its own `wgpu` canvas layout.
-   - *Production Requirement*: A true desktop shell compositor (like Mutter or Sway) acts as the display compositor itself, exposing Wayland surface sockets to independent client processes. In RetroShell, external applications cannot natively display their window surfaces unless they are fully rewritten as child sub-widgets in RetroShell's monolithic layout canvas.
+## Architecture Documentation
 
-2. **Font Engine & Text Limitations**:
-   - *Current Implementation*: Uses system font discovery plus per-glyph `ab_glyph` rasterization, with a bitmap fallback. It is visibly better than the original bitmap-only path but still lacks full shaping, fallback font runs, kerning, and subpixel policy.
-   - *Production Requirement*: A production environment requires a full text stack (HarfBuzz-style shaping, font fallback, international input, ligatures, and dynamic antialiasing policy).
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — crate graph, rendering pipeline,
+  Wayland protocol stack, how to add a new app
+- [docs/CONFIGURATION.md](docs/CONFIGURATION.md) — all settings.conf keys,
+  environment variables, theme system
+- [docs/KEYBOARD_SHORTCUTS.md](docs/KEYBOARD_SHORTCUTS.md) — full shortcut reference
 
-3. **Missing HiDPI / Display Scale Adaptability**:
-   - *Current Implementation*: layouts (such as the 90x90px Finder grid) utilize hardcoded pixel offsets.
-   - *Production Requirement*: Modern systems must seamlessly dynamically scale their entire UI tree according to display scaling factors (e.g. 1.25x, 2.0x HiDPI Retina) without visual clipping or alignment breakage.
+---
 
-4. **Weak Process Separation & Security Sandboxing**:
-   - *Current Implementation*: Spawns applications with the same UID/permissions as the root process.
-   - *Production Requirement*: Desktop sessions must enforce strict privilege boundaries (e.g. sandboxed Flatpak-style apps) communicating over access-restricted D-Bus interfaces.
+## Contributing
 
-5. **Color/Presentation Tone Gaps**:
-   - *Current Implementation*: Dynamically selects `Rgba16Float` or `Rgb10a2Unorm` color spaces if the surface reports support (HDR/VRR), but doesn't perform proper SDR-to-HDR color grading/tonemapping. SDR application textures can appear washed out or oversaturated depending on physical monitor calibration.
+1. Fork and clone the repository.
+2. Create a feature branch: `git checkout -b feat/my-feature`
+3. Follow the coding standards below.
+4. Run `cargo test` and ensure all tests pass.
+5. Open a pull request with a clear description of the change.
+
+### Coding standards
+
+- **Rust idioms** — avoid `unsafe` blocks. Prefer clear ownership and type-state
+  machines over raw flags.
+- **Widget structure** — all widgets implement the `Widget` trait from `retro-kit`.
+  Pass rendering tasks back to the active `Canvas` using NDC coordinate translation.
+  Never hard-code colors; use `ThemeToken` values.
+- **No design noise** — border radius must not exceed 4 px. Avoid heavy drop shadows
+  or high-contrast modern gradients. Retain the compact Platinum metaphor.
+- **Portability** — keep core crates decoupled from OS-specific backends. The
+  `retro-compositor` crate uses `cfg(target_os = "linux")` guards; other crates
+  must not.
+- **Settings persistence** — new user-facing preferences go through `settings.conf`
+  via the Settings app. Do not write ad-hoc config files in other locations.
+- **Tests** — new behavior should have at least one unit or integration test.
+
+### Screenshots
+
+After a visual change is verified in the Docker VM, update the relevant screenshot
+in `docs/screenshots/` and reference it in this README under "Latest VM Screenshots".
+
+### Repository layout
+
+```
+Cargo.toml              — workspace root
+Dockerfile.vm           — visual development Docker image (noVNC)
+Dockerfile.qa           — headless QA Docker image
+crates/
+  retro-render/         — wgpu rendering pipeline
+  retro-kit/            — widget toolkit
+  retro-bus/            — IPC layer
+  retro-sdk/            — application framework
+  retro-shell/          — shell process
+  retro-compositor/     — future Smithay compositor
+apps/
+  finder/               — file manager
+  settings/             — system preferences
+  textedit/             — text editor
+  terminal/             — PTY terminal emulator
+  appstore/             — package manager front-end
+docs/
+  ARCHITECTURE.md
+  CONFIGURATION.md
+  KEYBOARD_SHORTCUTS.md
+  implementation_plan.md
+  screenshots/
+```
+
+---
+
+## License
+
+See [LICENSE](LICENSE).
+
+---
+
+## Latest VM Screenshots
+
+![RetroShell desktop (Docker QA)](docs/screenshots/current-compositor-qa.png)
+
+*Docker QA screenshot: retro-compositor running, full desktop with Finder window, menu bar, dock, and right-column desktop icons.*
+
+![RetroShell desktop](docs/screenshots/current-retroshell-desktop.png)
+
+![Finder drag-to-folder](docs/screenshots/current-finder-dnd.png)
+
+![Settings Display pane](docs/screenshots/current-settings.png)
+
+![Settings Sound slider](docs/screenshots/current-settings-sliders.png)
+
+![App Store package search](docs/screenshots/current-appstore.png)
+
+![Notification Center](docs/screenshots/current-notification-center.png)
+
+![Workspace switcher](docs/screenshots/current-workspace-switch.png)
+
+![Minimized Finder window](docs/screenshots/current-minimized-window.png)
+
+![About window](docs/screenshots/current-about-window.png)
+
+![Force Quit window](docs/screenshots/current-force-quit-window.png)

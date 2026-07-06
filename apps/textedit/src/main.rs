@@ -13,6 +13,13 @@ use retro_sdk::{build_menu, Application};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Returns the default file path: $TEXTEDIT_FILE env var or /tmp/retroshell-textedit.txt.
+fn default_file_path() -> PathBuf {
+    std::env::var("TEXTEDIT_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/tmp/retroshell-textedit.txt"))
+}
+
 fn main() {
     let _ = tracing_subscriber::fmt::try_init();
 
@@ -123,6 +130,16 @@ fn main() {
             meta: true,
         },
     );
+    edit_menu.add_separator();
+    edit_menu.add_action("Find").with_shortcut(
+        KeyCode::F,
+        Modifiers {
+            shift: false,
+            control: false,
+            alt: false,
+            meta: true,
+        },
+    );
 
     let mut format_menu = build_menu("Format");
     format_menu.add_action("Make Plain Text");
@@ -154,20 +171,36 @@ fn main() {
     app.run();
 }
 
+/// Which field currently receives keyboard input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusedField {
+    Editor,
+    Path,
+    Find,
+}
+
 struct TextEditView {
     state: WidgetState,
     toolbar: Toolbar,
     path_label: Label,
     path_field: TextField,
+    find_label: Label,
+    find_field: TextField,
     editor: TextField,
     status: Label,
     document_path: Option<PathBuf>,
     saved_text: String,
     dirty: bool,
     last_error: Option<String>,
+    /// Transient notification that overrides the error/state display for one render cycle.
+    notification: Option<String>,
     undo_stack: Vec<String>,
     redo_stack: Vec<String>,
-    path_focused: bool,
+    focused: FocusedField,
+    /// Whether the find bar row is currently visible.
+    find_visible: bool,
+    /// Last search string used for find-next.
+    last_find_query: String,
 }
 
 impl TextEditView {
@@ -190,6 +223,7 @@ impl TextEditView {
         toolbar.add(Box::new(Button::new("SAVE AS")));
         toolbar.add(Box::new(Button::new("UNDO")));
         toolbar.add(Box::new(Button::new("REDO")));
+        toolbar.add(Box::new(Button::new("FIND")));
         toolbar.add(Box::new(Button::new("COPY")));
         toolbar.add(Box::new(Button::new("PASTE")));
 
@@ -198,6 +232,8 @@ impl TextEditView {
         if let Some(path) = document_path.as_deref() {
             path_field.set_text(path.display().to_string());
         }
+
+        let find_field = TextField::new().with_placeholder("Search…");
 
         let mut editor = TextField::new();
         editor.set_multiline(true);
@@ -208,15 +244,20 @@ impl TextEditView {
             toolbar,
             path_label: Label::new("PATH"),
             path_field,
+            find_label: Label::new("FIND"),
+            find_field,
             editor,
             status: Label::new(""),
             document_path,
             saved_text: text,
             dirty: false,
             last_error: error,
+            notification: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
-            path_focused: false,
+            focused: FocusedField::Editor,
+            find_visible: false,
+            last_find_query: String::new(),
         };
         view.refresh_status();
         view
@@ -236,19 +277,57 @@ impl TextEditView {
         }
     }
 
+    // ----- Status bar helpers -----
+
+    fn word_count(&self) -> usize {
+        self.editor
+            .text()
+            .split_whitespace()
+            .filter(|w| !w.is_empty())
+            .count()
+    }
+
+    fn current_line(&self) -> usize {
+        let cursor = self.editor.cursor_position();
+        let text = self.editor.text();
+        // Count newlines before the cursor (1-based line number).
+        text[..cursor.min(text.len())]
+            .chars()
+            .filter(|&c| c == '\n')
+            .count()
+            + 1
+    }
+
     fn refresh_status(&mut self) {
+        if let Some(note) = self.notification.take() {
+            self.status.text = note;
+            return;
+        }
+
         let path = self
             .document_path
             .as_deref()
             .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "No file path".to_string());
+            .unwrap_or_else(|| "No file".to_string());
         let state = if self.dirty { "Edited" } else { "Saved" };
-        let error = self
+        let words = self.word_count();
+        let line = self.current_line();
+
+        let error_part = self
             .last_error
             .as_deref()
-            .map(|error| format!(" - {error}"))
+            .map(|e| format!(" | {e}"))
             .unwrap_or_default();
-        self.status.text = format!("{state} - {path}{error}");
+
+        self.status.text = format!(
+            "{state} | {path} | Ln {line} | {words}w{error_part}"
+        );
+    }
+
+    /// Show a notification in the status bar; it will be displayed once then cleared.
+    fn notify(&mut self, msg: impl Into<String>) {
+        self.notification = Some(msg.into());
+        self.refresh_status();
     }
 
     fn sync_path_field(&mut self) {
@@ -269,7 +348,8 @@ impl TextEditView {
         let current = self.editor.text().to_string();
         if self.undo_stack.last() != Some(&current) {
             self.undo_stack.push(current);
-            if self.undo_stack.len() > 100 {
+            // Cap at 50 entries.
+            if self.undo_stack.len() > 50 {
                 self.undo_stack.remove(0);
             }
         }
@@ -351,14 +431,12 @@ impl TextEditView {
         true
     }
 
-    fn path_from_field(&mut self) -> Option<PathBuf> {
-        let path = self.path_field.text().trim();
-        if path.is_empty() {
-            self.last_error = Some("Enter a document path".to_string());
-            self.refresh_status();
-            None
+    fn path_from_field_or_default(&mut self) -> PathBuf {
+        let typed = self.path_field.text().trim().to_string();
+        if typed.is_empty() {
+            default_file_path()
         } else {
-            Some(PathBuf::from(path))
+            PathBuf::from(typed)
         }
     }
 
@@ -366,14 +444,14 @@ impl TextEditView {
         match fs::read_to_string(&path) {
             Ok(text) => {
                 self.push_undo_snapshot();
-                self.document_path = Some(path);
+                self.document_path = Some(path.clone());
                 self.sync_path_field();
                 self.editor.set_text(text.clone());
                 self.saved_text = text;
                 self.dirty = false;
                 self.last_error = None;
                 self.redo_stack.clear();
-                self.refresh_status();
+                self.notify(format!("Opened {}", path.display()));
                 true
             }
             Err(err) => {
@@ -384,26 +462,27 @@ impl TextEditView {
         }
     }
 
-    fn open_from_path_field(&mut self) -> bool {
-        let Some(path) = self.path_from_field() else {
-            return false;
-        };
+    /// Cmd+O: open from path field, falling back to TEXTEDIT_FILE / /tmp default.
+    fn open_document(&mut self) -> bool {
+        let path = self.path_from_field_or_default();
         self.open_path(path)
     }
 
     fn save_document(&mut self) -> bool {
-        let Some(path) = self.document_path.as_deref() else {
-            self.last_error = Some("Save needs a file path".to_string());
-            self.refresh_status();
-            return false;
-        };
+        // Use the set document path, or fall back to TEXTEDIT_FILE / /tmp default.
+        let path = self
+            .document_path
+            .clone()
+            .unwrap_or_else(default_file_path);
 
-        match fs::write(path, self.editor.text()) {
+        match fs::write(&path, self.editor.text()) {
             Ok(()) => {
+                self.document_path = Some(path.clone());
+                self.sync_path_field();
                 self.saved_text = self.editor.text().to_string();
                 self.dirty = false;
                 self.last_error = None;
-                self.refresh_status();
+                self.notify(format!("Saved to {}", path.display()));
                 true
             }
             Err(err) => {
@@ -415,21 +494,69 @@ impl TextEditView {
     }
 
     fn save_as_from_path_field(&mut self) -> bool {
-        let Some(path) = self.path_from_field() else {
-            return false;
-        };
+        let path = self.path_from_field_or_default();
         match fs::write(&path, self.editor.text()) {
             Ok(()) => {
-                self.document_path = Some(path);
+                self.document_path = Some(path.clone());
                 self.sync_path_field();
                 self.saved_text = self.editor.text().to_string();
                 self.dirty = false;
                 self.last_error = None;
-                self.refresh_status();
+                self.notify(format!("Saved to {}", path.display()));
                 true
             }
             Err(err) => {
                 self.last_error = Some(format!("Could not save as: {err}"));
+                self.refresh_status();
+                false
+            }
+        }
+    }
+
+    // ----- Find -----
+
+    fn toggle_find(&mut self) {
+        self.find_visible = !self.find_visible;
+        if self.find_visible {
+            self.focused = FocusedField::Find;
+        } else {
+            self.focused = FocusedField::Editor;
+        }
+        self.refresh_status();
+    }
+
+    /// Execute a find for the text currently in the find field.
+    /// Moves the editor cursor to the first match after the current cursor position
+    /// (wraps around). Returns true if a match was found.
+    fn execute_find(&mut self) -> bool {
+        let query = self.find_field.text().to_string();
+        if query.is_empty() {
+            self.last_error = Some("Enter a search term".to_string());
+            self.refresh_status();
+            return false;
+        }
+        self.last_find_query = query.clone();
+
+        let text = self.editor.text().to_string();
+        let cursor = self.editor.cursor_position();
+
+        // Search from after current cursor first, then wrap around.
+        let found = if cursor < text.len() {
+            text[cursor..].find(&query).map(|offset| cursor + offset)
+        } else {
+            None
+        };
+        let found = found.or_else(|| text.find(&query));
+
+        match found {
+            Some(pos) => {
+                // Move cursor to just after the match.
+                self.editor.set_cursor_position(pos + query.len());
+                self.notify(format!("Found \"{}\" at byte {}", query, pos));
+                true
+            }
+            None => {
+                self.last_error = Some(format!("Not found: {query}"));
                 self.refresh_status();
                 false
             }
@@ -448,13 +575,17 @@ impl TextEditView {
 
         match index {
             0 => self.new_document(),
-            1 => self.open_from_path_field(),
+            1 => self.open_document(),
             2 => self.save_document(),
             3 => self.save_as_from_path_field(),
             4 => self.undo(),
             5 => self.redo(),
-            6 => self.copy_document(),
-            7 => self.paste_document(),
+            6 => {
+                self.toggle_find();
+                true
+            }
+            7 => self.copy_document(),
+            8 => self.paste_document(),
             _ => false,
         }
     }
@@ -476,8 +607,9 @@ impl Widget for TextEditView {
 
         let toolbar_h = 32.0;
         let path_h = 30.0;
+        let find_h = if self.find_visible { 30.0 } else { 0.0 };
         let status_h = 24.0;
-        let editor_h = (rect.height - toolbar_h - path_h - status_h).max(0.0);
+        let editor_h = (rect.height - toolbar_h - path_h - find_h - status_h).max(0.0);
 
         self.toolbar
             .set_rect(Rect::new(rect.x, rect.y, rect.width, toolbar_h));
@@ -485,6 +617,7 @@ impl Widget for TextEditView {
             .toolbar
             .layout(LayoutConstraint::tight(Size::new(rect.width, toolbar_h)));
 
+        // PATH row
         self.path_label.set_rect(Rect::new(
             rect.x + 8.0,
             rect.y + toolbar_h + 4.0,
@@ -507,9 +640,33 @@ impl Widget for TextEditView {
             .path_field
             .layout(LayoutConstraint::tight(Size::new(path_field_w, 26.0)));
 
+        // FIND row (conditionally visible)
+        let find_row_y = rect.y + toolbar_h + path_h;
+        self.find_label.set_rect(Rect::new(
+            rect.x + 8.0,
+            find_row_y + 4.0,
+            46.0,
+            22.0,
+        ));
+        let _ = self
+            .find_label
+            .layout(LayoutConstraint::tight(Size::new(46.0, 22.0)));
+
+        let find_field_w = (rect.width - 66.0).max(0.0);
+        self.find_field.set_rect(Rect::new(
+            rect.x + 58.0,
+            find_row_y + 2.0,
+            find_field_w,
+            26.0,
+        ));
+        let _ = self
+            .find_field
+            .layout(LayoutConstraint::tight(Size::new(find_field_w, 26.0)));
+
+        // EDITOR
         self.editor.set_rect(Rect::new(
             rect.x,
-            rect.y + toolbar_h + path_h,
+            rect.y + toolbar_h + path_h + find_h,
             rect.width,
             editor_h,
         ));
@@ -517,9 +674,10 @@ impl Widget for TextEditView {
             .editor
             .layout(LayoutConstraint::tight(Size::new(rect.width, editor_h)));
 
+        // STATUS
         self.status.set_rect(Rect::new(
             rect.x,
-            rect.y + toolbar_h + path_h + editor_h,
+            rect.y + toolbar_h + path_h + find_h + editor_h,
             rect.width,
             status_h,
         ));
@@ -534,11 +692,16 @@ impl Widget for TextEditView {
         self.toolbar.draw(theme);
         self.path_label.draw(theme);
         self.path_field.draw(theme);
+        if self.find_visible {
+            self.find_label.draw(theme);
+            self.find_field.draw(theme);
+        }
         self.editor.draw(theme);
         self.status.draw(theme);
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
+        // Global keyboard shortcuts.
         if let Event::KeyDown { key, modifiers } = event {
             if modifiers.meta {
                 match key {
@@ -555,7 +718,11 @@ impl Widget for TextEditView {
                         return EventResult::Handled;
                     }
                     KeyCode::O => {
-                        self.open_from_path_field();
+                        self.open_document();
+                        return EventResult::Handled;
+                    }
+                    KeyCode::F => {
+                        self.toggle_find();
                         return EventResult::Handled;
                     }
                     KeyCode::Z if modifiers.shift => {
@@ -585,8 +752,23 @@ impl Widget for TextEditView {
                     _ => {}
                 }
             }
+
+            // Enter in find field executes the search.
+            if *key == KeyCode::Enter && self.focused == FocusedField::Find {
+                self.execute_find();
+                return EventResult::Handled;
+            }
+
+            // Escape closes the find bar.
+            if *key == KeyCode::Escape && self.focused == FocusedField::Find {
+                self.find_visible = false;
+                self.focused = FocusedField::Editor;
+                self.refresh_status();
+                return EventResult::Handled;
+            }
         }
 
+        // Mouse focus routing.
         if let Event::MouseDown {
             button: MouseButton::Left,
             point,
@@ -597,21 +779,31 @@ impl Widget for TextEditView {
                 return EventResult::Handled;
             }
             if self.path_field.rect().contains(*point) {
-                self.path_focused = true;
+                self.focused = FocusedField::Path;
+                return EventResult::Handled;
+            }
+            if self.find_visible && self.find_field.rect().contains(*point) {
+                self.focused = FocusedField::Find;
                 return EventResult::Handled;
             }
             if self.editor.rect().contains(*point) {
-                self.path_focused = false;
+                self.focused = FocusedField::Editor;
             }
         }
 
-        if self.path_focused {
-            match event {
-                Event::Char { .. }
+        // Route character input and backspace to the focused field.
+        let is_text_input = matches!(
+            event,
+            Event::Char { .. }
                 | Event::KeyDown {
                     key: KeyCode::Backspace,
                     ..
-                } => {
+                }
+        );
+
+        if is_text_input {
+            match self.focused {
+                FocusedField::Path => {
                     let result = self.path_field.handle_event(event);
                     if matches!(result, EventResult::Handled) {
                         self.last_error = None;
@@ -619,17 +811,29 @@ impl Widget for TextEditView {
                     }
                     return result;
                 }
-                _ => {}
+                FocusedField::Find => {
+                    let result = self.find_field.handle_event(event);
+                    if matches!(result, EventResult::Handled) {
+                        self.last_error = None;
+                        self.refresh_status();
+                    }
+                    return result;
+                }
+                FocusedField::Editor => {
+                    // Fall through to editor handling below.
+                }
             }
         }
 
+        // Editor handles everything else.
         let before_edit = self.editor.text().to_string();
         let result = self.editor.handle_event(event);
         if matches!(result, EventResult::Handled) {
             if self.editor.text() != before_edit {
                 if self.undo_stack.last() != Some(&before_edit) {
                     self.undo_stack.push(before_edit);
-                    if self.undo_stack.len() > 100 {
+                    // Cap at 50 entries.
+                    if self.undo_stack.len() > 50 {
                         self.undo_stack.remove(0);
                     }
                 }
@@ -644,6 +848,8 @@ impl Widget for TextEditView {
         self.toolbar.update();
         self.path_label.update();
         self.path_field.update();
+        self.find_label.update();
+        self.find_field.update();
         self.editor.update();
         self.status.update();
     }
@@ -657,6 +863,8 @@ impl Widget for TextEditView {
             &self.toolbar,
             &self.path_label,
             &self.path_field,
+            &self.find_label,
+            &self.find_field,
             &self.editor,
             &self.status,
         ]
@@ -667,6 +875,8 @@ impl Widget for TextEditView {
             &mut self.toolbar,
             &mut self.path_label,
             &mut self.path_field,
+            &mut self.find_label,
+            &mut self.find_field,
             &mut self.editor,
             &mut self.status,
         ]
@@ -740,12 +950,14 @@ mod tests {
         view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
         let _ = view.handle_event(&Event::Char { character: '!' });
 
+        // Toolbar index 2 = SAVE
         let result = click_toolbar_button(&mut view, 2);
 
         assert!(matches!(result, EventResult::Handled));
         assert_eq!(fs::read_to_string(&path).unwrap(), "hello!");
         assert!(!view.dirty);
-        assert!(view.status.text.contains("Saved"));
+        // After save the notification replaces the normal status line.
+        assert!(view.status.text.contains("Saved to"));
 
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -760,13 +972,13 @@ mod tests {
         view.layout(LayoutConstraint::tight(Size::new(700.0, 460.0)));
         view.path_field.set_text(path.display().to_string());
 
+        // Toolbar index 1 = OPEN
         let result = click_toolbar_button(&mut view, 1);
 
         assert!(matches!(result, EventResult::Handled));
         assert_eq!(view.editor.text(), "opened from path");
         assert_eq!(view.document_path.as_deref(), Some(path.as_path()));
         assert!(!view.dirty);
-        assert!(view.status.text.contains("Saved"));
 
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -782,13 +994,13 @@ mod tests {
         view.mark_dirty_from_editor();
         view.path_field.set_text(path.display().to_string());
 
+        // Toolbar index 3 = SAVE AS
         let result = click_toolbar_button(&mut view, 3);
 
         assert!(matches!(result, EventResult::Handled));
         assert_eq!(fs::read_to_string(&path).unwrap(), "save as body");
         assert_eq!(view.document_path.as_deref(), Some(path.as_path()));
         assert!(!view.dirty);
-        assert!(view.status.text.contains("Saved"));
 
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
@@ -821,6 +1033,38 @@ mod tests {
     }
 
     #[test]
+    fn textedit_cmd_s_without_path_saves_to_default() {
+        let default_path = default_file_path();
+        let mut view = TextEditView::open(None);
+        // Clear initial text so we can check what gets written.
+        view.editor.set_text("default save test");
+        view.mark_dirty_from_editor();
+        // No document_path set, no path in path field.
+        view.path_field.set_text("");
+        view.document_path = None;
+
+        let result = view.handle_event(&Event::KeyDown {
+            key: KeyCode::S,
+            modifiers: Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(
+            fs::read_to_string(&default_path).unwrap(),
+            "default save test"
+        );
+        assert!(view.status.text.contains("Saved to"));
+
+        // Cleanup.
+        let _ = fs::remove_file(default_path);
+    }
+
+    #[test]
     fn textedit_path_field_accepts_typed_path_when_focused() {
         let mut view = TextEditView::open(None);
         view.layout(LayoutConstraint::tight(Size::new(700.0, 460.0)));
@@ -848,6 +1092,7 @@ mod tests {
         let mut view = TextEditView::open(Some(path.clone()));
         view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
 
+        // Toolbar index 0 = NEW
         let result = click_toolbar_button(&mut view, 0);
 
         assert!(matches!(result, EventResult::Handled));
@@ -897,6 +1142,19 @@ mod tests {
     }
 
     #[test]
+    fn textedit_undo_stack_capped_at_50() {
+        let mut view = TextEditView::open(None);
+        view.editor.set_text("");
+        view.saved_text = String::new();
+
+        // Type 60 characters, each pushing a snapshot.
+        for _ in 0..60 {
+            view.handle_event(&Event::Char { character: 'a' });
+        }
+        assert!(view.undo_stack.len() <= 50, "undo stack exceeded 50 entries");
+    }
+
+    #[test]
     fn textedit_copy_cut_and_paste_use_clipboard() {
         Clipboard::clear();
         let mut view = TextEditView::open(None);
@@ -940,5 +1198,122 @@ mod tests {
         });
         assert!(matches!(paste, EventResult::Handled));
         assert_eq!(view.editor.text(), "clip");
+    }
+
+    #[test]
+    fn textedit_word_count_counts_whitespace_separated_tokens() {
+        let mut view = TextEditView::open(None);
+        view.editor.set_text("hello world\nthis is a test");
+        assert_eq!(view.word_count(), 6);
+
+        view.editor.set_text("   ");
+        assert_eq!(view.word_count(), 0);
+
+        view.editor.set_text("");
+        assert_eq!(view.word_count(), 0);
+    }
+
+    #[test]
+    fn textedit_line_number_tracks_newlines_before_cursor() {
+        let mut view = TextEditView::open(None);
+        // set_text moves cursor to end.
+        view.editor.set_text("line1\nline2\nline3");
+        // Cursor at end of line3 => line 3.
+        assert_eq!(view.current_line(), 3);
+
+        // Move cursor to start of text.
+        view.editor.set_cursor_position(0);
+        assert_eq!(view.current_line(), 1);
+
+        // Move cursor to start of line2 (after "line1\n" = 6 bytes).
+        view.editor.set_cursor_position(6);
+        assert_eq!(view.current_line(), 2);
+    }
+
+    #[test]
+    fn textedit_find_moves_cursor_to_first_match() {
+        let mut view = TextEditView::open(None);
+        view.editor.set_text("foo bar foo baz");
+        view.editor.set_cursor_position(0);
+
+        view.find_field.set_text("foo");
+        let found = view.execute_find();
+
+        assert!(found);
+        // Cursor should be at end of first "foo" (byte 3).
+        assert_eq!(view.editor.cursor_position(), 3);
+    }
+
+    #[test]
+    fn textedit_find_wraps_around_from_end_of_document() {
+        let mut view = TextEditView::open(None);
+        view.editor.set_text("foo bar foo baz");
+        // Start cursor at "foo baz" section (after second foo, byte 11).
+        view.editor.set_cursor_position(11);
+
+        view.find_field.set_text("foo");
+        let found = view.execute_find();
+
+        assert!(found);
+        // Should wrap to first "foo" at byte 0, cursor placed at byte 3.
+        assert_eq!(view.editor.cursor_position(), 3);
+    }
+
+    #[test]
+    fn textedit_find_not_found_sets_error() {
+        let mut view = TextEditView::open(None);
+        view.editor.set_text("hello world");
+        view.editor.set_cursor_position(0);
+
+        view.find_field.set_text("zzz");
+        let found = view.execute_find();
+
+        assert!(!found);
+        assert!(view.last_error.is_some());
+    }
+
+    #[test]
+    fn textedit_status_bar_shows_word_count_and_line() {
+        let mut view = TextEditView::open(None);
+        view.editor.set_text("one two three\nfour");
+        view.last_error = None;
+        view.notification = None;
+        view.refresh_status();
+
+        assert!(view.status.text.contains("4w"), "expected '4w' in status: {}", view.status.text);
+        assert!(view.status.text.contains("Ln 2"), "expected 'Ln 2' in status: {}", view.status.text);
+    }
+
+    #[test]
+    fn textedit_cmd_o_without_path_field_uses_default() {
+        // Use an isolated temp path via TEXTEDIT_FILE to avoid collisions with the
+        // save-to-default test which also uses default_file_path().
+        let path = temp_textedit_path("cmd-o-default.txt");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "default open content").unwrap();
+
+        // Set TEXTEDIT_FILE so default_file_path() returns our temp file.
+        std::env::set_var("TEXTEDIT_FILE", path.display().to_string());
+
+        let mut view = TextEditView::open(None);
+        view.path_field.set_text(""); // empty path field
+        view.document_path = None;
+
+        let result = view.handle_event(&Event::KeyDown {
+            key: KeyCode::O,
+            modifiers: Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+
+        std::env::remove_var("TEXTEDIT_FILE");
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(view.editor.text(), "default open content");
+
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

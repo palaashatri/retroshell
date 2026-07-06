@@ -70,6 +70,19 @@ impl MenuServer {
             .with_action("shell.clear_notifications");
         system_menu.add_separator();
         system_menu
+            .add_action("Lock Screen")
+            .with_action("shell.lock")
+            .with_shortcut(
+                KeyCode::L,
+                Modifiers {
+                    shift: false,
+                    control: true,
+                    alt: false,
+                    meta: true,
+                },
+            );
+        system_menu.add_separator();
+        system_menu
             .add_action("Force Quit...")
             .with_action("shell.force_quit")
             .with_shortcut(
@@ -401,6 +414,21 @@ impl MenuServer {
             .with_action("finder.get_info")
             .with_shortcut(
                 KeyCode::I,
+                Modifiers {
+                    shift: false,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+        file_menu
+            .add_action("Rename...")
+            .with_action("finder.rename");
+        file_menu
+            .add_action("Move to Trash")
+            .with_action("finder.move_to_trash")
+            .with_shortcut(
+                KeyCode::Delete,
                 Modifiers {
                     shift: false,
                     control: false,

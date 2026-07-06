@@ -205,6 +205,15 @@ impl Widget for TabManager {
     fn update(&mut self) {
         for tab in &mut self.tabs {
             tab.term.update();
+            // Sync OSC title into tab title
+            if tab.term.title_changed {
+                if let Some(ref title) = tab.term.window_title.clone() {
+                    if !title.is_empty() {
+                        tab.title = title.clone();
+                    }
+                }
+                tab.term.title_changed = false;
+            }
         }
     }
 

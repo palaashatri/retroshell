@@ -936,7 +936,7 @@ impl<'a> Canvas<'a> {
         for ch in text.chars() {
             if ch == '\n' {
                 cursor_x = x;
-                cursor_y += 12.0;
+                cursor_y += 14.0;
                 continue;
             }
             cursor_x += self.glyph(ch, cursor_x, cursor_y, color);
@@ -944,11 +944,27 @@ impl<'a> Canvas<'a> {
     }
 
     fn glyph(&mut self, ch: char, x: f32, y: f32, color: [f32; 4]) -> f32 {
-        if let Some((data, w, h, advance)) = retro_render::rasterize_char(ch, 11.0) {
+        if let Some((data, w, h, advance)) = retro_render::rasterize_char(ch, 13.0) {
+            // Subpixel antialiasing: apply horizontal smoothing pass before rendering.
+            // For each pixel with alpha > 0 whose left neighbour has alpha == 0,
+            // paint a faint hint at x-1 (alpha * 0.3) to simulate RGB subpixel rendering.
+            let mut smoothed: Vec<u8> = data.clone();
+            for row in 0..h {
+                for col in 1..w {
+                    let idx = (row * w + col) as usize;
+                    let left_idx = (row * w + col - 1) as usize;
+                    if data[idx] > 0 && data[left_idx] == 0 {
+                        let hint = (data[idx] as f32 * 0.3) as u8;
+                        if hint > smoothed[left_idx] {
+                            smoothed[left_idx] = hint;
+                        }
+                    }
+                }
+            }
             for row in 0..h {
                 for col in 0..w {
                     let idx = (row * w + col) as usize;
-                    let alpha = data[idx] as f32 / 255.0;
+                    let alpha = smoothed[idx] as f32 / 255.0;
                     if alpha > 0.05 {
                         let mut c = color;
                         c[3] *= alpha;
@@ -1051,6 +1067,19 @@ fn draw_desktop_backdrop(canvas: &mut Canvas<'_>) {
             }
         }
     }
+
+    // Menu bar area: slightly lighter top 24px with a 1px separator below it.
+    if !render_dark_mode() {
+        canvas.rect(
+            Rect::new(0.0, 0.0, canvas.width, 24.0),
+            rgb(180, 180, 176),
+        );
+        // 1px separator line between menu bar and desktop content
+        canvas.rect(
+            Rect::new(0.0, 24.0, canvas.width, 1.0),
+            rgb(100, 100, 96),
+        );
+    }
 }
 
 fn draw_window(canvas: &mut Canvas<'_>, window: &Window) {
@@ -1067,11 +1096,11 @@ fn draw_window(canvas: &mut Canvas<'_>, window: &Window) {
         return;
     }
 
-    // Draw high-quality window drop shadows
+    // Draw high-quality window drop shadows (4px wide spread)
     if window.is_active {
-        for i in 1..=6 {
-            let offset = i as f32 * 1.5;
-            let alpha = 0.07 * (7 - i) as f32 / 6.0;
+        for i in 1..=4 {
+            let offset = i as f32;
+            let alpha = 0.18 * (5 - i) as f32 / 4.0;
             canvas.rect(
                 Rect::new(rect.x + offset, rect.y + offset, rect.width, rect.height),
                 [0.0, 0.0, 0.0, alpha],
@@ -1740,10 +1769,12 @@ fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
         }
     }
 
+    let battery = battery_status_string();
     let clock = current_time_string();
+    let right_label = format!("{}{}", battery, clock);
     canvas.text(
-        &clock,
-        rect.x + rect.width - clock.len() as f32 * 7.0 - 72.0,
+        &right_label,
+        rect.x + rect.width - right_label.len() as f32 * 7.0 - 72.0,
         rect.y + 8.0,
         ui(rgb(8, 8, 8), rgb(232, 232, 228)),
     );
@@ -1808,10 +1839,12 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
         }
     }
 
+    let battery = battery_status_string();
     let clock = current_time_string();
+    let right_label = format!("{}{}", battery, clock);
     canvas.text(
-        &clock,
-        rect.x + rect.width - clock.len() as f32 * 7.0 - 72.0,
+        &right_label,
+        rect.x + rect.width - right_label.len() as f32 * 7.0 - 72.0,
         rect.y + 8.0,
         ui(rgb(8, 8, 8), rgb(232, 232, 228)),
     );
@@ -2018,6 +2051,29 @@ fn current_time_string() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     format_clock_from_seconds(duration.as_secs())
+}
+
+/// Returns a compact battery indicator like "[87%]" or "[87% CHG]" when a
+/// battery is present, or an empty string on desktops/VMs without one.
+fn battery_status_string() -> String {
+    let capacity = std::fs::read_to_string("/sys/class/power_supply/BAT0/capacity")
+        .ok()
+        .and_then(|s| s.trim().parse::<u8>().ok());
+    let Some(pct) = capacity else {
+        return String::new();
+    };
+    if pct >= 100 {
+        return String::new();
+    }
+    let charging = std::fs::read_to_string("/sys/class/power_supply/BAT0/status")
+        .ok()
+        .map(|s| !s.trim().eq_ignore_ascii_case("Discharging"))
+        .unwrap_or(false);
+    if charging {
+        format!("[{}% CHG] ", pct)
+    } else {
+        format!("[{}%] ", pct)
+    }
 }
 
 fn format_clock_from_seconds(seconds_since_epoch: u64) -> String {
@@ -2256,6 +2312,13 @@ fn draw_monospace_view(canvas: &mut Canvas<'_>, rect: Rect, grid: &MonospaceView
 fn draw_desktop_icon(canvas: &mut Canvas<'_>, item: &IconItem) {
     let x = item.rect.x + 9.0;
     let y = item.rect.y + 3.0;
+    // Icon drop shadow: a slightly offset gray rect at (x+2, y+2) with alpha 0.3
+    let icon_w = item.rect.width - 18.0;
+    let icon_h = item.rect.height - 6.0;
+    canvas.rect(
+        Rect::new(x + 2.0, y + 2.0, icon_w, icon_h),
+        [0.0, 0.0, 0.0, 0.3],
+    );
     match item.label.as_str() {
         "Hard Disk" | "Home" => draw_drive_icon(canvas, x, y),
         "Trash" => draw_trash_icon(canvas, x + 5.0, y),

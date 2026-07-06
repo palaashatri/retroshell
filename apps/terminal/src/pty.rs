@@ -50,9 +50,32 @@ impl Pty {
                     Err(_) => std::process::exit(1),
                 };
                 let args = [shell_c.clone()];
-                let env: [CString; 0] = [];
 
-                if execve(&shell_c, &args, &env).is_err() {
+                // Build environment with essential variables
+                let mut env_vars: Vec<CString> = vec![];
+                let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+                let user = std::env::var("USER")
+                    .or_else(|_| std::env::var("LOGNAME"))
+                    .unwrap_or_else(|_| "user".to_string());
+                let path = std::env::var("PATH")
+                    .unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin".to_string());
+                let lang = std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".to_string());
+
+                for s in &[
+                    format!("HOME={}", home),
+                    format!("USER={}", user),
+                    format!("LOGNAME={}", user),
+                    format!("PATH={}", path),
+                    format!("LANG={}", lang),
+                    "TERM=xterm-256color".to_string(),
+                    "COLORTERM=truecolor".to_string(),
+                ] {
+                    if let Ok(c) = CString::new(s.as_str()) {
+                        env_vars.push(c);
+                    }
+                }
+
+                if execve(&shell_c, &args, &env_vars).is_err() {
                     std::process::exit(1);
                 }
                 std::process::exit(0);

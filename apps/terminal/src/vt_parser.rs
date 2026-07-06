@@ -35,15 +35,62 @@ impl<'a> Perform for VtHandler<'a> {
     fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: char) {}
     fn put(&mut self, _byte: u8) {}
     fn unhook(&mut self) {}
-    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        // OSC 0 ; title BEL  — set icon name and window title
+        // OSC 2 ; title BEL  — set window title only
+        if params.len() >= 2 {
+            let ps = params[0];
+            if ps == b"0" || ps == b"2" {
+                if let Ok(title) = std::str::from_utf8(params[1]) {
+                    self.term.set_window_title(title.to_string());
+                }
+            }
+        }
+    }
 
     fn csi_dispatch(
         &mut self,
         params: &Params,
-        _intermediates: &[u8],
+        intermediates: &[u8],
         _ignore: bool,
         action: char,
     ) {
+        // Handle DEC private modes (CSI ? Ps h/l)
+        if intermediates.contains(&b'?') {
+            let mode: u16 = params
+                .iter()
+                .next()
+                .and_then(|p| p.first())
+                .copied()
+                .unwrap_or(0);
+            match action {
+                'h' => match mode {
+                    1000 => {
+                        // Enable basic mouse button reporting
+                        self.term.mouse_reporting = true;
+                    }
+                    1049 => {
+                        // Enter alternate screen
+                        self.term.enter_alt_screen();
+                    }
+                    _ => {}
+                },
+                'l' => match mode {
+                    1000 => {
+                        // Disable mouse reporting
+                        self.term.mouse_reporting = false;
+                    }
+                    1049 => {
+                        // Leave alternate screen
+                        self.term.leave_alt_screen();
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+            return;
+        }
+
         match action {
             'm' => {
                 let flat: Vec<u16> = params.iter().flat_map(|p| p.iter()).copied().collect();
