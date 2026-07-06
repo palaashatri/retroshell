@@ -43,11 +43,26 @@ chmod 700 "$XDG_RUNTIME_DIR"
 # Try retro-compositor first; fall back to labwc if unavailable or crashes
 DISPLAY=:99 retro-compositor &
 RETRO_COMPOSITOR_PID=$!
-sleep 2
+sleep 3
 
 if kill -0 "$RETRO_COMPOSITOR_PID" 2>/dev/null; then
     echo "=== retro-compositor is running ==="
-    export WAYLAND_DISPLAY=wayland-retro
+    # Read actual socket name that the compositor writes to a file
+    RETRO_SOCKET=""
+    for _ in $(seq 1 20); do
+        if [ -f /tmp/runtime-root/wayland-display ]; then
+            RETRO_SOCKET=$(cat /tmp/runtime-root/wayland-display)
+            break
+        fi
+        sleep 0.25
+    done
+    if [ -n "$RETRO_SOCKET" ]; then
+        export WAYLAND_DISPLAY="$RETRO_SOCKET"
+        echo "=== WAYLAND_DISPLAY=$WAYLAND_DISPLAY ==="
+    else
+        export WAYLAND_DISPLAY=wayland-0
+        echo "=== wayland-display file not found, using wayland-0 ==="
+    fi
 else
     echo "=== retro-compositor not running; falling back to labwc ==="
     mkdir -p "$XDG_CONFIG_HOME/labwc"

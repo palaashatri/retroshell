@@ -20,18 +20,28 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::collections::HashSet;
     use std::sync::Arc;
     use std::time::Duration;
 
     use smithay::{
         backend::{
+            allocator::{
+                dmabuf::DmabufAllocator,
+                gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
+            },
+            egl::{EGLContext, EGLDisplay},
             input::{
                 ButtonState,
                 InputBackend, InputEvent as BackendInputEvent,
                 KeyboardKeyEvent, PointerButtonEvent, PointerMotionAbsoluteEvent,
             },
-            renderer::utils::on_commit_buffer_handler,
-            x11::{X11Backend, X11Event, X11Input, WindowBuilder},
+            renderer::{
+                Bind, Color32F, Frame, Renderer,
+                gles::GlesRenderer,
+                utils::on_commit_buffer_handler,
+            },
+            x11::{X11Backend, X11Event, X11Input, X11Surface, WindowBuilder},
         },
         delegate_compositor, delegate_shm, delegate_seat, delegate_xdg_shell, delegate_output,
         input::{
@@ -48,7 +58,7 @@ mod linux {
                 protocol::wl_surface::WlSurface,
             },
         },
-        utils::{Clock, Logical, Monotonic, Point, Size, Transform, Serial},
+        utils::{Clock, DeviceFd, Logical, Monotonic, Physical, Point, Rectangle, Size, Transform, Serial},
         wayland::{
             buffer::BufferHandler,
             compositor::{
@@ -81,6 +91,16 @@ mod linux {
     // Output resolution
     const OUTPUT_W: i32 = 1024;
     const OUTPUT_H: i32 = 768;
+
+    // Window placeholder colors (cycling palette for distinguishing windows)
+    const WIN_COLORS: &[(f32, f32, f32)] = &[
+        (0.502, 0.502, 1.000), // soft blue
+        (0.502, 1.000, 0.502), // soft green
+        (1.000, 0.502, 0.502), // soft red
+        (1.000, 1.000, 0.502), // soft yellow
+        (0.502, 1.000, 1.000), // soft cyan
+        (1.000, 0.502, 1.000), // soft magenta
+    ];
 
     // -----------------------------------------------------------------------
     // Per-client data
@@ -154,6 +174,10 @@ mod linux {
         pointer_pos: Point<f64, Logical>,
         // Serial counter for synthetic events
         serial: u32,
+
+        // GL rendering
+        renderer: GlesRenderer,
+        x11_surface: X11Surface,
     }
 
     impl RetroCompositor {
@@ -209,27 +233,83 @@ mod linux {
             self.windows.retain(|w| w.toplevel.alive());
         }
 
-        /// Simulated render: print a description of the current frame to stderr.
-        /// On a real Linux compositor this would clear the framebuffer to RETRO_GRAY
-        /// and blit each window's SHM buffer into its rectangle.
+        /// Render a frame using the GlesRenderer:
+        ///   1. Acquire an X11 dmabuf
+        ///   2. Bind it to the GL renderer
+        ///   3. Clear to retro gray, draw placeholder rectangles for each window
+        ///   4. Finish the frame and present
         fn render_frame(&mut self) {
             self.prune_dead_windows();
-            eprintln!(
-                "[render] background rgb({},{},{}), {} window(s)",
-                RETRO_GRAY.0,
-                RETRO_GRAY.1,
-                RETRO_GRAY.2,
-                self.windows.len()
+
+            // Acquire the next buffer from the X11 swapchain
+            let (mut dmabuf, _age) = match self.x11_surface.buffer() {
+                Ok(pair) => pair,
+                Err(e) => {
+                    eprintln!("[render] failed to get X11 buffer: {e}");
+                    return;
+                }
+            };
+
+            let output_size: Size<i32, Physical> = Size::from((OUTPUT_W, OUTPUT_H));
+
+            // Bind the dmabuf as GL render target
+            let mut target = match self.renderer.bind(&mut dmabuf) {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("[render] failed to bind dmabuf: {e}");
+                    return;
+                }
+            };
+
+            // Open a render frame
+            let mut frame = match self.renderer.render(&mut target, output_size, Transform::Normal) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("[render] failed to start frame: {e}");
+                    return;
+                }
+            };
+
+            // Clear to retro gray: rgb(152, 152, 148) → linear ≈ (0.596, 0.596, 0.580)
+            let retro_gray = Color32F::from([
+                RETRO_GRAY.0 as f32 / 255.0,
+                RETRO_GRAY.1 as f32 / 255.0,
+                RETRO_GRAY.2 as f32 / 255.0,
+                1.0_f32,
+            ]);
+            let full_screen = Rectangle::from_loc_and_size(
+                Point::<i32, Physical>::from((0, 0)),
+                output_size,
             );
-            for (i, w) in self.windows.iter().enumerate() {
-                eprintln!(
-                    "  [window {}] pos=({},{}) size={}x{}",
-                    i,
-                    w.position.x,
-                    w.position.y,
-                    w.size.w,
-                    w.size.h
+            if let Err(e) = frame.clear(retro_gray, &[full_screen]) {
+                eprintln!("[render] clear failed: {e}");
+            }
+
+            // Draw a solid colored placeholder rectangle for each mapped window
+            let windows: Vec<_> = self.windows.iter().enumerate().map(|(i, w)| {
+                let color_idx = i % WIN_COLORS.len();
+                let (r, g, b) = WIN_COLORS[color_idx];
+                let rect = Rectangle::from_loc_and_size(
+                    Point::<i32, Physical>::from((w.position.x, w.position.y)),
+                    Size::<i32, Physical>::from((w.size.w, w.size.h)),
                 );
+                (rect, Color32F::from([r, g, b, 1.0_f32]))
+            }).collect();
+
+            for (rect, color) in &windows {
+                if let Err(e) = frame.clear(*color, &[*rect]) {
+                    eprintln!("[render] window clear failed: {e}");
+                }
+            }
+
+            // Finish the frame (flushes GL commands)
+            if let Err(e) = frame.finish() {
+                eprintln!("[render] frame finish failed: {e}");
+            }
+
+            // Present to the X11 window
+            if let Err(e) = self.x11_surface.submit() {
+                eprintln!("[render] submit failed: {e}");
             }
         }
     }
@@ -574,6 +654,10 @@ mod linux {
         tracing::info!("Listening on WAYLAND_DISPLAY={}", socket_name);
         eprintln!("[retro-compositor] WAYLAND_DISPLAY={}", socket_name);
         println!("WAYLAND_DISPLAY={}", socket_name);
+        // Write the actual socket name to a file so the entrypoint can read it,
+        // and set the env var so child processes launched by the compositor see the right name.
+        let _ = std::fs::write("/tmp/runtime-root/wayland-display", &socket_name);
+        std::env::set_var("WAYLAND_DISPLAY", &socket_name);
 
         // Insert socket source: accept new Wayland client connections
         loop_handle
@@ -585,12 +669,43 @@ mod linux {
             })
             .expect("failed to insert wayland socket source");
 
-        // X11 backend (nested under Xvfb / DISPLAY=:xx)
+        // -----------------------------------------------------------------------
+        // X11 backend + GL renderer setup
+        // -----------------------------------------------------------------------
+
         let x11_backend = X11Backend::new()?;
         let x11_handle = x11_backend.handle();
-        let _window = WindowBuilder::new()
+        let window = WindowBuilder::new()
             .title("retro-compositor")
             .build(&x11_handle)?;
+
+        // Obtain the DRM render node used by the X server
+        let (_drm_node, fd) = x11_handle.drm_node()?;
+
+        // Create a GBM device on that node for buffer allocation
+        let device = GbmDevice::new(DeviceFd::from(fd))?;
+
+        // Create an EGL display backed by the GBM device, then an EGL context
+        let egl_display = unsafe { EGLDisplay::new(device.clone())? };
+        let egl_context = EGLContext::new(&egl_display)?;
+
+        // Collect dmabuf modifiers supported by this GL context
+        let modifiers: HashSet<_> = egl_context
+            .dmabuf_render_formats()
+            .iter()
+            .map(|fmt| fmt.modifier)
+            .collect();
+
+        // Create the X11 surface (swapchain backed by GBM dmabufs)
+        let x11_surface = x11_handle.create_surface(
+            &window,
+            DmabufAllocator(GbmAllocator::new(device, GbmBufferFlags::RENDERING)),
+            modifiers.into_iter(),
+        )?;
+
+        // Build the GlesRenderer from the EGL context
+        // SAFETY: we are the sole owner of `egl_context` and it is not current on any other thread.
+        let renderer = unsafe { GlesRenderer::new(egl_context)? };
 
         loop_handle
             .insert_source(x11_backend, |event, _, state| match event {
@@ -642,6 +757,8 @@ mod linux {
             next_window_offset: 0,
             pointer_pos: Point::from((0.0_f64, 0.0_f64)),
             serial: 0,
+            renderer,
+            x11_surface,
         };
 
         tracing::info!("retro-compositor event loop starting");
@@ -653,8 +770,8 @@ mod linux {
             // After each dispatch tick, render a frame (so we hit ~60 fps
             // even when no X11 Refresh event arrives)
             frame_counter += 1;
-            if frame_counter % 60 == 1 {
-                // Rate-limit stderr output: render log once per ~60 ticks
+            if frame_counter % 4 == 1 {
+                // Render every 4 ticks (~15 fps steady state, spikes to 60 on X11 Refresh)
                 state.render_frame();
             }
         }
