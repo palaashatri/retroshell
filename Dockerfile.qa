@@ -1,0 +1,102 @@
+# Stage 1: Build
+FROM ubuntu:24.04 AS builder
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    build-essential \
+    pkg-config \
+    libwayland-dev \
+    libwayland-egl-backend-dev \
+    libvulkan-dev \
+    libegl1-mesa-dev \
+    libgles2-mesa-dev \
+    libxkbcommon-dev \
+    libdbus-1-dev \
+    libfontconfig-dev \
+    libfreetype6-dev \
+    fontconfig \
+    fonts-dejavu-core \
+    libdrm-dev \
+    libgbm-dev \
+    libxcb1-dev \
+    libxcb-icccm4-dev \
+    libxcb-keysyms1-dev \
+    libxcb-randr0-dev \
+    libxcb-util0-dev \
+    libxcb-xfixes0-dev \
+    libinput-dev \
+    libudev-dev \
+    libseat-dev \
+    libsystemd-dev \
+    libpipewire-0.3-dev \
+    libspa-0.2-dev \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust without docs
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Remove rust docs to save space
+RUN rm -rf /root/.rustup/toolchains/*/share/doc
+
+WORKDIR /build
+COPY . .
+
+ENV CARGO_TARGET_DIR=/build/target-docker
+ENV RUSTFLAGS="-C link-arg=-s"
+
+# Build only the packages we need
+RUN cargo build --release -p retro-compositor -p retro-shell 2>&1
+
+# Strip binaries
+RUN strip /build/target-docker/release/retro-compositor /build/target-docker/release/retro-shell 2>/dev/null || true
+
+# Stage 2: Runtime
+FROM ubuntu:24.04
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    xvfb \
+    x11vnc \
+    novnc \
+    websockify \
+    x11-utils \
+    x11-xserver-utils \
+    libwayland-client0 \
+    libwayland-egl1 \
+    libvulkan1 \
+    mesa-vulkan-drivers \
+    libgles2 \
+    libegl1 \
+    libxkbcommon0 \
+    libxkbcommon-x11-0 \
+    libfontconfig1 \
+    libfreetype6 \
+    fonts-dejavu-core \
+    fontconfig \
+    libdbus-1-3 \
+    pulseaudio \
+    pulseaudio-utils \
+    dbus-x11 \
+    libdrm2 \
+    libgbm1 \
+    libinput10 \
+    libudev1 \
+    labwc \
+    imagemagick \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target-docker/release/retro-compositor /usr/local/bin/retro-compositor
+COPY --from=builder /build/target-docker/release/retro-shell /usr/local/bin/retro-shell
+
+COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+EXPOSE 6080
+
+ENV WGPU_BACKEND=vulkan
+ENV WGPU_POWER_PREF=low-power
+ENV LIBGL_ALWAYS_SOFTWARE=1
+ENV MESA_LOADER_DRIVER_OVERRIDE=softpipe
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

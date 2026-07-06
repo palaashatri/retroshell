@@ -6,6 +6,7 @@ members = [
     "crates/retro-shell",
     "crates/retro-bus",
     "crates/retro-sdk",
+    "crates/retro-compositor",
     "apps/finder",
     "apps/settings",
     "apps/textedit",

@@ -34,13 +34,25 @@ echo "=== Starting noVNC ==="
 /usr/share/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 6080 &
 sleep 1
 
-echo "=== Starting Wayland Compositor (labwc) ==="
+echo "=== Starting Wayland Compositor ==="
 export XDG_RUNTIME_DIR=/tmp/runtime-root
 export XDG_CONFIG_HOME=/root/.config
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME/labwc"
+mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
-cat > "$XDG_CONFIG_HOME/labwc/rc.xml" <<'EOF'
+# Try retro-compositor first; fall back to labwc if unavailable or crashes
+DISPLAY=:99 retro-compositor &
+RETRO_COMPOSITOR_PID=$!
+sleep 2
+
+if kill -0 "$RETRO_COMPOSITOR_PID" 2>/dev/null; then
+    echo "=== retro-compositor is running ==="
+    export WAYLAND_DISPLAY=wayland-retro
+else
+    echo "=== retro-compositor not running; falling back to labwc ==="
+    mkdir -p "$XDG_CONFIG_HOME/labwc"
+
+    cat > "$XDG_CONFIG_HOME/labwc/rc.xml" <<'EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <labwc_config>
   <core>
@@ -57,46 +69,9 @@ cat > "$XDG_CONFIG_HOME/labwc/rc.xml" <<'EOF'
 </labwc_config>
 EOF
 
-# Run labwc inside Xvfb (will use X11 backend)
-WLR_BACKENDS=x11 WLR_RENDERER_ALLOW_SOFTWARE=1 labwc &
-sleep 2
-
-# Set WAYLAND_DISPLAY for clients after compositor started
-export WAYLAND_DISPLAY=wayland-0
-
-echo "=== Configuring labwc output mode ==="
-# Set the nested wlroots output to match Xvfb resolution.
-if ! command -v wlr-randr &>/dev/null; then
-    echo "wlr-randr not installed; skipping output mode configuration"
-else
-    if command -v xdotool &>/dev/null; then
-        x11_window="$(
-            DISPLAY=:99 xwininfo -root -children 2>/dev/null \
-                | awk '/^[[:space:]]+0x[0-9a-f]+/ { print $1; exit }'
-        )"
-        if [ -n "$x11_window" ]; then
-            DISPLAY=:99 xdotool windowsize \
-                "$x11_window" \
-                "$RETROSHELL_VM_WIDTH" \
-                "$RETROSHELL_VM_HEIGHT" \
-                2>/dev/null || true
-            sleep 0.5
-        fi
-    fi
-
-    for _ in $(seq 1 20); do
-        output="$(wlr-randr 2>/dev/null | awk '/^[^[:space:]]/ { print $1; exit }')"
-        if [ -n "$output" ]; then
-            wlr-randr \
-                --output "$output" \
-                --mode "${RETROSHELL_VM_WIDTH}x${RETROSHELL_VM_HEIGHT}" \
-                --pos 0,0 \
-                --scale 1 \
-                2>/dev/null || true
-            break
-        fi
-        sleep 0.25
-    done
+    WLR_BACKENDS=x11 WLR_RENDERER_ALLOW_SOFTWARE=1 labwc &
+    sleep 2
+    export WAYLAND_DISPLAY=wayland-0
 fi
 
 echo "=== Ready ==="
