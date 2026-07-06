@@ -9,6 +9,8 @@ use retro_kit::menu::{Menu, MenuItem, MenuItemKind};
 use retro_kit::menu_bar::MenuBar;
 use retro_kit::scroll_view::ScrollView;
 use retro_kit::slider::Slider;
+use retro_kit::dialog::Dialog;
+use retro_kit::popup_button::PopupButton;
 use retro_kit::progress_bar::ProgressBar;
 use retro_kit::tab_view::TabView;
 use retro_kit::dock_view::DockView;
@@ -23,12 +25,14 @@ use retro_kit::{Color, LayoutConstraint, MonospaceView, Point, Rect, Size, Widge
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use wgpu::util::DeviceExt;
 
 static RENDER_DARK_MODE: AtomicBool = AtomicBool::new(false);
+static RENDER_ACCENT_COLOR: Mutex<[f32; 4]> = Mutex::new([0.36, 0.54, 0.85, 1.0]); // default Mac OS 7 blue
 
 fn set_render_dark_mode(is_dark: bool) {
     RENDER_DARK_MODE.store(is_dark, Ordering::Relaxed);
@@ -38,7 +42,36 @@ fn render_dark_mode() -> bool {
     RENDER_DARK_MODE.load(Ordering::Relaxed)
 }
 
-fn load_dark_mode_preference() -> bool {
+fn set_render_accent(color: [f32; 4]) {
+    *RENDER_ACCENT_COLOR.lock() = color;
+}
+
+fn render_accent() -> [f32; 4] {
+    *RENDER_ACCENT_COLOR.lock()
+}
+
+/// Apply both dark mode flag and accent color together (used when theme changes).
+pub fn apply_theme(is_dark: bool, accent: [f32; 4]) {
+    set_render_dark_mode(is_dark);
+    set_render_accent(accent);
+}
+
+/// Accent color definitions for each named theme.
+pub mod theme_accents {
+    /// Classic (Mac OS 7 Platinum) — blue
+    pub const CLASSIC: [f32; 4] = [0.36, 0.54, 0.85, 1.0];
+    /// Dark — same blue in dark mode
+    pub const DARK: [f32; 4] = [0.36, 0.54, 0.85, 1.0];
+    /// Grape — purple
+    pub const GRAPE: [f32; 4] = [0.55, 0.28, 0.72, 1.0];
+    /// Blueberry — deep blue
+    pub const BLUEBERRY: [f32; 4] = [0.15, 0.25, 0.62, 1.0];
+    /// Strawberry — red-pink
+    pub const STRAWBERRY: [f32; 4] = [0.82, 0.23, 0.28, 1.0];
+}
+
+/// Read settings.conf and return (is_dark, accent_color) for the current theme.
+fn load_theme_preference() -> (bool, [f32; 4]) {
     let config_dir = std::env::var_os("RETROSHELL_CONFIG_DIR")
         .map(PathBuf::from)
         .or_else(|| {
@@ -49,18 +82,45 @@ fn load_dark_mode_preference() -> bool {
         .unwrap_or_else(|| PathBuf::from("/tmp/retroshell"));
     let path = config_dir.join("settings.conf");
     let Ok(content) = std::fs::read_to_string(path) else {
-        return false;
+        return (false, theme_accents::CLASSIC);
     };
-    parse_dark_mode_preference(&content)
+    parse_theme_preference(&content)
 }
 
-fn parse_dark_mode_preference(content: &str) -> bool {
-    content.lines().any(|line| {
+fn parse_theme_preference(content: &str) -> (bool, [f32; 4]) {
+    let mut theme_name: Option<String> = None;
+    let mut appearance: Option<String> = None;
+    for line in content.lines() {
         let Some((key, value)) = line.split_once('=') else {
-            return false;
+            continue;
         };
-        key.trim() == "appearance" && value.trim().eq_ignore_ascii_case("dark")
-    })
+        match key.trim() {
+            "theme" => theme_name = Some(value.trim().to_ascii_lowercase()),
+            "appearance" => appearance = Some(value.trim().to_ascii_lowercase()),
+            _ => {}
+        }
+    }
+    // Named theme takes precedence over appearance
+    if let Some(name) = theme_name {
+        return match name.as_str() {
+            "grape" => (true, theme_accents::GRAPE),
+            "blueberry" => (true, theme_accents::BLUEBERRY),
+            "strawberry" => (false, theme_accents::STRAWBERRY),
+            "dark" => (true, theme_accents::DARK),
+            _ => (false, theme_accents::CLASSIC), // classic and unknown
+        };
+    }
+    // Fall back to appearance key
+    let is_dark = appearance
+        .as_deref()
+        .map(|a| a == "dark")
+        .unwrap_or(false);
+    let accent = if is_dark {
+        theme_accents::DARK
+    } else {
+        theme_accents::CLASSIC
+    };
+    (is_dark, accent)
 }
 
 pub fn menu_manifest_dir() -> Option<PathBuf> {
@@ -238,6 +298,7 @@ impl Application {
             last_click: Option<(MouseButton, Point, std::time::Instant)>,
             dirty: bool,
             dark_mode: bool,
+            accent_color: [f32; 4],
             scale: f32,
         }
 
@@ -277,7 +338,7 @@ impl Application {
                 let Some(presenter) = &mut self.presenter else {
                     return;
                 };
-                set_render_dark_mode(self.dark_mode);
+                apply_theme(self.dark_mode, self.accent_color);
                 let scale = self.scale;
                 if let Err(err) = presenter.render(|canvas| {
                     canvas.width /= scale;
@@ -479,9 +540,10 @@ impl Application {
             }
 
             fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
-                let next_dark_mode = load_dark_mode_preference();
-                if next_dark_mode != self.dark_mode {
+                let (next_dark_mode, next_accent) = load_theme_preference();
+                if next_dark_mode != self.dark_mode || next_accent != self.accent_color {
                     self.dark_mode = next_dark_mode;
+                    self.accent_color = next_accent;
                     self.dirty = true;
                 }
                 if let Some(ref mut win) = self.window {
@@ -496,6 +558,7 @@ impl Application {
             }
         }
 
+        let (init_dark_mode, init_accent) = load_theme_preference();
         let mut handler = AppHandler {
             name: self.name.clone(),
             window: main_window,
@@ -506,7 +569,8 @@ impl Application {
             cursor_position: Point::ZERO,
             last_click: None,
             dirty: true,
-            dark_mode: load_dark_mode_preference(),
+            dark_mode: init_dark_mode,
+            accent_color: init_accent,
             scale: 1.0,
         };
         if let Err(err) = event_loop.run(&mut handler) {
@@ -1226,7 +1290,7 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
             (track.width - 2.0) * slider.normalized_value(),
             track.height - 2.0,
         );
-        canvas.rect(filled, ui(rgb(92, 122, 176), rgb(120, 150, 208)));
+        canvas.rect(filled, render_accent());
         let thumb_x = track.x + track.width * slider.normalized_value() - 5.0;
         let thumb = Rect::new(thumb_x, rect.y + 3.0, 10.0, rect.height - 6.0);
         let thumb_bg = if slider.dragging {
@@ -1307,6 +1371,12 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
             );
             x += item.width.max(item.text.len() as f32 * 7.0 + 12.0);
         }
+    } else if let Some(dialog) = widget.as_any().downcast_ref::<Dialog>() {
+        draw_dialog(canvas, rect, dialog);
+        return;
+    } else if let Some(pb) = widget.as_any().downcast_ref::<PopupButton>() {
+        draw_popup_button(canvas, rect, pb);
+        return;
     } else if let Some(pb) = widget.as_any().downcast_ref::<ProgressBar>() {
         draw_progress_bar(canvas, rect, pb);
         return;
@@ -1336,6 +1406,112 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
     }
 }
 
+fn draw_dialog(canvas: &mut Canvas<'_>, rect: Rect, dialog: &Dialog) {
+    // Background and outer border
+    let bg = ui(rgb(236, 236, 232), rgb(42, 44, 46));
+    canvas.rect(rect, bg);
+    canvas.stroke(rect, ui(rgb(100, 100, 96), rgb(80, 82, 84)));
+
+    // Title bar area
+    let titlebar_rect = Rect::new(rect.x, rect.y, rect.width, 32.0);
+    let titlebar_bg = ui(rgb(218, 218, 214), rgb(54, 56, 58));
+    canvas.rect(titlebar_rect, titlebar_bg);
+
+    // Title bar highlight (raised bevel top edge)
+    canvas.rect(
+        Rect::new(rect.x + 1.0, rect.y + 1.0, rect.width - 2.0, 1.0),
+        ui(rgb(255, 255, 255), rgb(72, 74, 76)),
+    );
+
+    // Title text centered in title bar
+    let title = &dialog.title;
+    let title_w = title.len() as f32 * 7.0;
+    let title_x = rect.x + (rect.width - title_w) * 0.5;
+    canvas.text(
+        title,
+        title_x,
+        rect.y + 10.0,
+        ui(rgb(20, 20, 20), rgb(236, 236, 232)),
+    );
+
+    // Horizontal separator below title
+    canvas.rect(
+        Rect::new(rect.x, rect.y + 32.0, rect.width, 1.0),
+        ui(rgb(145, 145, 140), rgb(80, 82, 84)),
+    );
+
+    // Message text
+    canvas.text(
+        &dialog.message,
+        rect.x + 12.0,
+        rect.y + 42.0,
+        ui(rgb(24, 24, 24), rgb(220, 220, 216)),
+    );
+
+    // Draw buttons right-aligned at the bottom
+    let btn_h = 24.0;
+    let btn_y = rect.y + rect.height - btn_h - 10.0;
+    let mut btn_x = rect.x + rect.width - 10.0;
+    for btn in dialog.buttons.iter().rev() {
+        let label = btn.label();
+        let btn_w = (label.len() as f32 * 7.0 + 20.0).max(72.0);
+        btn_x -= btn_w;
+        let btn_rect = Rect::new(btn_x, btn_y, btn_w, btn_h);
+        let btn_bg = ui(rgb(222, 222, 218), rgb(58, 60, 64));
+        canvas.rect(btn_rect, btn_bg);
+        draw_beveled_rect(canvas, btn_rect, btn_bg, true);
+        canvas.text(
+            label,
+            btn_rect.x + (btn_w - label.len() as f32 * 7.0) * 0.5,
+            btn_rect.y + 6.0,
+            ui(rgb(20, 20, 20), rgb(236, 236, 232)),
+        );
+        btn_x -= 8.0;
+    }
+}
+
+fn draw_popup_button(canvas: &mut Canvas<'_>, rect: Rect, pb: &PopupButton) {
+    // Background with beveled raised look
+    let bg = ui(rgb(222, 222, 218), rgb(58, 60, 64));
+    canvas.rect(rect, bg);
+    draw_beveled_rect(canvas, rect, bg, true);
+
+    // Selected title text, left-aligned with some padding
+    let label = pb.selected_title().unwrap_or("");
+    canvas.text(
+        label,
+        rect.x + 8.0,
+        rect.y + (rect.height - 12.0) * 0.5,
+        ui(rgb(20, 20, 20), rgb(236, 236, 232)),
+    );
+
+    // Down-arrow indicator on the right side
+    // Draw a small triangle using three thin horizontal rects
+    let arrow_x = rect.x + rect.width - 14.0;
+    let arrow_y = rect.y + rect.height * 0.5 - 2.0;
+    let arrow_color = ui(rgb(60, 60, 58), rgb(180, 180, 176));
+    canvas.rect(Rect::new(arrow_x, arrow_y, 7.0, 1.0), arrow_color);
+    canvas.rect(Rect::new(arrow_x + 1.0, arrow_y + 1.0, 5.0, 1.0), arrow_color);
+    canvas.rect(Rect::new(arrow_x + 2.0, arrow_y + 2.0, 3.0, 1.0), arrow_color);
+    canvas.rect(Rect::new(arrow_x + 3.0, arrow_y + 3.0, 1.0, 1.0), arrow_color);
+
+    // Separator line between label area and arrow area
+    canvas.rect(
+        Rect::new(rect.x + rect.width - 18.0, rect.y + 2.0, 1.0, rect.height - 4.0),
+        ui(rgb(145, 145, 140), rgb(90, 92, 94)),
+    );
+
+    // Shadow line at bottom-right for depth
+    canvas.rect(
+        Rect::new(rect.x + 1.0, rect.y + rect.height - 1.0, rect.width - 1.0, 1.0),
+        ui(rgb(100, 100, 96), rgb(30, 32, 34)),
+    );
+    canvas.rect(
+        Rect::new(rect.x + rect.width - 1.0, rect.y + 1.0, 1.0, rect.height - 1.0),
+        ui(rgb(100, 100, 96), rgb(30, 32, 34)),
+    );
+}
+
 fn draw_progress_bar(canvas: &mut Canvas<'_>, rect: Rect, pb: &ProgressBar) {
     canvas.rect(rect, ui(rgb(236, 236, 232), rgb(24, 26, 28)));
     canvas.stroke(rect, ui(rgb(145, 145, 140), rgb(92, 94, 96)));
@@ -1343,7 +1519,8 @@ fn draw_progress_bar(canvas: &mut Canvas<'_>, rect: Rect, pb: &ProgressBar) {
     let fill_width = (rect.width - 4.0) * ratio.clamp(0.0, 1.0);
     if fill_width > 0.0 {
         let fill = Rect::new(rect.x + 2.0, rect.y + 2.0, fill_width, rect.height - 4.0);
-        canvas.rect(fill, ui(rgb(90, 140, 220), rgb(110, 160, 240)));
+        let accent = render_accent();
+        canvas.rect(fill, accent);
     }
 }
 
@@ -1419,6 +1596,11 @@ fn draw_tab_view(canvas: &mut Canvas<'_>, rect: Rect, tv: &TabView) {
             canvas.rect(
                 Rect::new(tab_rect.x + 1.0, divider_y, tab_rect.width - 2.0, 1.0),
                 ui(rgb(238, 238, 232), rgb(52, 54, 56)),
+            );
+            // Accent underline on selected tab
+            canvas.rect(
+                Rect::new(tab_rect.x + 2.0, tab_rect.y, tab_rect.width - 4.0, 2.0),
+                render_accent(),
             );
         } else {
             let inactive_bg = ui(rgb(210, 210, 204), rgb(32, 34, 36));
@@ -2018,22 +2200,33 @@ fn draw_icon_view(canvas: &mut Canvas<'_>, icon_view: &IconView) {
 }
 
 fn draw_selection_highlight(canvas: &mut Canvas<'_>, rect: Rect) {
-    canvas.rect(rect, rgb(64, 111, 171));
+    let [r, g, b, a] = render_accent();
+    let base = [r, g, b, a];
+    // Lighter highlight for top/left edges
+    let light = [
+        (r + 0.25).min(1.0),
+        (g + 0.25).min(1.0),
+        (b + 0.25).min(1.0),
+        a,
+    ];
+    // Darker shadow for bottom/right edges
+    let dark = [r * 0.6, g * 0.6, b * 0.6, a];
+    canvas.rect(rect, base);
     canvas.rect(
         Rect::new(rect.x + 1.0, rect.y + 1.0, rect.width - 2.0, 1.0),
-        rgb(120, 160, 220),
+        light,
     );
     canvas.rect(
         Rect::new(rect.x + 1.0, rect.y + 1.0, 1.0, rect.height - 2.0),
-        rgb(120, 160, 220),
+        light,
     );
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
-        rgb(40, 70, 130),
+        dark,
     );
     canvas.rect(
         Rect::new(rect.x + rect.width - 1.0, rect.y, 1.0, rect.height),
-        rgb(40, 70, 130),
+        dark,
     );
 }
 
@@ -2570,19 +2763,41 @@ fn distance_squared(a: Point, b: Point) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_clock_from_seconds, parse_dark_mode_preference};
+    use super::{format_clock_from_seconds, parse_theme_preference, theme_accents};
 
     #[test]
     fn parses_dark_appearance_preference() {
-        assert!(parse_dark_mode_preference("appearance=dark\n"));
-        assert!(parse_dark_mode_preference("appearance=Dark\n"));
+        assert!(parse_theme_preference("appearance=dark\n").0);
+        assert!(parse_theme_preference("appearance=Dark\n").0);
     }
 
     #[test]
     fn ignores_non_dark_appearance_preferences() {
-        assert!(!parse_dark_mode_preference("appearance=light\n"));
-        assert!(!parse_dark_mode_preference("appearance=system\n"));
-        assert!(!parse_dark_mode_preference("other=dark\n"));
+        assert!(!parse_theme_preference("appearance=light\n").0);
+        assert!(!parse_theme_preference("appearance=system\n").0);
+        assert!(!parse_theme_preference("other=dark\n").0);
+    }
+
+    #[test]
+    fn parses_named_theme_grape() {
+        let (is_dark, accent) = parse_theme_preference("theme=grape\n");
+        assert!(is_dark);
+        assert_eq!(accent, theme_accents::GRAPE);
+    }
+
+    #[test]
+    fn parses_named_theme_strawberry() {
+        let (is_dark, accent) = parse_theme_preference("theme=strawberry\n");
+        assert!(!is_dark);
+        assert_eq!(accent, theme_accents::STRAWBERRY);
+    }
+
+    #[test]
+    fn theme_key_overrides_appearance_key() {
+        let content = "appearance=dark\ntheme=classic\n";
+        let (is_dark, accent) = parse_theme_preference(content);
+        assert!(!is_dark);
+        assert_eq!(accent, theme_accents::CLASSIC);
     }
 
     #[test]

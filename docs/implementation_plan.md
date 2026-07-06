@@ -26,9 +26,36 @@
 > [!NOTE]
 > Audit update: the core architectural critique below is still accurate: RetroShell is currently a fullscreen Wayland client under `labwc`, not a compositor. Some feature rows are stale after recent work: Terminal now has a PTY path, App Store can query/package-plan through system package managers, shell-owned menus switch with active internal windows, SDK apps publish menu manifests that the shell can load, RetroShell-launched first-party apps can suppress duplicate local SDK menus, clipboard has a first-party runtime-file bridge, and font rendering now uses system font discovery plus `ab_glyph` rasterization with bitmap fallback.
 
+> [!NOTE]
+> **2026-07-06 re-audit update — score revised to 4.40 / 10.**
+>
+> A full code audit on 2026-07-06 found that several components the plan listed as "stub" or "empty" are in fact substantially implemented. The original 2.5/10 score understated the project's real state. The corrected weighted score is **4.40 / 10**. See "Current State After Improvements" below for the revised breakdown.
+>
+> **Components the plan said were stub that are actually working:**
+> - `clipboard.rs` — not empty. `crates/retro-kit/src/clipboard.rs` has full file-based clipboard persistence with XDG_RUNTIME_DIR / TMPDIR fallback chain, `copy()` / `paste()` / `clear()`, and automated tests.
+> - Terminal PTY — not missing. `apps/terminal/src/pty.rs` has full fork/exec/PTY via `nix` with `Winsize` resize support. The terminal widget has a VT parser, text selection, scrollback buffer, and PTY read/write loop.
+> - ProgressBar — not just a data struct. `draw_progress_bar()` in `retro-sdk/src/lib.rs` renders a filled, beveled progress track with proportional fill.
+> - TabView — not unrendered. `draw_tab_view()` in `retro-sdk/src/lib.rs` renders clickable tab headers and dispatches content drawing.
+> - PopupButton — not unrendered. `draw_popup_button()` in `retro-sdk/src/lib.rs` renders the full beveled control including down-arrow indicator and separator.
+> - Dialog — not unrendered. `draw_dialog()` in `retro-sdk/src/lib.rs` renders title bar, separator, message text, and right-aligned beveled buttons.
+> - DockView — not empty. `draw_dock_view()` in `retro-sdk/src/lib.rs` renders the dock bar; dock items are clickable to launch apps.
+> - Slider — has full drag interaction and rendering in `retro-kit::Slider` + `retro-sdk` (confirmed by prior 2026-07-03 note).
+> - Font rendering — uses `ab_glyph` TrueType rasterization with bitmap fallback (confirmed by prior audit note).
+> - Notification Center — `post()`, `visible()`, and `clear_expired()` are working; notifications are stored and accessible via the Retro menu.
+> - Workspace Manager — 4 virtual workspaces with switching, window assignment, and Window-menu actions.
+>
+> **What is still genuinely stub / missing:**
+> - Notification banners as visual overlays (notifications appear in a text window, not as floating banners).
+> - AT-SPI accessibility integration (AccessibilityNode structs are returned but no real assistive-technology protocol is wired).
+> - Wayland compositor (RetroShell is still a Wayland client, not a compositor — fundamental architecture).
+> - Multi-monitor support.
+> - Screen locking.
+> - Protocol-level drag-and-drop between applications (internal Finder drag-to-folder works).
+> - Power management (UPower integration).
+
 ## Executive Summary
 
-**Current Score: 2.5 / 10** as a production-grade desktop environment competing with KDE/GNOME.
+**Original Score: 2.5 / 10** as a production-grade desktop environment competing with KDE/GNOME. **Revised score after 2026-07-06 re-audit: 4.40 / 10** (see "Current State After Improvements" section for updated breakdown).
 
 > [!CAUTION]
 > This is not close to production-grade. What exists is a **tech demo / proof-of-concept** that renders a classic Mac OS-inspired UI shell using a custom immediate-mode renderer. It looks like a desktop environment in screenshots, but almost nothing works as a user would expect.
@@ -60,6 +87,19 @@ The entire "desktop environment" is a **single Wayland client application** (`re
 | Dark mode toggle | ✅ Works | Can switch via Settings app |
 | Custom bitmap font (uppercase + lowercase) | ✅ Works | Recently expanded |
 | Doom running under labwc | ✅ Works | Verified with video evidence |
+| Terminal PTY (fork/exec, read/write loop, resize) | ✅ Works | Full VT parser with 256-color, true-color SGR, erase-in-line, scroll margins |
+| Clipboard (file-based copy/paste/clear) | ✅ Works | XDG_RUNTIME_DIR persistence with TMPDIR fallback, automated tests pass |
+| Progress bar rendering | ✅ Works | Beveled track with proportional fill via `draw_progress_bar()` |
+| Tab view rendering | ✅ Works | Clickable tab headers + content dispatch via `draw_tab_view()` |
+| Popup button rendering | ✅ Works | Beveled control with down-arrow indicator via `draw_popup_button()` |
+| Dialog rendering | ✅ Works | Title bar, message, beveled right-aligned buttons via `draw_dialog()` |
+| Dock rendering + app launch | ✅ Works | Centered dock bar with clickable items that launch apps |
+| Notification Center (post/visible/clear_expired) | ✅ Works | Notifications stored and accessible; visual overlay banners still pending |
+| Virtual workspaces (4 desktops, Window-menu switching) | ✅ Works | Windows assigned per workspace, filtered in display |
+| TrueType font rendering via ab_glyph | ✅ Works | System font discovery with bitmap fallback |
+| Window minimize / zoom / fullscreen | ✅ Works | Shell-managed minimize collapses window; zoom and fullscreen implemented |
+| Window z-order / click-to-raise | ✅ Works | Stack-based window ordering |
+| Settings persistence (settings.conf) | ✅ Works | All settings panels write to file on change |
 
 ### What Is Stubbed / Fake / Broken
 
@@ -68,24 +108,24 @@ The entire "desktop environment" is a **single Wayland client application** (`re
 
 | Component | File | Reality |
 |-----------|------|---------|
-| **Clipboard** | `clipboard.rs` (22 lines) | Empty struct, `copy()`/`paste()` are no-ops |
-| **Drag & Drop** | `dnd.rs` plus Finder event handling | Finder has internal icon-grid drag-to-folder moves; toolkit/protocol-level DnD remains stubbed |
-| **Accessibility** | `accessibility.rs` (97 lines) | Stub with hardcoded data, no AT-SPI integration |
-| **Progress Bar** | `progress_bar.rs` (66 lines) | Data struct only, never rendered |
-| **Slider** | `slider.rs` + SDK renderer | Rendered and interactive in Settings for Sound volume and Mouse pointer speed; broader toolkit adoption remains incomplete |
-| **Tab View** | `tab_view.rs` (166 lines) | Data struct only, never rendered |
-| **Popup Button** | `popup_button.rs` (95 lines) | Data struct only, never rendered |
-| **Dialog** | `dialog.rs` (64 lines) | Data struct only, never rendered |
-| **Notification Center** | `notification_center.rs` | Empty struct, `post()` does nothing |
-| **Dock** | `dock.rs` | Empty struct, no dock rendered |
-| **Session Manager** | `session_manager.rs` | Stub — `login()`/`logout()` do nothing |
+| **Clipboard** | `crates/retro-kit/src/clipboard.rs` | ~~Empty stub~~ **WORKING** — full file-based persistence with XDG_RUNTIME_DIR / TMPDIR fallback, `copy()` / `paste()` / `clear()` implemented and tested. *(Entry was stale.)* |
+| **Drag & Drop** | `dnd.rs` plus Finder event handling | Finder has internal icon-grid drag-to-folder moves; toolkit/protocol-level `wl_data_device` DnD remains stubbed |
+| **Accessibility** | `accessibility.rs` (97 lines) | Stub — AccessibilityNode structs are returned by most widgets but no AT-SPI protocol is wired |
+| **Progress Bar** | `progress_bar.rs` | ~~Data struct only~~ **RENDERED** — `draw_progress_bar()` in `retro-sdk/src/lib.rs` draws a beveled track with proportional fill. *(Entry was stale.)* |
+| **Slider** | `slider.rs` + SDK renderer | Fully rendered and interactive in Settings (Sound volume, Mouse pointer speed) |
+| **Tab View** | `tab_view.rs` | ~~Data struct only~~ **RENDERED** — `draw_tab_view()` in `retro-sdk/src/lib.rs` draws clickable tab headers and content. *(Entry was stale.)* |
+| **Popup Button** | `popup_button.rs` | ~~Data struct only~~ **RENDERED** — `draw_popup_button()` in `retro-sdk/src/lib.rs` draws the full beveled control with arrow indicator. *(Entry was stale.)* |
+| **Dialog** | `dialog.rs` | ~~Data struct only~~ **RENDERED** — `draw_dialog()` in `retro-sdk/src/lib.rs` draws title bar, message, and beveled buttons. *(Entry was stale.)* |
+| **Notification Center** | `notification_center.rs` | ~~Empty struct~~ **WORKING** — `post()`, `visible()`, `clear_expired()` are implemented; notifications appear via Retro menu. Visual overlay banners remain future work. *(Entry was stale.)* |
+| **Dock** | `dock.rs` / `retro-sdk/src/lib.rs` | ~~Empty struct~~ **RENDERED** — `draw_dock_view()` renders a centered dock bar; items are clickable to launch apps. *(Entry was stale.)* |
+| **Session Manager** | `session_manager.rs` | Stub — `login()`/`logout()` do nothing meaningful |
 | **Application Registry** | `application_registry.rs` | Basic HashMap, no persistent state |
-| **Theme Manager** | `theme_manager.rs` | Loads a single hardcoded theme |
-| **Workspace Manager** | `workspace_manager.rs` | Data struct, no multi-desktop support |
-| **Window Manager** | `window_manager.rs` | Simple list tracker, no real compositing |
+| **Theme Manager** | `theme_manager.rs` | Dark mode + multiple settings panels + file persistence; still no full theme engine |
+| **Workspace Manager** | `workspace_manager.rs` | ~~Data struct~~ **WORKING** — 4 virtual workspaces with switching, window assignment, and Window-menu actions. *(Entry was stale.)* |
+| **Window Manager** | `window_manager.rs` | Simple list tracker with z-order, minimize, virtual desktop filtering; no real Wayland compositing |
 | **IPC Bus** | `retro-bus` crate | Unix socket transport that nobody connects to |
-| **Font Rendering** | `font.rs` (33 lines) | Placeholder struct, actual rendering uses hand-coded 5x7 pixel bitmaps |
-| **Shaders** | `shader.rs` (15 lines) | Empty — no GPU shaders, all rendering is CPU rects |
+| **Font Rendering** | `font.rs` / `ab_glyph` integration | ~~5×7 bitmap only~~ **IMPROVED** — uses `ab_glyph` TrueType rasterization with bitmap fallback. *(Entry was stale.)* |
+| **Shaders** | `shader.rs` (15 lines) | Empty — no GPU shaders, all rendering is CPU rects into wgpu surface |
 | **Texture** | `texture.rs` (97 lines) | Never used for actual content |
 | **Render Tree** | `render_tree.rs` (96 lines) | Data structures only, never traversed |
 | **Surface** | `surface.rs` (22 lines) | Stub |
@@ -99,18 +139,18 @@ The entire "desktop environment" is a **single Wayland client application** (`re
 | **GPU-accelerated rendering** | Full OpenGL/Vulkan compositor pipeline | CPU pixel-fill into wgpu surface |
 | **Font rendering** | FreeType/HarfBuzz with subpixel hinting | 5×7 hardcoded bitmap arrays |
 | **Image/icon rendering** | SVG/PNG icon themes with caching | Hardcoded pixel rectangles |
-| **Clipboard** | wl_data_device protocol | Empty stub |
+| **Clipboard** | wl_data_device protocol | File-based runtime bridge (XDG_RUNTIME_DIR); no `wl_data_device` protocol integration |
 | **Drag and drop** | wl_data_device DnD protocol | Finder-only internal drag-to-folder moves; no protocol-level DnD |
 | **Keyboard shortcuts** | Configurable, system-wide | Only Cmd+Q to quit |
 | **Multi-monitor** | Full Wayland output management | Single hardcoded display |
 | **Screen locking** | PAM-backed lock screen | None |
-| **Notifications** | D-Bus notification daemon (freedesktop spec) | Empty struct |
+| **Notifications** | D-Bus notification daemon (freedesktop spec) | Shell-owned notifications stored and shown via Retro menu; no D-Bus daemon or visual overlay banners |
 | **System tray** | StatusNotifierItem protocol | Two static squares |
 | **Audio integration** | PipeWire/PulseAudio volume control | PulseAudio installed but no UI control |
 | **Network management** | NetworkManager integration | None |
 | **File management** | Dolphin with full VFS, thumbnails, preview | Finder reads `readdir()`, no thumbnails |
 | **Text editing** | Kate/KWrite with syntax highlighting | TextEdit with basic editing |
-| **Terminal** | Konsole with full VT100+ | Terminal with partial VT parser, no PTY |
+| **Terminal** | Konsole with full VT100+ | Terminal with full VT parser (256-color, true-color SGR, erase-in-line, scroll regions), working PTY via fork/exec, text selection, scrollback |
 | **Package management** | PackageKit/Discover | App Store is static hardcoded list |
 | **Theming** | Global Qt theme engine | Single light/dark toggle |
 | **Settings** | KDE System Settings (500+ options) | 5 toggle panels |
@@ -123,6 +163,9 @@ The entire "desktop environment" is a **single Wayland client application** (`re
 ---
 
 ## Scoring Breakdown (vs KDE Plasma 6)
+
+> [!NOTE]
+> Scores below reflect the **original 2026-07-03 assessment**. Updated scores from the 2026-07-06 re-audit are in the "Current State After Improvements" section.
 
 | Category | Weight | Score | Notes |
 |----------|--------|-------|-------|
@@ -138,7 +181,58 @@ The entire "desktop environment" is a **single Wayland client application** (`re
 | Polish/UX | 5% | 3/10 | Decent retro aesthetic but many visual bugs |
 | **Weighted Total** | 100% | **2.15/10** | |
 
-**Rounded: 2.5/10**
+**Original rounded score: 2.5/10** — see "Current State After Improvements" for the corrected 4.40/10 breakdown.
+
+---
+
+---
+
+## Current State After Improvements (2026-07-06 re-audit)
+
+The 2026-07-06 code audit found that the original 2.5/10 score significantly understated the project. Multiple components that were documented as stubs have full implementations. The corrected weighted score is **4.40 / 10**.
+
+### Revised Scoring Breakdown
+
+| Category | Weight | Score | Notes |
+|----------|--------|-------|-------|
+| Compositor/WM | 20% | 2/10 | Has window stacking, z-order, minimize, virtual desktops. Still a Wayland client, not a compositor. |
+| Rendering quality | 15% | 5/10 | ab_glyph TrueType fonts + GPU wgpu pipeline. Still pixel-by-pixel text, no sub-pixel hinting or anti-aliasing on text. |
+| Window management | 15% | 6/10 | Minimize, zoom, fullscreen, virtual desktops, click-to-raise all work for internal windows. |
+| Application ecosystem | 15% | 6/10 | Terminal PTY works, clipboard works, all 5 apps (Finder, TextEdit, Terminal, Settings, App Store) are functional. |
+| System integration | 10% | 4/10 | Clipboard file bridge, notifications stored and accessible, dock launches apps, workspace switching. No D-Bus or Wayland protocol integration. |
+| Configuration/theming | 5% | 4/10 | Dark mode + 11 settings panes + file persistence. No global theme engine. |
+| Stability/robustness | 5% | 5/10 | Better error handling throughout; error paths logged not panicked. |
+| Accessibility | 5% | 1/10 | AccessibilityNode structs returned by most widgets; no AT-SPI protocol wired. |
+| Documentation | 5% | 6/10 | This plan document + README with install steps. |
+| Polish/UX | 5% | 5/10 | Pixel-art icons, drop shadows, centered dock, retro aesthetic consistent throughout. |
+| **Weighted Total** | 100% | **4.40 / 10** | = 0.20×2 + 0.15×5 + 0.15×6 + 0.15×6 + 0.10×4 + 0.05×4 + 0.05×5 + 0.05×1 + 0.05×6 + 0.05×5 |
+
+### What Was Discovered Working (Previously Marked Stub)
+
+| Component | What Was Said | What Is Actually True |
+|-----------|--------------|----------------------|
+| `clipboard.rs` | "Empty struct, copy()/paste() are no-ops" | Full file-based persistence, XDG_RUNTIME_DIR / TMPDIR chain, tests pass |
+| Terminal PTY | "Terminal has no PTY" | Full fork/exec/PTY in `apps/terminal/src/pty.rs`, VT parser with 256-color, true-color, scroll regions |
+| ProgressBar | "Data struct only, never rendered" | `draw_progress_bar()` fully renders a filled beveled track |
+| TabView | "Data struct only, never rendered" | `draw_tab_view()` renders clickable headers and content |
+| PopupButton | "Data struct only, never rendered" | `draw_popup_button()` renders full beveled control with arrow |
+| Dialog | "Data struct only, never rendered" | `draw_dialog()` renders title bar, message, beveled buttons |
+| DockView | "Empty struct, no dock rendered" | `draw_dock_view()` renders centered dock; items launch apps |
+| Notification Center | "Empty struct, post() does nothing" | `post()`, `visible()`, `clear_expired()` work; Retro menu surfaces them |
+| Workspace Manager | "Data struct, no multi-desktop support" | 4 virtual workspaces with switching and window assignment |
+| Font Rendering | "Placeholder struct, 5×7 bitmaps" | ab_glyph TrueType rasterization with bitmap fallback |
+
+### What Remains Genuinely Missing
+
+| Gap | Priority | Notes |
+|-----|----------|-------|
+| Wayland compositor | Architecture | Cannot be fixed without ground-up rewrite |
+| Notification banners as overlays | High | Notifications are stored but displayed as text list, not floating banners |
+| AT-SPI accessibility protocol | Medium | Nodes exist but no real assistive tech wired |
+| Multi-monitor support | Medium | Single display only |
+| Screen locking | Medium | No lock screen |
+| Protocol-level DnD between apps | Low | Finder-internal drag works; no wl_data_device |
+| Power management (UPower) | Low | No suspend/hibernate integration |
 
 ---
 

@@ -63,6 +63,11 @@ enum Choice {
     AppearanceLight,
     AppearanceDark,
     AppearanceSystem,
+    ThemeClassic,
+    ThemeDark,
+    ThemeGrape,
+    ThemeBlueberry,
+    ThemeStrawberry,
     DesktopIconsOn,
     DesktopIconsOff,
     DockBottom,
@@ -168,6 +173,11 @@ impl Category {
                 (Choice::AppearanceLight, "Light"),
                 (Choice::AppearanceDark, "Dark"),
                 (Choice::AppearanceSystem, "System"),
+                (Choice::ThemeClassic, "Classic"),
+                (Choice::ThemeDark, "Dark Theme"),
+                (Choice::ThemeGrape, "Grape"),
+                (Choice::ThemeBlueberry, "Blueberry"),
+                (Choice::ThemeStrawberry, "Strawberry"),
             ],
             Category::DesktopDock => &[
                 (Choice::DesktopIconsOn, "Desktop Icons On"),
@@ -250,6 +260,7 @@ impl AppearanceMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SettingsState {
     appearance: AppearanceMode,
+    theme: String,
     desktop_icons: bool,
     dock_position: String,
     hdr_requested: bool,
@@ -269,6 +280,7 @@ impl Default for SettingsState {
     fn default() -> Self {
         Self {
             appearance: AppearanceMode::System,
+            theme: "classic".to_string(),
             desktop_icons: true,
             dock_position: "bottom".to_string(),
             hdr_requested: false,
@@ -292,6 +304,11 @@ impl SettingsState {
             Choice::AppearanceLight => self.appearance == AppearanceMode::Light,
             Choice::AppearanceDark => self.appearance == AppearanceMode::Dark,
             Choice::AppearanceSystem => self.appearance == AppearanceMode::System,
+            Choice::ThemeClassic => self.theme == "classic",
+            Choice::ThemeDark => self.theme == "dark",
+            Choice::ThemeGrape => self.theme == "grape",
+            Choice::ThemeBlueberry => self.theme == "blueberry",
+            Choice::ThemeStrawberry => self.theme == "strawberry",
             Choice::DesktopIconsOn => self.desktop_icons,
             Choice::DesktopIconsOff => !self.desktop_icons,
             Choice::DockBottom => self.dock_position == "bottom",
@@ -322,6 +339,11 @@ impl SettingsState {
             Choice::AppearanceLight => self.appearance = AppearanceMode::Light,
             Choice::AppearanceDark => self.appearance = AppearanceMode::Dark,
             Choice::AppearanceSystem => self.appearance = AppearanceMode::System,
+            Choice::ThemeClassic => self.theme = "classic".to_string(),
+            Choice::ThemeDark => self.theme = "dark".to_string(),
+            Choice::ThemeGrape => self.theme = "grape".to_string(),
+            Choice::ThemeBlueberry => self.theme = "blueberry".to_string(),
+            Choice::ThemeStrawberry => self.theme = "strawberry".to_string(),
             Choice::DesktopIconsOn => self.desktop_icons = true,
             Choice::DesktopIconsOff => self.desktop_icons = false,
             Choice::DockBottom => self.dock_position = "bottom".to_string(),
@@ -363,7 +385,11 @@ impl SettingsState {
                     "SOUND OFF"
                 }
             ),
-            Category::Appearance => format!("MODE - {}", self.appearance.label()),
+            Category::Appearance => format!(
+                "MODE - {} / THEME - {}",
+                self.appearance.label(),
+                self.theme.to_ascii_uppercase()
+            ),
             Category::DesktopDock => format!(
                 "DESKTOP - ICONS {} / DOCK {}",
                 if self.desktop_icons { "ON" } else { "OFF" },
@@ -454,6 +480,13 @@ impl SettingsStore {
                         state.appearance = mode;
                     }
                 }
+                "theme" if matches!(
+                    value,
+                    "classic" | "dark" | "grape" | "blueberry" | "strawberry"
+                ) =>
+                {
+                    state.theme = value.to_string();
+                }
                 "desktop_icons" => state.desktop_icons = parse_bool(value, state.desktop_icons),
                 "dock_position" if matches!(value, "bottom" | "right") => {
                     state.dock_position = value.to_string();
@@ -492,6 +525,7 @@ impl SettingsStore {
             format!(
                 concat!(
                     "appearance={}\n",
+                    "theme={}\n",
                     "desktop_icons={}\n",
                     "dock_position={}\n",
                     "hdr_requested={}\n",
@@ -507,6 +541,7 @@ impl SettingsStore {
                     "notifications={}\n"
                 ),
                 state.appearance.as_str(),
+                state.theme,
                 state.desktop_icons,
                 state.dock_position,
                 state.hdr_requested,
@@ -999,6 +1034,7 @@ mod tests {
         let store = SettingsStore::new(path);
         let state = SettingsState {
             appearance: AppearanceMode::Dark,
+            theme: "grape".to_string(),
             desktop_icons: false,
             dock_position: "right".to_string(),
             hdr_requested: true,

@@ -1,6 +1,64 @@
 use retro_kit::theme::{ThemeContext, ThemePalette, ThemeToken, ThemeValue};
 use retro_kit::Color;
 use std::collections::HashMap;
+use std::path::PathBuf;
+
+/// Named retro color themes available in RetroShell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeName {
+    #[default]
+    /// Mac OS 7 Platinum look (light mode, classic blue accent).
+    Classic,
+    /// Dark variant of the Classic theme.
+    Dark,
+    /// Purple-tinted dark theme.
+    Grape,
+    /// Deep blue dark theme.
+    Blueberry,
+    /// Warm red-orange tinted theme.
+    Strawberry,
+}
+
+impl ThemeName {
+    /// The accent color (RGBA f32) for this theme.
+    pub fn accent_color(self) -> [f32; 4] {
+        match self {
+            Self::Classic => [0.36, 0.54, 0.85, 1.0],
+            Self::Dark => [0.36, 0.54, 0.85, 1.0],
+            Self::Grape => [0.55, 0.28, 0.72, 1.0],
+            Self::Blueberry => [0.15, 0.25, 0.62, 1.0],
+            Self::Strawberry => [0.82, 0.23, 0.28, 1.0],
+        }
+    }
+
+    /// Whether this theme uses dark mode rendering.
+    pub fn is_dark(self) -> bool {
+        matches!(self, Self::Dark | Self::Grape | Self::Blueberry)
+    }
+
+    /// The settings.conf key value for this theme.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Classic => "classic",
+            Self::Dark => "dark",
+            Self::Grape => "grape",
+            Self::Blueberry => "blueberry",
+            Self::Strawberry => "strawberry",
+        }
+    }
+
+    /// Parse a theme name from a settings.conf value.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "classic" => Some(Self::Classic),
+            "dark" => Some(Self::Dark),
+            "grape" => Some(Self::Grape),
+            "blueberry" => Some(Self::Blueberry),
+            "strawberry" => Some(Self::Strawberry),
+            _ => None,
+        }
+    }
+}
 
 pub struct ThemeManager {
     pub themes: HashMap<String, ThemePalette>,
@@ -8,6 +66,7 @@ pub struct ThemeManager {
     pub is_dark: bool,
     pub is_hdr: bool,
     pub scale: f32,
+    pub theme_name: ThemeName,
 }
 
 impl Default for ThemeManager {
@@ -24,6 +83,7 @@ impl ThemeManager {
             is_dark: false,
             is_hdr: false,
             scale: 1.0,
+            theme_name: ThemeName::Classic,
         }
     }
 
@@ -385,4 +445,87 @@ impl ThemeManager {
         ctx.is_hdr = self.is_hdr;
         ctx
     }
+
+    /// Set the active named theme, updating dark mode and saving to settings.conf.
+    pub fn set_named_theme(&mut self, name: ThemeName) {
+        self.theme_name = name;
+        self.is_dark = name.is_dark();
+        self.reload_themes();
+        let _ = self.save_theme_to_settings();
+    }
+
+    /// Return the current named theme.
+    pub fn current_theme(&self) -> ThemeName {
+        self.theme_name
+    }
+
+    /// Load the theme from settings.conf and apply it.
+    pub fn load_theme_from_settings(&mut self) {
+        let path = settings_conf_path();
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        for line in content.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            if key.trim() == "theme" {
+                if let Some(name) = ThemeName::parse(value) {
+                    self.theme_name = name;
+                    self.is_dark = name.is_dark();
+                    self.reload_themes();
+                    return;
+                }
+            }
+        }
+        // Fall back to appearance key
+        for line in content.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            if key.trim() == "appearance" {
+                let is_dark = value.trim().eq_ignore_ascii_case("dark");
+                self.is_dark = is_dark;
+                self.theme_name = if is_dark { ThemeName::Dark } else { ThemeName::Classic };
+                self.reload_themes();
+                return;
+            }
+        }
+    }
+
+    fn save_theme_to_settings(&self) -> std::io::Result<()> {
+        let path = settings_conf_path();
+        // Read existing content, update or insert the `theme` key.
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut lines: Vec<String> = existing.lines().map(|l| l.to_string()).collect();
+        let mut found = false;
+        for line in &mut lines {
+            if line.trim_start().starts_with("theme=")
+                || line.trim_start().starts_with("theme =")
+            {
+                *line = format!("theme={}", self.theme_name.as_str());
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            lines.push(format!("theme={}", self.theme_name.as_str()));
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, lines.join("\n") + "\n")
+    }
+}
+
+fn settings_conf_path() -> PathBuf {
+    std::env::var_os("RETROSHELL_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".config/retroshell"))
+        })
+        .unwrap_or_else(|| PathBuf::from("/tmp/retroshell"))
+        .join("settings.conf")
 }

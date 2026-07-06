@@ -138,6 +138,8 @@ struct ShellDesktop {
     dock: Arc<RwLock<Dock>>,
     dock_view: DockView,
     bundle_ids: Vec<String>,
+    /// Notification banner pop-up windows, rebuilt each update() from visible notifications.
+    notification_popup_windows: Vec<Window>,
 }
 
 struct ShellWindow {
@@ -247,6 +249,7 @@ impl ShellDesktop {
             dock: dock.clone(),
             dock_view: DockView::new(),
             bundle_ids,
+            notification_popup_windows: Vec::new(),
         };
         shell.open_finder_window();
         shell
@@ -1491,6 +1494,10 @@ impl Widget for ShellDesktop {
             active.window.draw(theme);
         }
         self.dock_view.draw(theme);
+        // Draw notification banners on top of windows and dock, below menu bar
+        for popup in &self.notification_popup_windows {
+            popup.draw(theme);
+        }
         self.menu_bar.draw(theme);
     }
 
@@ -1501,6 +1508,41 @@ impl Widget for ShellDesktop {
         }
 
         if let Event::KeyDown { key, modifiers } = event {
+            // Cmd+Tab: cycle focus through non-minimized windows on the active workspace
+            if modifiers.meta && *key == retro_kit::event::KeyCode::Tab {
+                let active_workspace = self.active_workspace();
+                let workspace_window_ids: Vec<Uuid> = self
+                    .windows
+                    .iter()
+                    .filter(|w| {
+                        w.workspace == active_workspace && w.mode != ShellWindowMode::Minimized
+                    })
+                    .map(|w| w.id)
+                    .collect();
+                if workspace_window_ids.len() > 1 {
+                    let current = self.active_window_id();
+                    let next_id = if let Some(current_id) = current {
+                        let pos = workspace_window_ids
+                            .iter()
+                            .position(|&id| id == current_id)
+                            .unwrap_or(0);
+                        workspace_window_ids[(pos + 1) % workspace_window_ids.len()]
+                    } else {
+                        workspace_window_ids[0]
+                    };
+                    self.focus_window(next_id);
+                }
+                return EventResult::Handled;
+            }
+
+            // Cmd+W: close the front window on the active workspace
+            if modifiers.meta && *key == retro_kit::event::KeyCode::W {
+                if let Some(id) = self.active_window_id() {
+                    self.close_window(id);
+                    return EventResult::Handled;
+                }
+            }
+
             let action = self
                 .menu_server
                 .read()
@@ -1772,10 +1814,52 @@ impl Widget for ShellDesktop {
             });
         }
         self.dock_view.items = dock_view_items;
+
+        // Expire old notifications (older than 5 seconds)
+        {
+            self.notification_center
+                .write()
+                .clear_expired(std::time::Duration::from_secs(5));
+        }
+
+        // Rebuild notification popup windows from currently visible notifications
+        let notifications: Vec<(String, String)> = self
+            .notification_center
+            .read()
+            .visible()
+            .into_iter()
+            .map(|n| (n.title.clone(), n.message.clone()))
+            .collect();
+
+        self.notification_popup_windows.clear();
+        let right_margin = 12.0;
+        let popup_w = 280.0;
+        let popup_h = 80.0;
+        let menu_bar_h = 24.0;
+        let gap = 8.0;
+        let desktop_width = self.rect().width;
+
+        for (i, (title, message)) in notifications.iter().enumerate() {
+            let x = desktop_width - popup_w - right_margin;
+            let y = menu_bar_h + gap + i as f32 * (popup_h + gap);
+            let rect = Rect::new(x, y, popup_w, popup_h);
+
+            let mut layout = Layout::vertical(4.0);
+            layout.add(Box::new(Label::new(format!("[!] {title}"))));
+            layout.add(Box::new(Label::new(message.clone())));
+
+            let mut popup = Window::new(title.as_str());
+            popup.set_content(Box::new(LayoutView::new(layout)));
+            popup.set_rect(rect);
+            let _ = popup.layout(LayoutConstraint::tight(Size::new(popup_w, popup_h)));
+
+            self.notification_popup_windows.push(popup);
+        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = Vec::with_capacity(self.windows.len() + 3);
+        let capacity = self.windows.len() + 3 + self.notification_popup_windows.len();
+        let mut children: Vec<&dyn Widget> = Vec::with_capacity(capacity);
         children.push(&self.desktop);
         let active_workspace = self.active_workspace();
         for shell_window in &self.windows {
@@ -1784,12 +1868,16 @@ impl Widget for ShellDesktop {
             }
         }
         children.push(&self.dock_view);
+        // Notification banners are drawn above dock but below menu bar
+        for popup in &self.notification_popup_windows {
+            children.push(popup as &dyn Widget);
+        }
         children.push(&self.menu_bar);
         children
     }
 
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        let capacity = self.windows.len() + 3;
+        let capacity = self.windows.len() + 3 + self.notification_popup_windows.len();
         let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(capacity);
         children.push(&mut self.desktop);
         let active_workspace = self.workspace_manager.read().active;
@@ -1799,6 +1887,10 @@ impl Widget for ShellDesktop {
             }
         }
         children.push(&mut self.dock_view);
+        // Notification banners are drawn above dock but below menu bar
+        for popup in &mut self.notification_popup_windows {
+            children.push(popup as &mut dyn Widget);
+        }
         children.push(&mut self.menu_bar);
         children
     }

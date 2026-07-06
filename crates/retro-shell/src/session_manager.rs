@@ -11,6 +11,17 @@ pub enum SessionAction {
     Sleep,
 }
 
+/// High-level state of the user session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionState {
+    /// No user is logged in.
+    LoggedOut,
+    /// A user is logged in and the desktop is accessible.
+    Active,
+    /// A user is logged in but the screen is locked.
+    Locked,
+}
+
 pub struct SessionManager {
     pub logged_in: bool,
     pub username: String,
@@ -19,6 +30,10 @@ pub struct SessionManager {
     pub locked: bool,
     pub pending_action: Option<SessionAction>,
     pub session_state: HashMap<String, String>,
+    /// Structured session state enum derived from `logged_in` and `locked`.
+    pub state: SessionState,
+    /// Unix timestamp (seconds since epoch) recorded at login.
+    pub login_timestamp: Option<u64>,
     lock_on_sleep: bool,
 }
 
@@ -38,6 +53,8 @@ impl SessionManager {
             locked: false,
             pending_action: None,
             session_state: HashMap::new(),
+            state: SessionState::LoggedOut,
+            login_timestamp: None,
             lock_on_sleep: true,
         }
     }
@@ -45,42 +62,62 @@ impl SessionManager {
     pub fn login(&mut self, username: &str) {
         self.logged_in = true;
         self.locked = false;
+        self.state = SessionState::Active;
         self.pending_action = Some(SessionAction::Login);
         self.username = username.to_string();
+        self.login_timestamp = Some(unix_now());
+        self.save_state();
+    }
+
+    /// Transition the session to the Locked state without ending it.
+    /// A separate authentication step is required to return to Active.
+    pub fn lock_screen(&mut self) {
+        if self.logged_in {
+            self.locked = true;
+            self.state = SessionState::Locked;
+            self.pending_action = Some(SessionAction::Lock);
+        }
     }
 
     pub fn logout(&mut self) {
         self.logged_in = false;
         self.locked = false;
+        self.state = SessionState::LoggedOut;
+        self.login_timestamp = None;
         self.pending_action = Some(SessionAction::Logout);
         self.save_state();
+        std::process::exit(0);
     }
 
     pub fn lock(&mut self) {
-        if self.logged_in {
-            self.locked = true;
-            self.pending_action = Some(SessionAction::Lock);
-        }
+        self.lock_screen();
     }
 
     pub fn unlock(&mut self) {
         self.locked = false;
+        self.state = if self.logged_in {
+            SessionState::Active
+        } else {
+            SessionState::LoggedOut
+        };
         self.pending_action = Some(SessionAction::Unlock);
     }
 
     pub fn sleep(&mut self) {
         if self.lock_on_sleep {
-            self.lock();
+            self.lock_screen();
         }
         self.pending_action = Some(SessionAction::Sleep);
     }
 
     pub fn shutdown(&mut self) {
+        self.state = SessionState::LoggedOut;
         self.pending_action = Some(SessionAction::Shutdown);
         self.save_state();
     }
 
     pub fn restart(&mut self) {
+        self.state = SessionState::LoggedOut;
         self.pending_action = Some(SessionAction::Restart);
         self.save_state();
     }
@@ -100,6 +137,9 @@ impl SessionManager {
         content.push_str(&format!("logged_in = {}\n", self.logged_in));
         content.push_str(&format!("locked = {}\n", self.locked));
         content.push_str(&format!("restore_windows = {}\n", self.restore_windows));
+        if let Some(ts) = self.login_timestamp {
+            content.push_str(&format!("login_timestamp = {}\n", ts));
+        }
         for (k, v) in &self.session_state {
             content.push_str(&format!("{} = \"{}\"\n", k, escape_toml_string(v)));
         }
@@ -122,13 +162,29 @@ impl SessionManager {
                         self.locked = val.parse().unwrap_or(false);
                     } else if key == "restore_windows" {
                         self.restore_windows = val.parse().unwrap_or(true);
+                    } else if key == "login_timestamp" {
+                        self.login_timestamp = val.parse().ok();
                     } else if key != "[session]" {
                         self.session_state.insert(key.to_string(), val.to_string());
                     }
                 }
             }
         }
+        // Reconstruct the SessionState enum from the persisted boolean fields
+        self.state = match (self.logged_in, self.locked) {
+            (true, true) => SessionState::Locked,
+            (true, false) => SessionState::Active,
+            _ => SessionState::LoggedOut,
+        };
     }
+}
+
+/// Returns the current time as seconds since the Unix epoch.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn escape_toml_string(value: &str) -> String {

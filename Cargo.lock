@@ -2617,6 +2617,7 @@ dependencies = [
  "bytemuck",
  "futures",
  "log",
+ "parking_lot",
  "retro-bus",
  "retro-kit",
  "retro-render",
