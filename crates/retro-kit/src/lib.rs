@@ -27,7 +27,7 @@ pub mod widget;
 pub mod window;
 pub mod workspace_grid_view;
 
-pub use accessibility::{AccessibilityNode, AccessibilityRole, AccessibilityState};
+pub use accessibility::{AccessibilityNode, AccessibilityRole, AccessibilityState, AccessibilityTree};
 pub use button::Button;
 pub use clipboard::Clipboard;
 pub use dialog::Dialog;

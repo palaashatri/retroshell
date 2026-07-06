@@ -20,6 +20,17 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libsystemd-dev \
     curl \
     git \
+    libudev-dev \
+    libinput-dev \
+    libxcb1-dev \
+    libxcb-icccm4-dev \
+    libxcb-keysyms1-dev \
+    libxcb-randr0-dev \
+    libxcb-util0-dev \
+    libxcb-xfixes0-dev \
+    libgbm-dev \
+    libdrm-dev \
+    libseat-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust
@@ -78,6 +89,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/retro-shell /usr/local/bin/
+COPY --from=builder /app/target/release/retro-compositor /usr/local/bin/
 COPY --from=builder /app/target/release/finder /usr/local/bin/
 COPY --from=builder /app/target/release/settings /usr/local/bin/
 COPY --from=builder /app/target/release/textedit /usr/local/bin/

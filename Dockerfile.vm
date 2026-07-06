@@ -37,6 +37,17 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     dbus-x11 \
     libpipewire-0.3-dev \
     libspa-0.2-dev \
+    libudev-dev \
+    libinput-dev \
+    libxcb1-dev \
+    libxcb-icccm4-dev \
+    libxcb-keysyms1-dev \
+    libxcb-randr0-dev \
+    libxcb-util0-dev \
+    libxcb-xfixes0-dev \
+    libgbm-dev \
+    libdrm-dev \
+    libseat-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust

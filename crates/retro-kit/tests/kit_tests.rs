@@ -209,3 +209,105 @@ fn test_layout_arrange_reflows_nested_layout_view_children() {
     assert_eq!(children[0].rect().x, 15.0);
     assert_eq!(children[0].rect().y, 25.0);
 }
+
+
+// ---------------------------------------------------------------------------
+// Accessibility tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn accessibility_node_new_sets_role_and_label() {
+    let node = AccessibilityNode::new(AccessibilityRole::Button, "OK");
+    assert_eq!(node.role, AccessibilityRole::Button);
+    assert_eq!(node.label, "OK");
+    assert!(node.description.is_empty());
+    assert_eq!(node.index, 0);
+    assert!(node.parent.is_none());
+    assert!(node.children.is_empty());
+}
+
+#[test]
+fn accessibility_role_name_returns_expected_strings() {
+    assert_eq!(AccessibilityRole::Window.role_name(), "frame");
+    assert_eq!(AccessibilityRole::Button.role_name(), "push button");
+    assert_eq!(AccessibilityRole::Checkbox.role_name(), "check box");
+    assert_eq!(AccessibilityRole::RadioButton.role_name(), "radio button");
+    assert_eq!(AccessibilityRole::TextField.role_name(), "text");
+    assert_eq!(AccessibilityRole::Label.role_name(), "label");
+    assert_eq!(AccessibilityRole::List.role_name(), "list");
+    assert_eq!(AccessibilityRole::ListItem.role_name(), "list item");
+    assert_eq!(AccessibilityRole::Menu.role_name(), "menu");
+    assert_eq!(AccessibilityRole::MenuItem.role_name(), "menu item");
+    assert_eq!(AccessibilityRole::MenuBar.role_name(), "menu bar");
+    assert_eq!(AccessibilityRole::Dialog.role_name(), "dialog");
+    assert_eq!(AccessibilityRole::Tab.role_name(), "page tab");
+    assert_eq!(AccessibilityRole::TabGroup.role_name(), "page tab list");
+    assert_eq!(AccessibilityRole::ComboBox.role_name(), "combo box");
+    assert_eq!(AccessibilityRole::Notification.role_name(), "alert");
+    assert_eq!(AccessibilityRole::Desktop.role_name(), "desktop frame");
+    assert_eq!(AccessibilityRole::Unknown.role_name(), "unknown");
+}
+
+#[test]
+fn accessibility_role_is_focusable_for_interactive_roles() {
+    // Interactive (should be focusable)
+    assert!(AccessibilityRole::Button.is_focusable());
+    assert!(AccessibilityRole::Checkbox.is_focusable());
+    assert!(AccessibilityRole::RadioButton.is_focusable());
+    assert!(AccessibilityRole::TextField.is_focusable());
+    assert!(AccessibilityRole::ListItem.is_focusable());
+    assert!(AccessibilityRole::TreeItem.is_focusable());
+    assert!(AccessibilityRole::MenuItem.is_focusable());
+    assert!(AccessibilityRole::Tab.is_focusable());
+    assert!(AccessibilityRole::Slider.is_focusable());
+    assert!(AccessibilityRole::ComboBox.is_focusable());
+    assert!(AccessibilityRole::Link.is_focusable());
+
+    // Non-interactive (should NOT be focusable)
+    assert!(!AccessibilityRole::Window.is_focusable());
+    assert!(!AccessibilityRole::Label.is_focusable());
+    assert!(!AccessibilityRole::StaticText.is_focusable());
+    assert!(!AccessibilityRole::Image.is_focusable());
+    assert!(!AccessibilityRole::Group.is_focusable());
+    assert!(!AccessibilityRole::Desktop.is_focusable());
+    assert!(!AccessibilityRole::Unknown.is_focusable());
+}
+
+#[test]
+fn accessibility_node_role_name_delegates_to_role() {
+    let node = AccessibilityNode::new(AccessibilityRole::Dialog, "Confirm");
+    assert_eq!(node.role_name(), "dialog");
+}
+
+#[test]
+fn accessibility_node_is_focusable_delegates_to_role() {
+    let focusable = AccessibilityNode::new(AccessibilityRole::TextField, "Name");
+    assert!(focusable.is_focusable());
+
+    let not_focusable = AccessibilityNode::new(AccessibilityRole::Label, "Name:");
+    assert!(!not_focusable.is_focusable());
+}
+
+#[test]
+fn accessibility_tree_add_and_clear() {
+    let mut tree = AccessibilityTree::new();
+    assert!(tree.to_atspi_objects().is_empty());
+
+    tree.add(AccessibilityNode::new(AccessibilityRole::Button, "Save"));
+    tree.add(AccessibilityNode::new(AccessibilityRole::Button, "Cancel"));
+    assert_eq!(tree.to_atspi_objects().len(), 2);
+
+    tree.clear();
+    assert!(tree.to_atspi_objects().is_empty());
+}
+
+#[test]
+fn accessibility_tree_to_atspi_objects_format() {
+    let mut tree = AccessibilityTree::new();
+    tree.add(AccessibilityNode::new(AccessibilityRole::Button, "OK"));
+    tree.add(AccessibilityNode::new(AccessibilityRole::TextField, "Username"));
+
+    let objects = tree.to_atspi_objects();
+    assert_eq!(objects[0], "role:push button label:OK");
+    assert_eq!(objects[1], "role:text label:Username");
+}

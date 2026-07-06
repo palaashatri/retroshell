@@ -8,3 +8,4 @@ target-docker/
 *.mp4
 *.png
 !docs/screenshots/*.png
+docs/superpowers/
