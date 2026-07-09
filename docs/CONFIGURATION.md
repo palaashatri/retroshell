@@ -22,9 +22,9 @@ The directory is created automatically if it does not exist.
 
 #### Appearance
 
-| Key          | Values                                          | Default   | Description                              |
-|--------------|-------------------------------------------------|-----------|------------------------------------------|
-| `theme`      | `classic` `dark` `grape` `blueberry` `strawberry` | `classic` | Named color theme. Takes precedence over `appearance`. |
+| Key          | Values                                                                       | Default   | Description                              |
+|--------------|----------------------------------------------------------------------|-----------|------------------------------------------|
+| `theme`      | `classic` `dark` `grape` `blueberry` `strawberry` `solarized` `dracula` `highcontrast` | `classic` | Named color theme. Takes precedence over `appearance`. |
 | `appearance` | `light` `dark`                                  | `light`   | Legacy light/dark toggle. Used if `theme` is absent. |
 
 #### Sound
@@ -121,7 +121,7 @@ do_not_disturb=false
 
 ### Named themes
 
-RetroShell ships five named themes. Set the `theme` key in `settings.conf` or select
+RetroShell ships eight named themes. Set the `theme` key in `settings.conf` or select
 via Settings > Appearance.
 
 | Theme name    | Key          | Mode  | Accent color          | Description                              |
@@ -131,6 +131,9 @@ via Settings > Appearance.
 | Grape         | `grape`      | Dark  | Purple (0.55, 0.28, 0.72) | Purple-tinted dark theme               |
 | Blueberry     | `blueberry`  | Dark  | Deep blue (0.15, 0.25, 0.62) | Deep blue dark theme                |
 | Strawberry    | `strawberry` | Light | Red-orange (0.82, 0.23, 0.28) | Warm red-orange tinted theme        |
+| Solarized     | `solarized`  | Dark  | Blue (0.16, 0.54, 0.82) | Solarized dark theme                     |
+| Dracula       | `dracula`    | Dark  | Purple (0.74, 0.58, 0.98) | Dracula dark theme                       |
+| HighContrast  | `highcontrast` | Light | Yellow (1.0, 0.84, 0.0) | Pure black/white with yellow accent      |
 
 ### Internal palette layers
 

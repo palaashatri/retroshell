@@ -5,8 +5,10 @@ A native Rust desktop environment inspired by Classic Mac OS, NeXTSTEP, and BeOS
 RetroShell is not a Linux desktop theme. It is a custom GUI toolkit, application
 framework, and shell client written entirely in Rust. The shell renders its own windows
 using a wgpu graphics pipeline, ships a suite of first-party applications, and runs as
-a Wayland client today. The long-term goal is a real desktop environment driven by a
-custom Smithay compositor.
+a Wayland client. RetroShell ships a separate Smithay-based nested-X11 compositor
+(`retro-compositor`) that the entrypoint prefers; if unavailable it falls back to labwc.
+Note: the compositor requires DRI3 X11 extension and fails in nested Docker environments
+without GPU acceleration.
 
 ---
 
@@ -35,7 +37,7 @@ custom Smithay compositor.
       with persistent `settings.conf` writes
 - [x] App Store — reads system package indices (APT), shows install state per package,
       search with package-change gate
-- [x] Five color themes: Classic, Dark, Grape, Blueberry, Strawberry
+- [x] Eight color themes: Classic, Dark, Grape, Blueberry, Strawberry, Solarized, Dracula, HighContrast
 - [x] Dark mode with per-token palette switching
 - [x] TrueType font rendering via ab_glyph with system font discovery and bitmap fallback
 - [x] File-based clipboard persistence across process boundaries
@@ -44,7 +46,7 @@ custom Smithay compositor.
 
 ### In progress / planned
 
-- [ ] retro-compositor — Smithay-based Wayland compositor (skeleton only)
+- [x] retro-compositor — Smithay-based nested-X11 compositor (real GL rendering, protocol stubs)
 - [ ] Universal global menu for external apps (requires compositor session ownership)
 - [ ] Wayland wl_data_device protocol drag-and-drop between apps
 - [ ] Notification banners as floating visual overlays
@@ -229,6 +231,9 @@ Set the `theme` key in `~/.config/retroshell/settings.conf` or use Settings > Ap
 | `grape`     | Dark  | Purple-tinted dark theme                      |
 | `blueberry` | Dark  | Deep navy dark theme                          |
 | `strawberry`| Light | Warm red-orange accent on light gray          |
+| `solarized` | Dark  | Solarized dark theme with blue accent         |
+| `dracula`   | Dark  | Dracula dark theme with purple accent         |
+| `highcontrast` | Light | Pure black/white with yellow accent        |
 
 ---
 
@@ -236,9 +241,9 @@ Set the `theme` key in `~/.config/retroshell/settings.conf` or use Settings > Ap
 
 Configuration file: `~/.config/retroshell/settings.conf`
 
-| Key                 | Values                                            | Default   |
-|---------------------|---------------------------------------------------|-----------|
-| `theme`             | `classic` `dark` `grape` `blueberry` `strawberry` | `classic` |
+| Key                 | Values                                                                       | Default   |
+|---------------------|---------------------------------------------------------------------|-----------|
+| `theme`             | `classic` `dark` `grape` `blueberry` `strawberry` `solarized` `dracula` `highcontrast` | `classic` |
 | `appearance`        | `light` `dark`                                    | `light`   |
 | `sound_volume`      | `0`–`100`                                         | `50`      |
 | `mouse_speed`       | `0`–`100`                                         | `50`      |
@@ -321,9 +326,10 @@ xinit /usr/bin/labwc
 | Current          | 5.9   | Drop shadows, pixel art icons, dock, tab switching, VT parser expansion, workspace grid view, polished window chrome |
 | Target           | 10.0  | Full Smithay compositor, HiDPI, universal global menu, AT-SPI, protocol DnD |
 
-The gap between the current score and 10 is primarily architectural: RetroShell is a
-Wayland client, not a compositor. Closing that gap requires implementing
-`retro-compositor` with Smithay, which is tracked as long-term milestone work.
+The gap between the current score and 10 is primarily architectural: while RetroShell
+ships a Smithay-based nested-X11 compositor, `retro-shell` itself remains a single fullscreen
+Wayland client rendering all internal windows into one surface. A true per-app Wayland session
+compositor with multi-window protocol support is tracked as long-term work.
 
 ---
 
