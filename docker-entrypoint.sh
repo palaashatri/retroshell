@@ -37,6 +37,8 @@ sleep 1
 echo "=== Starting Wayland Compositor ==="
 export XDG_RUNTIME_DIR=/tmp/runtime-root
 export XDG_CONFIG_HOME=/root/.config
+export RETROSHELL_COMPOSITOR_WIDTH="$RETROSHELL_VM_WIDTH"
+export RETROSHELL_COMPOSITOR_HEIGHT="$RETROSHELL_VM_HEIGHT"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 

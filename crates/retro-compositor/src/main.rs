@@ -24,6 +24,10 @@ mod linux {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use retro_compositor::{
+        cascade_position, move_to_top, next_cascade_offset, topmost_window_at, OutputConfig,
+        WindowGeometry, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+    };
     use smithay::{
         backend::{
             allocator::{
@@ -90,11 +94,6 @@ mod linux {
     // Retro gray: rgb(152, 152, 148) — the classic Mac OS desktop fill
     const RETRO_GRAY: (u8, u8, u8) = (152, 152, 148);
     // Default size given to new toplevel windows (placeholder rectangle)
-    const DEFAULT_WIN_W: i32 = 640;
-    const DEFAULT_WIN_H: i32 = 480;
-    // Output resolution
-    const OUTPUT_W: i32 = 1024;
-    const OUTPUT_H: i32 = 768;
 
     // Window placeholder colors (cycling palette for distinguishing windows)
     const WIN_COLORS: &[(f32, f32, f32)] = &[
@@ -138,13 +137,12 @@ mod linux {
     }
 
     impl MappedWindow {
+        fn geometry(&self) -> WindowGeometry {
+            WindowGeometry::new(self.position.x, self.position.y, self.size.w, self.size.h)
+        }
+
         fn contains(&self, pt: Point<f64, Logical>) -> bool {
-            let x = pt.x as i32;
-            let y = pt.y as i32;
-            x >= self.position.x
-                && x < self.position.x + self.size.w
-                && y >= self.position.y
-                && y < self.position.y + self.size.h
+            self.geometry().contains_f64(pt.x, pt.y)
         }
     }
 
@@ -176,6 +174,8 @@ mod linux {
         next_window_offset: i32,
         // Current pointer position (logical)
         pointer_pos: Point<f64, Logical>,
+        // Output size advertised to clients and used for X11 input transforms.
+        output_size: Size<i32, Physical>,
         // Serial counter for synthetic events
         serial: u32,
 
@@ -193,20 +193,15 @@ mod linux {
 
         /// Find the topmost window that contains `pt`, returning its index.
         fn window_at(&self, pt: Point<f64, Logical>) -> Option<usize> {
-            self.windows
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_, w)| w.contains(pt))
-                .map(|(i, _)| i)
+            let windows: Vec<_> = self.windows.iter().map(MappedWindow::geometry).collect();
+            topmost_window_at(&windows, pt.x, pt.y)
         }
 
         /// Bring window at `idx` to the top and focus keyboard+pointer on it.
         fn focus_window(&mut self, idx: usize) {
             // Rotate to top
-            let win = self.windows.remove(idx);
-            let surface = win.toplevel.wl_surface().clone();
-            self.windows.push(win);
+            let surface = self.windows[idx].toplevel.wl_surface().clone();
+            move_to_top(&mut self.windows, idx);
 
             let serial = self.next_serial();
             if let Some(kb) = self.seat.get_keyboard() {
@@ -273,7 +268,7 @@ mod linux {
                 }
             };
 
-            let output_size: Size<i32, Physical> = Size::from((OUTPUT_W, OUTPUT_H));
+            let output_size = self.output_size;
 
             // Bind the dmabuf as GL render target
             let mut target = match self.renderer.bind(&mut dmabuf) {
@@ -387,12 +382,12 @@ mod linux {
                         if st.size.map_or(0, |s| s.w) > 0 {
                             st.size.unwrap().w
                         } else {
-                            DEFAULT_WIN_W
+                            DEFAULT_WINDOW_W
                         },
                         if st.size.map_or(0, |s| s.h) > 0 {
                             st.size.unwrap().h
                         } else {
-                            DEFAULT_WIN_H
+                            DEFAULT_WINDOW_H
                         },
                     );
                     w.size = Size::from((sw, sh));
@@ -473,15 +468,15 @@ mod linux {
         fn new_toplevel(&mut self, surface: ToplevelSurface) {
             surface.with_pending_state(|state| {
                 // Tell the client what size we'd like
-                state.size = Some(Size::from((DEFAULT_WIN_W, DEFAULT_WIN_H)));
+            state.size = Some(Size::from((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)));
                 state.states.set(xdg_toplevel::State::Activated);
             });
             surface.send_configure();
 
             // Cascade new windows
-            let offset = self.next_window_offset;
-            self.next_window_offset = (offset + 32) % 256;
-            let position = Point::from((64 + offset, 64 + offset));
+        let offset = self.next_window_offset;
+        self.next_window_offset = next_cascade_offset(offset);
+        let position = Point::from(cascade_position(offset));
 
             eprintln!(
                 "[retro-compositor] surface mapped at ({},{})",
@@ -491,7 +486,7 @@ mod linux {
             self.windows.push(MappedWindow {
                 toplevel: surface,
                 position,
-                size: Size::from((DEFAULT_WIN_W, DEFAULT_WIN_H)),
+            size: Size::from((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)),
             });
 
             // Focus the new window
@@ -566,8 +561,8 @@ mod linux {
     where
         E: PointerMotionAbsoluteEvent<X11Input>,
     {
-        let output_size = Size::from((OUTPUT_W, OUTPUT_H));
-        let pos = ev.position_transformed(output_size);
+        let logical = Size::<i32, Logical>::from((state.output_size.w, state.output_size.h));
+        let pos = ev.position_transformed(logical);
         state.pointer_pos = pos;
 
         // Find which window (if any) the pointer is over
@@ -662,8 +657,11 @@ mod linux {
         seat.add_keyboard(XkbConfig::default(), 200, 25)?;
         seat.add_pointer();
 
-        // Output (OUTPUT_W x OUTPUT_H @ 60 Hz)
-        let output = Output::new(
+    let output_config = OutputConfig::from_env();
+    let output_size = Size::<i32, Physical>::from((output_config.width, output_config.height));
+
+    // Output (logical pixels @ 60 Hz)
+    let output = Output::new(
             "X11-1".into(),
             PhysicalProperties {
                 size: (0, 0).into(),
@@ -671,11 +669,11 @@ mod linux {
                 make: "RetroShell".into(),
                 model: "X11 Output".into(),
             },
-        );
-        let mode = Mode {
-            size: (OUTPUT_W, OUTPUT_H).into(),
-            refresh: 60_000,
-        };
+    );
+    let mode = Mode {
+        size: (output_config.width, output_config.height).into(),
+        refresh: 60_000,
+    };
         output.change_current_state(
             Some(mode),
             Some(Transform::Normal),
@@ -790,11 +788,12 @@ mod linux {
             seat,
             _output: output,
             running: true,
-            windows: Vec::new(),
-            next_window_offset: 0,
-            pointer_pos: Point::from((0.0_f64, 0.0_f64)),
-            serial: 0,
-            renderer,
+        windows: Vec::new(),
+        next_window_offset: 0,
+        pointer_pos: Point::from((0.0_f64, 0.0_f64)),
+        output_size,
+        serial: 0,
+        renderer,
             x11_surface,
         };
 

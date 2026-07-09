@@ -1,165 +1,95 @@
-//! Integration tests for retro-compositor geometry logic.
-//!
-//! `MappedWindow` and `RetroCompositor` are not exported — they live inside
-//! the `linux` cfg-gated module and require a live Wayland display.
-//! We test the *pure geometry logic* (the `contains` predicate and window
-//! ordering semantics) by replicating the minimal struct locally.
-//!
-//! This file compiles and runs on all platforms, including macOS.
-
-/// Minimal replica of the compositor-space window rectangle used by
-/// `MappedWindow::contains` in `src/main.rs`.
-#[derive(Clone, Debug)]
-struct WindowRect {
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-}
-
-impl WindowRect {
-    /// Equivalent to `MappedWindow::contains` in src/main.rs.
-    fn contains(&self, px: i32, py: i32) -> bool {
-        px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
-    }
-}
-
-// ---------------------------------------------------------------------------
-// contains() tests
-// ---------------------------------------------------------------------------
+use retro_compositor::{
+    cascade_position, move_to_top, next_cascade_offset, topmost_window_at, OutputConfig,
+    WindowGeometry, CASCADE_WRAP, DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H,
+    DEFAULT_WINDOW_W,
+};
 
 #[test]
-fn contains_point_inside_window() {
-    let win = WindowRect { x: 10, y: 20, w: 100, h: 80 };
-    // Centre of the window
-    assert!(win.contains(60, 60));
+fn window_contains_point_inside() {
+    let win = WindowGeometry::new(10, 20, 100, 80);
+
+    assert!(win.contains_f64(60.0, 60.0));
 }
 
 #[test]
-fn contains_point_at_top_left_corner_is_inside() {
-    let win = WindowRect { x: 10, y: 20, w: 100, h: 80 };
-    assert!(win.contains(10, 20));
+fn window_contains_top_left_corner() {
+    let win = WindowGeometry::new(10, 20, 100, 80);
+
+    assert!(win.contains_f64(10.0, 20.0));
 }
 
 #[test]
-fn contains_point_at_bottom_right_exclusive_boundary_is_outside() {
-    let win = WindowRect { x: 10, y: 20, w: 100, h: 80 };
-    // x = 10 + 100 = 110, y = 20 + 80 = 100 — both exclusive upper bounds
-    assert!(!win.contains(110, 100));
+fn window_rejects_bottom_right_exclusive_boundary() {
+    let win = WindowGeometry::new(10, 20, 100, 80);
+
+    assert!(!win.contains_f64(110.0, 100.0));
 }
 
 #[test]
-fn contains_point_one_before_bottom_right_exclusive_boundary_is_inside() {
-    let win = WindowRect { x: 10, y: 20, w: 100, h: 80 };
-    assert!(win.contains(109, 99));
+fn zero_sized_window_contains_nothing() {
+    let win = WindowGeometry::new(5, 5, 0, 0);
+
+    assert!(!win.contains_f64(5.0, 5.0));
+    assert!(!win.contains_f64(4.0, 4.0));
+    assert!(!win.contains_f64(6.0, 6.0));
 }
 
 #[test]
-fn contains_point_left_of_window_is_outside() {
-    let win = WindowRect { x: 10, y: 20, w: 100, h: 80 };
-    assert!(!win.contains(9, 60));
+fn topmost_window_at_prefers_later_z_order() {
+    let windows = vec![
+        WindowGeometry::new(0, 0, 200, 200),
+        WindowGeometry::new(50, 50, 200, 200),
+        WindowGeometry::new(100, 100, 200, 200),
+    ];
+
+    assert_eq!(topmost_window_at(&windows, 125.0, 125.0), Some(2));
+    assert_eq!(topmost_window_at(&windows, 75.0, 75.0), Some(1));
+    assert_eq!(topmost_window_at(&windows, 25.0, 25.0), Some(0));
+    assert_eq!(topmost_window_at(&windows, 500.0, 500.0), None);
 }
 
 #[test]
-fn contains_point_above_window_is_outside() {
-    let win = WindowRect { x: 10, y: 20, w: 100, h: 80 };
-    assert!(!win.contains(60, 19));
-}
-
-#[test]
-fn contains_point_right_of_window_is_outside() {
-    let win = WindowRect { x: 10, y: 20, w: 100, h: 80 };
-    assert!(!win.contains(111, 60));
-}
-
-#[test]
-fn contains_point_below_window_is_outside() {
-    let win = WindowRect { x: 10, y: 20, w: 100, h: 80 };
-    assert!(!win.contains(60, 101));
-}
-
-#[test]
-fn zero_size_window_contains_no_points() {
-    let win = WindowRect { x: 5, y: 5, w: 0, h: 0 };
-    assert!(!win.contains(5, 5));
-    assert!(!win.contains(4, 4));
-    assert!(!win.contains(6, 6));
-}
-
-// ---------------------------------------------------------------------------
-// Window z-order / focus tests (pure Vec manipulation, mirrors focus_window)
-// ---------------------------------------------------------------------------
-
-/// Equivalent to `RetroCompositor::focus_window`: removes the window at `idx`
-/// and appends it to the back of the list (top of z-order).
-fn focus_window(windows: &mut Vec<WindowRect>, idx: usize) {
-    let win = windows.remove(idx);
-    windows.push(win);
-}
-
-#[test]
-fn focus_window_moves_target_to_end() {
+fn move_to_top_moves_target_to_end_and_preserves_other_order() {
     let mut windows = vec![
-        WindowRect { x: 0, y: 0, w: 100, h: 100 },  // idx 0
-        WindowRect { x: 10, y: 10, w: 80, h: 60 },  // idx 1
-        WindowRect { x: 20, y: 20, w: 60, h: 40 },  // idx 2
+        WindowGeometry::new(1, 0, 50, 50),
+        WindowGeometry::new(2, 0, 50, 50),
+        WindowGeometry::new(3, 0, 50, 50),
     ];
-    focus_window(&mut windows, 0);
-    // Window originally at idx 0 (x=0) should now be last
-    assert_eq!(windows.last().unwrap().x, 0);
-    assert_eq!(windows.len(), 3);
+
+    move_to_top(&mut windows, 0);
+
+    assert_eq!(windows.iter().map(|win| win.x).collect::<Vec<_>>(), vec![2, 3, 1]);
 }
 
 #[test]
-fn focus_window_on_last_element_is_identity() {
-    let mut windows = vec![
-        WindowRect { x: 0, y: 0, w: 50, h: 50 },
-        WindowRect { x: 99, y: 99, w: 50, h: 50 },
-    ];
-    let last_x_before = windows.last().unwrap().x;
-    let last_idx = windows.len() - 1;
-    focus_window(&mut windows, last_idx);
-    assert_eq!(windows.last().unwrap().x, last_x_before);
-    assert_eq!(windows.len(), 2);
+fn cascade_position_uses_classic_offset_and_wraps() {
+    assert_eq!(cascade_position(0), (64, 64));
+    assert_eq!(cascade_position(32), (96, 96));
+    assert_eq!(next_cascade_offset(CASCADE_WRAP - 32), 0);
 }
 
 #[test]
-fn focus_window_preserves_other_order() {
-    let mut windows = vec![
-        WindowRect { x: 1, y: 0, w: 50, h: 50 },  // idx 0 — will be focused
-        WindowRect { x: 2, y: 0, w: 50, h: 50 },  // idx 1
-        WindowRect { x: 3, y: 0, w: 50, h: 50 },  // idx 2
-    ];
-    focus_window(&mut windows, 0);
-    // After focusing idx 0, order should be [2, 3, 1] by x
-    assert_eq!(windows[0].x, 2);
-    assert_eq!(windows[1].x, 3);
-    assert_eq!(windows[2].x, 1);
+fn output_config_uses_defaults_for_missing_or_invalid_values() {
+    assert_eq!(OutputConfig::from_env_values(None, None), OutputConfig::default());
+    assert_eq!(
+        OutputConfig::from_env_values(Some("wide".into()), Some("-1".into())),
+        OutputConfig::default()
+    );
 }
 
-// ---------------------------------------------------------------------------
-// prune_dead_windows logic (pure Vec retain, no live surfaces needed)
-// ---------------------------------------------------------------------------
+#[test]
+fn output_config_accepts_positive_env_values() {
+    assert_eq!(
+        OutputConfig::from_env_values(Some("1280".into()), Some("800".into())),
+        OutputConfig {
+            width: 1280,
+            height: 800,
+        }
+    );
+}
 
 #[test]
-fn prune_retains_alive_windows_and_removes_dead_ones() {
-    // Simulate alive/dead tracking with a bool flag — mirrors the
-    // `w.toplevel.alive()` predicate in RetroCompositor::prune_dead_windows.
-    struct TrackableWindow {
-        rect: WindowRect,
-        alive: bool,
-    }
-
-    let mut windows: Vec<TrackableWindow> = vec![
-        TrackableWindow { rect: WindowRect { x: 0, y: 0, w: 10, h: 10 }, alive: true },
-        TrackableWindow { rect: WindowRect { x: 1, y: 0, w: 10, h: 10 }, alive: false },
-        TrackableWindow { rect: WindowRect { x: 2, y: 0, w: 10, h: 10 }, alive: true },
-        TrackableWindow { rect: WindowRect { x: 3, y: 0, w: 10, h: 10 }, alive: false },
-    ];
-
-    windows.retain(|w| w.alive);
-
-    assert_eq!(windows.len(), 2);
-    assert_eq!(windows[0].rect.x, 0);
-    assert_eq!(windows[1].rect.x, 2);
+fn defaults_match_runtime_contract() {
+    assert_eq!((DEFAULT_OUTPUT_W, DEFAULT_OUTPUT_H), (1024, 768));
+    assert_eq!((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H), (640, 480));
 }
