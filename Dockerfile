@@ -86,6 +86,13 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     fonts-dejavu-core \
     mesa-vulkan-drivers \
     ca-certificates \
+    xvfb \
+    x11vnc \
+    dbus \
+    pulseaudio \
+    pulseaudio-utils \
+    x11-utils \
+    labwc \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/retro-shell /usr/local/bin/
@@ -96,4 +103,8 @@ COPY --from=builder /app/target/release/textedit /usr/local/bin/
 COPY --from=builder /app/target/release/terminal /usr/local/bin/
 COPY --from=builder /app/target/release/appstore /usr/local/bin/
 
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["retro-shell"]
