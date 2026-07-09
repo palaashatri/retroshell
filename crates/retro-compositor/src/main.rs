@@ -447,10 +447,27 @@ mod linux {
     impl ServerDndGrabHandler for RetroCompositor {
         fn send(
             &mut self,
-            _mime_type: String,
-            _fd: std::os::unix::io::OwnedFd,
+            mime_type: String,
+            fd: std::os::unix::io::OwnedFd,
             _seat: Seat<Self>,
         ) {
+            // TODO(T4): Implement full clipboard/DnD data transfer.
+            // For now, respond by closing the fd immediately (no data).
+            // This allows the protocol to proceed without hanging clients,
+            // but no actual clipboard data is transferred.
+            //
+            // To fully implement:
+            //   1. Wire SelectionHandler::send_selection() for clipboard/primary selections
+            //   2. Store DnD offer sources from drag_start/drop_start handlers
+            //   3. Look up the source for the current grab and serialize its data
+            //   4. Write the serialized data to the fd before closing
+            //
+            // Currently, we simply drop the fd which closes it, signaling EOF to the client.
+            drop(fd);
+            tracing::debug!(
+                "ServerDndGrabHandler::send called for mime_type: {} (placeholder implementation)",
+                mime_type
+            );
         }
     }
 
