@@ -207,9 +207,10 @@ impl AccessibilityTree {
 // AT-SPI2 registration via D-Bus (zbus)
 // ---------------------------------------------------------------------------
 
-/// Attempt to register this application with the AT-SPI2 registry daemon.
+/// Stub: does not register an org.a11y service or expose an Accessible tree.
 ///
-/// This is a best-effort call: if D-Bus is unavailable (headless CI, macOS,
+/// This is a placeholder that checks for D-Bus availability but does not
+/// perform AT-SPI2 registration. If D-Bus is unavailable (headless CI, macOS,
 /// no accessibility service running) the function returns `Ok(())` after
 /// logging a warning. It never panics.
 pub fn register_at_spi_app(app_name: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -221,7 +222,7 @@ pub fn register_at_spi_app(app_name: &str) -> Result<(), Box<dyn std::error::Err
         Ok(_conn) => {
             tracing::info!(
                 app = app_name,
-                "AT-SPI2 D-Bus session available (stub registration — no registry call made)"
+                "AT-SPI2 D-Bus session available (stub — no org.a11y service registered, no Accessible tree exposed)"
             );
             Ok(())
         }
