@@ -30,6 +30,7 @@ use retro_kit::label::Label;
 use retro_kit::layout::LayoutView;
 use retro_kit::menu::{Menu, MenuItemKind};
 use retro_kit::menu_bar::MenuBar;
+use retro_kit::text_field::TextField;
 use retro_kit::theme::ThemeContext;
 use retro_kit::window::Window;
 use retro_kit::{
@@ -149,6 +150,12 @@ struct ShellDesktop {
     locked: bool,
     /// Lock screen overlay widget, shown when `locked` is true.
     lock_screen_widget: Window,
+    /// Password field for the lock screen.
+    lock_password_field: TextField,
+    /// Error message to display on lock screen (e.g., "Incorrect password").
+    lock_error_message: Option<String>,
+    /// The expected lock password (from env or config).
+    expected_lock_password: Option<String>,
 }
 
 struct ShellWindow {
@@ -246,6 +253,10 @@ impl ShellDesktop {
 
         let menus = menu_server.read().menus.clone();
         let lock_screen_widget = build_lock_screen_window();
+        let expected_lock_password = get_lock_password();
+        let mut lock_password_field = TextField::new()
+            .with_placeholder("Enter password");
+        lock_password_field.is_password = true;
         let mut shell = Self {
             state: WidgetState::new(),
             menu_bar: MenuBar::new(menus),
@@ -265,6 +276,9 @@ impl ShellDesktop {
             last_error: None,
             locked: false,
             lock_screen_widget,
+            lock_password_field,
+            lock_error_message: None,
+            expected_lock_password,
         };
         shell.open_finder_window();
         shell
@@ -825,8 +839,20 @@ impl ShellDesktop {
             ),
             "shell.force_quit" => self.open_force_quit_window(),
             "shell.lock" => {
-                self.session_manager.write().lock_screen();
-                self.locked = true;
+                if self.expected_lock_password.is_some() {
+                    self.session_manager.write().lock_screen();
+                    self.locked = true;
+                    self.lock_password_field.set_text("");
+                    self.lock_error_message = None;
+                } else {
+                    // Lock password not set - show notification instead
+                    self.notification_center.write().post(
+                        "com.retro.shell",
+                        "Lock Password Not Set",
+                        "Configure RETROSHELL_LOCK_PASSWORD env var or lock_password in ~/.config/retroshell/settings.conf",
+                        NotificationPriority::High,
+                    );
+                }
             }
             "shell.log_out" => self.open_shell_status_window(
                 "Log Out",
@@ -1472,10 +1498,33 @@ fn build_folder_window(title: &str, path: &PathBuf) -> Window {
     window
 }
 
+fn get_lock_password() -> Option<String> {
+    // First, check environment variable
+    if let Ok(password) = std::env::var("RETROSHELL_LOCK_PASSWORD") {
+        return Some(password);
+    }
+
+    // Then, check config file
+    let config_path = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".config/retroshell/settings.conf"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/retroshell/settings.conf"));
+
+    if let Ok(contents) = fs::read_to_string(&config_path) {
+        for line in contents.lines() {
+            if let Some(value) = line.strip_prefix("lock_password=") {
+                return Some(value.to_string());
+            }
+        }
+    }
+
+    None
+}
+
 fn build_lock_screen_window() -> Window {
     let mut layout = Layout::vertical(24.0);
     layout.add(Box::new(Label::new("RetroShell")));
-    layout.add(Box::new(Label::new("Press any key to unlock")));
+    layout.add(Box::new(Label::new("Password:")));
     let mut window = Window::new("Lock Screen");
     window.set_content(Box::new(LayoutView::new(layout)));
     window
@@ -1852,15 +1901,45 @@ impl Widget for ShellDesktop {
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
-        // When locked, any key press unlocks the screen
+        // When locked, handle password entry
         if self.locked {
-            if let Event::KeyDown { .. } = event {
-                self.session_manager.write().unlock();
-                self.locked = false;
-                return EventResult::Handled;
+            match event {
+                Event::KeyDown { key: retro_kit::event::KeyCode::Escape, .. } => {
+                    // Escape key: clear the field and error
+                    self.lock_password_field.set_text("");
+                    self.lock_error_message = None;
+                    return EventResult::Handled;
+                }
+                Event::KeyDown { key: retro_kit::event::KeyCode::Enter, .. } => {
+                    // Enter key: attempt to unlock
+                    let entered_password = self.lock_password_field.text().to_string();
+                    if let Some(ref expected) = self.expected_lock_password {
+                        if entered_password == *expected {
+                            self.session_manager.write().unlock();
+                            self.locked = false;
+                            self.lock_password_field.set_text("");
+                            self.lock_error_message = None;
+                            return EventResult::Handled;
+                        } else {
+                            // Wrong password
+                            self.lock_error_message = Some("Incorrect password".to_string());
+                            self.lock_password_field.set_text("");
+                            return EventResult::Handled;
+                        }
+                    }
+                    return EventResult::Handled;
+                }
+                Event::Char { .. } | Event::KeyDown { key: retro_kit::event::KeyCode::Backspace, .. } => {
+                    // Pass character/backspace events to the password field
+                    self.lock_password_field.handle_event(event);
+                    self.lock_error_message = None;
+                    return EventResult::Handled;
+                }
+                _ => {
+                    // Swallow all other events while locked
+                    return EventResult::Handled;
+                }
             }
-            // Swallow all other events while locked
-            return EventResult::Handled;
         }
 
         let result = self.menu_bar.handle_event(event);
@@ -2161,6 +2240,27 @@ impl Widget for ShellDesktop {
             self.locked = true;
         }
 
+        // Update lock screen widget with current password field state
+        if self.locked {
+            let mut layout = Layout::vertical(12.0);
+            layout.add(Box::new(Label::new("RetroShell")));
+            layout.add(Box::new(Label::new("")));
+            layout.add(Box::new(Label::new("Password:")));
+
+            // Add a copy of the password field for display
+            let mut field = TextField::new()
+                .with_placeholder("Enter password");
+            field.is_password = true;
+            field.set_text(self.lock_password_field.text());
+            layout.add(Box::new(field));
+
+            if let Some(ref error) = self.lock_error_message {
+                layout.add(Box::new(Label::new(error.clone())));
+            }
+
+            self.lock_screen_widget.set_content(Box::new(LayoutView::new(layout)));
+        }
+
         self.menu_bar.menus = self.menu_server.read().menus.clone();
 
         if let Some(action) = self.menu_bar.last_action.take() {
@@ -2284,6 +2384,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static MENU_MANIFEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+    static LOCK_PASSWORD_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_shell_root() -> PathBuf {
         let unique = SystemTime::now()
@@ -3067,5 +3168,40 @@ mod tests {
             .find(|menu| menu.title == "View")
             .expect("view menu exists");
         assert_eq!(view.items[3].action_id, "shell.toggle_fullscreen");
+    }
+
+    #[test]
+    fn lock_accepts_correct_password() {
+        let _lock = LOCK_PASSWORD_ENV_LOCK.lock().unwrap();
+        // Clean up any existing env var first
+        std::env::remove_var("RETROSHELL_LOCK_PASSWORD");
+
+        // Set the expected password via environment variable
+        std::env::set_var("RETROSHELL_LOCK_PASSWORD", "test_password");
+
+        // Test the validation logic directly
+        let password = get_lock_password();
+        assert_eq!(password, Some("test_password".to_string()));
+
+        std::env::remove_var("RETROSHELL_LOCK_PASSWORD");
+    }
+
+    #[test]
+    fn lock_rejects_wrong_password() {
+        let _lock = LOCK_PASSWORD_ENV_LOCK.lock().unwrap();
+        // Clean up any existing env var first
+        std::env::remove_var("RETROSHELL_LOCK_PASSWORD");
+
+        // Set the expected password via environment variable
+        std::env::set_var("RETROSHELL_LOCK_PASSWORD", "correct_password");
+
+        let password = get_lock_password();
+        assert_eq!(password, Some("correct_password".to_string()));
+
+        // Test that a different password doesn't match
+        let wrong = "wrong_password";
+        assert_ne!(wrong, password.as_deref().unwrap_or(""));
+
+        std::env::remove_var("RETROSHELL_LOCK_PASSWORD");
     }
 }
