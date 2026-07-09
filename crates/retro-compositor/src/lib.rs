@@ -1,5 +1,8 @@
 //! Shared compositor policy that can be tested without a live Wayland server.
 
+pub mod hdr;
+pub mod frame_timing;
+
 pub const DEFAULT_OUTPUT_W: i32 = 1024;
 pub const DEFAULT_OUTPUT_H: i32 = 768;
 pub const DEFAULT_WINDOW_W: i32 = 640;
