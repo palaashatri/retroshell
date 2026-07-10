@@ -9,6 +9,80 @@ use std::path::{Path, PathBuf};
 use frame_timing::RefreshRate;
 use hdr::ColorSpace;
 
+/// How the session compositor process is expected to present.
+///
+/// Pure policy label for Phase A/B honesty: logs and entrypoints must say which
+/// path was chosen (nested X11 under Xvfb, real DRM/KMS session, or external
+/// labwc fallback) rather than implying DRM when only nested X11 is running.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum CompositorBackendKind {
+    /// Nested Smithay X11 backend (Xvfb / desktop X host). Needs DRI3 for GL.
+    NestedX11,
+    /// Session DRM/KMS (bare metal / seat) path when prefer_drm && dri3_ok.
+    SessionDrm,
+    /// External labwc process — not retro-compositor itself.
+    LabwcFallback,
+}
+
+/// Select compositor session backend kind from capability flags.
+///
+/// Precedence:
+/// 1. `force_labwc` → [`CompositorBackendKind::LabwcFallback`]
+/// 2. `prefer_drm && dri3_available` → [`CompositorBackendKind::SessionDrm`]
+/// 3. otherwise → [`CompositorBackendKind::NestedX11`]
+///
+/// Nested X11 remains the default when DRM is not preferred or DRI3 is missing;
+/// actual GL init may still fail without DRI3 (entrypoint then falls back to labwc).
+pub fn select_backend_kind(
+    prefer_drm: bool,
+    dri3_available: bool,
+    force_labwc: bool,
+) -> CompositorBackendKind {
+    if force_labwc {
+        return CompositorBackendKind::LabwcFallback;
+    }
+    if prefer_drm && dri3_available {
+        return CompositorBackendKind::SessionDrm;
+    }
+    CompositorBackendKind::NestedX11
+}
+
+/// Detect DRI3 availability override from `RETROSHELL_DRI3`.
+///
+/// - `1` / truthy → `Some(true)`
+/// - `0` / falsey → `Some(false)`
+/// - unset / unrecognised → `None` (caller should probe the real display)
+///
+/// Intended for tests and CI; production can fall back to X11 extension probe.
+pub fn detect_dri3_from_env() -> Option<bool> {
+    detect_dri3_from_env_value(std::env::var("RETROSHELL_DRI3").ok().as_deref())
+}
+
+/// Pure form of [`detect_dri3_from_env`] for unit tests.
+pub fn detect_dri3_from_env_value(value: Option<&str>) -> Option<bool> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    parse_bool_loose(value)
+}
+
+/// One-line honest label for logs (never claims DRM when nested / labwc).
+pub fn session_mode_summary(kind: CompositorBackendKind) -> String {
+    match kind {
+        CompositorBackendKind::NestedX11 => {
+            "session_mode=nested_x11 (not DRM/KMS; labwc may still be used if GL/DRI3 fails)"
+                .to_string()
+        }
+        CompositorBackendKind::SessionDrm => {
+            "session_mode=session_drm (DRM/KMS seat path)".to_string()
+        }
+        CompositorBackendKind::LabwcFallback => {
+            "session_mode=labwc_fallback (external labwc; not retro-compositor)".to_string()
+        }
+    }
+}
+
 pub const DEFAULT_OUTPUT_W: i32 = 1024;
 pub const DEFAULT_OUTPUT_H: i32 = 768;
 pub const DEFAULT_WINDOW_W: i32 = 640;
@@ -700,5 +774,73 @@ mod tests {
             selection_bytes_for_mime_with_text_fallback(&store, "image/png"),
             None
         );
+    }
+
+    #[test]
+    fn select_backend_kind_force_labwc_wins() {
+        assert_eq!(
+            select_backend_kind(true, true, true),
+            CompositorBackendKind::LabwcFallback
+        );
+        assert_eq!(
+            select_backend_kind(false, false, true),
+            CompositorBackendKind::LabwcFallback
+        );
+        assert_eq!(
+            select_backend_kind(true, false, true),
+            CompositorBackendKind::LabwcFallback
+        );
+    }
+
+    #[test]
+    fn select_backend_kind_session_drm_when_prefer_and_dri3() {
+        assert_eq!(
+            select_backend_kind(true, true, false),
+            CompositorBackendKind::SessionDrm
+        );
+    }
+
+    #[test]
+    fn select_backend_kind_nested_x11_otherwise() {
+        // prefer_drm but no DRI3 → nested (honest default; may fail GL later)
+        assert_eq!(
+            select_backend_kind(true, false, false),
+            CompositorBackendKind::NestedX11
+        );
+        // no prefer_drm even with DRI3 → nested
+        assert_eq!(
+            select_backend_kind(false, true, false),
+            CompositorBackendKind::NestedX11
+        );
+        assert_eq!(
+            select_backend_kind(false, false, false),
+            CompositorBackendKind::NestedX11
+        );
+    }
+
+    #[test]
+    fn detect_dri3_from_env_value_parses_0_1() {
+        assert_eq!(detect_dri3_from_env_value(Some("1")), Some(true));
+        assert_eq!(detect_dri3_from_env_value(Some("0")), Some(false));
+        assert_eq!(detect_dri3_from_env_value(Some("true")), Some(true));
+        assert_eq!(detect_dri3_from_env_value(Some("false")), Some(false));
+        assert_eq!(detect_dri3_from_env_value(None), None);
+        assert_eq!(detect_dri3_from_env_value(Some("")), None);
+        assert_eq!(detect_dri3_from_env_value(Some("maybe")), None);
+    }
+
+    #[test]
+    fn session_mode_summary_is_honest() {
+        let nested = session_mode_summary(CompositorBackendKind::NestedX11);
+        assert!(nested.contains("nested_x11"));
+        assert!(!nested.contains("session_drm"));
+
+        let drm = session_mode_summary(CompositorBackendKind::SessionDrm);
+        assert!(drm.contains("session_drm"));
+        assert!(drm.contains("DRM"));
+
+        let labwc = session_mode_summary(CompositorBackendKind::LabwcFallback);
+        assert!(labwc.contains("labwc"));
+        assert!(labwc.contains("fallback") || labwc.contains("not retro-compositor"));
     }
 }

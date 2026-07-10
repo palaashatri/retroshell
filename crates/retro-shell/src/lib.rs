@@ -3,6 +3,7 @@ pub mod audio;
 pub mod capture;
 pub mod desktop_manager;
 pub mod dock;
+pub mod fdo_notifications;
 pub mod launch_services;
 pub mod menu_server;
 pub mod network_manager;
@@ -22,6 +23,11 @@ pub use dock::Dock;
 pub use launch_services::LaunchServices;
 pub use menu_server::MenuServer;
 pub use network_manager::{get_network_status, NetworkStatus};
+pub use fdo_notifications::{
+    try_register_session_bus as try_register_fdo_notifications, NotificationDaemon,
+    NotificationPayload, NotificationServerState, NotifySendStyle, ServerInformation, Urgency,
+    FDO_NOTIFICATIONS_BUS_NAME, FDO_NOTIFICATIONS_INTERFACE, FDO_NOTIFICATIONS_PATH,
+};
 pub use notification_center::{NotificationCenter, NotificationPriority};
 pub use power::{battery_info, BatteryInfo};
 pub use session_clients::{
@@ -113,6 +119,9 @@ impl RetroShell {
         let shell = Self::new();
         shell.launch_services.write().scan_applications();
         shell.theme_manager.write().load_default();
+        // Best-effort FreeDesktop Notifications on the session bus (Linux).
+        // Failure is non-fatal: pure NotificationCenter still works in-process.
+        let _ = fdo_notifications::try_register_session_bus(shell.notification_center.clone());
         Ok(shell)
     }
 

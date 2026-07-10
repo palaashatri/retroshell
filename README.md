@@ -23,11 +23,16 @@ sold as a drop-in replacement. It is an advancing stack:
 password lock (Enter + correct secret only), eight themes, volume/network/battery
 status, screenshot/record, Docker noVNC DE path under labwc.
 
-**Remaining gaps vs KDE/GNOME-class:** display manager / multi-user session,
-xdg-desktop-portal suite, multi-monitor daily driver polish, external-app
-ecosystem, Orca-complete a11y, effects/overview, full NM connect UI. Nested Docker
-often cannot run `retro-compositor` (no DRI3) — that is an environment limit, not
-hidden success.
+**Session entry (Phase A MVP):** install `packaging/retroshell.desktop` into
+`/usr/share/wayland-sessions/` and put `scripts/start-retroshell` on `PATH`.
+The script prefers `retro-compositor`, falls back to **labwc** with an honest
+message, then execs `retro-shell`. See `packaging/README.md`. FreeDesktop
+`org.freedesktop.Notifications` is registered when a session bus is available.
+
+**Remaining gaps vs KDE/GNOME-class:** DRM session compositor (not NestedX11 only),
+seatd/logind, xdg-desktop-portal suite, layer-shell chrome, multi-monitor daily
+driver polish, Orca-complete a11y, full NM connect UI. Nested Docker often cannot
+run `retro-compositor` (no DRI3) — labwc is the gated path there.
 
 Would you use it as your **only** desktop tomorrow? Only if you accept a fixed app
 set and the labwc/GPU path you verified. Would you treat it as a DE project to

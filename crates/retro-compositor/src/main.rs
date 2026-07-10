@@ -30,9 +30,10 @@ mod linux {
     use std::time::Duration;
 
     use retro_compositor::{
-        cascade_position, layout_outputs_side_by_side, move_to_top, next_cascade_offset,
-        outputs_from_env, selection_bytes_for_mime_with_text_fallback, topmost_window_at,
-        total_output_size, DisplayPolicy, WindowGeometry, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+        cascade_position, detect_dri3_from_env, layout_outputs_side_by_side, move_to_top,
+        next_cascade_offset, outputs_from_env, select_backend_kind, selection_bytes_for_mime_with_text_fallback,
+        session_mode_summary, topmost_window_at, total_output_size, CompositorBackendKind,
+        DisplayPolicy, WindowGeometry, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
     };
     use retro_compositor::frame_timing::{FrameScheduler, RefreshRate};
     use retro_compositor::hdr::HdrCapabilities;
@@ -1176,6 +1177,35 @@ mod linux {
 
     pub fn run() -> anyhow::Result<()> {
         tracing_subscriber::fmt::init();
+
+        // ---- Backend mode honesty (session DRM vs nested X11 vs labwc) ----
+        // This binary is the nested-X11 / session candidate; labwc is chosen by
+        // start-retroshell/entrypoint when we die early. Log the selected kind.
+        let force_labwc = std::env::var_os("RETROSHELL_FORCE_LABWC").is_some()
+            || std::env::var("RETROSHELL_COMPOSITOR")
+                .map(|v| v.eq_ignore_ascii_case("labwc"))
+                .unwrap_or(false);
+        let prefer_drm = std::env::var("RETROSHELL_PREFER_DRM")
+            .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(std::path::Path::new("/dev/dri").exists());
+        let dri3 = detect_dri3_from_env().unwrap_or(prefer_drm && !force_labwc);
+        let backend_kind = select_backend_kind(prefer_drm, dri3, force_labwc);
+        let mode_line = session_mode_summary(backend_kind);
+        tracing::info!("compositor backend selection: {mode_line}");
+        eprintln!("[retro-compositor] backend: {mode_line}");
+        if matches!(backend_kind, CompositorBackendKind::LabwcFallback) {
+            anyhow::bail!(
+                "RETROSHELL_FORCE_LABWC / COMPOSITOR=labwc set; refusing to start nested compositor"
+            );
+        }
+        if matches!(backend_kind, CompositorBackendKind::SessionDrm) {
+            tracing::warn!(
+                "SessionDrm selected by policy; this build still uses nested X11 backend code path until DRM backend lands — running NestedX11 with honest log"
+            );
+            eprintln!(
+                "[retro-compositor] NOTE: SessionDrm preferred but runtime is NestedX11 until DRM backend ships"
+            );
+        }
 
         // ---- Display policy (HDR / VRR / refresh / color) ----
         let display_policy = DisplayPolicy::resolve();

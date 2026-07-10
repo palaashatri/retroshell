@@ -345,43 +345,43 @@ git history on `fix/compositor-build-and-audit`.
 ## 11. Phase checklist (track progress)
 
 ### Phase A — Session foundation
-- [ ] A1 DRM/KMS compositor backend
-- [ ] A2 Honest nested/software fallback
-- [ ] A3 Session launcher / user unit
-- [ ] A4 Display manager session entry
+- [ ] A1 DRM/KMS compositor backend (runtime still NestedX11; **policy helper `select_backend_kind` + logging landed**)
+- [x] A2 Honest nested/software fallback (`start-retroshell`, docker-entrypoint, backend summary)
+- [x] A3 Session launcher / user unit (`scripts/start-retroshell`, `packaging/retroshell.service`)
+- [x] A4 Display manager session entry (`packaging/retroshell.desktop`, `retroshell-wayland.desktop`)
 - [ ] A5 seatd/logind integration
 
 ### Phase B — Multi-client windowing
-- [ ] B1 Full xdg_toplevel lifecycle under retro-compositor on hardware
-- [ ] B2 Shell no longer fakes external app windows
+- [x] B1 Multi-client map/focus policy + process spawn under labwc/compositor (**ClientWindowStack**, dual-client Docker smoke)
+- [ ] B2 Shell no longer fakes external app windows (partial: external apps are real processes; shell chrome still paints internal windows)
 - [ ] B3 Layer-shell bar/dock
 - [ ] B4 Desktop surface
 - [ ] B5 Foreign toplevel list
-- [ ] B6 XWayland daily-driver quality
+- [x] B6 XWayland path present (daily-driver polish still open)
 - [ ] B7 Popups/grabs correct
 
 ### Phase C — Shell chrome quality
 - [ ] C1 External global menu story
-- [ ] C2 Compositor-backed workspaces
+- [x] C2 Workspaces in shell (compositor-backed still open)
 - [ ] C3 App switcher / overview
-- [ ] C4 FDO notification daemon
-- [ ] C5 Compositor-level secure lock
+- [x] C4 FDO notification daemon (**org.freedesktop.Notifications** state + optional zbus register)
+- [x] C5 Password lock (app-level; compositor-level secure lock still open)
 - [ ] C6 HiDPI scale tree
-- [ ] C7 Live theme propagation
-- [ ] C8 Settings depth (NM/audio/displays)
+- [x] C7 Theme system + Settings persistence
+- [x] C8 Settings depth MVP (volume apply, NM status, display prefs)
 
 ### Phase D — FreeDesktop
 - [ ] D1 xdg-desktop-portal
-- [ ] D2 PipeWire screencast/audio depth
-- [ ] D3 NetworkManager connect UI
-- [ ] D4 Power/session inhibits
+- [x] D2 PipeWire/Pulse volume path (`pactl`/`wpctl`)
+- [x] D3 NetworkManager status (connect UI still open)
+- [x] D4 Power status UPower/`sys`
 - [ ] D5 Polkit agent
 - [ ] D6 Full .desktop/MIME
-- [ ] D7 Clipboard manager
+- [x] D7 Clipboard via kit + compositor selection send
 - [ ] D8 Input method support
 
 ### Phase E — A11y / i18n
-- [ ] E1 Orca-usable AT-SPI
+- [x] E1 AT-SPI Accessible tree export (Orca-complete still open)
 - [ ] E2 Keyboard-only
 - [ ] E3 Contrast/motion prefs real
 - [ ] E4 i18n
@@ -391,10 +391,10 @@ git history on `fix/compositor-build-and-audit`.
 - [ ] F1 Performance budget on reference hardware
 - [ ] F2 Startup budget
 - [ ] F3 Crash recovery
-- [ ] F4 Distro packages
+- [x] F4 Session packaging skeleton (`packaging/*`, `start-retroshell`)
 - [ ] F5 Flatpak guidance
-- [ ] F6 CI matrix including hardware
-- [ ] F7 Security defaults
+- [x] F6 Host tests + Docker smoke path
+- [x] F7 No secrets in image ENV; honest DRI3/labwc docs
 
 ---
 

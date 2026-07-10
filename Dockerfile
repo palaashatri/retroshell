@@ -98,7 +98,9 @@ COPY --from=builder /app/target/release/terminal /usr/local/bin/
 COPY --from=builder /app/target/release/appstore /usr/local/bin/
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+COPY scripts/start-retroshell /usr/local/bin/start-retroshell
+COPY packaging/ /usr/share/retroshell/packaging/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/start-retroshell
 
 EXPOSE 6080
 

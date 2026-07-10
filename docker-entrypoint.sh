@@ -75,7 +75,8 @@ lock_password=${RETROSHELL_LOCK_PASSWORD:-retroshell}
 EOF
 fi
 
-# Try retro-compositor first; fall back to labwc if unavailable or crashes
+# Try retro-compositor first; fall back to labwc if unavailable or crashes.
+# Host / greeter sessions use scripts/start-retroshell (same preference order).
 : > /tmp/retro-compositor.log
 DISPLAY=:99 retro-compositor >>/tmp/retro-compositor.log 2>&1 &
 RETRO_COMPOSITOR_PID=$!
