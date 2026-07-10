@@ -71,6 +71,74 @@ impl SessionClientRegistry {
             .filter(|c| c.bundle_id == bundle_id)
             .count()
     }
+
+    /// Force-terminate a tracked client by pid (kill process + drop from registry).
+    /// Returns true if a registry entry was removed.
+    pub fn force_quit_pid(&mut self, pid: u32) -> bool {
+        let Some(mut client) = self.clients.remove(&pid) else {
+            // Still try kill in case the process is untracked.
+            let _ = kill_process(pid);
+            return false;
+        };
+        if let Some(mut child) = client.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        } else {
+            let _ = kill_process(pid);
+        }
+        true
+    }
+}
+
+/// Best-effort process kill (used for force-quit of multi-client apps).
+pub fn kill_process(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Parsed Force Quit list entry (must match formatting in shell Force Quit UI).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForceQuitTarget {
+    /// Shell-managed painted window, matched by title.
+    WindowTitle(String),
+    /// External multi-client process.
+    ClientPid(u32),
+}
+
+/// Parse list labels produced by Force Quit UI:
+/// - `window: {title}`
+/// - `client: {binary} (pid {n})`
+pub fn parse_force_quit_entry(entry: &str) -> Option<ForceQuitTarget> {
+    let entry = entry.trim();
+    if let Some(title) = entry.strip_prefix("window:") {
+        let title = title.trim();
+        if title.is_empty() {
+            return None;
+        }
+        return Some(ForceQuitTarget::WindowTitle(title.to_string()));
+    }
+    if let Some(rest) = entry.strip_prefix("client:") {
+        let rest = rest.trim();
+        // "... (pid 123)"
+        let pid_marker = "(pid ";
+        let start = rest.rfind(pid_marker)?;
+        let after = &rest[start + pid_marker.len()..];
+        let digits = after.strip_suffix(')')?.trim();
+        let pid: u32 = digits.parse().ok()?;
+        return Some(ForceQuitTarget::ClientPid(pid));
+    }
+    // Legacy bare title (pre multi-client list format)
+    if !entry.is_empty() {
+        return Some(ForceQuitTarget::WindowTitle(entry.to_string()));
+    }
+    None
 }
 
 /// Map bundle id → executable name (shipped first-party apps).
@@ -217,5 +285,43 @@ mod tests {
             Ok(p) => assert!(p.to_string_lossy().contains("finder")),
             Err(e) => assert!(e.contains("finder") || e.contains("Could not find")),
         }
+    }
+
+    #[test]
+    fn parse_force_quit_entry_window_and_client() {
+        assert_eq!(
+            parse_force_quit_entry("window: Retro HD"),
+            Some(ForceQuitTarget::WindowTitle("Retro HD".into()))
+        );
+        assert_eq!(
+            parse_force_quit_entry("client: finder (pid 203)"),
+            Some(ForceQuitTarget::ClientPid(203))
+        );
+        assert_eq!(
+            parse_force_quit_entry("client: settings (pid 42)"),
+            Some(ForceQuitTarget::ClientPid(42))
+        );
+        // Legacy bare title still resolves to a shell window target.
+        assert_eq!(
+            parse_force_quit_entry("About RetroShell"),
+            Some(ForceQuitTarget::WindowTitle("About RetroShell".into()))
+        );
+        assert_eq!(parse_force_quit_entry("window: "), None);
+        assert_eq!(parse_force_quit_entry("client: broken"), None);
+    }
+
+    #[test]
+    fn force_quit_pid_removes_registry_entry() {
+        let mut reg = SessionClientRegistry::new();
+        reg.register(ExternalClient {
+            bundle_id: "com.retro.finder".into(),
+            binary_name: "finder".into(),
+            pid: 999_001,
+            child: None,
+            launched_at_unix: 1,
+        });
+        assert!(reg.force_quit_pid(999_001));
+        assert_eq!(reg.len(), 0);
+        assert!(!reg.force_quit_pid(999_001));
     }
 }

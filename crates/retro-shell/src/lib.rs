@@ -25,7 +25,8 @@ pub use network_manager::{get_network_status, NetworkStatus};
 pub use notification_center::{NotificationCenter, NotificationPriority};
 pub use power::{battery_info, BatteryInfo};
 pub use session_clients::{
-    binary_name_for_bundle, resolve_app_binary, spawn_app_client, SessionClientRegistry,
+    binary_name_for_bundle, parse_force_quit_entry, resolve_app_binary, spawn_app_client,
+    ForceQuitTarget, SessionClientRegistry,
 };
 pub use session_manager::SessionManager;
 pub use theme_manager::ThemeManager;
@@ -733,6 +734,28 @@ impl ShellDesktop {
                     NotificationPriority::Normal,
                 );
             }
+        }
+    }
+
+    /// Apply a Force Quit list selection (window title or external client pid).
+    /// Returns true if a shell window closed or a client was force-quit.
+    fn apply_force_quit_entry(&mut self, entry: &str) -> bool {
+        match parse_force_quit_entry(entry) {
+            Some(ForceQuitTarget::WindowTitle(title)) => {
+                let target_id = self
+                    .windows
+                    .iter()
+                    .find(|w| w.window.title() == title)
+                    .map(|w| w.id);
+                if let Some(tid) = target_id {
+                    self.close_window(tid);
+                    true
+                } else {
+                    false
+                }
+            }
+            Some(ForceQuitTarget::ClientPid(pid)) => self.session_clients.force_quit_pid(pid),
+            None => false,
         }
     }
 
@@ -1856,18 +1879,6 @@ fn trash_dir() -> PathBuf {
         .join("Trash/files")
 }
 
-/// Launch helper used by tests and callers that only need Ok/Err (no PID tracking).
-fn launch_app_binary(bundle_id: &str) -> std::result::Result<(), String> {
-    session_clients::spawn_app_client(bundle_id).map(|mut client| {
-        // Detach from Child so dropping the result does not kill the process.
-        if let Some(child) = client.child.take() {
-            // Intentionally leak the Child handle so the process keeps running when
-            // the caller does not track it (legacy path). Prefer launch_external_app.
-            std::mem::forget(child);
-        }
-    })
-}
-
 impl Widget for ShellDesktop {
     fn widget_state(&self) -> &WidgetState {
         &self.state
@@ -2127,49 +2138,62 @@ impl Widget for ShellDesktop {
                 }
 
                 if self.windows[index].window.title() == "Force Quit" {
-                    if let Some(content) = self.windows[index].window.content.as_deref() {
-                        if let Some(layout_view) = content.as_any().downcast_ref::<LayoutView>() {
-                        if let Layout::Vertical { children, .. } = &layout_view.layout {
-                            if children.len() >= 3 {
-                                let list_view = children[1].as_any().downcast_ref::<ListView>();
-                                if let Some(btn_layout_widget) = children[2].as_any().downcast_ref::<LayoutView>() {
-                                    if let Layout::Horizontal { children: btn_children, .. } = &btn_layout_widget.layout {
-                                        if btn_children.len() >= 2 {
-                                            let cancel_btn = btn_children[0].as_any().downcast_ref::<Button>();
-                                            let force_quit_btn = btn_children[1].as_any().downcast_ref::<Button>();
-                                            
-                                            if let Some(btn) = cancel_btn {
-                                                if btn.rect().contains(*point) {
-                                                    self.close_window(window_id);
-                                                    return EventResult::Handled;
-                                                }
-                                            }
-                                            if let Some(btn) = force_quit_btn {
-                                                if btn.rect().contains(*point) {
-                                                    let mut target_window_id = None;
-                                                    if let Some(list) = list_view {
-                                                        if let Some(sel_idx) = list.selected_index {
-                                                            if let Some(target_title) = list.items.get(sel_idx) {
-                                                                target_window_id = self.windows.iter()
-                                                                    .find(|w| w.window.title() == target_title)
-                                                                    .map(|w| w.id);
-                                                            }
-                                                        }
-                                                    }
-                                                    if let Some(tid) = target_window_id {
-                                                        self.close_window(tid);
-                                                    }
-                                                    self.close_window(window_id);
-                                                    return EventResult::Handled;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    // Collect click outcome without holding a borrow across mut methods.
+                    enum FqClick {
+                        Cancel,
+                        Confirm { entry: Option<String> },
                     }
-                }
+                    let fq_click = (|| {
+                        let content = self.windows[index].window.content.as_deref()?;
+                        let layout_view = content.as_any().downcast_ref::<LayoutView>()?;
+                        let Layout::Vertical { children, .. } = &layout_view.layout else {
+                            return None;
+                        };
+                        if children.len() < 3 {
+                            return None;
+                        }
+                        let list_view = children[1].as_any().downcast_ref::<ListView>();
+                        let btn_layout_widget =
+                            children[2].as_any().downcast_ref::<LayoutView>()?;
+                        let Layout::Horizontal {
+                            children: btn_children,
+                            ..
+                        } = &btn_layout_widget.layout
+                        else {
+                            return None;
+                        };
+                        if btn_children.len() < 2 {
+                            return None;
+                        }
+                        let cancel_btn = btn_children[0].as_any().downcast_ref::<Button>()?;
+                        let force_quit_btn = btn_children[1].as_any().downcast_ref::<Button>()?;
+                        if cancel_btn.rect().contains(*point) {
+                            return Some(FqClick::Cancel);
+                        }
+                        if force_quit_btn.rect().contains(*point) {
+                            let entry = list_view.and_then(|list| {
+                                list.selected_index
+                                    .and_then(|i| list.items.get(i).cloned())
+                            });
+                            return Some(FqClick::Confirm { entry });
+                        }
+                        None
+                    })();
+
+                    match fq_click {
+                        Some(FqClick::Cancel) => {
+                            self.close_window(window_id);
+                            return EventResult::Handled;
+                        }
+                        Some(FqClick::Confirm { entry }) => {
+                            if let Some(entry) = entry {
+                                let _ = self.apply_force_quit_entry(&entry);
+                            }
+                            self.close_window(window_id);
+                            return EventResult::Handled;
+                        }
+                        None => {}
+                    }
                 }
 
                 if self.windows[index].window.title() == "Workspace" {
@@ -2993,6 +3017,46 @@ mod tests {
         } else {
             panic!("not vertical layout");
         }
+    }
+
+    #[test]
+    fn force_quit_apply_closes_listed_shell_window() {
+        let (mut desktop, _) = test_desktop();
+        // test_desktop opens a Finder-style "Retro HD" window among others.
+        let before = desktop.windows.len();
+        assert!(
+            desktop
+                .windows
+                .iter()
+                .any(|w| w.window.title() == "Retro HD"),
+            "precondition: Retro HD window present"
+        );
+
+        // Drive the same path Force Quit button uses (shipped apply helper).
+        assert!(desktop.apply_force_quit_entry("window: Retro HD"));
+        assert!(
+            !desktop
+                .windows
+                .iter()
+                .any(|w| w.window.title() == "Retro HD"),
+            "Retro HD must be closed after force quit"
+        );
+        assert!(desktop.windows.len() < before);
+    }
+
+    #[test]
+    fn force_quit_apply_kills_registered_client_pid() {
+        let (mut desktop, _) = test_desktop();
+        desktop.session_clients.register(session_clients::ExternalClient {
+            bundle_id: "com.retro.finder".into(),
+            binary_name: "finder".into(),
+            pid: 424_242,
+            child: None,
+            launched_at_unix: 1,
+        });
+        assert_eq!(desktop.session_clients.len(), 1);
+        assert!(desktop.apply_force_quit_entry("client: finder (pid 424242)"));
+        assert_eq!(desktop.session_clients.len(), 0);
     }
 
     #[test]
