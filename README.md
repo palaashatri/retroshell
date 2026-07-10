@@ -2,13 +2,40 @@
 
 A native Rust desktop environment inspired by Classic Mac OS, NeXTSTEP, and BeOS.
 
-RetroShell is not a Linux desktop theme. It is a custom GUI toolkit, application
-framework, and shell client written entirely in Rust. The shell renders its own windows
-using a wgpu graphics pipeline, ships a suite of first-party applications, and runs as
-a Wayland client. RetroShell ships a separate Smithay-based nested-X11 compositor
-(`retro-compositor`) that the entrypoint prefers; if unavailable it falls back to labwc.
-Note: the compositor requires DRI3 X11 extension and fails in nested Docker environments
-without GPU acceleration.
+## Honest positioning (read this first)
+
+**RetroShell is not a KDE or GNOME alternative.** It is not a daily-driver Linux
+desktop for general computing, and it should not be marketed as one.
+
+What it actually is today:
+
+- A **custom Rust GUI toolkit** (`retro-kit` / `retro-render`) and a **single
+  fullscreen winit/wgpu client** (`retro-shell`) that *paints* desktop UI
+  (icons, dock, menu bar, internal “windows”) into **one** surface.
+- A suite of **first-party apps** (Finder, TextEdit, Terminal, Settings, App Store)
+  that are real programs with real I/O — not mockups.
+- An optional **nested Smithay compositor** binary (`retro-compositor`) that the
+  Docker entrypoint **prefers**; if it dies (common under nested Xvfb without
+  DRI3), the stack **falls back to labwc** and the shell still runs as a Wayland
+  client.
+
+What it is **not**:
+
+- A multi-surface session compositor that owns login, seatd/logind, multi-monitor
+  layout for arbitrary apps, or a full FreeDesktop portal stack.
+- A replacement for Plasma, GNOME Shell, Cosmic, or Sway for everyday use.
+- A claim that internal shell windows are separate Wayland toplevels — they are
+  drawn rectangles inside the shell process.
+
+**Would a careful engineer use it as their only Linux desktop today?** No.
+**Would they use it as a research / retro UI / embedded-appliance shell with a
+fixed app set?** Possibly, after verifying the labwc (or GPU compositor) path on
+real hardware.
+
+Concrete blockers vs KDE/GNOME-class desktops: single-surface shell architecture;
+compositor often unavailable in nested Docker (DRI3); no full session manager;
+limited external-app integration; AT-SPI tree is minimal, not Orca-complete;
+Network/volume are status + preference paths, not full control panels.
 
 ---
 
@@ -44,18 +71,23 @@ without GPU acceleration.
 - [x] Drop shadows, pixel art icons, custom window chrome
 - [x] Docker VM with noVNC browser access for visual development
 
-### In progress / planned
+### Systems integration (implemented)
 
-- [x] retro-compositor — Smithay-based nested-X11 compositor (real GL rendering, protocol stubs)
-- [ ] Universal global menu for external apps (requires compositor session ownership)
-- [ ] Wayland wl_data_device protocol drag-and-drop between apps
-- [ ] Notification banners as floating visual overlays
-- [ ] HiDPI / display scale (UI uses logical pixels; no scale-factor tree yet)
-- [ ] HDR / VRR output control (preferences stored; compositor work required)
-- [ ] AT-SPI accessibility protocol integration
-- [ ] Multi-monitor support
-- [ ] Power management (UPower)
-- [ ] Screen recording / screenshot service
+- [x] retro-compositor — Smithay nested-X11 compositor (GL path; multi-output via `RETROSHELL_OUTPUTS`; XWayland best-effort; selection send)
+- [x] HDR / VRR **preferences** wired through Settings → compositor `FrameScheduler` / `HdrCapabilities` and client `DisplayRenderPolicy` (actual HDR pixels need HDR panel + GPU)
+- [x] AT-SPI2 registration with Accessible object tree on session/a11y bus when D-Bus is available
+- [x] NetworkManager status client (D-Bus) with Unavailable fallback
+- [x] PulseAudio/PipeWire volume via `pactl`/`wpctl`
+- [x] UPower battery with `/sys` fallback
+- [x] Screenshot + screen recording (menu actions; ffmpeg/import)
+- [x] Password lock screen (`RETROSHELL_LOCK_PASSWORD` or `lock_password` in settings.conf)
+
+### Still limited / environment-dependent
+
+- [ ] Universal global menu for arbitrary external apps
+- [ ] HiDPI scale-factor tree
+- [ ] Full Orca-grade AT-SPI coverage for every widget
+- [ ] Nested Docker-on-mac: compositor may lack DRI3 and fall back to labwc (DE still runs)
 
 ---
 
@@ -89,8 +121,9 @@ without GPU acceleration.
   └────┬───────────────────────────────────────────┘
        │
   ┌────▼───────────────────────────────────────────┐
-  │  labwc (Wayland compositor, today)             │
-  │  retro-compositor  (Smithay, future)           │
+  │  labwc (reliable Docker / nested fallback)     │
+  │  retro-compositor (Smithay nested-X11, preferred│
+  │    when DRI3/GL is available)                  │
   └────┬───────────────────────────────────────────┘
        │
   Linux kernel  DRM / KMS
@@ -432,3 +465,29 @@ See [LICENSE](LICENSE).
 ![About window](docs/screenshots/current-about-window.png)
 
 ![Force Quit window](docs/screenshots/current-force-quit-window.png)
+
+## Raspberry Pi / native Linux verification
+
+On a Pi or Linux box with GPU/Wayland deps:
+
+```bash
+chmod +x scripts/verify_pi.sh
+./scripts/verify_pi.sh
+```
+
+The script installs build deps (apt), runs `cargo test --workspace`, builds release
+binaries, and probes NetworkManager, audio, UPower, DRI, and AT-SPI. Compositor
+runtime is smoke-tested when `DISPLAY` or `WAYLAND_DISPLAY` is set.
+
+Docker (macOS host visual QA):
+
+```bash
+docker build -t retroshell .
+docker run -d --name rs -p 6080:6080 retroshell
+# open http://localhost:6080/vnc.html
+# Default lock password in image: retroshell (RETROSHELL_LOCK_PASSWORD)
+```
+
+If `retro-compositor` fails with missing DRI3 under nested Xvfb, the entrypoint
+falls back to labwc and still launches the full DE. Check `/tmp/retro-compositor.log`
+inside the container.

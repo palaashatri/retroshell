@@ -43,15 +43,30 @@ The directory is created automatically if it does not exist.
 
 | Key             | Values     | Default | Description                                |
 |-----------------|------------|---------|--------------------------------------------|
-| `hdr_request`   | `true` `false` | `false` | Request HDR output when available. Requires compositor-level color management — not yet active. |
-| `vrr_adaptive`  | `true` `false` | `false` | Prefer VRR/adaptive sync when available. Requires compositor-level presentation control — not yet active. |
+| `hdr_requested` | `true` `false` | `false` | Request HDR path when compositor/GPU reports support. Nested Xvfb stays SDR. |
+| `hdr_request`   | `true` `false` | `false` | Alias accepted by compositor policy loader. |
+| `vrr_adaptive`  | `true` `false` | `false` | Prefer adaptive present modes / VRR scheduling when available. |
+| `refresh_rate`  | `60hz` `120hz` `144hz` `165hz` `adaptive` | `60hz` | Target refresh / pacing. |
+| `color_space`   | `srgb` `rec2020` `scrgb` | `srgb` | Preferred color space policy. |
 
-#### Network (preferences only — no live network control)
+#### Lock screen
+
+| Key              | Values     | Default | Description |
+|------------------|------------|---------|-------------|
+| `lock_password`  | string     | unset   | Password required to unlock. Also set via `RETROSHELL_LOCK_PASSWORD`. If neither is set, lock is disabled. Settings app merge-save **preserves** this key. |
+
+#### Network
 
 | Key              | Values                | Default   | Description                        |
 |------------------|-----------------------|-----------|------------------------------------|
-| `wifi_enabled`   | `true` `false`        | `true`    | Stored preference                  |
-| `network_location` | any string          | `Automatic` | Stored location name              |
+| `network_profile`| `offline` `dhcp`      | `dhcp`    | Preferred profile in Settings. Live status also reads NetworkManager when available. |
+
+#### Sound (Settings app keys)
+
+| Key              | Values    | Default | Description                        |
+|------------------|-----------|---------|------------------------------------|
+| `sound_effects`  | `true`/`false` | `true` | Desktop sound effects preference |
+| `volume_percent` | `0`–`100` | `75`    | Applied via `pactl`/`wpctl` when available |
 
 #### Keyboard
 
