@@ -1,20 +1,28 @@
 pub mod application_registry;
+pub mod audio;
+pub mod capture;
 pub mod desktop_manager;
 pub mod dock;
 pub mod launch_services;
 pub mod menu_server;
+pub mod network_manager;
 pub mod notification_center;
+pub mod power;
 pub mod session_manager;
 pub mod theme_manager;
 pub mod window_manager;
 pub mod workspace_manager;
 
 pub use application_registry::ApplicationRegistry;
+pub use audio::{get_volume, set_volume};
+pub use capture::{start_recording, stop_recording, take_screenshot};
 pub use desktop_manager::DesktopManager;
 pub use dock::Dock;
 pub use launch_services::LaunchServices;
 pub use menu_server::MenuServer;
+pub use network_manager::{get_network_status, NetworkStatus};
 pub use notification_center::{NotificationCenter, NotificationPriority};
+pub use power::{battery_info, BatteryInfo};
 pub use session_manager::SessionManager;
 pub use theme_manager::ThemeManager;
 pub use window_manager::WindowManager;
@@ -870,6 +878,60 @@ impl ShellDesktop {
                 "Print",
                 ["Printing is not connected to a system print service yet.".to_string()],
             ),
+            "shell.screenshot" => match capture::take_screenshot() {
+                Ok(path) => {
+                    self.record_notification(
+                        "com.retro.shell",
+                        "Screenshot Saved",
+                        &format!("Saved to {}", path.display()),
+                        NotificationPriority::Normal,
+                    );
+                }
+                Err(err) => {
+                    self.record_notification(
+                        "com.retro.shell",
+                        "Screenshot Failed",
+                        &err.to_string(),
+                        NotificationPriority::High,
+                    );
+                }
+            },
+            "shell.start_recording" => match capture::start_recording() {
+                Ok(path) => {
+                    self.record_notification(
+                        "com.retro.shell",
+                        "Screen Recording",
+                        &format!("Recording to {}", path.display()),
+                        NotificationPriority::Normal,
+                    );
+                }
+                Err(err) => {
+                    self.record_notification(
+                        "com.retro.shell",
+                        "Recording Failed",
+                        &err.to_string(),
+                        NotificationPriority::High,
+                    );
+                }
+            },
+            "shell.stop_recording" => match capture::stop_recording() {
+                Ok(path) => {
+                    self.record_notification(
+                        "com.retro.shell",
+                        "Recording Saved",
+                        &format!("Saved to {}", path.display()),
+                        NotificationPriority::Normal,
+                    );
+                }
+                Err(err) => {
+                    self.record_notification(
+                        "com.retro.shell",
+                        "Stop Recording Failed",
+                        &err.to_string(),
+                        NotificationPriority::High,
+                    );
+                }
+            },
             "shell.undo" | "shell.redo" | "shell.cut" | "shell.copy" | "shell.paste"
             | "shell.select_all" => self.open_shell_status_window(
                 "Edit",
@@ -1178,17 +1240,8 @@ impl ShellDesktop {
         } else {
             "Memory: Not available".to_string()
         };
-        let battery_line = match session_manager::battery_percentage() {
-            Some(pct) => {
-                let status = if session_manager::is_on_battery() {
-                    "Discharging"
-                } else {
-                    "Charging"
-                };
-                format!("Battery: {}% ({})", pct, status)
-            }
-            None => "Battery: Not available".to_string(),
-        };
+        let battery_line = power::battery_info().summary_line();
+        let network_line = network_manager::get_network_status().summary_line();
 
         let mut layout = Layout::vertical(12.0);
         layout.add(Box::new(Label::new("          RetroShell   ")));
@@ -1201,6 +1254,7 @@ impl ShellDesktop {
         layout.add(Box::new(Label::new(format!("Uptime: {uptime}"))));
         layout.add(Box::new(Label::new(mem_line)));
         layout.add(Box::new(Label::new(battery_line)));
+        layout.add(Box::new(Label::new(network_line)));
 
         let mut btn_layout = Layout::horizontal(10.0);
         btn_layout.add(Box::new(Button::new("OK")));
@@ -1501,7 +1555,10 @@ fn build_folder_window(title: &str, path: &PathBuf) -> Window {
 fn get_lock_password() -> Option<String> {
     // First, check environment variable
     if let Ok(password) = std::env::var("RETROSHELL_LOCK_PASSWORD") {
-        return Some(password);
+        let password = password.trim();
+        if !password.is_empty() {
+            return Some(password.to_string());
+        }
     }
 
     // Then, check config file
@@ -1513,12 +1570,21 @@ fn get_lock_password() -> Option<String> {
     if let Ok(contents) = fs::read_to_string(&config_path) {
         for line in contents.lines() {
             if let Some(value) = line.strip_prefix("lock_password=") {
-                return Some(value.to_string());
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
             }
         }
     }
 
     None
+}
+
+/// Pure password check used by the lock screen (and unit tests).
+/// Empty entered password never unlocks. Unlock only on exact match.
+pub fn verify_lock_password(entered: &str, expected: &str) -> bool {
+    !entered.is_empty() && entered == expected
 }
 
 fn build_lock_screen_window() -> Window {
@@ -1911,17 +1977,16 @@ impl Widget for ShellDesktop {
                     return EventResult::Handled;
                 }
                 Event::KeyDown { key: retro_kit::event::KeyCode::Enter, .. } => {
-                    // Enter key: attempt to unlock
+                    // Enter key: attempt to unlock (never unlock on empty / wrong / non-Enter keys)
                     let entered_password = self.lock_password_field.text().to_string();
                     if let Some(ref expected) = self.expected_lock_password {
-                        if entered_password == *expected {
+                        if verify_lock_password(&entered_password, expected) {
                             self.session_manager.write().unlock();
                             self.locked = false;
                             self.lock_password_field.set_text("");
                             self.lock_error_message = None;
                             return EventResult::Handled;
                         } else {
-                            // Wrong password
                             self.lock_error_message = Some("Incorrect password".to_string());
                             self.lock_password_field.set_text("");
                             return EventResult::Handled;
@@ -3172,36 +3237,27 @@ mod tests {
 
     #[test]
     fn lock_accepts_correct_password() {
-        let _lock = LOCK_PASSWORD_ENV_LOCK.lock().unwrap();
-        // Clean up any existing env var first
-        std::env::remove_var("RETROSHELL_LOCK_PASSWORD");
-
-        // Set the expected password via environment variable
-        std::env::set_var("RETROSHELL_LOCK_PASSWORD", "test_password");
-
-        // Test the validation logic directly
-        let password = get_lock_password();
-        assert_eq!(password, Some("test_password".to_string()));
-
-        std::env::remove_var("RETROSHELL_LOCK_PASSWORD");
+        // Drive the shipped verify_lock_password used by Enter-to-unlock.
+        assert!(verify_lock_password("test_password", "test_password"));
+        assert!(verify_lock_password("s3cret!", "s3cret!"));
     }
 
     #[test]
     fn lock_rejects_wrong_password() {
+        assert!(!verify_lock_password("wrong", "correct_password"));
+        assert!(!verify_lock_password("", "correct_password"));
+        assert!(!verify_lock_password("correct_password", ""));
+        assert!(!verify_lock_password("Correct_password", "correct_password"));
+    }
+
+    #[test]
+    fn lock_password_env_is_source_for_expected_secret() {
         let _lock = LOCK_PASSWORD_ENV_LOCK.lock().unwrap();
-        // Clean up any existing env var first
         std::env::remove_var("RETROSHELL_LOCK_PASSWORD");
-
-        // Set the expected password via environment variable
-        std::env::set_var("RETROSHELL_LOCK_PASSWORD", "correct_password");
-
-        let password = get_lock_password();
-        assert_eq!(password, Some("correct_password".to_string()));
-
-        // Test that a different password doesn't match
-        let wrong = "wrong_password";
-        assert_ne!(wrong, password.as_deref().unwrap_or(""));
-
+        std::env::set_var("RETROSHELL_LOCK_PASSWORD", "env_secret");
+        let expected = get_lock_password().expect("env secret");
+        assert!(verify_lock_password("env_secret", &expected));
+        assert!(!verify_lock_password("other", &expected));
         std::env::remove_var("RETROSHELL_LOCK_PASSWORD");
     }
 }

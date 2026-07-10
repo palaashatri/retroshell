@@ -27,7 +27,13 @@ pub mod widget;
 pub mod window;
 pub mod workspace_grid_view;
 
-pub use accessibility::{AccessibilityNode, AccessibilityRole, AccessibilityState, AccessibilityTree};
+pub use accessibility::{
+    at_spi_registration_info, atspi_object_path, atspi_object_path_with_label,
+    default_accessibility_tree, register_at_spi_app, register_at_spi_app_with_tree,
+    role_to_atspi_role, sanitize_path_segment, state_to_atspi_bitset, AccessibilityNode,
+    AccessibilityRole, AccessibilityState, AccessibilityTree, AtSpiRegistrationInfo,
+    ATSPI_ACCESSIBLE_PREFIX, ATSPI_NULL_PATH, ATSPI_ROOT_PATH,
+};
 pub use button::Button;
 pub use clipboard::Clipboard;
 pub use dialog::Dialog;

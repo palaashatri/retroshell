@@ -194,17 +194,15 @@ fn escape_toml_string(value: &str) -> String {
 
 /// Read the battery charge level (0–100) from the system.
 /// Returns `None` on desktop machines, VMs, or any system without a battery.
+///
+/// Prefers UPower (Linux) then `/sys` BAT0 — see [`crate::power::battery_info`].
 pub fn battery_percentage() -> Option<u8> {
-    let capacity = std::fs::read_to_string("/sys/class/power_supply/BAT0/capacity").ok()?;
-    capacity.trim().parse::<u8>().ok()
+    crate::power::battery_percentage()
 }
 
 /// Returns `true` when the system is running on battery (i.e. not plugged in).
 pub fn is_on_battery() -> bool {
-    std::fs::read_to_string("/sys/class/power_supply/BAT0/status")
-        .ok()
-        .map(|status| status.trim().eq_ignore_ascii_case("Discharging"))
-        .unwrap_or(false)
+    crate::power::is_on_battery()
 }
 
 /// Returns the machine hostname, falling back to `"retroshell"` if unavailable.

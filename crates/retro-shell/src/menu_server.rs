@@ -43,7 +43,44 @@ impl MenuServer {
             app_menus: HashMap::new(),
         };
         server.setup_default_menus();
+        server.refresh_status_items();
         server
+    }
+
+    /// Refresh menu-bar status items for battery and network (best-effort).
+    pub fn refresh_status_items(&mut self) {
+        use crate::network_manager::get_network_status;
+        use crate::power::battery_info;
+
+        self.status_items.clear();
+
+        let battery = battery_info();
+        let battery_label = match battery.percentage {
+            Some(pct) => format!("🔋 {pct}%"),
+            None => "🔋 —".to_string(),
+        };
+        self.status_items.push(StatusItem {
+            id: "battery".to_string(),
+            label: battery_label,
+            icon: Some("battery".to_string()),
+            priority: 10,
+        });
+
+        let net = get_network_status();
+        let net_label = if net.available {
+            match &net.primary_connection_name {
+                Some(name) if !name.is_empty() => format!("📶 {name}"),
+                _ => format!("📶 {}", net.state.as_str()),
+            }
+        } else {
+            "📶 —".to_string()
+        };
+        self.status_items.push(StatusItem {
+            id: "network".to_string(),
+            label: net_label,
+            icon: Some("network".to_string()),
+            priority: 20,
+        });
     }
 
     fn setup_default_menus(&mut self) {
@@ -182,6 +219,25 @@ impl MenuServer {
                     meta: true,
                 },
             );
+        file_menu.add_separator();
+        file_menu
+            .add_action("Take Screenshot")
+            .with_action("shell.screenshot")
+            .with_shortcut(
+                KeyCode::Key3,
+                Modifiers {
+                    shift: true,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+        file_menu
+            .add_action("Start Screen Recording")
+            .with_action("shell.start_recording");
+        file_menu
+            .add_action("Stop Screen Recording")
+            .with_action("shell.stop_recording");
 
         let mut edit_menu = Menu::new("Edit");
         edit_menu

@@ -39,36 +39,10 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 
 WORKDIR /app
 
-# Copy manifests first for dependency caching
-COPY Cargo.toml Cargo.lock ./
-COPY crates/retro-render/Cargo.toml crates/retro-render/
-COPY crates/retro-kit/Cargo.toml crates/retro-kit/
-COPY crates/retro-shell/Cargo.toml crates/retro-shell/
-COPY crates/retro-bus/Cargo.toml crates/retro-bus/
-COPY crates/retro-sdk/Cargo.toml crates/retro-sdk/
-COPY apps/finder/Cargo.toml apps/finder/
-COPY apps/settings/Cargo.toml apps/settings/
-COPY apps/textedit/Cargo.toml apps/textedit/
-COPY apps/terminal/Cargo.toml apps/terminal/
-COPY apps/appstore/Cargo.toml apps/appstore/
-
-# Create dummy build files to cache dependencies
-RUN mkdir -p crates/retro-render/src crates/retro-kit/src crates/retro-shell/src \
-    crates/retro-bus/src crates/retro-sdk/src \
-    apps/finder/src apps/settings/src apps/textedit/src apps/terminal/src apps/appstore/src \
-    crates/retro-render/shaders \
-    && for d in crates/retro-render crates/retro-kit crates/retro-shell crates/retro-bus crates/retro-sdk \
-               apps/finder apps/settings apps/textedit apps/terminal apps/appstore; do \
-        echo "fn main() {}" > "$d/src/main.rs"; \
-    done \
-    && touch crates/retro-render/src/lib.rs crates/retro-kit/src/lib.rs \
-             crates/retro-bus/src/lib.rs crates/retro-sdk/src/lib.rs \
-    && cargo build --release 2>/dev/null || true
-
-# Copy actual source code
+# Full source copy + release build.
+# (Avoids the old "dummy lib.rs dep-cache" pattern, which left empty rlibs that
+# cargo could reuse and break downstream crates with missing-module errors.)
 COPY . .
-
-# Build everything
 RUN cargo build --release --workspace
 
 FROM ubuntu:24.04 AS runtime
@@ -76,23 +50,43 @@ FROM ubuntu:24.04 AS runtime
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
     libwayland-client0 \
     libwayland-egl1 \
+    libwayland-server0 \
     libvulkan1 \
     libegl1 \
+    libgles2 \
     libxkbcommon0 \
+    libxkbcommon-x11-0 \
     libdbus-1-3 \
     libfontconfig1 \
     libfreetype6 \
     fontconfig \
     fonts-dejavu-core \
     mesa-vulkan-drivers \
+    mesa-utils \
+    libgl1-mesa-dri \
+    libgbm1 \
+    libdrm2 \
+    libinput10 \
+    libudev1 \
     ca-certificates \
     xvfb \
     x11vnc \
+    x11-utils \
+    x11-xserver-utils \
+    xdotool \
     dbus \
+    dbus-x11 \
     pulseaudio \
     pulseaudio-utils \
-    x11-utils \
     labwc \
+    novnc \
+    websockify \
+    imagemagick \
+    ffmpeg \
+    xwayland \
+    at-spi2-core \
+    at-spi2-common \
+    libatspi2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/retro-shell /usr/local/bin/
@@ -105,6 +99,15 @@ COPY --from=builder /app/target/release/appstore /usr/local/bin/
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+EXPOSE 6080
+
+ENV WGPU_BACKEND=vulkan
+ENV WGPU_POWER_PREF=low-power
+ENV LIBGL_ALWAYS_SOFTWARE=1
+ENV MESA_LOADER_DRIVER_OVERRIDE=softpipe
+# Default lock password is set in docker-entrypoint.sh when seeding settings.conf
+# (not via ENV) so secrets are not baked into the image config layer.
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["retro-shell"]

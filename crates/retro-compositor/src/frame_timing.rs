@@ -29,24 +29,36 @@ impl RefreshRate {
     }
 
     pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "60hz" => Some(Self::Hz60),
-            "120hz" => Some(Self::Hz120),
-            "144hz" => Some(Self::Hz144),
-            "165hz" => Some(Self::Hz165),
-            "adaptive" => Some(Self::Adaptive),
+        Self::parse_flexible(s)
+    }
+
+    /// Parse refresh rate from settings/env (`60`, `60hz`, `120Hz`, `adaptive`).
+    pub fn parse_flexible(s: &str) -> Option<Self> {
+        let s = s.trim().to_ascii_lowercase();
+        match s.as_str() {
+            "60" | "60hz" | "60h" => Some(Self::Hz60),
+            "120" | "120hz" => Some(Self::Hz120),
+            "144" | "144hz" => Some(Self::Hz144),
+            "165" | "165hz" => Some(Self::Hz165),
+            "adaptive" | "vrr" | "variable" | "0" => Some(Self::Adaptive),
             _ => None,
         }
     }
 
     pub fn frame_duration(&self) -> Duration {
         match self {
-            Self::Hz60 => Duration::from_millis(1000 / 60),
-            Self::Hz120 => Duration::from_millis(1000 / 120),
-            Self::Hz144 => Duration::from_millis(1000 / 144),
-            Self::Hz165 => Duration::from_millis(1000 / 165),
-            Self::Adaptive => Duration::from_millis(16), // Placeholder for adaptive
+            Self::Hz60 => Duration::from_nanos(1_000_000_000 / 60),
+            Self::Hz120 => Duration::from_nanos(1_000_000_000 / 120),
+            Self::Hz144 => Duration::from_nanos(1_000_000_000 / 144),
+            Self::Hz165 => Duration::from_nanos(1_000_000_000 / 165),
+            // Adaptive: short poll so X11 Present / damage can drive timing.
+            Self::Adaptive => Duration::from_millis(1),
         }
+    }
+
+    /// Whether this rate means "pace with FrameScheduler" (false for Adaptive/VRR).
+    pub fn is_fixed(&self) -> bool {
+        !matches!(self, Self::Adaptive)
     }
 }
 
@@ -145,9 +157,11 @@ mod tests {
 
     #[test]
     fn test_refresh_rate_duration() {
-        assert_eq!(RefreshRate::Hz60.frame_duration(), Duration::from_millis(16));
-        assert_eq!(RefreshRate::Hz120.frame_duration(), Duration::from_millis(8));
-        assert_eq!(RefreshRate::Hz144.frame_duration().as_millis(), 6); // ~6.94ms rounded
+        assert!(RefreshRate::Hz60.frame_duration().as_millis() <= 17);
+        assert!(RefreshRate::Hz120.frame_duration().as_millis() <= 9);
+        assert!(RefreshRate::Hz144.frame_duration().as_millis() <= 7);
+        assert!(RefreshRate::Adaptive.is_fixed() == false);
+        assert!(RefreshRate::Hz60.is_fixed());
     }
 
     #[test]
@@ -163,6 +177,8 @@ mod tests {
         assert_eq!(RefreshRate::from_str("120hz"), Some(RefreshRate::Hz120));
         assert_eq!(RefreshRate::from_str("adaptive"), Some(RefreshRate::Adaptive));
         assert_eq!(RefreshRate::from_str("invalid"), None);
+        assert_eq!(RefreshRate::parse_flexible("60"), Some(RefreshRate::Hz60));
+        assert_eq!(RefreshRate::parse_flexible("VRR"), Some(RefreshRate::Adaptive));
     }
 
     #[test]

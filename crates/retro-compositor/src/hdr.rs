@@ -1,7 +1,5 @@
 //! HDR and color space management for the compositor.
 
-use std::collections::HashMap;
-
 /// Supported color spaces for output and surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ColorSpace {
@@ -23,10 +21,15 @@ impl ColorSpace {
     }
 
     pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "srgb" => Some(Self::SRgb),
-            "rec2020" => Some(Self::Rec2020),
-            "scrgb" => Some(Self::ScRgb),
+        Self::from_str_flexible(s)
+    }
+
+    /// Case-insensitive parse; accepts aliases used in settings/env.
+    pub fn from_str_flexible(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "srgb" | "s-rgb" | "srgb8" => Some(Self::SRgb),
+            "rec2020" | "bt2020" | "bt.2020" => Some(Self::Rec2020),
+            "scrgb" | "sc-rgb" | "linear" => Some(Self::ScRgb),
             _ => None,
         }
     }
@@ -54,25 +57,17 @@ impl Default for HdrCapabilities {
 }
 
 impl HdrCapabilities {
-    /// Detect HDR capabilities from the GPU.
-    /// Returns capabilities detected; falls back to SDR if HDR unavailable.
+    /// Detect HDR capabilities from the GPU / display path.
+    ///
+    /// Nested X11 / Xvfb / software GL has no honest HDR path. Until a real
+    /// DRM/KMS connector probe exists, this always reports `hdr_supported = false`.
+    /// Callers may still *request* HDR via policy; [`apply_request`] refuses honestly.
     pub fn detect() -> Self {
-        // In a real implementation, query wgpu adapter for:
-        // - RGBA16F support (Rec2020, scRGB)
-        // - HDR texture formats
-        // - Compositor color space negotiation capability
-        //
-        // For now: default to SDR (sRGB) with infrastructure for future GPU detection.
-        let hdr_supported = false; // Placeholder; detect GPU in real implementation
-        let supported_color_spaces = if hdr_supported {
-            vec![ColorSpace::SRgb, ColorSpace::Rec2020, ColorSpace::ScRgb]
-        } else {
-            vec![ColorSpace::SRgb]
-        };
-
+        // Future: query DRM connector HDR static metadata / EGL colorspace
+        // extensions / ten-bit fb formats. Nested X11 backend cannot claim that.
         Self {
-            hdr_supported,
-            supported_color_spaces,
+            hdr_supported: false,
+            supported_color_spaces: vec![ColorSpace::SRgb],
             current_color_space: ColorSpace::SRgb,
         }
     }
@@ -85,6 +80,26 @@ impl HdrCapabilities {
         } else {
             false
         }
+    }
+
+    /// Apply a client/user policy request. Returns whether the requested color
+    /// space was applied. HDR request is ignored when `hdr_supported` is false.
+    pub fn apply_request(&mut self, hdr_requested: bool, color_space: ColorSpace) -> bool {
+        if hdr_requested && !self.hdr_supported {
+            // Keep SDR; widen supported list is not honest without hardware.
+            return self.set_color_space(ColorSpace::SRgb);
+        }
+        if hdr_requested && self.hdr_supported {
+            if !self.supported_color_spaces.contains(&ColorSpace::Rec2020) {
+                self.supported_color_spaces
+                    .push(ColorSpace::Rec2020);
+            }
+            if !self.supported_color_spaces.contains(&ColorSpace::ScRgb) {
+                self.supported_color_spaces.push(ColorSpace::ScRgb);
+            }
+        }
+        self.set_color_space(color_space)
+            || self.set_color_space(ColorSpace::SRgb)
     }
 }
 
