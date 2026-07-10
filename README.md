@@ -2,40 +2,36 @@
 
 A native Rust desktop environment inspired by Classic Mac OS, NeXTSTEP, and BeOS.
 
-## Honest positioning (read this first)
+## Positioning (ambition vs reality)
 
-**RetroShell is not a KDE or GNOME alternative.** It is not a daily-driver Linux
-desktop for general computing, and it should not be marketed as one.
+**Ambition:** RetroShell aims at a **proper multi-client Linux desktop session**
+(compositor-managed app windows, shell chrome, system integration) — in the same
+*category* as a desktop environment, not a theme.
 
-What it actually is today:
+**Reality today (honest):** it is **not** Plasma/GNOME parity and should not be
+sold as a drop-in replacement. It is an advancing stack:
 
-- A **custom Rust GUI toolkit** (`retro-kit` / `retro-render`) and a **single
-  fullscreen winit/wgpu client** (`retro-shell`) that *paints* desktop UI
-  (icons, dock, menu bar, internal “windows”) into **one** surface.
-- A suite of **first-party apps** (Finder, TextEdit, Terminal, Settings, App Store)
-  that are real programs with real I/O — not mockups.
-- An optional **nested Smithay compositor** binary (`retro-compositor`) that the
-  Docker entrypoint **prefers**; if it dies (common under nested Xvfb without
-  DRI3), the stack **falls back to labwc** and the shell still runs as a Wayland
-  client.
+| Layer | Live today | Structural / in progress |
+|---|---|---|
+| Shell chrome | Dock, menu bar, workspaces, notifications, password lock | — |
+| First-party apps | Real processes with real I/O; **spawned as separate clients** tracked by `SessionClientRegistry` | Apps need a working Wayland (or X11) compositor socket |
+| Compositor | Prefers `retro-compositor`; **labwc fallback** when DRI3 missing (Docker-on-mac) | Full DRM/KMS session, DM greeter |
+| Multi-client stacking | `ClientWindowStack` (map/focus/z-order) in compositor policy + unit tests | Live multi-window under GPU compositor on Pi/native |
+| Shell-internal UI | Folder/About/Force Quit still **painted** into the shell surface | Migrating remaining chrome off single-surface paint |
 
-What it is **not**:
+**What works for desktop work right now:** launch first-party apps as processes,
+password lock (Enter + correct secret only), eight themes, volume/network/battery
+status, screenshot/record, Docker noVNC DE path under labwc.
 
-- A multi-surface session compositor that owns login, seatd/logind, multi-monitor
-  layout for arbitrary apps, or a full FreeDesktop portal stack.
-- A replacement for Plasma, GNOME Shell, Cosmic, or Sway for everyday use.
-- A claim that internal shell windows are separate Wayland toplevels — they are
-  drawn rectangles inside the shell process.
+**Remaining gaps vs KDE/GNOME-class:** display manager / multi-user session,
+xdg-desktop-portal suite, multi-monitor daily driver polish, external-app
+ecosystem, Orca-complete a11y, effects/overview, full NM connect UI. Nested Docker
+often cannot run `retro-compositor` (no DRI3) — that is an environment limit, not
+hidden success.
 
-**Would a careful engineer use it as their only Linux desktop today?** No.
-**Would they use it as a research / retro UI / embedded-appliance shell with a
-fixed app set?** Possibly, after verifying the labwc (or GPU compositor) path on
-real hardware.
-
-Concrete blockers vs KDE/GNOME-class desktops: single-surface shell architecture;
-compositor often unavailable in nested Docker (DRI3); no full session manager;
-limited external-app integration; AT-SPI tree is minimal, not Orca-complete;
-Network/volume are status + preference paths, not full control panels.
+Would you use it as your **only** desktop tomorrow? Only if you accept a fixed app
+set and the labwc/GPU path you verified. Would you treat it as a DE project to
+grow? **Yes — that is the stated direction.**
 
 ---
 
@@ -73,21 +69,20 @@ Network/volume are status + preference paths, not full control panels.
 
 ### Systems integration (implemented)
 
-- [x] retro-compositor — Smithay nested-X11 compositor (GL path; multi-output via `RETROSHELL_OUTPUTS`; XWayland best-effort; selection send)
-- [x] HDR / VRR **preferences** wired through Settings → compositor `FrameScheduler` / `HdrCapabilities` and client `DisplayRenderPolicy` (actual HDR pixels need HDR panel + GPU)
-- [x] AT-SPI2 registration with Accessible object tree on session/a11y bus when D-Bus is available
-- [x] NetworkManager status client (D-Bus) with Unavailable fallback
-- [x] PulseAudio/PipeWire volume via `pactl`/`wpctl`
-- [x] UPower battery with `/sys` fallback
-- [x] Screenshot + screen recording (menu actions; ffmpeg/import)
-- [x] Password lock screen (`RETROSHELL_LOCK_PASSWORD` or `lock_password` in settings.conf)
+- [x] Multi-client launch: first-party apps spawn as **separate processes** with PID registry (`session_clients`)
+- [x] Compositor policy: `ClientWindowStack` map/focus/z-order; multi-output; selection send; HDR/VRR policy
+- [x] retro-compositor preferred; **labwc fallback** documented when DRI3 unavailable
+- [x] AT-SPI2 Accessible tree export when D-Bus is available
+- [x] NetworkManager status, volume get/set, UPower/`/sys` battery, screenshot/record
+- [x] Password lock (`RETROSHELL_LOCK_PASSWORD` / `lock_password`); eight themes; conf merge
 
 ### Still limited / environment-dependent
 
 - [ ] Universal global menu for arbitrary external apps
 - [ ] HiDPI scale-factor tree
-- [ ] Full Orca-grade AT-SPI coverage for every widget
-- [ ] Nested Docker-on-mac: compositor may lack DRI3 and fall back to labwc (DE still runs)
+- [ ] Full Orca-grade AT-SPI for every widget
+- [ ] Nested Docker-on-mac DRI3 / live retro-compositor (labwc path remains the gated success there)
+- [ ] Display manager, portals, multi-monitor daily-driver polish
 
 ---
 

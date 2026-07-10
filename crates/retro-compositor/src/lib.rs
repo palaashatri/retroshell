@@ -353,6 +353,117 @@ pub fn move_to_top<T>(windows: &mut Vec<T>, idx: usize) {
     windows.push(window);
 }
 
+/// Identifier for a compositor-managed client surface (independent process).
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ClientSurfaceId(pub u64);
+
+/// One mapped client window in compositor space (multi-client session model).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MappedClientWindow {
+    pub id: ClientSurfaceId,
+    pub title: String,
+    pub geometry: WindowGeometry,
+    /// Process id of the Wayland/X11 client when known (0 = unknown).
+    pub pid: u32,
+}
+
+/// Focus and z-order stack for independent client windows.
+///
+/// Back is bottom; front is topmost / focused. Pure policy — used by the
+/// Linux compositor runtime and host unit tests.
+#[derive(Clone, Debug, Default)]
+pub struct ClientWindowStack {
+    windows: Vec<MappedClientWindow>,
+    next_id: u64,
+    cascade_offset: i32,
+}
+
+impl ClientWindowStack {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.windows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.windows.is_empty()
+    }
+
+    pub fn windows(&self) -> &[MappedClientWindow] {
+        &self.windows
+    }
+
+    /// Map a new client surface; returns its id. Cascades position like classic DE.
+    pub fn map_window(&mut self, title: impl Into<String>, pid: u32) -> ClientSurfaceId {
+        let (x, y) = cascade_position(self.cascade_offset);
+        self.cascade_offset = next_cascade_offset(self.cascade_offset);
+        self.map_window_at(
+            title,
+            pid,
+            WindowGeometry::new(x, y, DEFAULT_WINDOW_W, DEFAULT_WINDOW_H),
+        )
+    }
+
+    /// Map a client at an explicit geometry (tests / multi-output placement).
+    pub fn map_window_at(
+        &mut self,
+        title: impl Into<String>,
+        pid: u32,
+        geometry: WindowGeometry,
+    ) -> ClientSurfaceId {
+        let id = ClientSurfaceId(self.next_id);
+        self.next_id = self.next_id.saturating_add(1);
+        self.windows.push(MappedClientWindow {
+            id: id.clone(),
+            title: title.into(),
+            geometry,
+            pid,
+        });
+        id
+    }
+
+    /// Remove a mapped window; returns true if found.
+    pub fn unmap(&mut self, id: &ClientSurfaceId) -> bool {
+        if let Some(idx) = self.windows.iter().position(|w| &w.id == id) {
+            self.windows.remove(idx);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Focus / raise by id (moves to top of z-order).
+    pub fn focus(&mut self, id: &ClientSurfaceId) -> bool {
+        if let Some(idx) = self.windows.iter().position(|w| &w.id == id) {
+            move_to_top(&mut self.windows, idx);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Focus topmost window containing the point (click-to-raise).
+    pub fn focus_at(&mut self, x: f64, y: f64) -> Option<ClientSurfaceId> {
+        let geos: Vec<WindowGeometry> = self.windows.iter().map(|w| w.geometry).collect();
+        let idx = topmost_window_at(&geos, x, y)?;
+        let id = self.windows[idx].id.clone();
+        move_to_top(&mut self.windows, idx);
+        Some(id)
+    }
+
+    /// Currently focused window (top of stack), if any.
+    pub fn focused(&self) -> Option<&MappedClientWindow> {
+        self.windows.last()
+    }
+
+    /// Z-order from bottom to top (ids only).
+    pub fn z_order_ids(&self) -> Vec<ClientSurfaceId> {
+        self.windows.iter().map(|w| w.id.clone()).collect()
+    }
+}
+
 fn parse_positive_i32(value: Option<String>) -> Option<i32> {
     value?.parse::<i32>().ok().filter(|value| *value > 0)
 }
@@ -493,6 +604,51 @@ mod tests {
 
         let fallback = outputs_from_env_values(Some("garbage".into()), None, None);
         assert_eq!(fallback, vec![OutputConfig::default()]);
+    }
+
+    #[test]
+    fn client_window_stack_map_focus_z_order() {
+        let mut stack = ClientWindowStack::new();
+        // Non-overlapping geometries so click-to-raise is unambiguous.
+        let a = stack.map_window_at(
+            "Finder",
+            101,
+            WindowGeometry::new(0, 0, 100, 100),
+        );
+        let b = stack.map_window_at(
+            "Terminal",
+            102,
+            WindowGeometry::new(200, 0, 100, 100),
+        );
+        assert_eq!(stack.len(), 2);
+        assert_eq!(stack.focused().map(|w| w.id.clone()), Some(b.clone()));
+        assert_eq!(stack.z_order_ids(), vec![a.clone(), b.clone()]);
+
+        assert!(stack.focus(&a));
+        assert_eq!(stack.focused().map(|w| w.id.clone()), Some(a.clone()));
+        assert_eq!(stack.z_order_ids(), vec![b.clone(), a.clone()]);
+
+        let hit = stack.focus_at(210.0, 10.0).expect("hit terminal");
+        assert_eq!(hit, b);
+        assert_eq!(
+            stack.focused().map(|w| w.title.as_str()),
+            Some("Terminal")
+        );
+
+        assert!(stack.unmap(&a));
+        assert_eq!(stack.len(), 1);
+        assert!(!stack.unmap(&a));
+    }
+
+    #[test]
+    fn client_window_stack_independent_of_shell_paint_rects() {
+        // Two clients → two mapped surfaces in compositor stack (multi-client model).
+        let mut stack = ClientWindowStack::new();
+        stack.map_window("settings", 1);
+        stack.map_window("textedit", 2);
+        assert_eq!(stack.windows().len(), 2);
+        assert_ne!(stack.windows()[0].pid, 0);
+        assert_ne!(stack.windows()[0].id, stack.windows()[1].id);
     }
 
     #[test]

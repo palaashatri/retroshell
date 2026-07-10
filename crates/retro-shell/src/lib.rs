@@ -8,6 +8,7 @@ pub mod menu_server;
 pub mod network_manager;
 pub mod notification_center;
 pub mod power;
+pub mod session_clients;
 pub mod session_manager;
 pub mod theme_manager;
 pub mod window_manager;
@@ -23,6 +24,9 @@ pub use menu_server::MenuServer;
 pub use network_manager::{get_network_status, NetworkStatus};
 pub use notification_center::{NotificationCenter, NotificationPriority};
 pub use power::{battery_info, BatteryInfo};
+pub use session_clients::{
+    binary_name_for_bundle, resolve_app_binary, spawn_app_client, SessionClientRegistry,
+};
 pub use session_manager::SessionManager;
 pub use theme_manager::ThemeManager;
 pub use window_manager::WindowManager;
@@ -46,7 +50,6 @@ use retro_kit::{
 };
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -164,6 +167,8 @@ struct ShellDesktop {
     lock_error_message: Option<String>,
     /// The expected lock password (from env or config).
     expected_lock_password: Option<String>,
+    /// Independent first-party app processes (compositor/labwc clients).
+    session_clients: SessionClientRegistry,
 }
 
 struct ShellWindow {
@@ -287,6 +292,7 @@ impl ShellDesktop {
             lock_password_field,
             lock_error_message: None,
             expected_lock_password,
+            session_clients: SessionClientRegistry::new(),
         };
         shell.open_finder_window();
         shell
@@ -696,14 +702,24 @@ impl ShellDesktop {
     }
 
     fn launch_external_app(&mut self, bundle_id: &str) {
-        match launch_app_binary(bundle_id) {
-            Ok(()) => {
+        // Reap exited clients first so the registry reflects the live multi-client set.
+        let _ = self.session_clients.reap();
+        match session_clients::spawn_app_client(bundle_id) {
+            Ok(client) => {
+                let pid = client.pid;
+                tracing::info!(
+                    "Launched multi-client app {bundle_id} as pid {pid} (compositor-managed surface)"
+                );
+                self.session_clients.register(client);
                 self.last_error = None;
                 self.activate_app_menu(bundle_id);
                 self.record_notification(
                     bundle_id,
                     "Application Launched",
-                    "RetroShell started the application process.",
+                    &format!(
+                        "Started process pid={pid} ({} client(s) active).",
+                        self.session_clients.len()
+                    ),
                     NotificationPriority::Normal,
                 );
             }
@@ -1255,6 +1271,11 @@ impl ShellDesktop {
         layout.add(Box::new(Label::new(mem_line)));
         layout.add(Box::new(Label::new(battery_line)));
         layout.add(Box::new(Label::new(network_line)));
+        let _ = self.session_clients.reap();
+        layout.add(Box::new(Label::new(format!(
+            "External clients: {}",
+            self.session_clients.len()
+        ))));
 
         let mut btn_layout = Layout::horizontal(10.0);
         btn_layout.add(Box::new(Button::new("OK")));
@@ -1345,18 +1366,31 @@ impl ShellDesktop {
         );
 
         let mut layout = Layout::vertical(10.0);
-        layout.add(Box::new(Label::new("Select an application window to force quit:")));
+        layout.add(Box::new(Label::new(
+            "Shell windows and external multi-client processes:",
+        )));
 
         let mut items = Vec::new();
         for w in &self.windows {
             if w.window.title() != "RetroShell Desktop" && w.window.title() != "Force Quit" {
-                items.push(w.window.title().to_string());
+                items.push(format!("window: {}", w.window.title()));
             }
+        }
+        let _ = self.session_clients.reap();
+        for client in self.session_clients.clients() {
+            items.push(format!(
+                "client: {} (pid {})",
+                client.binary_name, client.pid
+            ));
         }
 
         let mut list_view = ListView::new();
         list_view.items = items;
-        list_view.selected_index = if list_view.items.is_empty() { None } else { Some(0) };
+        list_view.selected_index = if list_view.items.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
         layout.add(Box::new(list_view));
 
         let mut btn_layout = Layout::horizontal(10.0);
@@ -1822,53 +1856,16 @@ fn trash_dir() -> PathBuf {
         .join("Trash/files")
 }
 
+/// Launch helper used by tests and callers that only need Ok/Err (no PID tracking).
 fn launch_app_binary(bundle_id: &str) -> std::result::Result<(), String> {
-    let binary = match bundle_id {
-        "com.retro.finder" => "finder",
-        "com.retro.settings" => "settings",
-        "com.retro.textedit" => "textedit",
-        "com.retro.terminal" => "terminal",
-        "com.retro.appstore" => "appstore",
-        _ => {
-            return Err(format!("No binary registered for bundle '{bundle_id}'"));
+    session_clients::spawn_app_client(bundle_id).map(|mut client| {
+        // Detach from Child so dropping the result does not kill the process.
+        if let Some(child) = client.child.take() {
+            // Intentionally leak the Child handle so the process keeps running when
+            // the caller does not track it (legacy path). Prefer launch_external_app.
+            std::mem::forget(child);
         }
-    };
-
-    let candidates = [
-        std::env::current_exe()
-            .ok()
-            .and_then(|path| path.parent().map(|dir| dir.join(binary))),
-        Some(PathBuf::from(format!("target/debug/{binary}"))),
-        Some(PathBuf::from(format!("target/release/{binary}"))),
-        Some(PathBuf::from(binary)),
-    ];
-
-    for candidate in candidates.into_iter().flatten() {
-        if candidate.exists() {
-            let mut command = Command::new(&candidate);
-            command.env("RETROSHELL_GLOBAL_MENU", "1");
-            match command.spawn() {
-                Ok(_) => {
-                    tracing::info!("Launched {}", candidate.display());
-                    return Ok(());
-                }
-                Err(err) => {
-                    tracing::error!(
-                        "Failed to spawn '{}': {err} — trying next candidate",
-                        candidate.display()
-                    );
-                    // continue loop to try next candidate
-                }
-            }
-        }
-    }
-
-    let msg = format!(
-        "Could not find executable for '{bundle_id}' — checked PATH and target/{{debug,release}}/{}",
-        binary
-    );
-    tracing::warn!("{msg}");
-    Err(msg)
+    })
 }
 
 impl Widget for ShellDesktop {
@@ -2984,9 +2981,15 @@ mod tests {
             .expect("uses layout view");
         if let Layout::Vertical { children, .. } = &layout_view.layout {
             let label = children[0].as_any().downcast_ref::<Label>().expect("label");
-            assert_eq!(label.text, "Select an application window to force quit:");
+            assert_eq!(
+                label.text,
+                "Shell windows and external multi-client processes:"
+            );
             let list = children[1].as_any().downcast_ref::<ListView>().expect("list");
-            assert!(list.items.iter().any(|item| item == "Retro HD"));
+            assert!(list
+                .items
+                .iter()
+                .any(|item| item == "window: Retro HD" || item.contains("Retro HD")));
         } else {
             panic!("not vertical layout");
         }
