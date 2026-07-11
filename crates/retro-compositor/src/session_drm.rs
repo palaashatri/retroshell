@@ -82,9 +82,11 @@ use smithay::{
 use crate::frame_timing::{FrameScheduler, RefreshRate};
 use crate::hdr::HdrCapabilities;
 use crate::{
-    discover_drm_nodes, drm_presentation_pipeline, plan_drm_modeset, preferred_primary_drm_node,
-    session_mode_summary, CompositorBackendKind, DisplayPolicy, DrmPresentationStage,
-    WorkspaceState, DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+    assign_new_window_to_active, discover_drm_nodes, drm_presentation_pipeline,
+    focus_window_after_workspace_switch, plan_drm_modeset, preferred_primary_drm_node,
+    session_mode_summary, visible_paint_order, CompositorBackendKind, DisplayPolicy,
+    DrmPresentationStage, WorkspaceId, WorkspaceState, DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W,
+    DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
 };
 
 /// Compositor-owned selection payload keyed by mime type.
@@ -547,8 +549,11 @@ pub fn run_drm_session() -> Result<()> {
     let mut frame_i: u64 = 0;
     while state.running {
         let _ = frame_scheduler.record_frame();
+        // Keep workspace map honest if clients disconnect without destroy order.
+        state.prune_dead_windows();
         // Continuous present: re-issue dumb pageflip ~1 Hz when scanout armed
-        // so the path stays live (full damage-tracked GL scanout is follow-on).
+        // so the path stays live (full damage-tracked GL scanout of client SHM is
+        // follow-on; when added, only `window_ids_for_present()` should composite).
         if scanout_armed && frame_i % 60 == 0 {
             if let Some(surface) = drm_surface_keepalive.as_ref() {
                 if let Err(err) = try_present_dumb_frame(surface, present_w, present_h) {
@@ -654,6 +659,44 @@ impl DrmSessionState {
         if self.udev_events.len() > 64 {
             self.udev_events.remove(0);
         }
+    }
+
+    /// Drop dead xdg windows and keep `workspace_state` in sync.
+    fn prune_dead_windows(&mut self) {
+        let before: Vec<String> = self.windows.iter().map(|w| w.window_id.clone()).collect();
+        self.windows.retain(|w| w.toplevel.alive());
+        let alive: std::collections::HashSet<&str> =
+            self.windows.iter().map(|w| w.window_id.as_str()).collect();
+        for id in before {
+            if !alive.contains(id.as_str()) {
+                self.workspace_state.remove_window(&id);
+            }
+        }
+    }
+
+    /// Window ids that should present / list on the active workspace (bottom→top order).
+    ///
+    /// Client GL scanout of SHM trees is not yet wired on the DRM path (dumb-buffer
+    /// pageflip only); this filter is the live listing contract for focus and any
+    /// future composite path.
+    fn window_ids_for_present(&self) -> Vec<&str> {
+        let order: Vec<&str> = self.windows.iter().map(|w| w.window_id.as_str()).collect();
+        visible_paint_order(&self.workspace_state, &order)
+    }
+
+    /// Focus topmost visible window after map/destroy/workspace change; clear if none.
+    fn apply_focus_after_workspace_switch(&mut self) {
+        let order: Vec<&str> = self.windows.iter().map(|w| w.window_id.as_str()).collect();
+        let target =
+            focus_window_after_workspace_switch(&self.workspace_state, &order).map(str::to_owned);
+        if let Some(id) = target {
+            if let Some(w) = self.windows.iter().find(|w| w.window_id == id) {
+                let surf = w.toplevel.wl_surface().clone();
+                self.focus_surface(Some(surf));
+                return;
+            }
+        }
+        self.focus_surface(None);
     }
 
     fn handle_libinput(
@@ -892,19 +935,25 @@ impl XdgShellHandler for DrmSessionState {
         );
 
         let window_id = foreign.identifier();
-        let ws = self.workspace_state.active;
-        let _ = self.workspace_state.assign_window(window_id.clone(), ws);
-        eprintln!(
-            "[retro-compositor/drm] {} window_id={window_id}",
-            self.workspace_state.summary_line()
-        );
+        // Map → active workspace; remove is paired in destroy/prune.
+        if !assign_new_window_to_active(&mut self.workspace_state, window_id.clone()) {
+            let _ = self
+                .workspace_state
+                .assign_window(window_id.clone(), WorkspaceId::FIRST);
+        }
         self.windows.push(MappedWindow {
             toplevel: surface.clone(),
             foreign,
-            window_id,
+            window_id: window_id.clone(),
             position,
             size: Size::from((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)),
         });
+        // Listing/present filter: only active-workspace ids (client SHM composite TBD).
+        eprintln!(
+            "[retro-compositor/drm] {} window_id={window_id} present={:?}",
+            self.workspace_state.summary_line(),
+            self.window_ids_for_present()
+        );
         self.focus_surface(Some(surface.wl_surface().clone()));
     }
 
@@ -918,11 +967,8 @@ impl XdgShellHandler for DrmSessionState {
             self.workspace_state.remove_window(&win.window_id);
             win.foreign.send_closed();
         }
-        let next = self
-            .windows
-            .last()
-            .map(|w| w.toplevel.wl_surface().clone());
-        self.focus_surface(next);
+        // Prefer topmost **visible** window; clear focus if none on active workspace.
+        self.apply_focus_after_workspace_switch();
     }
 
     fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}

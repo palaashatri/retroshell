@@ -3,6 +3,13 @@
 pub mod frame_timing;
 pub mod hdr;
 pub mod perf_budget;
+pub mod workspace_focus;
+
+pub use workspace_focus::{
+    assign_new_window_to_active, focus_window_after_workspace_switch, hit_test_allowed,
+    move_window_to_index, should_clear_focus_after_workspace_switch, visible_paint_order,
+    window_paint_source, WindowPaintSource,
+};
 
 /// DRM/KMS + libseat session path (Linux only). Nested X11 lives in the binary.
 #[cfg(target_os = "linux")]

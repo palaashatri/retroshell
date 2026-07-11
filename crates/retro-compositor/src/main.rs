@@ -30,13 +30,15 @@ mod linux {
     use std::time::Duration;
 
     use retro_compositor::{
-        apply_scale_to_output_config, cascade_position, detect_dri3_from_env,
-        detect_output_scale_from_env, layout_mode_from_env, layout_outputs, move_to_top,
-        next_cascade_offset, output_scale_summary, outputs_from_env, select_backend_kind,
+        apply_scale_to_output_config, assign_new_window_to_active, cascade_position,
+        detect_dri3_from_env, detect_output_scale_from_env, focus_window_after_workspace_switch,
+        layout_mode_from_env, layout_outputs, move_to_top, next_cascade_offset,
+        output_scale_summary, outputs_from_env, select_backend_kind,
         selection_bytes_for_mime_with_text_fallback, session_mode_note, session_mode_summary,
         text_input_capability_from_env, text_input_capability_summary, topmost_window_at,
-        total_output_size, CompositorBackendKind, DisplayPolicy, OutputScale, TextInputCapability,
-        WindowGeometry, WorkspaceId, WorkspaceState, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+        total_output_size, window_paint_source, CompositorBackendKind, DisplayPolicy, OutputScale,
+        TextInputCapability, WindowGeometry, WindowPaintSource, WorkspaceId, WorkspaceState,
+        DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
     };
     use retro_compositor::frame_timing::{FrameScheduler, RefreshRate};
     use retro_compositor::hdr::HdrCapabilities;
@@ -348,12 +350,35 @@ mod linux {
                 .collect()
         }
 
+        /// After Super+workspace switch: unfocus windows now hidden; focus topmost
+        /// visible window (paint order bottom→top). Clears keyboard focus when none.
+        fn apply_focus_after_workspace_switch(&mut self) {
+            let order: Vec<&str> = self.windows.iter().map(|w| w.window_id.as_str()).collect();
+            let target =
+                focus_window_after_workspace_switch(&self.workspace_state, &order).map(str::to_owned);
+            if let Some(id) = target {
+                if let Some(idx) = self.windows.iter().position(|w| w.window_id == id) {
+                    self.focus_window(idx);
+                    return;
+                }
+            }
+            // No visible window on this workspace — drop keyboard/selection focus so a
+            // hidden window does not keep receiving keys.
+            let serial = self.next_serial();
+            if let Some(kb) = self.seat.get_keyboard() {
+                kb.set_focus(self, None, serial);
+            }
+            set_data_device_focus(&self.display_handle, &self.seat, None);
+            set_primary_focus(&self.display_handle, &self.seat, None);
+        }
+
         fn cycle_workspace_next(&mut self) {
             self.workspace_state.cycle_next();
             eprintln!(
                 "[retro-compositor] {}",
                 self.workspace_state.summary_line()
             );
+            self.apply_focus_after_workspace_switch();
         }
 
         fn cycle_workspace_prev(&mut self) {
@@ -362,6 +387,7 @@ mod linux {
                 "[retro-compositor] {}",
                 self.workspace_state.summary_line()
             );
+            self.apply_focus_after_workspace_switch();
         }
 
         fn activate_workspace_index(&mut self, index: u8) {
@@ -371,6 +397,7 @@ mod linux {
                         "[retro-compositor] {}",
                         self.workspace_state.summary_line()
                     );
+                    self.apply_focus_after_workspace_switch();
                 }
             }
         }
@@ -381,8 +408,12 @@ mod linux {
         ///   3. Clear to retro gray; composite layer-shell (under) → windows → layer-shell (over)
         ///   4. Finish the frame and present
         ///
-        /// When clients have committed buffers, real SHM content is drawn (not only
-        /// colored placeholder rects). Layer-shell chrome is included in the scene.
+        /// Client presentation honesty:
+        /// - Prefer real SHM/client surface trees (`render_elements_from_surface_tree`).
+        /// - Solid `WIN_COLORS` placeholders are used **only** for visible windows whose
+        ///   surface tree yields zero elements (no committed buffer yet). They never
+        ///   replace real content when a buffer has been committed.
+        /// - Inactive-workspace windows are not painted (workspace filter).
         fn render_frame(&mut self) {
             self.prune_dead_windows();
             self.layer_surfaces.retain(|l| l.surface.alive());
@@ -414,7 +445,14 @@ mod linux {
                 .collect();
 
             // Collect SHM render elements BEFORE binding the render target.
+            // Per-window: real surface elements when available; placeholders only when empty.
             let mut surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
+            // (rect, color) for windows with no committed buffer on the active workspace.
+            let mut placeholders: Vec<(
+                Rectangle<i32, Physical>,
+                Color32F,
+            )> = Vec::new();
+
             for &i in &under {
                 let layer = &self.layer_surfaces[i];
                 let loc = Point::<i32, Physical>::from((0, 0));
@@ -429,16 +467,31 @@ mod linux {
             }
             // Workspace filter: hide surfaces not on the active virtual desktop.
             let visible_windows = self.windows_visible_for_paint();
-            for w in &visible_windows {
+            for (i, w) in visible_windows.iter().enumerate() {
                 let loc = Point::<i32, Physical>::from((w.position.x, w.position.y));
-                surface_elements.extend(render_elements_from_surface_tree(
+                let els = render_elements_from_surface_tree(
                     &mut self.renderer,
                     w.toplevel.wl_surface(),
                     loc,
                     1.0_f64,
                     1.0_f32,
                     Kind::Unspecified,
-                ));
+                );
+                match window_paint_source(!els.is_empty()) {
+                    WindowPaintSource::SurfaceTree => {
+                        surface_elements.extend(els);
+                    }
+                    WindowPaintSource::Placeholder => {
+                        // No committed buffer: solid rect so the window still appears.
+                        let color_idx = i % WIN_COLORS.len();
+                        let (r, g, b) = WIN_COLORS[color_idx];
+                        let rect = Rectangle::from_loc_and_size(
+                            Point::<i32, Physical>::from((w.position.x, w.position.y)),
+                            Size::<i32, Physical>::from((w.size.w, w.size.h)),
+                        );
+                        placeholders.push((rect, Color32F::from([r, g, b, 1.0_f32])));
+                    }
+                }
             }
             for &i in &over {
                 let layer = &self.layer_surfaces[i];
@@ -497,9 +550,7 @@ mod linux {
                 eprintln!("[render] clear failed: {e}");
             }
 
-            // Render actual SHM buffer content for windows that have committed a buffer.
-            // If no surface elements were collected (client hasn't committed yet), fall back
-            // to solid colored placeholder rectangles so the compositor always shows something.
+            // Real SHM / surface content first (visible windows + layer-shell chrome).
             if !surface_elements.is_empty() {
                 if let Err(e) = draw_render_elements::<GlesRenderer, _, _>(
                     &mut frame,
@@ -509,26 +560,11 @@ mod linux {
                 ) {
                     eprintln!("[render] draw_render_elements failed: {e}");
                 }
-            } else {
-                // Fallback: colored placeholders only for **visible** workspace windows.
-                let windows: Vec<_> = self
-                    .windows_visible_for_paint()
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, w)| {
-                    let color_idx = i % WIN_COLORS.len();
-                    let (r, g, b) = WIN_COLORS[color_idx];
-                    let rect = Rectangle::from_loc_and_size(
-                        Point::<i32, Physical>::from((w.position.x, w.position.y)),
-                        Size::<i32, Physical>::from((w.size.w, w.size.h)),
-                    );
-                    (rect, Color32F::from([r, g, b, 1.0_f32]))
-                }).collect();
-
-                for (rect, color) in &windows {
-                    if let Err(e) = frame.clear(*color, &[*rect]) {
-                        eprintln!("[render] window clear failed: {e}");
-                    }
+            }
+            // Placeholders only for visible windows with no committed buffer.
+            for (rect, color) in &placeholders {
+                if let Err(e) = frame.clear(*color, &[*rect]) {
+                    eprintln!("[render] window placeholder clear failed: {e}");
                 }
             }
 
@@ -881,8 +917,13 @@ mod linux {
             );
 
             let window_id = foreign.identifier();
-            let ws = self.workspace_state.active;
-            let _ = self.workspace_state.assign_window(window_id.clone(), ws);
+            // New maps land on the active virtual workspace (not an untracked id).
+            if !assign_new_window_to_active(&mut self.workspace_state, window_id.clone()) {
+                // Active id is always valid after WorkspaceState::new / activate.
+                let _ = self
+                    .workspace_state
+                    .assign_window(window_id.clone(), WorkspaceId::FIRST);
+            }
             eprintln!(
                 "[retro-compositor] assign window_id={window_id} {}",
                 self.workspace_state.summary_line()
@@ -911,22 +952,8 @@ mod linux {
                 self.workspace_state.remove_window(&win.window_id);
                 win.foreign.send_closed();
             }
-            // Move focus to the topmost remaining window, if any
-            if let Some(top) = self.windows.last() {
-                let surf = top.toplevel.wl_surface().clone();
-                let serial = self.next_serial();
-                if let Some(kb) = self.seat.get_keyboard() {
-                    kb.set_focus(self, Some(surf.clone()), serial);
-                }
-                let client = surf.client();
-                set_data_device_focus(&self.display_handle, &self.seat, client.clone());
-                set_primary_focus(&self.display_handle, &self.seat, client);
-            } else if let Some(kb) = self.seat.get_keyboard() {
-                let serial = self.next_serial();
-                kb.set_focus(self, None, serial);
-                set_data_device_focus(&self.display_handle, &self.seat, None);
-                set_primary_focus(&self.display_handle, &self.seat, None);
-            }
+            // Focus topmost **visible** remaining window (not hidden by workspace).
+            self.apply_focus_after_workspace_switch();
         }
 
         fn title_changed(&mut self, surface: ToplevelSurface) {
