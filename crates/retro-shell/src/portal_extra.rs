@@ -2,8 +2,15 @@
 //!
 //! Complements [`crate::portal`] Screenshot / Settings / OpenURI / FileChooser /
 //! ScreenCast. These are protocol-level plans — no keyring or CUPS I/O here.
+//!
+//! # Inhibit cookies
+//! Pure [`handle_inhibit`] issues cookies; [`register_inhibit_cookie`] /
+//! [`release_inhibit_cookie`] keep a **process-wide** table the shell can poll
+//! via [`active_inhibits`] / [`active_idle_inhibit_state`] each frame. This is
+//! not logind Inhibit — only RetroShell idle policy consumes it.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 /// org.freedesktop.impl.portal.Secret — Retrieve secret request (pure).
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -152,7 +159,13 @@ pub struct PortalInhibitCookie {
 
 static NEXT_INHIBIT: AtomicU64 = AtomicU64::new(1);
 
-/// Pure Inhibit: issue a cookie for the requested flags.
+/// Process-wide active portal inhibit cookies (D-Bus Inhibit + pure tests).
+fn inhibit_cookie_store() -> &'static Mutex<Vec<PortalInhibitCookie>> {
+    static STORE: OnceLock<Mutex<Vec<PortalInhibitCookie>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Pure Inhibit: issue a cookie for the requested flags (does not store it).
 pub fn handle_inhibit(req: &PortalInhibitRequest) -> Result<PortalInhibitCookie, String> {
     if req.app_id.trim().is_empty() {
         return Err("empty app_id".into());
@@ -171,6 +184,69 @@ pub fn handle_inhibit(req: &PortalInhibitRequest) -> Result<PortalInhibitCookie,
         app_id: req.app_id.trim().to_string(),
         reason: req.reason.clone(),
     })
+}
+
+/// Issue a cookie **and** register it in the process-wide store.
+///
+/// Portal D-Bus `Inhibit` and shell tests should use this so idle policy can
+/// poll [`active_inhibits`].
+pub fn handle_inhibit_and_register(
+    req: &PortalInhibitRequest,
+) -> Result<PortalInhibitCookie, String> {
+    let cookie = handle_inhibit(req)?;
+    register_inhibit_cookie(cookie.clone());
+    Ok(cookie)
+}
+
+/// Register (or replace) an inhibit cookie in the process-wide store.
+pub fn register_inhibit_cookie(cookie: PortalInhibitCookie) {
+    if let Ok(mut guard) = inhibit_cookie_store().lock() {
+        guard.retain(|c| c.cookie != cookie.cookie);
+        guard.push(cookie);
+    }
+}
+
+/// Release a previously registered cookie. Returns `true` if it was present.
+pub fn release_inhibit_cookie(cookie_id: u32) -> bool {
+    match inhibit_cookie_store().lock() {
+        Ok(mut guard) => {
+            let before = guard.len();
+            guard.retain(|c| c.cookie != cookie_id);
+            guard.len() < before
+        }
+        Err(_) => false,
+    }
+}
+
+/// Snapshot of active portal inhibit cookies.
+pub fn active_inhibits() -> Vec<PortalInhibitCookie> {
+    inhibit_cookie_store()
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
+/// True when any active cookie blocks idle lock/suspend.
+pub fn portal_blocks_idle() -> bool {
+    active_inhibits().iter().any(inhibit_blocks_idle)
+}
+
+/// Merge active portal cookies into an [`IdleInhibitState`] (Media for idle/suspend flags).
+pub fn active_idle_inhibit_state() -> crate::idle_policy::IdleInhibitState {
+    let mut state = crate::idle_policy::IdleInhibitState::new();
+    for cookie in active_inhibits() {
+        if let Some(reason) = inhibit_to_idle_reason(&cookie) {
+            state.add(reason);
+        }
+    }
+    state
+}
+
+/// Clear the process-wide store (tests only).
+pub fn clear_inhibit_store_for_tests() {
+    if let Ok(mut guard) = inhibit_cookie_store().lock() {
+        guard.clear();
+    }
 }
 
 /// Whether an inhibit cookie blocks idle lock (flag Idle or Suspend).
@@ -254,5 +330,45 @@ mod tests {
             reason: String::new(),
         })
         .is_err());
+    }
+
+    #[test]
+    fn inhibit_store_register_release_and_idle_merge() {
+        clear_inhibit_store_for_tests();
+        assert!(!portal_blocks_idle());
+        assert!(active_inhibits().is_empty());
+
+        let c = handle_inhibit_and_register(&PortalInhibitRequest {
+            app_id: "video".into(),
+            window: String::new(),
+            flags: InhibitFlag::Idle as u32,
+            reason: "watching".into(),
+        })
+        .unwrap();
+        assert_eq!(active_inhibits().len(), 1);
+        assert!(portal_blocks_idle());
+        let state = active_idle_inhibit_state();
+        assert!(state.is_inhibited());
+        assert!(state.reasons().contains(&crate::idle_policy::InhibitReason::Media));
+
+        // Logout-only flags do not block idle.
+        let logout = handle_inhibit_and_register(&PortalInhibitRequest {
+            app_id: "installer".into(),
+            window: String::new(),
+            flags: InhibitFlag::Logout as u32,
+            reason: "installing".into(),
+        })
+        .unwrap();
+        assert!(!inhibit_blocks_idle(&logout));
+        // Still blocked by the Idle cookie.
+        assert!(portal_blocks_idle());
+
+        assert!(release_inhibit_cookie(c.cookie));
+        assert!(!release_inhibit_cookie(c.cookie));
+        // Logout cookie remains but does not block idle.
+        assert!(!portal_blocks_idle());
+        assert!(release_inhibit_cookie(logout.cookie));
+        assert!(active_inhibits().is_empty());
+        clear_inhibit_store_for_tests();
     }
 }

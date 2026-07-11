@@ -136,6 +136,9 @@ impl MessageCatalog {
             ("menu.reboot", "Restart…"),
             ("menu.power_off", "Shut Down…"),
             ("menu.quit", "Quit RetroShell"),
+            ("menu.force_quit", "Force Quit…"),
+            ("menu.notification_center", "Notification Center"),
+            ("menu.about", "About RetroShell"),
             ("lock.prompt", "Enter password to unlock"),
             ("lock.error", "Incorrect password"),
             ("confirm.logout", "Log out of RetroShell?"),
@@ -145,9 +148,17 @@ impl MessageCatalog {
             ("a11y.dock", "Dock"),
             ("a11y.desktop", "Desktop"),
             ("a11y.windows", "Windows"),
+            ("a11y.action.activate", "Activate"),
+            ("a11y.action.press", "Press"),
+            ("a11y.action.focus", "Focus"),
+            ("a11y.action.click", "Click"),
+            ("a11y.notification_center", "Notification Center"),
             ("status.network", "Network"),
             ("status.battery", "Battery"),
             ("workspace.desktop_n", "Desktop {n}"),
+            ("portal.inhibit.active", "Session idle inhibit active"),
+            ("portal.screencast.stub", "Screen share uses portal stubs (no live PipeWire stream)"),
+            ("portal.screencast.socket", "PipeWire socket present; streams still protocol stubs"),
         ];
         for (k, v) in en {
             self.insert(k, "en", v);
@@ -159,11 +170,18 @@ impl MessageCatalog {
             ("menu.suspend", "Suspender"),
             ("menu.reboot", "Reiniciar…"),
             ("menu.power_off", "Apagar…"),
+            ("menu.force_quit", "Forzar salida…"),
+            ("menu.notification_center", "Centro de notificaciones"),
             ("lock.prompt", "Introduzca la contraseña para desbloquear"),
             ("lock.error", "Contraseña incorrecta"),
             ("confirm.logout", "¿Cerrar sesión de RetroShell?"),
             ("a11y.menu_bar", "Barra de menús"),
             ("a11y.dock", "Dock"),
+            ("a11y.desktop", "Escritorio"),
+            ("a11y.windows", "Ventanas"),
+            ("a11y.action.activate", "Activar"),
+            ("a11y.notification_center", "Centro de notificaciones"),
+            ("portal.inhibit.active", "Inhibición de inactividad activa"),
         ];
         for (k, v) in es {
             self.insert(k, "es", v);
@@ -175,11 +193,18 @@ impl MessageCatalog {
             ("menu.suspend", "إيقاف مؤقت"),
             ("menu.reboot", "إعادة التشغيل…"),
             ("menu.power_off", "إيقاف التشغيل…"),
+            ("menu.force_quit", "إنهاء إجباري…"),
+            ("menu.notification_center", "مركز الإشعارات"),
             ("lock.prompt", "أدخل كلمة المرور لفتح القفل"),
             ("lock.error", "كلمة المرور غير صحيحة"),
             ("confirm.logout", "هل تريد تسجيل الخروج من RetroShell؟"),
             ("a11y.menu_bar", "شريط القوائم"),
             ("a11y.dock", "الرصيف"),
+            ("a11y.desktop", "سطح المكتب"),
+            ("a11y.windows", "النوافذ"),
+            ("a11y.action.activate", "تفعيل"),
+            ("a11y.notification_center", "مركز الإشعارات"),
+            ("portal.inhibit.active", "منع الخمول نشط"),
         ];
         for (k, v) in ar {
             self.insert(k, "ar", v);
@@ -191,8 +216,16 @@ impl MessageCatalog {
             ("menu.suspend", "Veille"),
             ("menu.reboot", "Redémarrer…"),
             ("menu.power_off", "Éteindre…"),
+            ("menu.force_quit", "Forcer à quitter…"),
+            ("menu.notification_center", "Centre de notifications"),
             ("lock.prompt", "Entrez le mot de passe pour déverrouiller"),
             ("confirm.logout", "Se déconnecter de RetroShell ?"),
+            ("a11y.menu_bar", "Barre de menus"),
+            ("a11y.dock", "Dock"),
+            ("a11y.desktop", "Bureau"),
+            ("a11y.windows", "Fenêtres"),
+            ("a11y.action.activate", "Activer"),
+            ("portal.inhibit.active", "Inhibition d’inactivité active"),
         ];
         for (k, v) in fr {
             self.insert(k, "fr", v);
@@ -326,6 +359,22 @@ mod tests {
         let p = LocalePrefs::parse_from_conf("locale=he_IL\nforce_rtl=true\n");
         assert_eq!(p.locale.language, "he");
         assert_eq!(p.effective_direction(), TextDirection::Rtl);
+    }
+
+    #[test]
+    fn a11y_and_portal_catalog_keys() {
+        let cat = MessageCatalog::with_builtin();
+        let en = LocaleId::new("en", None);
+        assert_eq!(cat.get("a11y.action.activate", &en), "Activate");
+        assert_eq!(cat.get("menu.force_quit", &en), "Force Quit…");
+        assert!(cat
+            .get("portal.screencast.stub", &en)
+            .contains("portal stubs"));
+        assert!(!cat
+            .get("portal.screencast.socket", &en)
+            .contains("live stream ready"));
+        let es = LocaleId::new("es", None);
+        assert_eq!(cat.get("a11y.action.activate", &es), "Activar");
     }
 
     #[test]

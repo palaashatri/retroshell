@@ -23,6 +23,8 @@
 //!
 //! [`ScreencastStream`] values are **protocol-level stubs**. `node_id` fields are placeholders
 //! for a future PipeWire graph — this code does **not** create live PipeWire nodes or streams.
+//! Sessions carry an honest [`PortalScreencastSession::backend_note`]
+//! (`backend=portal_stub` or `backend=pipewire_socket_present`) from readiness probe.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -350,6 +352,36 @@ pub struct PortalScreencastSession {
     pub sources_selected: bool,
     /// True after a successful [`start_screencast`].
     pub started: bool,
+    /// Honest readiness note (`backend=portal_stub` or `backend=pipewire_socket_present`).
+    ///
+    /// Socket presence does **not** mean live PipeWire streams are exported.
+    pub backend_note: String,
+}
+
+/// Portal Start / CreateSession `note` when only protocol stubs are available.
+pub const SCREENCAST_NOTE_PORTAL_STUB: &str = "backend=portal_stub";
+/// Portal note when the PipeWire socket exists (still not a live stream claim).
+pub const SCREENCAST_NOTE_PIPEWIRE_SOCKET: &str = "backend=pipewire_socket_present";
+
+/// Pure map from screencast readiness → honest backend note string.
+///
+/// `pipewire_socket_present` yields [`SCREENCAST_NOTE_PIPEWIRE_SOCKET`]; otherwise stub.
+/// Never claims live PipeWire graph export.
+pub fn screencast_backend_note(ready: &crate::screencast_pw::ScreencastReadiness) -> String {
+    if ready.pipewire_socket_present {
+        SCREENCAST_NOTE_PIPEWIRE_SOCKET.to_string()
+    } else {
+        SCREENCAST_NOTE_PORTAL_STUB.to_string()
+    }
+}
+
+/// Pure map from socket presence alone (tests without full readiness struct).
+pub fn screencast_backend_note_from_socket(socket_present: bool) -> String {
+    if socket_present {
+        SCREENCAST_NOTE_PIPEWIRE_SOCKET.to_string()
+    } else {
+        SCREENCAST_NOTE_PORTAL_STUB.to_string()
+    }
 }
 
 static NEXT_SCREENCAST_SESSION: AtomicU64 = AtomicU64::new(1);
@@ -377,7 +409,17 @@ fn placeholder_stream(node_id: u32, source_type: u32) -> ScreencastStream {
 /// Pure ScreenCast CreateSession: assigns an incremental session id and one monitor stream stub.
 ///
 /// The stream's `node_id` is a placeholder — PipeWire is not started or connected.
+/// Default backend note is [`SCREENCAST_NOTE_PORTAL_STUB`]; use
+/// [`create_screencast_session_with_backend_note`] when a readiness probe is available.
 pub fn create_screencast_session(req: PortalScreencastRequest) -> PortalScreencastSession {
+    create_screencast_session_with_backend_note(req, SCREENCAST_NOTE_PORTAL_STUB)
+}
+
+/// CreateSession with an explicit honesty note from readiness probe (pure).
+pub fn create_screencast_session_with_backend_note(
+    req: PortalScreencastRequest,
+    backend_note: impl Into<String>,
+) -> PortalScreencastSession {
     let n = NEXT_SCREENCAST_SESSION.fetch_add(1, Ordering::Relaxed);
     let source_type = default_source_type(req.types);
     PortalScreencastSession {
@@ -388,7 +430,16 @@ pub fn create_screencast_session(req: PortalScreencastRequest) -> PortalScreenca
         cursor_mode: req.cursor_mode,
         sources_selected: false,
         started: false,
+        backend_note: backend_note.into(),
     }
+}
+
+/// Apply readiness probe result onto a session's backend note (pure; no I/O).
+pub fn apply_screencast_readiness(
+    session: &mut PortalScreencastSession,
+    ready: &crate::screencast_pw::ScreencastReadiness,
+) {
+    session.backend_note = screencast_backend_note(ready);
 }
 
 /// Pure ScreenCast SelectSources: bind `source_ids` as stream node_id placeholders.
@@ -667,6 +718,39 @@ mod tests {
         let mut empty = create_screencast_session(PortalScreencastRequest::default());
         empty.streams.clear();
         assert!(start_screencast(&mut empty).is_err());
+    }
+
+    #[test]
+    fn screencast_backend_note_honesty() {
+        assert_eq!(
+            screencast_backend_note_from_socket(false),
+            SCREENCAST_NOTE_PORTAL_STUB
+        );
+        assert_eq!(
+            screencast_backend_note_from_socket(true),
+            SCREENCAST_NOTE_PIPEWIRE_SOCKET
+        );
+        let stub = create_screencast_session(PortalScreencastRequest::default());
+        assert_eq!(stub.backend_note, SCREENCAST_NOTE_PORTAL_STUB);
+
+        let ready = crate::screencast_pw::probe_screencast_readiness(
+            Some("/run/user/1000"),
+            true,
+            false,
+        );
+        let mut session = create_screencast_session_with_backend_note(
+            PortalScreencastRequest::default(),
+            screencast_backend_note(&ready),
+        );
+        assert_eq!(session.backend_note, SCREENCAST_NOTE_PIPEWIRE_SOCKET);
+        apply_screencast_readiness(
+            &mut session,
+            &crate::screencast_pw::probe_screencast_readiness(None, false, false),
+        );
+        assert_eq!(session.backend_note, SCREENCAST_NOTE_PORTAL_STUB);
+        // Start still succeeds with stubs — note does not imply live streams.
+        start_screencast(&mut session).unwrap();
+        assert!(session.started);
     }
 
     #[test]

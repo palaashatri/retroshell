@@ -7,7 +7,11 @@
 //! [`crate::portal_extra`].
 //!
 //! ScreenCast streams exposed on the bus are protocol-level stubs (`node_id`
-//! placeholders) — PipeWire is not started or connected.
+//! placeholders) — PipeWire is not started or connected. Start results include
+//! an honest `note` (`backend=portal_stub` or `backend=pipewire_socket_present`).
+//!
+//! Inhibit cookies are stored process-wide so shell idle policy can poll
+//! [`crate::portal_extra::active_inhibits`].
 
 use crate::portal::{PORTAL_BUS_NAME, PORTAL_PATH};
 
@@ -58,12 +62,12 @@ pub fn try_register_portal_session_bus() -> bool {
 mod linux {
     use super::*;
     use crate::portal::{
-        create_screencast_session, handle_file_chooser_open, handle_file_chooser_save,
-        handle_open_uri, handle_portal_screenshot_request, portal_screenshot_uri_for,
-        portal_screenshots_dir, read_all_portal_settings, read_portal_setting,
-        select_screencast_sources, start_screencast, take_portal_style_screenshot_with,
-        PortalFileChooserRequest, PortalScreencastRequest, PortalScreencastSession,
-        PortalScreenshotRequest,
+        create_screencast_session_with_backend_note, handle_file_chooser_open,
+        handle_file_chooser_save, handle_open_uri, handle_portal_screenshot_request,
+        portal_screenshot_uri_for, portal_screenshots_dir, read_all_portal_settings,
+        read_portal_setting, select_screencast_sources, start_screencast,
+        take_portal_style_screenshot_with, PortalFileChooserRequest, PortalScreencastRequest,
+        PortalScreencastSession, PortalScreenshotRequest,
     };
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -305,7 +309,10 @@ mod linux {
                 multiple,
                 cursor_mode,
             };
-            let session = create_screencast_session(req);
+            // Host probe for honest backend note only — never starts PipeWire.
+            let readiness = crate::screencast_pw::probe_screencast_readiness_host();
+            let note = crate::portal::screencast_backend_note(&readiness);
+            let session = create_screencast_session_with_backend_note(req, note.clone());
             let session_id = session.session_id.clone();
             with_screencast_sessions(|map| {
                 map.insert(session_id.clone(), session);
@@ -313,6 +320,9 @@ mod linux {
             let mut results: HashMap<String, OwnedValue> = HashMap::new();
             if let Ok(v) = OwnedValue::try_from(Value::from(session_id)) {
                 results.insert("session_id".into(), v);
+            }
+            if let Ok(v) = OwnedValue::try_from(Value::from(note)) {
+                results.insert("note".into(), v);
             }
             (0u32, results)
         }
@@ -377,7 +387,9 @@ mod linux {
         /// Simplified Start — pure handler; streams are non-empty stubs on success.
         ///
         /// Returns `(response, results)` with `streams` as a newline-joined summary
-        /// `node_id:widthxheight:source_type` (protocol stubs only).
+        /// `node_id:widthxheight:source_type` (protocol stubs only) and honest
+        /// `note` (`backend=portal_stub` / `backend=pipewire_socket_present`).
+        /// Does **not** export live PipeWire streams.
         fn start(
             &self,
             _handle: zbus::zvariant::ObjectPath<'_>,
@@ -386,17 +398,21 @@ mod linux {
             session_id: &str,
             _options: HashMap<String, OwnedValue>,
         ) -> (u32, HashMap<String, OwnedValue>) {
+            // Refresh readiness at Start so note reflects current socket state.
+            let readiness = crate::screencast_pw::probe_screencast_readiness_host();
+            let host_note = crate::portal::screencast_backend_note(&readiness);
             let outcome = with_screencast_sessions(|map| {
                 let Some(session) = map.get_mut(session_id) else {
                     return None;
                 };
+                session.backend_note = host_note.clone();
                 match start_screencast(session) {
-                    Ok(()) => Some(session.streams.clone()),
+                    Ok(()) => Some((session.streams.clone(), session.backend_note.clone())),
                     Err(_) => None,
                 }
             });
             match outcome {
-                Some(streams) if !streams.is_empty() => {
+                Some((streams, note)) if !streams.is_empty() => {
                     let summary = streams
                         .iter()
                         .map(|s| {
@@ -415,6 +431,9 @@ mod linux {
                         if let Ok(v) = OwnedValue::try_from(Value::from(first.node_id)) {
                             results.insert("node_id".into(), v);
                         }
+                    }
+                    if let Ok(v) = OwnedValue::try_from(Value::from(note)) {
+                        results.insert("note".into(), v);
                     }
                     (0u32, results)
                 }
@@ -502,7 +521,9 @@ mod linux {
 
     #[interface(name = "org.freedesktop.impl.portal.Inhibit")]
     impl PortalInhibitIface {
-        /// Inhibit — pure cookie; shell idle policy may consult callers later.
+        /// Inhibit — issue cookie into process-wide store for shell idle policy.
+        ///
+        /// Not logind Inhibit; only RetroShell [`crate::idle_policy`] polls it.
         fn inhibit(
             &self,
             _handle: zbus::zvariant::ObjectPath<'_>,
@@ -512,14 +533,14 @@ mod linux {
             reason: &str,
             _options: HashMap<String, OwnedValue>,
         ) -> (u32, HashMap<String, OwnedValue>) {
-            use crate::portal_extra::{handle_inhibit, PortalInhibitRequest};
+            use crate::portal_extra::{handle_inhibit_and_register, PortalInhibitRequest};
             let req = PortalInhibitRequest {
                 app_id: app_id.to_string(),
                 window: window.to_string(),
                 flags,
                 reason: reason.to_string(),
             };
-            match handle_inhibit(&req) {
+            match handle_inhibit_and_register(&req) {
                 Ok(cookie) => {
                     let mut results = HashMap::new();
                     if let Ok(v) = OwnedValue::try_from(Value::from(cookie.cookie)) {
@@ -531,6 +552,16 @@ mod linux {
                     tracing::debug!(%reason, "portal Inhibit rejected");
                     (2u32, HashMap::new())
                 }
+            }
+        }
+
+        /// Release a cookie previously returned by Inhibit.
+        fn un_inhibit(&self, cookie: u32) -> u32 {
+            use crate::portal_extra::release_inhibit_cookie;
+            if release_inhibit_cookie(cookie) {
+                0
+            } else {
+                2
             }
         }
     }
