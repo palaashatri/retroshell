@@ -6,7 +6,7 @@
 
 **Prior ~90 (mean 89.6) claim: WITHDRAWN** (score theater).
 
-**Current overall: ~85 / 100 (mean 84.6).** Not 90. Not 100.
+**Current overall: ~85 / 100 (mean 84.8).** Not 90. Not 100.
 
 Probe capture: implementer scratch `pure_vs_live_probes.txt` (same day).
 

@@ -469,7 +469,7 @@ log-only, §12 **0 / 7**.
 
 **Prior overall ~90 (mean 89.6) is WITHDRAWN as score theater.**  
 Timeline under original methodology: claim audit **~76** → first wire **~77** →
-warpath mid **~82–83** → **~85 (mean 84.6)** after MIME/menu/nmcli/Settings arrange.
+warpath mid **~82–83** → **~85 (mean 84.8)** after residual a11y/portal/packaging wave.
 Still not 90. Prefer under-claim.
 
 ### 13.2 Scorecard (warpath, honest)

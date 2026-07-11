@@ -4,7 +4,8 @@
 **Question:** After the live-integration warpath (post ~90 rejection), what is the
 honest equal-weight daily-driver score vs Plasma/GNOME?
 
-**Answer: ~85 / 100 (mean 84.6) after nmcli + Settings display + compositor damage wave.**  
+**Answer: ~85 / 100 (mean 84.8)** after full warpath (incl. dock/desktop a11y menus +
+session smoke report + screencast Start notes).  
 Not 90. Not 100. Prefer under-claim.
 
 Related: [`DEEP_AUDIT_90_CLAIM.md`](DEEP_AUDIT_90_CLAIM.md),
@@ -122,7 +123,7 @@ round → 85   ⇒  overall ~85 / 100
 
 ## Bottom line
 
-**Warpath overall: ~85 / 100 (mean 84.6).**  
+**Warpath overall: ~85 / 100 (mean 84.8).**  
 Climb was real (+4–5 pts from ~77) via **live wiring**, not policy theater.  
 Would you replace Plasma for a week? **Still no.**
 
