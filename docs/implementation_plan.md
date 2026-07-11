@@ -11,7 +11,7 @@
 > **Latest competitive audit:** §13 + `docs/WARPATH_SCORECARD.md` +
 > `docs/DEEP_AUDIT_90_CLAIM.md` (2026-07-11).
 > **Verdict:** prior **~90 withdrawn** (score theater). After warpath live integration,
-> honest overall **~85 / 100** (mean **84.8**). Still not 90 — greeter NOT RUN, PipeWire
+> honest overall **~85 / 100** (mean **84.5**, sum **845**). Still not 90 — greeter NOT RUN, PipeWire
 > stubs, §12 **0 / 7**. Prefer under-claim.
 >
 > **Related**: [`README.md`](../README.md) (ambition vs reality),
@@ -57,7 +57,7 @@ converge on FreeDesktop session norms or it will never feel like a real DE.
 
 **Competitive score (honest, vs Plasma/GNOME daily driver):** see **§13** +
 `docs/WARPATH_SCORECARD.md` + `docs/GOAL_DEEP_AUDIT_FINAL.md` — overall **~85**
-(mean **84.8**). Prior ~90 claim **withdrawn**.
+(mean **84.5**, sum **845**). Prior ~90 claim **withdrawn**.
 
 **Architectural bottleneck (must solve early):**  
 `retro-shell` is still largely a **single fullscreen winit client** that *draws* an
@@ -463,30 +463,29 @@ stay honest, and follow the critical path above.
 Hard-DE **code** landed, then a deep audit rejected the ~90 claim as score theater
 (integration gaps). A **warpath** same day closed several live paths (workspace paint
 in compositor `main`, SHM prefer, `RETROSHELL_OUTPUTS_LAYOUT`, DoAction drain, i18n
-menus, portal Inhibit→idle, install-session + daily checklist). Residuals remain:
-**live greeter NOT RUN**, PipeWire ScreenCast **stubs**, residual a11y menus
-log-only, §12 **0 / 7**.
+menus, portal Inhibit→idle, install-session + daily checklist, menu/dock/desktop
+a11y windows). Residuals remain: **live greeter NOT RUN**, PipeWire ScreenCast
+**stubs**, Orca incomplete, §12 **0 / 7**.
 
 **Prior overall ~90 (mean 89.6) is WITHDRAWN as score theater.**  
 Timeline under original methodology: claim audit **~76** → first wire **~77** →
-warpath mid **~82–83** → **~85 (mean 84.8)** after residual a11y/portal/packaging wave.
-Still not 90. Prefer under-claim.
+warpath **~85 (mean 84.5, sum 845)**. Still not 90. Prefer under-claim.
 
-### 13.2 Scorecard (warpath, honest)
+### 13.2 Scorecard (warpath, honest — **canonical vector only**)
 
 | Domain | Inflated (~90 card) | Post-claim (~77) | **Warpath honest** | Why |
 |---|---:|---:|---:|---|
-| First-party productivity apps | 90 | 86 | **86** | Real suite + Force Quit; not the DE bottleneck |
-| Toolkit / look & feel | 90 | 80 | **83** | Kit solid; DoAction queue kit→shell live for core chrome |
-| Session login / packaging | 88 | 74 | **78** | `install-session-files.sh` + daily checklist; live greeter **NOT RUN** |
-| Own compositor as session WM | 90 | 80 | **84** | Workspace filter paint/hit-test/focus in `main`; SHM prefer; placeholders remain |
-| Multi-client window management | 90 | 76 | **81** | FTL + spawn; live workspace hide; rules still partial on surfaces |
-| Shell chrome architecture | 90 | 78 | **83** | i18n system menus; a11y chrome dispatch; layer-shell dual paint path |
-| FreeDesktop | 90 | 80 | **84** | Secret/Print/Inhibit on bus; inhibit store→idle; ScreenCast/PW **stubs** |
-| A11y / i18n | 88 | 68 | **82** | Menus + lock `tr()`; DoAction live set + menu.activate; Orca incomplete |
-| Multi-monitor / HDR-VRR | 90 | 70 | **76** | Shell→comp `RETROSHELL_OUTPUTS_LAYOUT`; no live modeset / Settings apply UI |
-| Polish / packaging / CI | 90 | 80 | **84** | Tests green; Docker; install-session + `verify_daily_driver_checklist` |
-| **Overall (equal-weight mean)** | **~90** | **~77** | **~85** | **(88+84+78+86+83+86+88+84+82+86)/10 = 84.8 → 85** |
+| First-party productivity apps | 90 | 86 | **88** | Suite + MIME open + Force Quit |
+| Toolkit / look & feel | 90 | 80 | **84** | MenuBar open API + DoAction queue |
+| Session login / packaging | 88 | 74 | **78** | install-session + checklist; greeter **NOT RUN** |
+| Own compositor as session WM | 90 | 80 | **86** | Workspace paint/focus; SHM prefer; damage stats |
+| Multi-client window management | 90 | 76 | **83** | Live ws hide + MIME-spawned clients |
+| Shell chrome architecture | 90 | 78 | **86** | i18n menus; a11y menu open; status refresh |
+| FreeDesktop | 90 | 80 | **88** | OpenURI file://; nmcli; Inhibit→idle; **PW stubs** |
+| A11y / i18n | 88 | 68 | **84** | DoAction + menu/dock/desktop menus live; Orca incomplete |
+| Multi-monitor / HDR-VRR | 90 | 70 | **82** | Settings arrange + compositor layout parse |
+| Polish / packaging / CI | 90 | 80 | **86** | Checklist + session_entry_smoke_report; unit suite |
+| **Overall (equal-weight mean)** | **~90** | **~77** | **~85** | **(88+84+78+86+83+86+88+84+82+86)=845; 845/10=84.5 → ~85** |
 
 ### 13.3 What remains for honest ≥90
 
@@ -507,7 +506,7 @@ honest ≥90 require” and `WARPATH_SCORECARD.md` residual table.
 | `RETROSHELL_OUTPUTS_LAYOUT` | **yes (env bridge)** | shell `apply_display_plan_env` → compositor parse |
 | Layer-shell chrome client | **yes (bind path)** | `layer_shell_client`; dual kit paint remains |
 | Session power plans | **yes (wired spawn)** | `session_actions` + menu |
-| DoAction → shell handlers | **partial live** | lock/log_out/force_quit/ws/window/dock/desktop/menu open; dock.menu residual |
+| DoAction → shell handlers | **partial live** | lock/log_out/force_quit/ws/window/dock/desktop/**menu open** + dock/desktop context status windows; Orca still incomplete |
 | Portal D-Bus (subset) | **yes (plan-level extras)** | Secret/Print/Inhibit + Screenshot/…; ScreenCast stubs |
 | Inhibit store → idle | **yes (in-process)** | `active_idle_inhibit_state` merged in shell `update` |
 | Install session files | **yes (packaging)** | `scripts/install-session-files.sh` (+ dry-run) |
@@ -516,8 +515,8 @@ honest ≥90 require” and `WARPATH_SCORECARD.md` residual table.
 
 ### 13.5 Bottom line
 
-- **Overall ~85** (mean **84.8**), not 90 or 100 — honest vs Plasma/GNOME daily driver.
-- README / agents must not re-inflate to 90 without greeter + PW + menu a11y + §12.
+- **Overall ~85** (mean **84.5**, sum **845**), not 90 or 100 — honest vs Plasma/GNOME daily driver.
+- README / agents must not re-inflate to 90 without greeter + PW + Orca end-to-end + §12.
 - §12 remains **0 / 7 fully met**.
 
-*Skeptic deep audit 2026-07-11 — 90 claim rejected; warpath rescore same day.*
+*Skeptic deep audit 2026-07-11 — 90 claim rejected; warpath rescore; arithmetic fixed sum 845.*

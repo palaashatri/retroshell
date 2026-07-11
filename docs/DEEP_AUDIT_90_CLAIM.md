@@ -9,8 +9,9 @@ Plasma-grade integration. This audit corrects that.
 
 **Corrected overall after claim rejection: ~76 / 100** (mean **75.6**).  
 **After immediate live-wiring follow-up (same day): ~77 / 100** (mean **77.2**).  
-**After warpath live integration (same day): ~85 / 100** (mean **84.6**).  
-Still **not** 90 — do not re-inflate. See `GOAL_DEEP_AUDIT_FINAL.md`. Full arithmetic: **`docs/WARPATH_SCORECARD.md`**.
+**After warpath live integration (same day): ~85 / 100** (mean **84.5**, sum **845**).  
+Canonical vector: `88,84,78,86,83,86,88,84,82,86`.  
+Still **not** 90 — do not re-inflate. See `GOAL_DEEP_AUDIT_FINAL.md` / `WARPATH_SCORECARD.md`.
 
 ---
 
@@ -30,7 +31,7 @@ Domain scores reflect **workability**, not “lines of pure Rust that compile.�
 |---|---|
 | Compositor workspace composition filter → 90 | **Now wired** into nested `main.rs` paint + hit-test + Super+Left/Right/1–8 (still not Plasma). |
 | Multi-monitor display arrange → 90 | Shell **EmitLayoutEnv** + compositor **RETROSHELL_OUTPUTS_LAYOUT** parse. **Still no Settings UI modeset / live KMS apply.** |
-| i18n / a11y 88 | Lock + **system menus** use `tr()`. Orca incomplete; `chrome.menu.activate` **log-only**. |
+| i18n / a11y 88 | Lock + **system menus** use `tr()`. `chrome.menu.activate` **opens Retro menu live**; Orca still incomplete. |
 | FreeDesktop Secret/Print/Inhibit → 90 | **On portal bus** (plan-level, not keyring/CUPS). Inhibit store → shell idle. ScreenCast still **placeholder node_id**. |
 | Window rules → multi-client 90 | Rules apply skip-taskbar on FTL labels. **Workspace/maximize/float not fully applied to compositor surfaces.** |
 | Own compositor 90 | Nested path real; DRM present code real; **prefer SHM**, placeholder only if no committed buffer. Not KWin-class. |
@@ -46,7 +47,7 @@ cargo test -p retro-shell -p retro-kit -p retro-compositor  → green (lib paths
 ./scripts/verify_daily_driver_checklist.sh → PASSED (packaging + units only)
 ./scripts/verify_greeter_session.sh → PASSED (packaging only; no live DM)
 # residuals still true:
-# live greeter NOT RUN; PipeWire streams stubs; menu.activate not live; §12 0/7
+# live greeter NOT RUN; PipeWire streams stubs; Orca incomplete; §12 0/7
 ```
 
 ---
@@ -74,28 +75,28 @@ cargo test -p retro-shell -p retro-kit -p retro-compositor  → green (lib paths
 Warpath closed **live paths** that the claim audit marked missing or pure-only.
 This is **not** a redefinition of 100 and **not** a return to 90.
 
-| Domain | Post-claim (~77) | **Warpath** | What landed (evidence) |
+| Domain | Post-claim (~77) | **Warpath (canonical)** | What landed (evidence) |
 |---|---:|---:|---|
-| First-party productivity apps | 86 | **86** | No DE-bottleneck change |
-| Toolkit / look & feel | 80 | **83** | Kit DoAction pending → shell drain |
-| Session login / packaging | 74 | **78** | `install-session-files.sh` + `verify_daily_driver_checklist.sh`; greeter still **NOT RUN** |
-| Own compositor as session WM | 80 | **84** | Workspace paint/focus live; per-window SHM prefer |
-| Multi-client window management | 76 | **81** | Live workspace hide/focus for clients; rules still partial |
-| Shell chrome architecture | 78 | **83** | i18n menus; chrome a11y dispatch; dual path remains |
-| FreeDesktop | 80 | **84** | Inhibit store → idle policy; Secret/Print plan-level; PW stubs |
-| A11y / i18n | 68 | **82** | Menus + lock `tr()`; DoAction live set + menu.activate live |
-| Multi-monitor / HDR-VRR | 70 | **76** | `RETROSHELL_OUTPUTS_LAYOUT` shell→compositor; no live modeset UI |
-| Polish / packaging / CI | 80 | **84** | install-session + daily checklist + unit green |
-| **Overall** | **~77** | **~85** | **(88+84+78+86+83+86+88+82+82+86)/10 = 84.6 → 85** |
+| First-party productivity apps | 86 | **88** | Suite + MIME open + Force Quit |
+| Toolkit / look & feel | 80 | **84** | MenuBar open API + DoAction queue |
+| Session login / packaging | 74 | **78** | install-session + checklist; greeter **NOT RUN** |
+| Own compositor as session WM | 80 | **86** | Workspace paint/focus; SHM prefer; damage stats |
+| Multi-client window management | 76 | **83** | Live ws hide + MIME-spawned clients |
+| Shell chrome architecture | 78 | **86** | i18n menus; a11y menu open; status refresh |
+| FreeDesktop | 80 | **88** | OpenURI file://; nmcli; Inhibit→idle; PW stubs |
+| A11y / i18n | 68 | **84** | DoAction + menu/dock/desktop menus live; Orca incomplete |
+| Multi-monitor / HDR-VRR | 70 | **82** | Settings arrange + compositor layout parse |
+| Polish / packaging / CI | 80 | **86** | Checklist + session_entry_smoke_report; unit suite |
+| **Overall** | **~77** | **~85** | **(88+84+78+86+83+86+88+84+82+86)=845; 845/10=84.5 → ~85** |
 
 ### Still not closed (caps on 90)
 
 1. Live greeter → session **NOT RUN** (packaging only).  
 2. PipeWire ScreenCast streams still **stubs** (`node_id` placeholders).  
-3. `chrome.menu.activate` may remain **partial / log-only**.  
+3. Orca end-to-end (extents/caret/live re-export) incomplete — **menu.activate is live** (opens Retro menu).  
 4. §12 still **0 / 7 fully met**.  
 5. Placeholder rects still possible when clients have no committed buffer.  
-6. Display arrange is env-bridge, not live KMS/Settings apply.
+6. Display arrange is env-bridge, not live KMS modeset on hardware.
 
 See **`docs/WARPATH_SCORECARD.md`** for full arithmetic and residual table.
 

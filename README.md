@@ -34,7 +34,7 @@ message, then execs `retro-shell`. See `packaging/README.md`. FreeDesktop
 
 | Metric | Score |
 |---|---:|
-| **Overall daily-driver (original methodology)** | **~85/100** (mean 84.8; 90/100 not claimed) |
+| **Overall daily-driver (original methodology)** | **~85/100** (mean 84.5, sum 845; 90/100 not claimed) |
 | Prior “91 criteria-weighted” and “~90 hard-DE” claims | **withdrawn** (score theater) |
 | Post-claim-audit (pre-warpath) | ~77 (mean 77.2) |
 
@@ -47,9 +47,10 @@ DoAction queue → lock/log_out/force_quit/workspace/window/dock/desktop; i18n
 daily-driver checklist (packaging).
 
 **Honest residual (why not 90):** live greeter **NOT RUN**; PipeWire ScreenCast
-**stubs**; `chrome.menu.activate` still **partial/log-only**; display arrange is env
-bridge not live modeset; window rules partial on real surfaces; §12 **0/7**;
-placeholder rects still possible without committed buffers.
+**stubs**; Orca not end-to-end (DoAction **does** open Retro menu / dock / desktop
+context status windows); display arrange is env bridge not live KMS modeset;
+window rules partial on real surfaces; §12 **0/7**; placeholder rects still
+possible without committed buffers.
 
 Would you replace Plasma for a week? **No.** Honest score **~85**, not 90.
 

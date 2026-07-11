@@ -6,7 +6,9 @@
 
 **Prior ~90 (mean 89.6) claim: WITHDRAWN** (score theater).
 
-**Current overall: ~85 / 100 (mean 84.8).** Not 90. Not 100.
+**Current overall: ~85 / 100 (mean 84.5; sum 845).** Not 90. Not 100.
+
+**Canonical vector:** `88, 84, 78, 86, 83, 86, 88, 84, 82, 86`
 
 Probe capture: implementer scratch `pure_vs_live_probes.txt` (same day).
 
@@ -47,13 +49,13 @@ Probe capture: implementer scratch `pure_vs_live_probes.txt` (same day).
 | A11y / i18n | **84** | DoAction live set + menu/dock/desktop menus; Orca incomplete |
 | Multi-monitor / HDR-VRR | **82** | Settings arrange + compositor layout parse |
 | Polish / packaging / CI | **86** | Checklist + session_entry_smoke_report; 292 shell tests |
-| **Sum** | **848** | |
-| **Mean** | **84.8** | |
+| **Sum** | **845** | |
+| **Mean** | **84.5** | |
 | **Overall** | **~85** | round half up |
 
 ```text
-88+84+78+86+83+86+88+84+82+86 = 848
-848 / 10 = 84.8 → ~85
+88+84+78+86+83+86+88+84+82+86 = 845
+845 / 10 = 84.5 → ~85
 ```
 
 ---

@@ -4,9 +4,12 @@
 **Question:** After the live-integration warpath (post ~90 rejection), what is the
 honest equal-weight daily-driver score vs Plasma/GNOME?
 
-**Answer: ~85 / 100 (mean 84.8)** after full warpath (incl. dock/desktop a11y menus +
+**Answer: ~85 / 100 (mean 84.5)** after full warpath (incl. dock/desktop a11y menus +
 session smoke report + screencast Start notes).  
 Not 90. Not 100. Prefer under-claim.
+
+**Canonical domain vector (only vector allowed on all audit surfaces):**  
+`88, 84, 78, 86, 83, 86, 88, 84, 82, 86` → **sum 845** → **mean 84.5** → **~85**.
 
 Related: [`DEEP_AUDIT_90_CLAIM.md`](DEEP_AUDIT_90_CLAIM.md),
 [`implementation_plan.md`](implementation_plan.md) §13, [`README.md`](../README.md).
@@ -33,7 +36,8 @@ Related: [`DEEP_AUDIT_90_CLAIM.md`](DEEP_AUDIT_90_CLAIM.md),
 | Immediate wire (filter + portal + lock i18n) | 77.2 | **~77** |
 | Warpath mid pass | 81.6 | **~82** |
 | + menu.activate + MIME open | 83.0 | **~83** |
-| **+ nmcli + Settings arrange + damage (this card)** | **84.6** | **~85** |
+| + nmcli + Settings arrange + damage (intermediate) | ~84.5 | **~85** |
+| **Final canonical vector (this card)** | **84.5** | **~85** |
 
 ---
 
@@ -83,17 +87,17 @@ Checklist re-run this rescore:
 | 8 | A11y / i18n | 68 | **84** | +16 | DoAction + menu/dock/desktop menus live; Orca still incomplete |
 | 9 | Multi-monitor / HDR-VRR | 70 | **82** | +12 | Settings arrange UI + conf + env; compositor parse layout |
 | 10 | Polish / packaging / CI | 80 | **86** | +6 | Checklist + session_entry_smoke_report; 292 shell tests |
-| | **Sum** | 772 | **848** | +76 | |
-| | **Mean** | 77.2 | **84.8** | +7.6 | |
-| | **Overall** | **~77** | **~85** | | |
+| | **Sum** | 772 | **845** | +73 | |
+| | **Mean** | 77.2 | **84.5** | +7.3 | |
+| | **Overall** | **~77** | **~85** | | mean 84.5 rounds half-up to 85 |
 
 ### Arithmetic (explicit)
 
 ```text
 88 + 84 + 78 + 86 + 83 + 86 + 88 + 84 + 82 + 86
-  = 848
-848 / 10 = 84.8
-round → 85   ⇒  overall ~85 / 100
+  = 845
+845 / 10 = 84.5
+round half-up → 85   ⇒  overall ~85 / 100
 ```
 
 ---
@@ -123,8 +127,8 @@ round → 85   ⇒  overall ~85 / 100
 
 ## Bottom line
 
-**Warpath overall: ~85 / 100 (mean 84.8).**  
-Climb was real (+4–5 pts from ~77) via **live wiring**, not policy theater.  
+**Warpath overall: ~85 / 100 (mean 84.5; sum 845).**  
+Climb was real (+~8 pts from ~77) via **live wiring**, not policy theater.  
 Would you replace Plasma for a week? **Still no.**
 
 *Auditor stance: under-claim. Show the sum. Never invent 100.*
