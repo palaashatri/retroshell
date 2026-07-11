@@ -13,6 +13,7 @@ pub mod menu_server;
 pub mod network_connect;
 pub mod network_manager;
 pub mod notification_center;
+pub mod polkit_agent;
 pub mod portal;
 pub mod portal_dbus;
 pub mod power;
@@ -58,6 +59,11 @@ pub use portal::{
     read_portal_setting, take_portal_style_screenshot, take_portal_style_screenshot_with,
     PortalScreenshotRequest, PortalScreenshotResult, PortalSettingsNamespace, PORTAL_BUS_NAME,
     PORTAL_OPENURI_INTERFACE, PORTAL_PATH, PORTAL_SCREENSHOT_INTERFACE, PORTAL_SETTINGS_INTERFACE,
+};
+pub use polkit_agent::{
+    handle_polkit_auth, try_register_polkit_agent, validate_polkit_request, PolkitAgentState,
+    PolkitAuthDecision, PolkitAuthRequest, POLKIT_AGENT_BUS_NAME, POLKIT_AGENT_INTERFACE,
+    POLKIT_AGENT_PATH,
 };
 pub use portal_dbus::try_register_portal_session_bus;
 pub use power::{battery_info, BatteryInfo};
@@ -155,6 +161,8 @@ impl RetroShell {
         let _ = fdo_notifications::try_register_session_bus(shell.notification_center.clone());
         // Best-effort portal Screenshot/Settings/OpenURI on the session bus (Linux).
         let _ = portal_dbus::try_register_portal_session_bus();
+        // Best-effort polkit authentication agent (Linux).
+        let _ = polkit_agent::try_register_polkit_agent();
         Ok(shell)
     }
 
