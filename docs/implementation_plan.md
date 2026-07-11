@@ -8,13 +8,16 @@
 > **Positioning**: Ambition is real. Full parity is multi-year. This document is the
 > sequence of work that *actually gets there*, not marketing.
 >
-> **Latest competitive audit:** §13 + `docs/DEEP_AUDIT_90_CLAIM.md` (2026-07-11).
-> **Verdict:** prior **~90 withdrawn** (score theater). Honest overall **~76 / 100**.
-> Pure modules were over-scored as live integration. See corrected scorecard.
+> **Latest competitive audit:** §13 + `docs/WARPATH_SCORECARD.md` +
+> `docs/DEEP_AUDIT_90_CLAIM.md` (2026-07-11).
+> **Verdict:** prior **~90 withdrawn** (score theater). After warpath live integration,
+> honest overall **~82 / 100** (mean **81.6**). Still not 90 — greeter NOT RUN, PipeWire
+> stubs, §12 **0 / 7**. Prefer under-claim.
 >
 > **Related**: [`README.md`](../README.md) (ambition vs reality),
 > [`ARCHITECTURE.md`](ARCHITECTURE.md), [`audit_2026-07-09.md`](audit_2026-07-09.md),
-> [`FULL_AUDIT_2026-07-11.md`](FULL_AUDIT_2026-07-11.md).
+> [`FULL_AUDIT_2026-07-11.md`](FULL_AUDIT_2026-07-11.md),
+> [`WARPATH_SCORECARD.md`](WARPATH_SCORECARD.md).
 
 ---
 
@@ -52,8 +55,9 @@ converge on FreeDesktop session norms or it will never feel like a real DE.
 | System integration | NM status + connect plan, volume, power, FDO notifications, **portal D-Bus** Screenshot/Settings/OpenURI | No full polkit UI, IME, screencast, greeter proof |
 | Packaging | `packaging/*.desktop`, `start-retroshell`, Docker + noVNC | Skeleton; greeter→session **not proven** on hardware |
 
-**Competitive score (honest, vs Plasma/GNOME daily driver):** see **§13** — overall **~76**
-under original methodology (prior ~90 claim **withdrawn**).
+**Competitive score (honest, vs Plasma/GNOME daily driver):** see **§13** +
+`docs/WARPATH_SCORECARD.md` — overall **~82** (mean 81.6) under original methodology
+(prior ~90 claim **withdrawn**; post-claim-audit ~77; warpath rescore).
 
 **Architectural bottleneck (must solve early):**  
 `retro-shell` is still largely a **single fullscreen winit client** that *draws* an
@@ -449,59 +453,70 @@ stay honest, and follow the critical path above.
 > **Methodology (unchanged):** domain scores and **overall** = workability vs
 > **Plasma/GNOME as a daily-driver laptop DE** (100 = replace Plasma for a week).
 > **Pure modules + unit tests without live wiring do not score as 90.**
+> Equal weight: mean of 10 domains; round mean to nearest integer for “~NN”.
 >
-> Full write-up: **`docs/DEEP_AUDIT_90_CLAIM.md`**.
+> Full write-up: **`docs/DEEP_AUDIT_90_CLAIM.md`**, arithmetic:
+> **`docs/WARPATH_SCORECARD.md`**.
 
 ### 13.1 Verdict
 
-Hard-DE **code** landed (session actions, pure window rules, pure display arrange,
-idle policy, i18n catalog, AT-SPI Text/Component export, portal pure extras).  
-A deep audit found **integration gaps**: workspace filter unused in compositor
-`main.rs`, `tr()` unused in UI, Secret/Print/Inhibit not on portal D-Bus, display
-arrange not applied live, client **placeholder rect** fallback still present.
+Hard-DE **code** landed, then a deep audit rejected the ~90 claim as score theater
+(integration gaps). A **warpath** same day closed several live paths (workspace paint
+in compositor `main`, SHM prefer, `RETROSHELL_OUTPUTS_LAYOUT`, DoAction drain, i18n
+menus, portal Inhibit→idle, install-session + daily checklist). Residuals remain:
+**live greeter NOT RUN**, PipeWire ScreenCast **stubs**, `chrome.menu.activate`
+log-only, §12 **0 / 7**.
 
 **Prior overall ~90 (mean 89.6) is WITHDRAWN as score theater.**  
-**Corrected overall under original methodology: ~77 / 100** after live-wire follow-up
-(claim audit was **~76**; still far from 90).
+Timeline under original methodology: claim audit **~76** → first wire **~77** →
+**warpath rescore ~82 (mean 81.6)**. Still far from 90. Prefer under-claim.
 
-### 13.2 Scorecard (corrected)
+### 13.2 Scorecard (warpath, honest)
 
-| Domain | Inflated (~90 card) | **Honest** | Why |
-|---|---:|---:|---|
-| First-party productivity apps | 90 | **86** | Real suite + Force Quit |
-| Toolkit / look & feel | 90 | **80** | Kit solid; a11y structural / DoAction advisory |
-| Session login / packaging | 88 | **74** | Packaging verify PASS; live greeter **NOT RUN** |
-| Own compositor as session WM | 90 | **80** | Filter **wired in main** paint/hit-test; Super+ws; placeholders remain |
-| Multi-client window management | 90 | **76** | FTL + spawn; live workspace hide for clients; rules partial |
-| Shell chrome architecture | 90 | **78** | Menus/lock real; layer-shell dual paint path |
-| FreeDesktop | 90 | **80** | Secret/Print/Inhibit on bus (plan-level); ScreenCast stubs |
-| A11y / i18n | 88 | **68** | Lock screen `tr()`; Orca still incomplete |
-| Multi-monitor / HDR-VRR | 90 | **70** | Env multi-output + pure arrange; no live apply UI |
-| Polish / packaging / CI | 90 | **80** | Tests + Docker + greeter packaging scripts |
-| **Overall (equal-weight mean)** | **~90** | **~77** | **(86+80+74+80+76+78+80+68+70+80)/10 = 77.2 → 77** |
+| Domain | Inflated (~90 card) | Post-claim (~77) | **Warpath honest** | Why |
+|---|---:|---:|---:|---|
+| First-party productivity apps | 90 | 86 | **86** | Real suite + Force Quit; not the DE bottleneck |
+| Toolkit / look & feel | 90 | 80 | **83** | Kit solid; DoAction queue kit→shell live for core chrome |
+| Session login / packaging | 88 | 74 | **78** | `install-session-files.sh` + daily checklist; live greeter **NOT RUN** |
+| Own compositor as session WM | 90 | 80 | **84** | Workspace filter paint/hit-test/focus in `main`; SHM prefer; placeholders remain |
+| Multi-client window management | 90 | 76 | **81** | FTL + spawn; live workspace hide; rules still partial on surfaces |
+| Shell chrome architecture | 90 | 78 | **83** | i18n system menus; a11y chrome dispatch; layer-shell dual paint path |
+| FreeDesktop | 90 | 80 | **84** | Secret/Print/Inhibit on bus; inhibit store→idle; ScreenCast/PW **stubs** |
+| A11y / i18n | 88 | 68 | **77** | Menus + lock `tr()`; DoAction live set; `menu.activate` stub; Orca incomplete |
+| Multi-monitor / HDR-VRR | 90 | 70 | **76** | Shell→comp `RETROSHELL_OUTPUTS_LAYOUT`; no live modeset / Settings apply UI |
+| Polish / packaging / CI | 90 | 80 | **84** | Tests green; Docker; install-session + `verify_daily_driver_checklist` |
+| **Overall (equal-weight mean)** | **~90** | **~77** | **~82** | **(86+83+78+84+81+83+84+77+76+84)/10 = 81.6 → 82** |
 
 ### 13.3 What remains for honest ≥90
 
-Wire pure modules into live paths; greeter/session evidence; real client buffers
-over placeholders; portals complete on bus; i18n driving chrome; Orca activation
-path; display arrange apply. See deep audit § “What would honest ≥90 require.”
+Nearly all domains **≥85 with live evidence**, including: greeter→session exercised;
+client buffers routinely (not placeholder fallback); PipeWire ScreenCast or honest
+“unavailable” UX; Orca activating core chrome including menus; display arrange
+applied to outputs; window rules moving real surfaces. See deep audit § “What would
+honest ≥90 require” and `WARPATH_SCORECARD.md` residual table.
 
-### 13.4 Capability evidence (technical — still true)
+### 13.4 Capability evidence (technical — warpath-verified)
 
 | Criterion | Status | Evidence |
 |---|---|---|
 | Nested layer compose | **yes** | `main.rs` render under→windows→over |
 | DRM present path | **yes (code)** | `session_drm` commit/page_flip |
-| Workspace filter pure | **yes / unused in main** | `WorkspaceState::filter_visible` tests only |
-| Layer-shell chrome client | **yes (bind path)** | `layer_shell_client` |
+| Workspace filter in paint | **yes (main)** | `windows_visible_for_paint` / `workspace_state.is_visible` |
+| Per-window SHM vs placeholder | **yes (prefer SHM)** | `window_paint_source`; placeholder only if zero elements |
+| `RETROSHELL_OUTPUTS_LAYOUT` | **yes (env bridge)** | shell `apply_display_plan_env` → compositor parse |
+| Layer-shell chrome client | **yes (bind path)** | `layer_shell_client`; dual kit paint remains |
 | Session power plans | **yes (wired spawn)** | `session_actions` + menu |
-| Portal D-Bus (subset) | **yes** | Screenshot/Settings/OpenURI/FileChooser/ScreenCast stubs |
-| Host unit tests | **yes** | shell/kit/compositor green this audit |
+| DoAction → shell handlers | **partial live** | lock/log_out/force_quit/ws/window/dock/desktop; menu.activate stub |
+| Portal D-Bus (subset) | **yes (plan-level extras)** | Secret/Print/Inhibit + Screenshot/…; ScreenCast stubs |
+| Inhibit store → idle | **yes (in-process)** | `active_idle_inhibit_state` merged in shell `update` |
+| Install session files | **yes (packaging)** | `scripts/install-session-files.sh` (+ dry-run) |
+| Live greeter → session | **NOT RUN** | packaging/checklist only |
+| Host unit tests | **yes** | shell/kit/compositor lib green (`verify_daily_driver_checklist`) |
 
 ### 13.5 Bottom line
 
-- **Overall ~76**, not 90 — honest vs Plasma/GNOME daily driver.
-- README must not claim 90 until live integration closes the gaps above.
+- **Overall ~82** (mean **81.6**), not 90 — honest vs Plasma/GNOME daily driver.
+- README / agents must not re-inflate to 90 without greeter + PW + menu a11y + §12.
 - §12 remains **0 / 7 fully met**.
 
-*Skeptic deep audit 2026-07-11 — 90 claim rejected.*
+*Skeptic deep audit 2026-07-11 — 90 claim rejected; warpath rescore same day.*

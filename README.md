@@ -29,24 +29,29 @@ The script prefers `retro-compositor`, falls back to **labwc** with an honest
 message, then execs `retro-shell`. See `packaging/README.md`. FreeDesktop
 `org.freedesktop.Notifications` is registered when a session bus is available.
 
-**Status (see `docs/implementation_plan.md` §13 + `docs/DEEP_AUDIT_90_CLAIM.md`):**
+**Status (see `docs/implementation_plan.md` §13, `docs/WARPATH_SCORECARD.md`,
+`docs/DEEP_AUDIT_90_CLAIM.md`):**
 
 | Metric | Score |
 |---|---:|
-| **Overall daily-driver (original methodology)** | **~77/100** (mean 77.2; 90 claim withdrawn) |
+| **Overall daily-driver (original methodology)** | **~82/100** (mean 81.6; warpath rescore) |
 | Prior “91 criteria-weighted” and “~90 hard-DE” claims | **withdrawn** (score theater) |
+| Post-claim-audit (pre-warpath) | ~77 (mean 77.2) |
 
-**Landed (real code):** nested layer compose; DRM present path; layer-shell / FTL
-**clients**; portal D-Bus subset; session power **plans** + menu wiring; idle policy;
-pure window rules / display arrange / i18n catalog; AT-SPI Text+Component export;
-greeter **packaging** verify.
+**Landed (real / live paths):** nested layer compose; DRM present path; workspace
+**paint/focus filter in compositor main**; per-window **SHM prefer** (placeholder only
+if no buffer); layer-shell / FTL clients; portal D-Bus subset including
+Secret/Print/Inhibit; inhibit store → idle; session power plans + menu wiring;
+DoAction queue → lock/log_out/force_quit/workspace/window/dock/desktop; i18n
+**menus + lock**; shell→comp `RETROSHELL_OUTPUTS_LAYOUT`; install-session +
+daily-driver checklist (packaging).
 
-**Honest residual (why not 90):** many new modules are **pure + unit-tested** but not
-fully live (workspace filter unused in compositor `main`, `tr()` unused in UI,
-Secret/Print/Inhibit not on portal bus, display arrange not applied to outputs,
-client **placeholder rect** fallback, live greeter **NOT RUN**, screencast stubs).
+**Honest residual (why not 90):** live greeter **NOT RUN**; PipeWire ScreenCast
+**stubs**; `chrome.menu.activate` still **partial/log-only**; display arrange is env
+bridge not live modeset; window rules partial on real surfaces; §12 **0/7**;
+placeholder rects still possible without committed buffers.
 
-Would you replace Plasma for a week? **No.** Corrected score **~77**, not 90.
+Would you replace Plasma for a week? **No.** Honest score **~82**, not 90.
 
 ---
 
