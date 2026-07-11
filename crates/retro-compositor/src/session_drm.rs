@@ -124,10 +124,6 @@ fn try_present_dumb_frame(
     let dst = Rectangle::<i32, Physical>::from_size((w as i32, h as i32).into());
     let src = Rectangle::<f64, BufferCoords>::from_size((f64::from(w), f64::from(h)).into());
     // First commit may modeset; on failure try non-blocking page_flip.
-    let plane_state = |cfg: PlaneConfig<'_>| PlaneState {
-        handle: plane,
-        config: Some(cfg),
-    };
     let cfg = PlaneConfig {
         src,
         dst,
@@ -137,13 +133,17 @@ fn try_present_dumb_frame(
         fb: fb_handle,
         fence: None,
     };
-    match surface.commit([plane_state(cfg)], true) {
+    let states = [PlaneState {
+        handle: plane,
+        config: Some(cfg),
+    }];
+    match surface.commit(states.iter().cloned(), true) {
         Ok(()) => {
             tracing::debug!("DrmSurface::commit ok");
         }
         Err(err) => {
             tracing::debug!(?err, "commit failed, trying page_flip");
-            let cfg = PlaneConfig {
+            let cfg2 = PlaneConfig {
                 src,
                 dst,
                 transform: Transform::Normal,
@@ -152,8 +152,12 @@ fn try_present_dumb_frame(
                 fb: fb_handle,
                 fence: None,
             };
+            let states2 = [PlaneState {
+                handle: plane,
+                config: Some(cfg2),
+            }];
             surface
-                .page_flip([plane_state(cfg)], true)
+                .page_flip(states2.iter().cloned(), true)
                 .context("DrmSurface::page_flip")?;
         }
     }
