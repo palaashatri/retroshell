@@ -34,7 +34,7 @@ message, then execs `retro-shell`. See `packaging/README.md`. FreeDesktop
 
 | Metric | Score |
 |---|---:|
-| **Overall daily-driver (original methodology)** | **~82/100** (mean 81.6; warpath rescore) |
+| **Overall daily-driver (original methodology)** | **~85/100** (mean 84.6; warpath ongoing) |
 | Prior “91 criteria-weighted” and “~90 hard-DE” claims | **withdrawn** (score theater) |
 | Post-claim-audit (pre-warpath) | ~77 (mean 77.2) |
 

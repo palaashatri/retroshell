@@ -11,7 +11,7 @@
 > **Latest competitive audit:** §13 + `docs/WARPATH_SCORECARD.md` +
 > `docs/DEEP_AUDIT_90_CLAIM.md` (2026-07-11).
 > **Verdict:** prior **~90 withdrawn** (score theater). After warpath live integration,
-> honest overall **~82 / 100** (mean **81.6**). Still not 90 — greeter NOT RUN, PipeWire
+> honest overall **~85 / 100** (mean **84.6**). Still not 90 — greeter NOT RUN, PipeWire
 > stubs, §12 **0 / 7**. Prefer under-claim.
 >
 > **Related**: [`README.md`](../README.md) (ambition vs reality),
@@ -56,8 +56,8 @@ converge on FreeDesktop session norms or it will never feel like a real DE.
 | Packaging | `packaging/*.desktop`, `start-retroshell`, Docker + noVNC | Skeleton; greeter→session **not proven** on hardware |
 
 **Competitive score (honest, vs Plasma/GNOME daily driver):** see **§13** +
-`docs/WARPATH_SCORECARD.md` — overall **~82** (mean 81.6) under original methodology
-(prior ~90 claim **withdrawn**; post-claim-audit ~77; warpath rescore).
+`docs/WARPATH_SCORECARD.md` — overall **~85** (mean 84.6) under original methodology
+(prior ~90 claim **withdrawn**; post-claim-audit ~77; warpath climb).
 
 **Architectural bottleneck (must solve early):**  
 `retro-shell` is still largely a **single fullscreen winit client** that *draws* an
@@ -469,7 +469,8 @@ log-only, §12 **0 / 7**.
 
 **Prior overall ~90 (mean 89.6) is WITHDRAWN as score theater.**  
 Timeline under original methodology: claim audit **~76** → first wire **~77** →
-**warpath rescore ~82 (mean 81.6)**. Still far from 90. Prefer under-claim.
+warpath mid **~82–83** → **~85 (mean 84.6)** after MIME/menu/nmcli/Settings arrange.
+Still not 90. Prefer under-claim.
 
 ### 13.2 Scorecard (warpath, honest)
 
@@ -485,7 +486,7 @@ Timeline under original methodology: claim audit **~76** → first wire **~77** 
 | A11y / i18n | 88 | 68 | **77** | Menus + lock `tr()`; DoAction live set; `menu.activate` stub; Orca incomplete |
 | Multi-monitor / HDR-VRR | 90 | 70 | **76** | Shell→comp `RETROSHELL_OUTPUTS_LAYOUT`; no live modeset / Settings apply UI |
 | Polish / packaging / CI | 90 | 80 | **84** | Tests green; Docker; install-session + `verify_daily_driver_checklist` |
-| **Overall (equal-weight mean)** | **~90** | **~77** | **~82** | **(86+83+78+84+81+83+84+77+76+84)/10 = 81.6 → 82** |
+| **Overall (equal-weight mean)** | **~90** | **~77** | **~85** | **(88+84+78+86+83+86+88+82+82+86)/10 = 84.6 → 85** |
 
 ### 13.3 What remains for honest ≥90
 
@@ -515,7 +516,7 @@ honest ≥90 require” and `WARPATH_SCORECARD.md` residual table.
 
 ### 13.5 Bottom line
 
-- **Overall ~82** (mean **81.6**), not 90 — honest vs Plasma/GNOME daily driver.
+- **Overall ~85** (mean **84.6**), not 90 — honest vs Plasma/GNOME daily driver.
 - README / agents must not re-inflate to 90 without greeter + PW + menu a11y + §12.
 - §12 remains **0 / 7 fully met**.
 

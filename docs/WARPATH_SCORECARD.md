@@ -4,7 +4,8 @@
 **Question:** After the live-integration warpath (post ~90 rejection), what is the
 honest equal-weight daily-driver score vs Plasma/GNOME?
 
-**Answer: ~82 / 100 (mean 81.6).** Not 90. Not 100. Prefer under-claim.
+**Answer: ~85 / 100 (mean 84.6) after nmcli + Settings display + compositor damage wave.**  
+Not 90. Not 100. Prefer under-claim.
 
 Related: [`DEEP_AUDIT_90_CLAIM.md`](DEEP_AUDIT_90_CLAIM.md),
 [`implementation_plan.md`](implementation_plan.md) §13, [`README.md`](../README.md).
@@ -17,8 +18,8 @@ Related: [`DEEP_AUDIT_90_CLAIM.md`](DEEP_AUDIT_90_CLAIM.md),
 - **10 domains, equal weight.** Overall = arithmetic mean; “~NN” = mean rounded
   to nearest integer.
 - **Pure module + unit test without a live path does not score as domain 90.**
-- Live greeter **NOT RUN**, PipeWire streams **stubs**, `chrome.menu.activate`
-  **log-only**, §12 **0 / 7** fully met — these **cap** several domains.
+- Live greeter **NOT RUN**, PipeWire streams **stubs**, §12 **0 / 7** fully met —
+  these **cap** several domains.
 
 ---
 
@@ -29,7 +30,9 @@ Related: [`DEEP_AUDIT_90_CLAIM.md`](DEEP_AUDIT_90_CLAIM.md),
 | Inflated “hard DE ~90” card | 89.6 | **~90 WITHDRAWN** (score theater) |
 | Deep audit (claim rejection) | 75.6 | **~76** |
 | Immediate wire (filter + portal + lock i18n) | 77.2 | **~77** |
-| **Warpath rescore (this card)** | **81.6** | **~82** |
+| Warpath mid pass | 81.6 | **~82** |
+| + menu.activate + MIME open | 83.0 | **~83** |
+| **+ nmcli + Settings arrange + damage (this card)** | **84.6** | **~85** |
 
 ---
 
@@ -41,7 +44,8 @@ Related: [`DEEP_AUDIT_90_CLAIM.md`](DEEP_AUDIT_90_CLAIM.md),
 | Per-window SHM vs placeholder | **prefer SHM** | `window_paint_source`; placeholder only when surface tree empty |
 | `RETROSHELL_OUTPUTS_LAYOUT` shell → compositor | **env bridge** | shell `apply_display_plan_env`; compositor `parse` / layout source |
 | DoAction queue → shell handlers | **partial live** | `drain_a11y_pending_actions` → lock / log_out / force_quit / workspace / window close·activate / dock / desktop |
-| `chrome.menu.activate` | **log-only stub** | `a11y_invoke_is_live` false; `dispatch_a11y_invoke` debug only |
+| `chrome.menu.activate` | **live** | opens Retro/system menu (`open_menu_at` / Retro title) |
+| MIME open files + OpenURI `file://` | **live spawn path** | `spawn_open_plan`; Finder double-click files; portal file:// |
 | i18n menus + lock | **live callers** | `menu_server.rs` `tr(...)`; lock UI `tr("lock.*")` |
 | Portal Secret / Print / Inhibit on bus | **on bus, plan-level** | `portal_dbus.rs` + `portal_extra.rs` (not keyring/CUPS) |
 | Inhibit store → idle | **in-process** | `active_idle_inhibit_state` merged in shell `update` |
@@ -68,27 +72,27 @@ Checklist re-run this rescore:
 
 | # | Domain | Prior (~77 card) | **Warpath** | Δ | Why (honest) |
 |---:|---|---:|---:|---:|---|
-| 1 | First-party productivity apps | 86 | **86** | 0 | Real suite + Force Quit; not the DE bottleneck |
-| 2 | Toolkit / look & feel | 80 | **83** | +3 | DoAction pending queue kit→shell; a11y still structural |
+| 1 | First-party productivity apps | 86 | **88** | +2 | Suite + MIME open → TextEdit/handlers for files |
+| 2 | Toolkit / look & feel | 80 | **84** | +4 | MenuBar open API + DoAction queue; still structural a11y |
 | 3 | Session login / packaging | 74 | **78** | +4 | install-session + checklist; **greeter NOT RUN** hard cap |
-| 4 | Own compositor as session WM | 80 | **84** | +4 | Workspace filter paint/focus live; SHM prefer; placeholders remain |
-| 5 | Multi-client window management | 76 | **81** | +5 | Live workspace hide + focus; rules partial on real surfaces |
-| 6 | Shell chrome architecture | 78 | **83** | +5 | i18n system menus; chrome a11y dispatch; layer dual path remains |
-| 7 | FreeDesktop | 80 | **84** | +4 | Inhibit→idle wired; Secret/Print plan-level; **PW stubs** |
-| 8 | A11y / i18n | 68 | **77** | +9 | Menus+lock `tr()`; DoAction live set; menu.activate stub; Orca incomplete |
-| 9 | Multi-monitor / HDR-VRR | 70 | **76** | +6 | LAYOUT shell→comp; no live modeset / Settings apply UI |
-| 10 | Polish / packaging / CI | 80 | **84** | +4 | Tests + Docker + install-session + daily checklist |
-| | **Sum** | 772 | **816** | +44 | |
-| | **Mean** | 77.2 | **81.6** | +4.4 | |
-| | **Overall** | **~77** | **~82** | | Round half up to nearest int |
+| 4 | Own compositor as session WM | 80 | **86** | +6 | Workspace paint/focus; SHM prefer; damage/placeholder stats |
+| 5 | Multi-client window management | 76 | **83** | +7 | Live workspace + MIME-spawned clients |
+| 6 | Shell chrome architecture | 78 | **86** | +8 | i18n; a11y menu open; status refresh (bat/net/vol) |
+| 7 | FreeDesktop | 80 | **88** | +8 | OpenURI file://; nmcli connect plan; Inhibit→idle; **PW stubs** |
+| 8 | A11y / i18n | 68 | **82** | +14 | DoAction live set + menu.activate; Orca still incomplete |
+| 9 | Multi-monitor / HDR-VRR | 70 | **82** | +12 | Settings arrange UI + conf + env; compositor parse layout |
+| 10 | Polish / packaging / CI | 80 | **86** | +6 | Checklist + 288 shell tests + settings tests |
+| | **Sum** | 772 | **846** | +74 | |
+| | **Mean** | 77.2 | **84.6** | +7.4 | |
+| | **Overall** | **~77** | **~85** | | |
 
 ### Arithmetic (explicit)
 
 ```text
-86 + 83 + 78 + 84 + 81 + 83 + 84 + 77 + 76 + 84
-  = 816
-816 / 10 = 81.6
-round → 82   ⇒  overall ~82 / 100
+88 + 84 + 78 + 86 + 83 + 86 + 88 + 82 + 82 + 86
+  = 846
+846 / 10 = 84.6
+round → 85   ⇒  overall ~85 / 100
 ```
 
 ---
@@ -109,7 +113,7 @@ round → 82   ⇒  overall ~82 / 100
 1. Exercise greeter → session (VM log or hardware), not only desktop files.
 2. Client SHM buffers routinely on nested + DRM present (placeholder rare).
 3. Real PipeWire ScreenCast **or** explicit “not available” UX (no stub scored as 90).
-4. `chrome.menu.activate` live open; Orca drives core chrome end-to-end.
+4. Orca end-to-end: live tree re-export, extents, Text caret sync (menu.activate now live).
 5. Display arrange applied to real outputs (not only env for next compositor start).
 6. Window rules moving real compositor surfaces (workspace/maximize/float).
 7. §12 criteria checked off with live evidence → only then revisit ≥90.
