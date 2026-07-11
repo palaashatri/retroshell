@@ -513,6 +513,36 @@ pub fn handle_open_uri(uri: &str) -> Result<(), String> {
     }
 }
 
+/// Post-validation OpenURI action (pure — no process spawn).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenUriAction {
+    /// `http` / `https`: scheme allowed; no local handler in this build.
+    ValidatedRemote,
+    /// `file://`: MIME open plan ready for spawn by the live portal path.
+    MimeOpen(crate::mime_open::OpenPlan),
+}
+
+/// Pure OpenURI plan: validate, then for `file://` build a MIME open plan
+/// using [`crate::mime_open::seed_retroshell_defaults`].
+///
+/// Live D-Bus OpenURI spawns [`OpenUriAction::MimeOpen`] via
+/// [`crate::session_clients::spawn_open_plan`].
+pub fn plan_open_uri(uri: &str) -> Result<OpenUriAction, String> {
+    handle_open_uri(uri)?;
+    let uri = uri.trim();
+    let is_file = uri
+        .split_once(':')
+        .map(|(s, _)| s.eq_ignore_ascii_case("file"))
+        .unwrap_or(false);
+    if !is_file {
+        return Ok(OpenUriAction::ValidatedRemote);
+    }
+    let mut reg = crate::mime_open::MimeOpenRegistry::new();
+    crate::mime_open::seed_retroshell_defaults(&mut reg);
+    let plan = crate::mime_open::open_plan_for_file_uri(&reg, uri)?;
+    Ok(OpenUriAction::MimeOpen(plan))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,6 +664,34 @@ mod tests {
         assert!(handle_open_uri("").is_err());
         assert!(handle_open_uri("noscheme").is_err());
         assert!(handle_open_uri("http\0://bad").is_err());
+    }
+
+    #[test]
+    fn plan_open_uri_http_is_validated_remote() {
+        match plan_open_uri("https://example.com/a").unwrap() {
+            OpenUriAction::ValidatedRemote => {}
+            other => panic!("expected ValidatedRemote, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_open_uri_file_text_is_mime_open_textedit_spawn_argv() {
+        match plan_open_uri("file:///tmp/hello.txt").unwrap() {
+            OpenUriAction::MimeOpen(plan) => {
+                assert_eq!(plan.app_id, "com.retro.textedit");
+                assert_eq!(
+                    crate::mime_open::spawn_argv(&plan),
+                    vec!["textedit", "/tmp/hello.txt"]
+                );
+            }
+            OpenUriAction::ValidatedRemote => panic!("expected MimeOpen for file URI"),
+        }
+    }
+
+    #[test]
+    fn plan_open_uri_file_unknown_mime_errors() {
+        let err = plan_open_uri("file:///tmp/blob.bin").unwrap_err();
+        assert!(err.contains("no handler"), "{err}");
     }
 
     #[test]

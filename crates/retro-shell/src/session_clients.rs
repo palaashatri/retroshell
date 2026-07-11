@@ -232,6 +232,44 @@ pub fn spawn_app_client(bundle_id: &str) -> Result<ExternalClient, String> {
     })
 }
 
+/// Spawn a handler process for a MIME [`crate::mime_open::OpenPlan`].
+///
+/// Uses pure [`crate::mime_open::spawn_argv`] for the argument vector. First-party
+/// app ids resolve to on-disk binaries via [`resolve_app_binary`]; other plans
+/// use `argv[0]` as the command name/path.
+pub fn spawn_open_plan(plan: &crate::mime_open::OpenPlan) -> Result<ExternalClient, String> {
+    let argv = crate::mime_open::spawn_argv(plan);
+    if argv.is_empty() {
+        return Err("empty open plan argv".to_string());
+    }
+    let binary_name = argv[0].clone();
+    let path = if binary_name_for_bundle(&plan.app_id).is_some() {
+        resolve_app_binary(&plan.app_id)?
+    } else {
+        // Non-first-party: honor argv[0] (PATH or absolute).
+        std::path::PathBuf::from(&argv[0])
+    };
+    let mut command = build_app_command(&path);
+    if argv.len() > 1 {
+        command.args(&argv[1..]);
+    }
+    let child = command
+        .spawn()
+        .map_err(|err| format!("Failed to spawn open plan '{}': {err}", path.display()))?;
+    let pid = child.id();
+    let launched_at_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(ExternalClient {
+        bundle_id: plan.app_id.clone(),
+        binary_name,
+        pid,
+        child: Some(child),
+        launched_at_unix,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,6 +280,19 @@ mod tests {
         assert_eq!(binary_name_for_bundle("com.retro.terminal"), Some("terminal"));
         assert_eq!(binary_name_for_bundle("com.retro.settings"), Some("settings"));
         assert_eq!(binary_name_for_bundle("unknown"), None);
+    }
+
+    #[test]
+    fn spawn_open_plan_argv_matches_mime_spawn_argv_pure() {
+        // Pure: plan → spawn argv without spawning a GUI process.
+        let mut reg = crate::mime_open::MimeOpenRegistry::new();
+        crate::mime_open::seed_retroshell_defaults(&mut reg);
+        let plan =
+            crate::mime_open::open_plan(&reg, std::path::PathBuf::from("/tmp/readme.txt")).unwrap();
+        let argv = crate::mime_open::spawn_argv(&plan);
+        assert_eq!(argv, vec!["textedit", "/tmp/readme.txt"]);
+        assert_eq!(plan.app_id, "com.retro.textedit");
+        assert_eq!(binary_name_for_bundle(&plan.app_id), Some("textedit"));
     }
 
     #[test]

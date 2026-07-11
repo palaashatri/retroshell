@@ -82,7 +82,8 @@ pub use layer_shell_client::{
 pub use launch_services::LaunchServices;
 pub use menu_server::MenuServer;
 pub use mime_open::{
-    mime_from_path, open_plan, parse_desktop_exec, seed_retroshell_defaults, DesktopAppEntry,
+    first_party_binary_for_app_id, mime_from_path, open_plan, open_plan_for_file_uri,
+    parse_desktop_exec, path_from_file_uri, seed_retroshell_defaults, spawn_argv, DesktopAppEntry,
     MimeOpenRegistry, OpenPlan,
 };
 pub use network_connect::{
@@ -98,13 +99,14 @@ pub use notification_center::{NotificationCenter, NotificationPriority};
 pub use portal::{
     apply_screencast_readiness, create_screencast_session,
     create_screencast_session_with_backend_note, handle_file_chooser_open, handle_file_chooser_save,
-    handle_open_uri, handle_portal_screenshot_request, portal_screenshot_filename,
+    handle_open_uri, handle_portal_screenshot_request, plan_open_uri, portal_screenshot_filename,
     portal_screenshot_uri_for, portal_screenshots_dir, read_all_portal_settings,
     read_portal_setting, screencast_backend_note, screencast_backend_note_from_socket,
     select_screencast_sources, start_screencast, take_portal_style_screenshot,
-    take_portal_style_screenshot_with, validate_file_chooser_request, PortalFileChooserRequest,
-    PortalFileChooserResult, PortalScreencastRequest, PortalScreencastSession,
-    PortalScreenshotRequest, PortalScreenshotResult, PortalSettingsNamespace, ScreencastStream,
+    take_portal_style_screenshot_with, validate_file_chooser_request, OpenUriAction,
+    PortalFileChooserRequest, PortalFileChooserResult, PortalScreencastRequest,
+    PortalScreencastSession, PortalScreenshotRequest, PortalScreenshotResult,
+    PortalSettingsNamespace, ScreencastStream,
     PORTAL_BUS_NAME, PORTAL_FILECHOOSER_INTERFACE, PORTAL_OPENURI_INTERFACE, PORTAL_PATH,
     PORTAL_SCREENCAST_INTERFACE, PORTAL_SCREENSHOT_INTERFACE, PORTAL_SETTINGS_INTERFACE,
     SCREENCAST_DEFAULT_HEIGHT, SCREENCAST_DEFAULT_WIDTH, SCREENCAST_NOTE_PIPEWIRE_SOCKET,
@@ -157,7 +159,7 @@ pub use window_rules::{
 };
 pub use session_clients::{
     binary_name_for_bundle, parse_force_quit_entry, resolve_app_binary, spawn_app_client,
-    ForceQuitTarget, SessionClientRegistry,
+    spawn_open_plan, ForceQuitTarget, SessionClientRegistry,
 };
 pub use session_manager::SessionManager;
 pub use session_packaging::{
@@ -391,6 +393,12 @@ struct ShellDesktop {
     idle_config: IdleConfig,
     /// Portal / media idle inhibit tokens.
     idle_inhibit: IdleInhibitState,
+    /// MIME open registry (seeded with RetroShell defaults).
+    mime_registry: MimeOpenRegistry,
+    /// When false, file open records [`Self::last_mime_open`] only (unit tests).
+    mime_open_spawn: bool,
+    /// Last MIME open plan produced by folder double-click / open path (tests + status).
+    last_mime_open: Option<OpenPlan>,
 }
 
 struct ShellWindow {
@@ -525,6 +533,13 @@ impl ShellDesktop {
             // settings.conf flat keys (idle_lock_secs, …) when present; else defaults.
             idle_config: IdleConfig::parse_from_conf(&read_settings_conf_text()),
             idle_inhibit: IdleInhibitState::new(),
+            mime_registry: {
+                let mut reg = MimeOpenRegistry::new();
+                seed_retroshell_defaults(&mut reg);
+                reg
+            },
+            mime_open_spawn: true,
+            last_mime_open: None,
         };
         // Map layer-shell chrome + sync foreign-toplevel list when a compositor is live.
         RetroShell::attach_wayland_session_protocols(&mut shell);
@@ -1252,6 +1267,103 @@ impl ShellDesktop {
             title: item.label.clone(),
             path,
         })
+    }
+
+    /// File (non-directory) icon under a folder window at `point`, if any.
+    fn folder_file_target_at(&self, window_index: usize, point: Point) -> Option<PathBuf> {
+        let shell_window = self.windows.get(window_index)?;
+        let folder_path = shell_window.folder_path.as_ref()?;
+        let icon_view = shell_window
+            .window
+            .content
+            .as_ref()
+            .and_then(|content| content.as_any().downcast_ref::<IconView>())?;
+        let item = icon_view
+            .items
+            .iter()
+            .find(|item| item.rect.contains(point))?;
+        // Folders are handled by folder_open_target_at.
+        if item.icon.as_deref() == Some("folder") {
+            return None;
+        }
+        let path = folder_path.join(&item.label);
+        if path.is_dir() {
+            return None;
+        }
+        if !path.exists() {
+            return None;
+        }
+        Some(path)
+    }
+
+    /// Open a filesystem path via MIME registry (`open_plan` + optional live spawn).
+    ///
+    /// Folders should use [`Self::open_folder_window`] instead. When
+    /// `mime_open_spawn` is false (unit tests), only records the plan.
+    fn open_path_with_mime(&mut self, path: PathBuf) {
+        match open_plan(&self.mime_registry, &path) {
+            Ok(plan) => {
+                tracing::info!(
+                    app_id = %plan.app_id,
+                    argv = ?spawn_argv(&plan),
+                    path = %path.display(),
+                    "MIME open plan"
+                );
+                self.last_mime_open = Some(plan.clone());
+                if !self.mime_open_spawn {
+                    return;
+                }
+                let _ = self.session_clients.reap();
+                match session_clients::spawn_open_plan(&plan) {
+                    Ok(client) => {
+                        let pid = client.pid;
+                        let binary_name = client.binary_name.clone();
+                        let bundle_id = client.bundle_id.clone();
+                        self.foreign_toplevels.add(ForeignToplevelEntry::new(
+                            format!("session-client-{pid}"),
+                            binary_name,
+                            &bundle_id,
+                            Some(pid),
+                        ));
+                        self.apply_foreign_rule_workspaces_to_shell_windows();
+                        self.session_clients.register(client);
+                        self.last_error = None;
+                        self.activate_app_menu(&bundle_id);
+                        self.record_notification(
+                            &bundle_id,
+                            "Opened",
+                            &format!("{} (pid={pid})", path.display()),
+                            NotificationPriority::Normal,
+                        );
+                    }
+                    Err(msg) => {
+                        tracing::error!(
+                            path = %path.display(),
+                            error = %msg,
+                            "MIME open spawn failed"
+                        );
+                        self.last_error = Some(msg.clone());
+                        self.record_notification(
+                            "com.retro.shell",
+                            "Open Failed",
+                            &msg,
+                            NotificationPriority::Normal,
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(path = %path.display(), error = %err, "MIME open: no handler");
+                self.last_mime_open = None;
+                self.last_error = Some(err.clone());
+                self.record_notification(
+                    "com.retro.shell",
+                    "No Application",
+                    &format!("{}: {err}", path.display()),
+                    NotificationPriority::Normal,
+                );
+            }
+        }
     }
 
     fn layout_window(&mut self, id: Uuid) {
@@ -2991,6 +3103,12 @@ impl Widget for ShellDesktop {
                         return EventResult::Handled;
                     }
 
+                    // File (not folder): MIME open_plan + spawn when handler exists.
+                    if let Some(path) = self.folder_file_target_at(index, *point) {
+                        self.open_path_with_mime(path);
+                        return EventResult::Handled;
+                    }
+
                     let result = self.windows[index].window.handle_event(event);
                     if matches!(result, EventResult::Handled | EventResult::StopPropagation) {
                         return result;
@@ -3230,6 +3348,8 @@ mod tests {
             session_manager,
         );
         desktop.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+        // Unit tests: plan MIME open without spawning real GUI processes.
+        desktop.mime_open_spawn = false;
         (desktop, window_manager)
     }
 
@@ -3569,7 +3689,66 @@ mod tests {
         });
 
         assert!(matches!(result, EventResult::Handled));
+        // MIME open is external process — no new shell-managed window.
         assert_eq!(desktop.windows.len(), initial_count);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shell_folder_window_double_click_file_plans_mime_open_textedit() {
+        let root = temp_shell_root();
+        let note = root.join("note.txt");
+        fs::write(&note, "hello").unwrap();
+        let (mut desktop, _) = test_desktop();
+        assert!(!desktop.mime_open_spawn, "tests must not spawn GUI");
+        let root_id = desktop.open_folder_window("Root", root.clone());
+        let index = desktop.window_index(root_id).unwrap();
+        let point = icon_item_center(&desktop.windows[index], "note.txt");
+        let initial_count = desktop.windows.len();
+
+        let result = desktop.handle_event(&Event::DoubleClick {
+            button: MouseButton::Left,
+            point,
+            modifiers: Modifiers::NONE,
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(desktop.windows.len(), initial_count);
+        let plan = desktop
+            .last_mime_open
+            .as_ref()
+            .expect("MIME open plan recorded");
+        assert_eq!(plan.app_id, "com.retro.textedit");
+        assert_eq!(
+            spawn_argv(plan),
+            vec!["textedit".to_string(), note.to_string_lossy().into_owned()]
+        );
+        // No live spawn in unit tests.
+        assert_eq!(desktop.session_clients.len(), 0);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shell_folder_window_double_click_unknown_file_records_no_handler() {
+        let root = temp_shell_root();
+        fs::write(root.join("blob.bin"), [0u8, 1, 2]).unwrap();
+        let (mut desktop, _) = test_desktop();
+        let root_id = desktop.open_folder_window("Root", root.clone());
+        let index = desktop.window_index(root_id).unwrap();
+        let point = icon_item_center(&desktop.windows[index], "blob.bin");
+
+        let result = desktop.handle_event(&Event::DoubleClick {
+            button: MouseButton::Left,
+            point,
+            modifiers: Modifiers::NONE,
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert!(desktop.last_mime_open.is_none());
+        let err = desktop.last_error.as_deref().unwrap_or("");
+        assert!(err.contains("no handler"), "{err}");
 
         fs::remove_dir_all(root).unwrap();
     }

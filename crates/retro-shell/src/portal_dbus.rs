@@ -63,11 +63,11 @@ mod linux {
     use super::*;
     use crate::portal::{
         create_screencast_session_with_backend_note, handle_file_chooser_open,
-        handle_file_chooser_save, handle_open_uri, handle_portal_screenshot_request,
+        handle_file_chooser_save, handle_portal_screenshot_request, plan_open_uri,
         portal_screenshot_uri_for, portal_screenshots_dir, read_all_portal_settings,
         read_portal_setting, select_screencast_sources, start_screencast,
-        take_portal_style_screenshot_with, PortalFileChooserRequest, PortalScreencastRequest,
-        PortalScreencastSession, PortalScreenshotRequest,
+        take_portal_style_screenshot_with, OpenUriAction, PortalFileChooserRequest,
+        PortalScreencastRequest, PortalScreencastSession, PortalScreenshotRequest,
     };
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -248,9 +248,10 @@ mod linux {
 
     #[interface(name = "org.freedesktop.impl.portal.OpenURI")]
     impl PortalOpenUriIface {
-        /// OpenURI validation (pure); does not spawn a handler process.
+        /// OpenURI: validate schemes; for `file://` try MIME open plan + spawn.
         ///
-        /// Returns response `0` on allowed schemes, `2` on rejection.
+        /// Returns response `0` on success (remote schemes validated; file spawn ok),
+        /// `2` on rejection / no handler / spawn failure.
         fn open_uri(
             &self,
             _handle: zbus::zvariant::ObjectPath<'_>,
@@ -259,9 +260,39 @@ mod linux {
             uri: &str,
             _options: HashMap<String, OwnedValue>,
         ) -> u32 {
-            match handle_open_uri(uri) {
-                Ok(()) => 0,
-                Err(_) => 2,
+            match plan_open_uri(uri) {
+                Ok(OpenUriAction::ValidatedRemote) => 0,
+                Ok(OpenUriAction::MimeOpen(plan)) => {
+                    let argv = crate::mime_open::spawn_argv(&plan);
+                    match crate::session_clients::spawn_open_plan(&plan) {
+                        Ok(client) => {
+                            tracing::info!(
+                                pid = client.pid,
+                                app_id = %plan.app_id,
+                                ?argv,
+                                uri,
+                                "OpenURI file:// MIME open spawned"
+                            );
+                            // Fire-and-forget: portal has no session client registry.
+                            // Child keeps running after ExternalClient drop.
+                            0
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                error = %err,
+                                app_id = %plan.app_id,
+                                ?argv,
+                                uri,
+                                "OpenURI file:// MIME open spawn failed"
+                            );
+                            2
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::debug!(error = %err, uri, "OpenURI rejected");
+                    2
+                }
             }
         }
     }

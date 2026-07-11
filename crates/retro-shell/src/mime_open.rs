@@ -3,9 +3,11 @@
 //! No process execution — builds argv plans and registry lookups only.
 //! Field-code expansion follows the FreeDesktop Desktop Entry Spec Exec keys
 //! for the minimal set: `%f` `%F` `%u` `%U` `%i` `%c` `%%`.
+//!
+//! Live spawn of an [`OpenPlan`] lives in [`crate::session_clients::spawn_open_plan`].
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A registered application that can open one or more MIME types.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,6 +305,115 @@ pub fn open_plan(
     Ok(OpenPlan { app_id, argv })
 }
 
+/// First-party binary name for a RetroShell app id (spawn-ready, not Exec= name).
+pub fn first_party_binary_for_app_id(app_id: &str) -> Option<&'static str> {
+    match app_id {
+        "com.retro.textedit" => Some("textedit"),
+        "com.retro.finder" => Some("finder"),
+        "com.retro.settings" => Some("settings"),
+        "com.retro.terminal" => Some("terminal"),
+        "com.retro.appstore" => Some("appstore"),
+        _ => None,
+    }
+}
+
+/// Pure spawn argv for an [`OpenPlan`].
+///
+/// Remaps known RetroShell app ids to on-disk first-party binary names
+/// (`retro-textedit` Exec → `textedit`). Unknown apps keep `plan.argv` as-is.
+pub fn spawn_argv(plan: &OpenPlan) -> Vec<String> {
+    let mut argv = plan.argv.clone();
+    if argv.is_empty() {
+        return argv;
+    }
+    if let Some(bin) = first_party_binary_for_app_id(&plan.app_id) {
+        argv[0] = bin.to_string();
+    }
+    argv
+}
+
+/// Pure: filesystem path from a `file:` URI.
+///
+/// Accepts `file:///abs`, `file://localhost/abs`, and `file:/abs`.
+/// Minimal percent-decoding for path segments (`%20` → space).
+pub fn path_from_file_uri(uri: &str) -> Result<PathBuf, String> {
+    let uri = uri.trim();
+    if uri.is_empty() {
+        return Err("empty URI".to_string());
+    }
+    let rest = uri
+        .strip_prefix("file:")
+        .or_else(|| uri.strip_prefix("FILE:"))
+        .ok_or_else(|| "not a file URI".to_string())?;
+
+    // file:///path  |  file://localhost/path  |  file:/path  |  file://path
+    let path_part = if let Some(after) = rest.strip_prefix("//") {
+        // authority + path
+        if after.starts_with('/') {
+            // file:///tmp/x → after = "/tmp/x"
+            after
+        } else if let Some(slash) = after.find('/') {
+            let authority = &after[..slash];
+            if authority.is_empty() || authority.eq_ignore_ascii_case("localhost") {
+                &after[slash..]
+            } else {
+                return Err(format!("unsupported file URI authority: {authority}"));
+            }
+        } else {
+            return Err("file URI missing path".to_string());
+        }
+    } else if rest.starts_with('/') {
+        // file:/tmp/x
+        rest
+    } else {
+        return Err("file URI missing path".to_string());
+    };
+
+    let decoded = percent_decode_path(path_part);
+    if decoded.is_empty() {
+        return Err("file URI path is empty".to_string());
+    }
+    Ok(PathBuf::from(decoded))
+}
+
+/// Pure open plan for a validated (or raw) `file://` URI using the registry.
+pub fn open_plan_for_file_uri(
+    registry: &MimeOpenRegistry,
+    uri: &str,
+) -> Result<OpenPlan, String> {
+    let path = path_from_file_uri(uri)?;
+    open_plan(registry, path)
+}
+
+fn percent_decode_path(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let h1 = bytes[i + 1];
+            let h2 = bytes[i + 2];
+            if let (Some(a), Some(b)) = (from_hex(h1), from_hex(h2)) {
+                out.push((a << 4) | b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn from_hex(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,6 +590,30 @@ mod tests {
     }
 
     #[test]
+    fn open_plan_spawn_argv_text_file_is_first_party_binary() {
+        let mut reg = MimeOpenRegistry::new();
+        seed_retroshell_defaults(&mut reg);
+        let plan = open_plan(&reg, PathBuf::from("/tmp/hello.txt")).unwrap();
+        // Pure spawn argv: Exec name remapped to on-disk binary (no process).
+        assert_eq!(spawn_argv(&plan), vec!["textedit", "/tmp/hello.txt"]);
+        assert_eq!(
+            first_party_binary_for_app_id(&plan.app_id),
+            Some("textedit")
+        );
+    }
+
+    #[test]
+    fn open_plan_spawn_argv_directory_is_finder() {
+        let mut reg = MimeOpenRegistry::new();
+        seed_retroshell_defaults(&mut reg);
+        let dir = std::env::temp_dir();
+        let plan = open_plan(&reg, &dir).unwrap();
+        let argv = spawn_argv(&plan);
+        assert_eq!(argv[0], "finder");
+        assert_eq!(argv[1], dir.to_string_lossy().as_ref());
+    }
+
+    #[test]
     fn open_plan_directory_uses_finder() {
         let mut reg = MimeOpenRegistry::new();
         seed_retroshell_defaults(&mut reg);
@@ -494,6 +629,41 @@ mod tests {
         let reg = MimeOpenRegistry::new();
         let err = open_plan(&reg, PathBuf::from("/tmp/x.bin")).unwrap_err();
         assert!(err.contains("no handler"), "{err}");
+    }
+
+    #[test]
+    fn path_from_file_uri_triple_slash() {
+        assert_eq!(
+            path_from_file_uri("file:///tmp/doc.txt").unwrap(),
+            PathBuf::from("/tmp/doc.txt")
+        );
+    }
+
+    #[test]
+    fn path_from_file_uri_localhost_and_percent() {
+        assert_eq!(
+            path_from_file_uri("file://localhost/tmp/hello%20world.txt").unwrap(),
+            PathBuf::from("/tmp/hello world.txt")
+        );
+        assert_eq!(
+            path_from_file_uri("file:/tmp/a.txt").unwrap(),
+            PathBuf::from("/tmp/a.txt")
+        );
+    }
+
+    #[test]
+    fn path_from_file_uri_rejects_non_file() {
+        assert!(path_from_file_uri("https://example.com/x").is_err());
+        assert!(path_from_file_uri("").is_err());
+    }
+
+    #[test]
+    fn open_plan_for_file_uri_text_uses_textedit_spawn_argv() {
+        let mut reg = MimeOpenRegistry::new();
+        seed_retroshell_defaults(&mut reg);
+        let plan = open_plan_for_file_uri(&reg, "file:///tmp/notes.md").unwrap();
+        assert_eq!(plan.app_id, "com.retro.textedit");
+        assert_eq!(spawn_argv(&plan), vec!["textedit", "/tmp/notes.md"]);
     }
 
     #[test]
