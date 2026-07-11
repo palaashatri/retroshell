@@ -43,23 +43,59 @@ converge on FreeDesktop session norms or it will never feel like a real DE.
 
 ---
 
-## 2. Where we are today (baseline, 2026-07-11)
+## 2. Where we are today (status snapshot, 2026-07-11)
+
+> **Hand-off for next implementers (any model):** read §2 + §13 + §14 first.
+> Do **not** re-claim 90/100 without live greeter + residual table cleared.
+> Canonical score vector: `88,84,78,86,83,86,88,84,82,86` → **sum 845 → mean 84.5 → ~85**.
+
+### 2.1 Layer status
 
 | Layer | Status | Gap vs DE-class |
 |---|---|---|
-| Toolkit (`retro-kit` / `retro-render` / `retro-sdk`) | Strong: widgets, wgpu, themes, menus | No scale-factor tree; limited a11y roles |
-| First-party apps | Real I/O (Finder, Terminal, TextEdit, Settings, App Store) | Not all FreeDesktop portals; limited third-party |
-| Shell chrome | Dock/menu painted for visuals; **layer-shell client** maps bar/dock namespaces when `WAYLAND_DISPLAY` live | Dual path: kit paint still drives UI; protocol chrome is real bind when compositor supports zwlr_layer_shell |
-| Multi-client apps | Process spawn + **ext-foreign-toplevel-list client** sync into Force Quit | FTL client best-effort; still also tracks PIDs in session registry |
-| Compositor (`retro-compositor`) | Nested: SHM + **layer-shell in render_frame**; FTL; decorations; DRM: modeset + dumb-buffer **commit/page_flip** present path | Full multi-plane composition / damage still progressive; Docker often labwc |
-| System integration | NM status + connect plan, volume, power, FDO notifications, **portal D-Bus** Screenshot/Settings/OpenURI | No full polkit UI, IME, screencast, greeter proof |
-| Packaging | `packaging/*.desktop`, `start-retroshell`, Docker + noVNC | Skeleton; greeter→session **not proven** on hardware |
+| Toolkit (`retro-kit` / `retro-render` / `retro-sdk`) | Strong widgets/wgpu/themes; MenuBar `open_menu_at`; AT-SPI Action/Text/Component export; DoAction → in-process queue | No full scale-factor tree; DoAction does not fully drive all widgets; Orca incomplete |
+| First-party apps | Finder, Terminal, TextEdit, Settings, App Store; Settings display arrange UI; MIME open → spawn | Not every portal; limited third-party integration |
+| Shell chrome | Dock/menu; layer-shell **client** bind; i18n system menus + lock; idle auto-lock; session power menus; status refresh (bat/net/vol); a11y open Retro menu + dock/desktop context windows | Still dual paint when layer unbound; shell is largely one winit client drawing chrome |
+| Multi-client apps | Process spawn; FTL client → Force Quit; MIME/OpenURI file:// spawn; window rules (partial, shell-side) | Rules not full compositor surface control; XWayland paint limited nested |
+| Compositor (`retro-compositor`) | Nested: layer compose; workspace **paint/hit-test/focus** (Super+ws); SHM prefer + placeholder only if empty; `RETROSHELL_OUTPUTS_LAYOUT`; damage/placeholder stats; DRM present path (code) | Placeholders still possible; DRM multi-plane / live GPU session **NOT RUN** here; Docker often labwc (DRI3) |
+| System integration | Portal D-Bus Screenshot/Settings/OpenURI/FileChooser/ScreenCast + Secret/Print/Inhibit; inhibit→idle; nmcli connect plan; volume pactl/wpctl; FDO notifications; polkit agent pure | ScreenCast **stubs** (honesty notes); Secret/Print plan-level not keyring/CUPS; live greeter **NOT RUN** |
+| Packaging | `packaging/*.desktop`, `start-retroshell`, `install-session-files.sh`, `verify_*` + daily-driver checklist; `session_entry_smoke_report` (`live_greeter_verified: false` always) | Greeter→session not exercised on hardware; §12 **0/7 fully met** |
 
-**Competitive score (honest, vs Plasma/GNOME daily driver):** see **§13** +
-`docs/WARPATH_SCORECARD.md` + `docs/GOAL_DEEP_AUDIT_FINAL.md` — overall **~85**
-(mean **84.5**, sum **845**). Prior ~90 claim **withdrawn**.
+### 2.2 Score (equal-weight Plasma methodology)
 
-**Architectural bottleneck (must solve early):**  
+| Metric | Value |
+|---|---|
+| Overall | **~85 / 100** |
+| Mean | **84.5** |
+| Sum of 10 domains | **845** |
+| Prior ~90 claim | **WITHDRAWN** (score theater) |
+| §12 “we made it” | **0 / 7 fully met** |
+
+```text
+88 + 84 + 78 + 86 + 83 + 86 + 88 + 84 + 82 + 86 = 845
+845 / 10 = 84.5  →  ~85
+```
+
+Full scorecard: **§13.2**, `docs/WARPATH_SCORECARD.md`, `docs/GOAL_DEEP_AUDIT_FINAL.md`.
+
+### 2.3 Live vs residual (do not re-score pure as live)
+
+| Capability | Live? | Notes for next agent |
+|---|---|---|
+| Workspace filter in compositor paint | **yes** | `main.rs` `windows_visible_for_paint` |
+| SHM prefer / placeholder honesty | **yes** | Placeholder only if zero surface elements |
+| Shell → compositor layout env | **yes** | `RETROSHELL_OUTPUTS_LAYOUT` |
+| Settings display arrange save | **yes** | conf + env apply |
+| DoAction → shell.lock / menu / dock / desktop | **yes** | queue + `dispatch_a11y_invoke` |
+| MIME open / OpenURI file:// | **yes** | `spawn_open_plan` |
+| nmcli connect plan spawn | **yes** | best-effort |
+| Greeter → session on hardware | **NOT RUN** | packaging only |
+| PipeWire ScreenCast streams | **stub** | honesty `backend=portal_stub` notes |
+| Orca end-to-end | **no** | extents/caret/live re-export incomplete |
+| Client placeholder eliminated | **no** | still used when no buffer |
+
+### 2.4 Architectural bottleneck (unchanged)
+
 `retro-shell` is still largely a **single fullscreen winit client** that *draws* an
 internal desktop. KDE/GNOME-level workability requires the **compositor** to manage
 app surfaces, and the shell to become a **session client** (panels + protocols), not
@@ -443,8 +479,9 @@ RetroShell is **KDE/GNOME-class in workability** when **all** are true:
 6. Orca can drive core UI; keyboard-only is possible.
 7. Docs match reality; CI proves the above on hardware, not only nested Docker.
 
-**§12 status as of 2026-07-11: 0 / 7 fully met.** Until then: ship incrementally,
-stay honest, and follow the critical path above.
+**§12 status as of 2026-07-11: 0 / 7 fully met.** Packaging artifacts exist for
+criterion 1 (installable session files) but greeter login is **NOT RUN**. Until
+7/7: ship incrementally, stay honest, follow §14 goals.
 
 ---
 
@@ -520,3 +557,102 @@ honest ≥90 require” and `WARPATH_SCORECARD.md` residual table.
 - §12 remains **0 / 7 fully met**.
 
 *Skeptic deep audit 2026-07-11 — 90 claim rejected; warpath rescore; arithmetic fixed sum 845.*
+
+---
+
+## 14. Implementation goals for next agents (path to ≥90, then 100)
+
+> **Audience:** next model / human implementer. Prefer **live wiring + host tests**
+> over pure bookkeeping. After each wave: rescore only from greppable live paths;
+> never invent greeter/GPU evidence.
+
+### 14.1 Hard rules (honesty)
+
+1. **Methodology frozen:** equal-weight mean of the 10 domains in §13.2; overall =
+   sum/10; “~NN” = half-up round of mean.
+2. **Pure ≠ live.** Unit tests alone do not raise a domain to 90.
+3. **Do not claim 90** until greeter→session has **live evidence** (VM log or hardware)
+   and residual table in §14.4 is largely cleared.
+4. **Do not claim 100** until §12 is **7/7** and Plasma-week workability is real.
+5. Keep `session_entry_smoke_report.live_greeter_verified == false` until a greeter
+   is actually exercised; never hard-code `true`.
+
+### 14.2 Priority ordered goals (P0 → P2)
+
+| Pri | Goal | Acceptance (evidence) | Domains lifted |
+|---|---|---|---|
+| **P0** | **Live greeter → session** on a Linux VM or Pi | DM selects RetroShell; log shows compositor+shell; paste logs in docs/evidence | Session → ≥88; §12 #1 partial→yes |
+| **P0** | **Client buffers routinely** under nested + document DRM | Nested: first-party app shows SHM content (not color rect); placeholder stats rare in session log | Compositor, multi-client → ≥88 |
+| **P0** | **Orca / AT-SPI end-to-end core chrome** | Live tree re-export or proven focus+DoAction for lock/menu/dock; extents non-zero when laid out | A11y → ≥88; Toolkit → ≥88 |
+| **P1** | **ScreenCast honesty or PipeWire** | Either live node export **or** Start returns clear “unavailable” UX (no stub scored as done) | FreeDesktop → ≥90 only if real PW **or** honest UX + rest of domain |
+| **P1** | **Window rules → compositor surfaces** | Rules assign workspace/maximize applied to real mapped clients (not only Force Quit labels) | Multi-client → ≥88 |
+| **P1** | **Display arrange live apply** | Settings save applies to running compositor outputs (not only next-process env) | Multi-monitor → ≥88 |
+| **P1** | **Shell as multi-surface session client** | Menu bar / dock remain correct when kit paint skipped after layer-shell bind | Shell chrome → ≥90 |
+| **P2** | **Polkit interactive agent UI** | Real auth dialog path for privileged actions | FreeDesktop, session |
+| **P2** | **IME full path** | text-input-v3 + IM-v2 proven with real client | Compositor, toolkit |
+| **P2** | **CI packaging + Docker DE smoke** | `verify_daily_driver_checklist` + container shell/labwc smoke in CI | Polish → ≥90 |
+| **P2** | **Flatpak / portal completeness** | FileChooser/OpenURI/ScreenCast usable by sandboxed app | FreeDesktop |
+
+### 14.3 Suggested work packages (files)
+
+| Package | Primary paths | Notes |
+|---|---|---|
+| Greeter / session | `scripts/start-retroshell`, `packaging/*`, `session_packaging.rs`, distro greeter config | Prove login; keep honesty flags accurate |
+| Compositor present | `crates/retro-compositor/src/main.rs`, `session_drm.rs`, `workspace_focus.rs` | Fewer placeholders; DRM seat when available |
+| A11y / Orca | `crates/retro-kit/src/accessibility.rs`, `retro-shell` `atspi_bus`, `a11y_actions`, `lib.rs` drain | Live re-export; extents; Text caret |
+| Window rules | `window_rules.rs`, FTL map path, compositor `WorkspaceState` | Bridge shell rules → map/focus |
+| Display | `display_arrange.rs`, `display_settings.rs`, Settings app, compositor layout | Runtime apply, not only env |
+| Portals / PW | `portal.rs`, `portal_dbus.rs`, `screencast_pw.rs` | Stub honesty or real PipeWire |
+| Packaging CI | `scripts/verify_*.sh`, Docker entrypoint | Automate smoke without lying |
+
+### 14.4 Residual caps (must stay documented until cleared)
+
+1. Live greeter login **NOT RUN** (packaging-only).
+2. PipeWire ScreenCast **stubs** (`node_id` placeholders + honesty notes).
+3. Orca incomplete (DoAction chrome works; tree/caret/extents incomplete).
+4. Placeholder client rects still possible without committed buffer.
+5. Display arrange: env bridge + Settings conf — not live KMS modeset on hardware.
+6. Window rules: partial shell/FTL, not full surface control.
+7. §12 **0 / 7 fully met**.
+8. Docker Desktop often **labwc** when DRI3 missing.
+
+### 14.5 Rescore protocol (after each material wave)
+
+1. List **new live paths** (file:symbol greppable from handlers/`main`).
+2. Update pure-vs-live table in `GOAL_DEEP_AUDIT_FINAL.md` / §2.3.
+3. Adjust **only** domains with new evidence; recompute **sum / mean**.
+4. Set overall `~round_half_up(mean)`.
+5. Sync **README**, **§13.2**, **WARPATH_SCORECARD** to the **same** 10 scores + sum + mean.
+6. Run:  
+   `cargo test -p retro-shell -p retro-kit -p retro-compositor`  
+   `./scripts/verify_daily_driver_checklist.sh`  
+   (plus `-p settings` if Settings touched).
+7. If mean &lt; 90: do **not** claim 90. If greeter still NOT RUN: session domain hard-capped.
+
+### 14.6 Verification commands (host)
+
+```bash
+# Unit / lib (macOS-safe excluding compositor binary DRM runtime)
+cargo test -p retro-shell -p retro-kit -p retro-compositor -p settings
+
+# Packaging + greeter install artifacts (no live DM claim)
+./scripts/verify_daily_driver_checklist.sh
+./scripts/verify_greeter_session.sh
+./scripts/install-session-files.sh --dry-run
+
+# Score arithmetic self-check
+python3 -c 'v=[88,84,78,86,83,86,88,84,82,86]; print(sum(v), sum(v)/10)'
+# expect: 845 84.5
+```
+
+### 14.7 Branch / docs map
+
+| Item | Location |
+|---|---|
+| Branch (as of this write-up) | `fix/compositor-build-and-audit` |
+| Scorecard | `docs/WARPATH_SCORECARD.md` |
+| Pure-vs-live audit | `docs/GOAL_DEEP_AUDIT_FINAL.md` |
+| 90-claim rejection | `docs/DEEP_AUDIT_90_CLAIM.md` |
+| Product reality summary | `README.md` status table |
+
+*Hand-off 2026-07-11: status ~85; next work is live greeter proof + present quality + Orca depth — not score theater.*
