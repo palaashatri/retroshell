@@ -958,7 +958,7 @@ mod linux {
 
     impl XdgDecorationHandler for RetroCompositor {
         fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-            use retro_compositor::{decoration_preference_for_app_id, DecorationsPreference};
+            use retro_compositor::{decoration_preference_for_app_id, DecrationsPreference};
             use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
             let app_id = with_states(toplevel.wl_surface(), |states| {
                 states
@@ -968,8 +968,8 @@ mod linux {
                     .unwrap_or_default()
             });
             let mode = match decoration_preference_for_app_id(&app_id) {
-                DecorationsPreference::ServerSide => Mode::ServerSide,
-                DecorationsPreference::ClientSide => Mode::ClientSide,
+                DecrationsPreference::ServerSide => Mode::ServerSide,
+                DecrationsPreference::ClientSide => Mode::ClientSide,
             };
             toplevel.with_pending_state(|state| {
                 state.decoration_mode = Some(mode);
