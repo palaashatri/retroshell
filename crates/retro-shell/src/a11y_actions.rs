@@ -99,7 +99,121 @@ pub fn session_root_actions() -> Vec<AccessibleAction> {
             description: "Open Force Quit".into(),
             invoke_id: "shell.force_quit".into(),
         },
+        AccessibleAction {
+            name: "next-workspace".into(),
+            description: "Switch to the next workspace".into(),
+            invoke_id: "workspace.next".into(),
+        },
+        AccessibleAction {
+            name: "previous-workspace".into(),
+            description: "Switch to the previous workspace".into(),
+            invoke_id: "workspace.previous".into(),
+        },
     ]
+}
+
+/// Pure classification of an a11y invoke_id for shell dispatch / tests.
+///
+/// Distinguishes live handlers from log-only stubs so Orca DoAction coverage
+/// is auditable without spinning up a full desktop.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum A11yDispatchTarget {
+    /// System menu open (currently log-only / navigable via keyboard).
+    ChromeMenuActivate,
+    /// Launch or focus first dock item.
+    ChromeDockActivate,
+    /// Dock item context menu (log-only).
+    ChromeDockMenu,
+    /// Open selected desktop icon.
+    ChromeDesktopOpen,
+    /// Desktop context menu (log-only).
+    ChromeDesktopMenu,
+    /// Focus next non-minimized window on the active workspace.
+    ChromeWindowActivateNext,
+    /// Close the active window.
+    ChromeWindowClose,
+    /// Minimize the active window.
+    ChromeWindowMinimize,
+    /// Route through [`crate::ShellDesktop`] menu/session handlers (live).
+    ///
+    /// Includes `shell.lock`, `shell.log_out`, `shell.notification_center`,
+    /// `shell.force_quit`, `workspace.next` / `workspace.previous`, and other
+    /// `shell.*` / `workspace.*` / `finder.*` action ids.
+    MenuAction(&'static str),
+    /// Dynamic menu action id (owned) — same live path as [`Self::MenuAction`].
+    MenuActionOwned(String),
+    /// Unrecognized invoke id.
+    Unknown,
+}
+
+impl A11yDispatchTarget {
+    /// Whether dispatch runs a real shell side effect (not just a debug log).
+    pub fn is_live(&self) -> bool {
+        match self {
+            Self::ChromeMenuActivate | Self::ChromeDockMenu | Self::ChromeDesktopMenu | Self::Unknown => {
+                false
+            }
+            Self::ChromeDockActivate
+            | Self::ChromeDesktopOpen
+            | Self::ChromeWindowActivateNext
+            | Self::ChromeWindowClose
+            | Self::ChromeWindowMinimize
+            | Self::MenuAction(_)
+            | Self::MenuActionOwned(_) => true,
+        }
+    }
+
+    /// Stable invoke id string when known.
+    pub fn invoke_id(&self) -> Option<&str> {
+        match self {
+            Self::ChromeMenuActivate => Some("chrome.menu.activate"),
+            Self::ChromeDockActivate => Some("chrome.dock.activate"),
+            Self::ChromeDockMenu => Some("chrome.dock.menu"),
+            Self::ChromeDesktopOpen => Some("chrome.desktop.open"),
+            Self::ChromeDesktopMenu => Some("chrome.desktop.menu"),
+            Self::ChromeWindowActivateNext => Some("chrome.window.activate"),
+            Self::ChromeWindowClose => Some("chrome.window.close"),
+            Self::ChromeWindowMinimize => Some("chrome.window.minimize"),
+            Self::MenuAction(id) => Some(id),
+            Self::MenuActionOwned(id) => Some(id.as_str()),
+            Self::Unknown => None,
+        }
+    }
+}
+
+/// Pure: map invoke_id → dispatch target (no I/O).
+pub fn classify_a11y_invoke(invoke_id: &str) -> A11yDispatchTarget {
+    match invoke_id {
+        "chrome.menu.activate" | "chrome.menu.system" => A11yDispatchTarget::ChromeMenuActivate,
+        "chrome.dock.activate" => A11yDispatchTarget::ChromeDockActivate,
+        "chrome.dock.menu" => A11yDispatchTarget::ChromeDockMenu,
+        "chrome.desktop.open" => A11yDispatchTarget::ChromeDesktopOpen,
+        "chrome.desktop.menu" => A11yDispatchTarget::ChromeDesktopMenu,
+        "chrome.window.activate" => A11yDispatchTarget::ChromeWindowActivateNext,
+        "chrome.window.close" => A11yDispatchTarget::ChromeWindowClose,
+        "chrome.window.minimize" => A11yDispatchTarget::ChromeWindowMinimize,
+        // Core daily-driver session actions (static for tests / Orca audit).
+        "shell.lock" => A11yDispatchTarget::MenuAction("shell.lock"),
+        "shell.log_out" | "shell.logout" => A11yDispatchTarget::MenuAction("shell.log_out"),
+        "shell.notification_center" => A11yDispatchTarget::MenuAction("shell.notification_center"),
+        "shell.force_quit" => A11yDispatchTarget::MenuAction("shell.force_quit"),
+        "workspace.next" => A11yDispatchTarget::MenuAction("workspace.next"),
+        "workspace.previous" => A11yDispatchTarget::MenuAction("workspace.previous"),
+        other
+            if other.starts_with("shell.")
+                || other.starts_with("workspace.")
+                || other.starts_with("finder.")
+                || other.starts_with("com.retro.") =>
+        {
+            A11yDispatchTarget::MenuActionOwned(other.to_string())
+        }
+        _ => A11yDispatchTarget::Unknown,
+    }
+}
+
+/// True when Orca DoAction on this invoke_id reaches a live shell handler.
+pub fn a11y_invoke_is_live(invoke_id: &str) -> bool {
+    classify_a11y_invoke(invoke_id).is_live()
 }
 
 /// Map an accessible action invoke_id to a session action when applicable.
@@ -190,6 +304,8 @@ pub fn invoke_id_for_object_name(name: &str) -> Option<&'static str> {
         "System Settings..." | "System Settings…" => Some("shell.settings"),
         "About RetroShell" => Some("shell.about"),
         "Quit RetroShell" => Some("shell.quit"),
+        "Next Workspace" | "next-workspace" => Some("workspace.next"),
+        "Previous Workspace" | "previous-workspace" => Some("workspace.previous"),
         _ => None,
     }
 }
@@ -295,6 +411,87 @@ mod tests {
         assert_eq!(
             primary_invoke_for_chrome(ChromeFocusTarget::MenuBar).invoke_id,
             "chrome.menu.activate"
+        );
+    }
+
+    #[test]
+    fn classify_daily_driver_dispatch_paths() {
+        assert_eq!(
+            classify_a11y_invoke("shell.lock"),
+            A11yDispatchTarget::MenuAction("shell.lock")
+        );
+        assert_eq!(
+            classify_a11y_invoke("shell.log_out"),
+            A11yDispatchTarget::MenuAction("shell.log_out")
+        );
+        assert_eq!(
+            classify_a11y_invoke("shell.logout"),
+            A11yDispatchTarget::MenuAction("shell.log_out")
+        );
+        assert_eq!(
+            classify_a11y_invoke("shell.notification_center"),
+            A11yDispatchTarget::MenuAction("shell.notification_center")
+        );
+        assert_eq!(
+            classify_a11y_invoke("shell.force_quit"),
+            A11yDispatchTarget::MenuAction("shell.force_quit")
+        );
+        assert_eq!(
+            classify_a11y_invoke("chrome.window.close"),
+            A11yDispatchTarget::ChromeWindowClose
+        );
+        assert_eq!(
+            classify_a11y_invoke("chrome.window.activate"),
+            A11yDispatchTarget::ChromeWindowActivateNext
+        );
+        assert_eq!(
+            classify_a11y_invoke("workspace.next"),
+            A11yDispatchTarget::MenuAction("workspace.next")
+        );
+        assert_eq!(
+            classify_a11y_invoke("workspace.previous"),
+            A11yDispatchTarget::MenuAction("workspace.previous")
+        );
+
+        // Live vs log-only audit for Orca.
+        assert!(a11y_invoke_is_live("shell.lock"));
+        assert!(a11y_invoke_is_live("shell.log_out"));
+        assert!(a11y_invoke_is_live("shell.notification_center"));
+        assert!(a11y_invoke_is_live("shell.force_quit"));
+        assert!(a11y_invoke_is_live("chrome.window.close"));
+        assert!(a11y_invoke_is_live("chrome.window.activate"));
+        assert!(a11y_invoke_is_live("workspace.next"));
+        assert!(a11y_invoke_is_live("chrome.dock.activate"));
+        assert!(a11y_invoke_is_live("chrome.desktop.open"));
+        assert!(!a11y_invoke_is_live("chrome.menu.activate"));
+        assert!(!a11y_invoke_is_live("chrome.dock.menu"));
+        assert!(!a11y_invoke_is_live("chrome.desktop.menu"));
+        assert!(!a11y_invoke_is_live("not.a.real.action"));
+    }
+
+    #[test]
+    fn primary_window_chrome_is_activate_next() {
+        let plan = primary_invoke_for_chrome(ChromeFocusTarget::Windows);
+        assert!(plan.valid);
+        assert_eq!(plan.invoke_id, "chrome.window.activate");
+        assert_eq!(
+            classify_a11y_invoke(&plan.invoke_id),
+            A11yDispatchTarget::ChromeWindowActivateNext
+        );
+    }
+
+    #[test]
+    fn session_root_includes_workspace_cycle() {
+        let root = session_root_actions();
+        assert!(root.iter().any(|a| a.invoke_id == "workspace.next"));
+        assert!(root.iter().any(|a| a.invoke_id == "workspace.previous"));
+        assert_eq!(
+            invoke_id_for_object_name("Next Workspace"),
+            Some("workspace.next")
+        );
+        assert_eq!(
+            invoke_id_for_object_name("Previous Workspace"),
+            Some("workspace.previous")
         );
     }
 }

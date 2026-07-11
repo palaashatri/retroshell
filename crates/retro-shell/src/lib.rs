@@ -41,9 +41,10 @@ pub mod window_rules;
 pub mod workspace_manager;
 
 pub use a11y_actions::{
-    actions_for_chrome, chrome_target_for_atspi_path, invoke_id_for_object_name, plan_invoke,
-    primary_invoke_for_chrome, resolve_pending_invoke, session_action_for_invoke,
-    session_root_actions, summarize_actions, AccessibleAction, ActionInterfaceSummary, InvokePlan,
+    a11y_invoke_is_live, actions_for_chrome, chrome_target_for_atspi_path, classify_a11y_invoke,
+    invoke_id_for_object_name, plan_invoke, primary_invoke_for_chrome, resolve_pending_invoke,
+    session_action_for_invoke, session_root_actions, summarize_actions, A11yDispatchTarget,
+    AccessibleAction, ActionInterfaceSummary, InvokePlan,
 };
 pub use a11y_prefs::{
     apply_a11y_prefs_to_theme_name, effective_animation_ms, A11yPrefs, ContrastPreference,
@@ -521,7 +522,8 @@ impl ShellDesktop {
             foreign_toplevel_synced: false,
             chrome_focus: ChromeFocusTarget::MenuBar,
             last_input_at: std::time::Instant::now(),
-            idle_config: IdleConfig::default(),
+            // settings.conf flat keys (idle_lock_secs, …) when present; else defaults.
+            idle_config: IdleConfig::parse_from_conf(&read_settings_conf_text()),
             idle_inhibit: IdleInhibitState::new(),
         };
         // Map layer-shell chrome + sync foreign-toplevel list when a compositor is live.
@@ -616,48 +618,78 @@ impl ShellDesktop {
     }
 
     /// Handle chrome.* and shell.* invoke ids from a11y / keyboard Activate.
+    ///
+    /// Routing is pure-classified via [`classify_a11y_invoke`]; side effects run here.
     fn dispatch_a11y_invoke(&mut self, invoke_id: &str) {
-        match invoke_id {
-            "chrome.menu.activate" | "chrome.menu.system" => {
-                // Open the Retro system menu (first menu).
+        match classify_a11y_invoke(invoke_id) {
+            A11yDispatchTarget::ChromeMenuActivate => {
+                // MenuBar has no public "open index" API; keyboard chrome nav still works.
                 if !self.menu_bar.menus.is_empty() {
-                    // MenuBar has no public "open index" API in all builds; fire
-                    // a known session action via the system menu path when possible.
-                    // Activate: no-op beyond logging if menu is already navigable.
-                    tracing::debug!("a11y chrome.menu.activate");
+                    tracing::debug!("a11y chrome.menu.activate (log-only: menu open stub)");
                 }
             }
-            "chrome.dock.activate" => {
+            A11yDispatchTarget::ChromeDockActivate => {
                 if let Some(bundle) = self.bundle_ids.first().cloned() {
                     self.launch_external_app(&bundle);
                 }
             }
-            "chrome.desktop.open" => {
+            A11yDispatchTarget::ChromeDesktopOpen => {
                 if let Some(item) = self.desktop.items.iter().position(|i| i.selected) {
                     self.launch_item(item);
                 } else if !self.desktop.items.is_empty() {
                     self.launch_item(0);
                 }
             }
-            "chrome.window.activate" => {
-                if let Some(id) = self.active_window_id() {
-                    self.focus_window(id);
-                }
+            A11yDispatchTarget::ChromeWindowActivateNext => {
+                // Focus next non-minimized window on the active workspace (Cmd+Tab parity).
+                self.focus_next_window();
             }
-            "chrome.window.close" => self.close_active_window(),
-            "chrome.window.minimize" => {
+            A11yDispatchTarget::ChromeWindowClose => self.close_active_window(),
+            A11yDispatchTarget::ChromeWindowMinimize => {
                 if let Some(id) = self.active_window_id() {
                     self.toggle_window_minimized(id);
                 }
             }
-            "chrome.dock.menu" | "chrome.desktop.menu" => {
-                tracing::debug!(invoke_id, "a11y context menu invoke (no popup yet)");
+            A11yDispatchTarget::ChromeDockMenu | A11yDispatchTarget::ChromeDesktopMenu => {
+                tracing::debug!(invoke_id, "a11y context menu invoke (log-only: no popup yet)");
             }
-            other => {
-                // shell.lock / shell.log_out / shell.force_quit / …
-                self.handle_menu_action(other);
+            A11yDispatchTarget::MenuAction(action) => {
+                // shell.lock / shell.log_out / shell.notification_center /
+                // shell.force_quit / workspace.next / workspace.previous / …
+                self.handle_menu_action(action);
+            }
+            A11yDispatchTarget::MenuActionOwned(action) => {
+                self.handle_menu_action(&action);
+            }
+            A11yDispatchTarget::Unknown => {
+                // Fall through: keep prior behaviour for any unmapped but menu-like ids.
+                self.handle_menu_action(invoke_id);
             }
         }
+    }
+
+    /// Cycle focus to the next non-minimized window on the active workspace.
+    fn focus_next_window(&mut self) {
+        let active_workspace = self.active_workspace();
+        let workspace_window_ids: Vec<Uuid> = self
+            .windows
+            .iter()
+            .filter(|w| w.workspace == active_workspace && w.mode != ShellWindowMode::Minimized)
+            .map(|w| w.id)
+            .collect();
+        if workspace_window_ids.is_empty() {
+            return;
+        }
+        let next_id = if let Some(current_id) = self.active_window_id() {
+            let pos = workspace_window_ids
+                .iter()
+                .position(|&id| id == current_id)
+                .unwrap_or(0);
+            workspace_window_ids[(pos + 1) % workspace_window_ids.len()]
+        } else {
+            workspace_window_ids[0]
+        };
+        self.focus_window(next_id);
     }
 
     fn launch_item(&mut self, index: usize) {
@@ -2702,28 +2734,7 @@ impl Widget for ShellDesktop {
             }
             // Cmd+Tab: cycle focus through non-minimized windows on the active workspace
             if modifiers.meta && *key == retro_kit::event::KeyCode::Tab {
-                let active_workspace = self.active_workspace();
-                let workspace_window_ids: Vec<Uuid> = self
-                    .windows
-                    .iter()
-                    .filter(|w| {
-                        w.workspace == active_workspace && w.mode != ShellWindowMode::Minimized
-                    })
-                    .map(|w| w.id)
-                    .collect();
-                if workspace_window_ids.len() > 1 {
-                    let current = self.active_window_id();
-                    let next_id = if let Some(current_id) = current {
-                        let pos = workspace_window_ids
-                            .iter()
-                            .position(|&id| id == current_id)
-                            .unwrap_or(0);
-                        workspace_window_ids[(pos + 1) % workspace_window_ids.len()]
-                    } else {
-                        workspace_window_ids[0]
-                    };
-                    self.focus_window(next_id);
-                }
+                self.focus_next_window();
                 return EventResult::Handled;
             }
 
@@ -4037,5 +4048,122 @@ mod tests {
         assert!(verify_lock_password("env_secret", &expected));
         assert!(!verify_lock_password("other", &expected));
         std::env::remove_var("RETROSHELL_LOCK_PASSWORD");
+    }
+
+    #[test]
+    fn a11y_dispatch_shell_session_actions_are_live() {
+        let (mut desktop, _) = test_desktop();
+
+        desktop.dispatch_a11y_invoke("shell.notification_center");
+        assert!(desktop
+            .windows
+            .iter()
+            .any(|w| w.window.title() == "Notification Center"));
+
+        desktop.dispatch_a11y_invoke("shell.force_quit");
+        assert!(desktop
+            .windows
+            .iter()
+            .any(|w| w.window.title() == "Force Quit"));
+
+        desktop.expected_lock_password = Some("secret".into());
+        desktop.dispatch_a11y_invoke("shell.lock");
+        assert!(desktop.locked);
+    }
+
+    #[test]
+    fn a11y_dispatch_chrome_window_close_and_activate_next() {
+        let (mut desktop, window_manager) = test_desktop();
+        // Start with the default Finder; open a second window so activate can cycle.
+        desktop.handle_menu_action("shell.new_finder_window");
+        assert!(desktop.windows.len() >= 2);
+
+        let first = desktop.windows[0].id;
+        let second = desktop.windows[1].id;
+        desktop.focus_window(first);
+        assert_eq!(desktop.active_window_id(), Some(first));
+
+        desktop.dispatch_a11y_invoke("chrome.window.activate");
+        let after_activate = desktop.active_window_id();
+        assert_eq!(after_activate, Some(second));
+        assert_eq!(window_manager.read().active_window, Some(second));
+
+        let before_close = desktop.windows.len();
+        desktop.dispatch_a11y_invoke("chrome.window.close");
+        assert_eq!(desktop.windows.len(), before_close - 1);
+        assert!(!desktop.windows.iter().any(|w| w.id == second));
+    }
+
+    #[test]
+    fn a11y_dispatch_workspace_next_previous() {
+        let (mut desktop, _) = test_desktop();
+        assert_eq!(desktop.active_workspace(), 0);
+
+        desktop.dispatch_a11y_invoke("workspace.next");
+        assert_eq!(desktop.active_workspace(), 1);
+
+        desktop.dispatch_a11y_invoke("workspace.previous");
+        assert_eq!(desktop.active_workspace(), 0);
+    }
+
+    #[test]
+    fn a11y_chrome_activate_enter_dispatches_primary_invoke() {
+        let (mut desktop, _) = test_desktop();
+        desktop.chrome_focus = ChromeFocusTarget::Windows;
+        desktop.handle_menu_action("shell.new_finder_window");
+        let first = desktop.windows[0].id;
+        desktop.focus_window(first);
+
+        let result = desktop.handle_event(&Event::KeyDown {
+            key: retro_kit::event::KeyCode::Enter,
+            modifiers: Modifiers::NONE,
+        });
+        assert!(matches!(result, EventResult::Handled));
+        // Windows primary invoke is chrome.window.activate → focus next.
+        assert_ne!(desktop.active_window_id(), Some(first));
+    }
+
+    #[test]
+    fn idle_config_parses_from_settings_conf_keys() {
+        let cfg = IdleConfig::parse_from_conf(
+            "# comment\nidle_warn_secs=15\nidle_lock_secs=45\nidle_suspend_secs=90\nlock_on_suspend=false\n",
+        );
+        assert_eq!(cfg.warn_after_secs, 15);
+        assert_eq!(cfg.lock_after_secs, 45);
+        assert_eq!(cfg.suspend_after_secs, 90);
+        assert!(!cfg.lock_on_suspend);
+        // Empty conf keeps defaults (used when settings.conf is absent).
+        assert_eq!(IdleConfig::parse_from_conf(""), IdleConfig::default());
+    }
+
+    #[test]
+    fn portal_idle_inhibit_merges_into_phase() {
+        clear_inhibit_store_for_tests();
+        let cfg = IdleConfig {
+            warn_after_secs: 1,
+            lock_after_secs: 2,
+            suspend_after_secs: 0,
+            lock_on_suspend: true,
+            inhibited: false,
+        };
+        let base = IdleInhibitState::new();
+        assert_eq!(
+            idle_phase(&cfg, 10, false, &base),
+            IdlePhase::ShouldLock
+        );
+
+        let _ = handle_inhibit_and_register(&PortalInhibitRequest {
+            app_id: "player".into(),
+            window: String::new(),
+            flags: InhibitFlag::Idle as u32,
+            reason: "playing".into(),
+        });
+        let mut merged = base.clone();
+        for reason in active_idle_inhibit_state().reasons() {
+            merged.add(*reason);
+        }
+        assert!(merged.is_inhibited());
+        assert_eq!(idle_phase(&cfg, 10, false, &merged), IdlePhase::Active);
+        clear_inhibit_store_for_tests();
     }
 }
