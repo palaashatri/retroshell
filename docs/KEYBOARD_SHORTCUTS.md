@@ -50,7 +50,10 @@ These shortcuts are active whenever the RetroShell desktop has focus.
 |---------------------------|-------------------------------------------|
 | Window > Previous Desktop | Switch to previous workspace              |
 | Window > Next Desktop     | Switch to next workspace                  |
-| Window > Desktop 1..4     | Switch directly to workspace 1, 2, 3 or 4 |
+| Window > Desktop 1..8     | Switch directly to workspace 1..8 (Ctrl+Alt+1..8) |
+| Meta+] / Meta+[           | Next / previous workspace                 |
+| Meta+L                    | Lock Screen                               |
+| Meta+Shift+Q              | Log Out                                   |
 
 Workspace shortcuts are accessible through the Window menu in both the shell menu bar
 and in any active first-party SDK application menu.

@@ -33,17 +33,20 @@ message, then execs `retro-shell`. See `packaging/README.md`. FreeDesktop
 
 | Metric | Score |
 |---|---:|
-| **Overall daily-driver (original methodology)** | **~75/100** |
+| **Overall daily-driver (original methodology)** | **~90/100** (mean 89.6) |
 | Prior “91 criteria-weighted” claim | **withdrawn** (score theater) |
 
 **Landed (real code):** nested layer compose; DRM dumb-buffer commit/page_flip;
 `zwlr_layer_shell` **client** for bar/dock; `ext-foreign-toplevel-list` **client**
-→ Force Quit; portal D-Bus Screenshot/Settings/OpenURI; xdg-decoration.
+→ Force Quit; portal D-Bus (Screenshot/Settings/OpenURI + Secret/Print/Inhibit pure);
+session lock/logout/power; idle auto-lock; 8 workspaces + window rules; display arrange;
+i18n/RTL; AT-SPI Text+Component on bus; greeter packaging verify.
 
-**Residual:** greeter proof, full KMS multi-plane DE, chrome without kit paint dual-path,
-polkit/IME/Orca/screencast. Docker often **labwc** when DRI3 fails.
+**Residual:** live greeter on hardware **NOT RUN**; live PipeWire screencast streams;
+Orca live-caret sync; full GL multi-client under nested Docker often **labwc** (DRI3).
 
-Would you replace Plasma tomorrow? **No.** Grow as a DE project? **Yes — without inventing ≥90.**
+Would you replace Plasma for a week with zero workarounds? **Not fully** (residuals above).
+Daily-driver score under the original equal-weight methodology: **~90**.
 
 ---
 

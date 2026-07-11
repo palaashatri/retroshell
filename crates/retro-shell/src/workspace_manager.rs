@@ -1,18 +1,29 @@
 //! Shell-side named desktops (menu bar / status chrome).
 //!
-//! The compositor pure model lives in `retro_compositor::{WorkspaceId,
-//! WorkspaceState}` with a fixed **8** virtual workspaces and window→workspace
-//! mapping. This shell manager keeps **4** classic "Desktop N" entries for the
-//! Window menu shortcuts and status UI until chrome is unified with the
-//! compositor-backed policy. Cycling / switch APIs mirror the pure model
-//! (`next`/`previous` ≈ `cycle_next`/`cycle_prev`, `switch_to` ≈ `activate`).
+//! Aligned with the compositor pure model (`WorkspaceId` / `WorkspaceState`):
+//! fixed **8** virtual workspaces. Window menu exposes Desktop 1..8; cycling
+//! and switch APIs mirror compositor (`next`/`previous` ≈ `cycle_next`/
+//! `cycle_prev`, `switch_to` ≈ `activate`).
 
-/// Number of shell UI desktops (Window menu `workspace.switch.0..3`).
-pub const SHELL_DESKTOP_COUNT: usize = 4;
+/// Number of shell UI desktops (Window menu `workspace.switch.0..7`).
+pub const SHELL_DESKTOP_COUNT: usize = 8;
 
 /// Compositor-backed workspace count (pure model in `retro-compositor`).
-/// Kept here for shell/compositor alignment docs and future bridge code.
 pub const COMPOSITOR_WORKSPACE_COUNT: usize = 8;
+
+/// Pure bridge: shell active index ↔ compositor workspace id (0..7).
+pub fn shell_index_to_compositor(index: usize) -> Option<u8> {
+    if index < COMPOSITOR_WORKSPACE_COUNT {
+        Some(index as u8)
+    } else {
+        None
+    }
+}
+
+/// Whether a window on `window_workspace` is visible when shell active is `active`.
+pub fn window_visible_on_active(active: usize, window_workspace: usize) -> bool {
+    active == window_workspace && active < SHELL_DESKTOP_COUNT
+}
 
 pub struct WorkspaceManager {
     pub workspaces: Vec<Workspace>,
@@ -105,5 +116,48 @@ impl WorkspaceManager {
             background: None,
         });
         self.total += 1;
+    }
+
+    /// Compositor-aligned summary line for session logs.
+    pub fn summary_line(&self) -> String {
+        format!(
+            "shell-workspace active={}/{} name={}",
+            self.active,
+            self.total,
+            self.active_workspace()
+                .map(|w| w.name.as_str())
+                .unwrap_or("?")
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eight_desktops_align_with_compositor() {
+        assert_eq!(SHELL_DESKTOP_COUNT, COMPOSITOR_WORKSPACE_COUNT);
+        assert_eq!(SHELL_DESKTOP_COUNT, 8);
+        let wm = WorkspaceManager::new();
+        assert_eq!(wm.total, 8);
+        assert_eq!(wm.workspaces.len(), 8);
+        assert_eq!(shell_index_to_compositor(7), Some(7));
+        assert_eq!(shell_index_to_compositor(8), None);
+        assert!(window_visible_on_active(2, 2));
+        assert!(!window_visible_on_active(2, 3));
+    }
+
+    #[test]
+    fn cycle_wraps_eight() {
+        let mut wm = WorkspaceManager::new();
+        for _ in 0..7 {
+            wm.next();
+        }
+        assert_eq!(wm.active, 7);
+        wm.next();
+        assert_eq!(wm.active, 0);
+        wm.previous();
+        assert_eq!(wm.active, 7);
     }
 }

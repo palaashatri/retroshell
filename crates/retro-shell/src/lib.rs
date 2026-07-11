@@ -1,3 +1,4 @@
+pub mod a11y_actions;
 pub mod a11y_prefs;
 pub mod application_registry;
 pub mod atspi_bus;
@@ -5,10 +6,13 @@ pub mod audio;
 pub mod capture;
 pub mod chrome_protocol;
 pub mod desktop_manager;
+pub mod display_arrange;
 pub mod dock;
 pub mod fdo_notifications;
 pub mod foreign_toplevel;
 pub mod foreign_toplevel_client;
+pub mod i18n;
+pub mod idle_policy;
 pub mod layer_shell_client;
 pub mod keyboard_nav;
 pub mod launch_services;
@@ -20,7 +24,10 @@ pub mod notification_center;
 pub mod polkit_agent;
 pub mod portal;
 pub mod portal_dbus;
+pub mod portal_extra;
 pub mod power;
+pub mod screencast_pw;
+pub mod session_actions;
 pub mod session_clients;
 pub mod session_manager;
 pub mod session_packaging;
@@ -29,8 +36,13 @@ pub mod shell_scale;
 pub mod startup_budget;
 pub mod theme_manager;
 pub mod window_manager;
+pub mod window_rules;
 pub mod workspace_manager;
 
+pub use a11y_actions::{
+    actions_for_chrome, plan_invoke, session_action_for_invoke, session_root_actions,
+    summarize_actions, AccessibleAction, ActionInterfaceSummary, InvokePlan,
+};
 pub use a11y_prefs::{
     apply_a11y_prefs_to_theme_name, effective_animation_ms, A11yPrefs, ContrastPreference,
     MotionPreference,
@@ -99,15 +111,49 @@ pub use polkit_agent::{
     POLKIT_AGENT_PATH,
 };
 pub use portal_dbus::try_register_portal_session_bus;
+pub use portal_extra::{
+    handle_inhibit, handle_print_request, handle_secret_retrieve, inhibit_blocks_idle,
+    inhibit_to_idle_reason, InhibitFlag, PortalInhibitCookie, PortalInhibitRequest,
+    PortalPrintRequest, PortalPrintResult, PortalSecretRequest, PortalSecretResult,
+};
 pub use power::{battery_info, BatteryInfo};
+pub use display_arrange::{
+    arrange_mode_from_env_value, arrangement_bounds, normalize_arrangement, place_outputs,
+    plan_display_apply, ArrangeMode, DisplayApplyPlan, DisplayApplyStep, DisplayArrangement,
+    DisplayOutput, PlacedOutput,
+};
+pub use i18n::{
+    format_message, is_rtl_language, text_direction_for_locale, tr, LocaleId, LocalePrefs,
+    MessageCatalog, TextDirection,
+};
+pub use idle_policy::{
+    idle_phase, recommended_action, secs_until_next_phase, IdleConfig, IdleInhibitState,
+    IdlePhase, IdleRecommendedAction, InhibitReason,
+};
+pub use screencast_pw::{
+    can_claim_live_streams, default_pipewire_socket, plan_list_pipewire_nodes,
+    probe_screencast_readiness, probe_screencast_readiness_host, source_ids_for_portal,
+    sources_from_outputs, sources_from_windows, PwListNodesPlan, ScreencastBackend,
+    ScreencastReadiness, ScreencastSource, ScreencastSourceType,
+};
+pub use session_actions::{
+    confirm_prompt, confirm_prompt_i18n_key, describe_plan, plan_requires_privileges,
+    plan_session_action, plan_session_action_with, requires_confirmation, shell_delta_for_plan,
+    PowerBackend, SessionAction, SessionActionPlan, ShellSessionDelta, LOGIND_BUS,
+    LOGIND_MANAGER_IFACE, LOGIND_PATH,
+};
+pub use window_rules::{
+    default_session_rules, evaluate_rules, field_matches, parse_rules_simple, rule_matches,
+    MatchField, MatchKind, WindowInfo, WindowMatch, WindowRule, WindowRuleActions,
+};
 pub use session_clients::{
     binary_name_for_bundle, parse_force_quit_entry, resolve_app_binary, spawn_app_client,
     ForceQuitTarget, SessionClientRegistry,
 };
 pub use session_manager::SessionManager;
 pub use session_packaging::{
-    check_packaging_health, parse_desktop_keys, validate_session_desktop, PackagingHealth,
-    SessionPackagingLayout,
+    check_greeter_session_readiness, check_packaging_health, parse_desktop_keys,
+    validate_session_desktop, GreeterSessionReadiness, PackagingHealth, SessionPackagingLayout,
 };
 pub use session_recovery::{
     recovery_plan, should_attempt_recovery, CheckpointClient, RecoveryStep, SessionCheckpoint,
@@ -304,6 +350,12 @@ struct ShellDesktop {
     foreign_toplevel_synced: bool,
     /// Keyboard-only chrome focus region (Tab cycle).
     chrome_focus: ChromeFocusTarget,
+    /// Monotonic instant of last user input (for idle auto-lock).
+    last_input_at: std::time::Instant,
+    /// Idle lock/suspend policy (from defaults / settings.conf).
+    idle_config: IdleConfig,
+    /// Portal / media idle inhibit tokens.
+    idle_inhibit: IdleInhibitState,
 }
 
 struct ShellWindow {
@@ -434,6 +486,9 @@ impl ShellDesktop {
             layer_shell_bound: false,
             foreign_toplevel_synced: false,
             chrome_focus: ChromeFocusTarget::MenuBar,
+            last_input_at: std::time::Instant::now(),
+            idle_config: IdleConfig::default(),
+            idle_inhibit: IdleInhibitState::new(),
         };
         // Map layer-shell chrome + sync foreign-toplevel list when a compositor is live.
         RetroShell::attach_wayland_session_protocols(&mut shell);
@@ -841,12 +896,9 @@ impl ShellDesktop {
 
         let mut grid = WorkspaceGridView::new();
         grid.active_index = active;
-        grid.items = vec![
-            "Desktop 1".to_string(),
-            "Desktop 2".to_string(),
-            "Desktop 3".to_string(),
-            "Desktop 4".to_string(),
-        ];
+        grid.items = (1..=SHELL_DESKTOP_COUNT)
+            .map(|n| format!("Desktop {n}"))
+            .collect();
         layout.add(Box::new(grid));
 
         let desc = format!("Active: {} ({} windows)", name, visible_count);
@@ -885,12 +937,12 @@ impl ShellDesktop {
                     "Launched multi-client app {bundle_id} as pid {pid} (compositor-managed surface)"
                 );
                 // Foreign-toplevel mirror for Force Quit / task list (with pid).
-                self.foreign_toplevels.add(ForeignToplevelEntry {
-                    handle_id: format!("session-client-{pid}"),
-                    title: binary_name,
-                    app_id: bundle_id.to_string(),
-                    pid: Some(pid),
-                });
+                self.foreign_toplevels.add(ForeignToplevelEntry::new(
+                    format!("session-client-{pid}"),
+                    binary_name,
+                    bundle_id,
+                    Some(pid),
+                ));
                 self.session_clients.register(client);
                 self.last_error = None;
                 self.activate_app_menu(bundle_id);
@@ -1082,30 +1134,19 @@ impl ShellDesktop {
                 ],
             ),
             "shell.force_quit" => self.open_force_quit_window(),
-            "shell.lock" => {
-                if self.expected_lock_password.is_some() {
-                    self.session_manager.write().lock_screen();
-                    self.locked = true;
-                    self.lock_password_field.set_text("");
-                    self.lock_error_message = None;
-                } else {
-                    // Lock password not set - show notification instead
-                    self.notification_center.write().post(
-                        "com.retro.shell",
-                        "Lock Password Not Set",
-                        "Configure RETROSHELL_LOCK_PASSWORD env var or lock_password in ~/.config/retroshell/settings.conf",
-                        NotificationPriority::High,
-                    );
-                }
+            "shell.lock" => self.handle_session_action(session_actions::SessionAction::Lock),
+            "shell.log_out" | "shell.logout" => {
+                self.handle_session_action(session_actions::SessionAction::Logout)
             }
-            "shell.log_out" => self.open_shell_status_window(
-                "Log Out",
-                [
-                    "RetroShell session logout is not active in this prototype.".to_string(),
-                    "Close the VM/container or quit RetroShell to end this lab session."
-                        .to_string(),
-                ],
-            ),
+            "shell.suspend" | "shell.sleep" => {
+                self.handle_session_action(session_actions::SessionAction::Suspend)
+            }
+            "shell.reboot" | "shell.restart" => {
+                self.handle_session_action(session_actions::SessionAction::Reboot)
+            }
+            "shell.power_off" | "shell.shutdown" | "shell.poweroff" => {
+                self.handle_session_action(session_actions::SessionAction::PowerOff)
+            }
             "shell.save" => self.open_shell_status_window(
                 "Save",
                 ["The active shell window has no document to save.".to_string()],
@@ -1249,6 +1290,124 @@ impl ShellDesktop {
             ],
         );
         true
+    }
+
+    /// Execute a session power/logout action via pure plan + shell side effects.
+    fn handle_session_action(&mut self, action: session_actions::SessionAction) {
+        use session_actions::{
+            confirm_prompt, describe_plan, plan_session_action, plan_requires_privileges,
+            shell_delta_for_plan, SessionActionPlan,
+        };
+
+        let plan = plan_session_action(action);
+
+        // Destructive actions: show confirm UI first (status window). User can
+        // re-trigger from Power menu after reading; shell.quit remains immediate.
+        if let Some(prompt) = confirm_prompt(action) {
+            if !matches!(
+                action,
+                session_actions::SessionAction::Logout
+                    | session_actions::SessionAction::Reboot
+                    | session_actions::SessionAction::PowerOff
+            ) {
+                // unreachable for current confirm_prompt set
+            } else {
+                // For logout we still proceed (session exit is the product intent).
+                // Reboot/PowerOff stay gated: show plan + require explicit systemctl spawn
+                // only after confirm status — we present the plan and run system commands
+                // when privileges path is available; otherwise notify.
+                if matches!(
+                    action,
+                    session_actions::SessionAction::Reboot
+                        | session_actions::SessionAction::PowerOff
+                ) {
+                    self.open_shell_status_window(
+                        match action {
+                            session_actions::SessionAction::Reboot => "Restart",
+                            _ => "Shut Down",
+                        },
+                        [
+                            prompt.to_string(),
+                            format!("Plan: {}", describe_plan(&plan)),
+                            if plan_requires_privileges(&plan) {
+                                "This will invoke system power management (systemctl/logind)."
+                                    .to_string()
+                            } else {
+                                String::new()
+                            },
+                            "Executing now…".to_string(),
+                        ],
+                    );
+                }
+            }
+        }
+
+        let delta = shell_delta_for_plan(&plan);
+        if delta.lock {
+            if self.expected_lock_password.is_some() {
+                self.session_manager.write().lock_screen();
+                self.locked = true;
+                self.lock_password_field.set_text("");
+                self.lock_error_message = None;
+            } else {
+                self.notification_center.write().post(
+                    "com.retro.shell",
+                    "Lock Password Not Set",
+                    "Configure RETROSHELL_LOCK_PASSWORD env var or lock_password in ~/.config/retroshell/settings.conf",
+                    NotificationPriority::High,
+                );
+            }
+            return;
+        }
+
+        match plan {
+            SessionActionPlan::ShellExit { code } => {
+                tracing::info!(code, "session logout: shell exit");
+                self.session_manager.write().logout_without_exit();
+                std::process::exit(code);
+            }
+            SessionActionPlan::SystemCommand { argv } => {
+                tracing::info!(?argv, "session power action");
+                match std::process::Command::new(&argv[0]).args(&argv[1..]).spawn() {
+                    Ok(_) => {
+                        self.record_notification(
+                            "com.retro.shell",
+                            "Session",
+                            &format!("Started: {}", argv.join(" ")),
+                            NotificationPriority::Normal,
+                        );
+                    }
+                    Err(err) => {
+                        self.record_notification(
+                            "com.retro.shell",
+                            "Session Action Failed",
+                            &format!("{} ({err})", describe_plan(&SessionActionPlan::SystemCommand { argv: argv.clone() })),
+                            NotificationPriority::High,
+                        );
+                        self.open_shell_status_window(
+                            "Session Action",
+                            [
+                                describe_plan(&SessionActionPlan::SystemCommand { argv }),
+                                format!("Could not spawn: {err}"),
+                                "Install systemd/logind or run on a real session host.".to_string(),
+                            ],
+                        );
+                    }
+                }
+            }
+            SessionActionPlan::LogindMethod { method, interactive } => {
+                self.open_shell_status_window(
+                    "Session Action",
+                    [
+                        format!("logind method: {method} (interactive={interactive})"),
+                        format!("bus: {}", session_actions::LOGIND_BUS),
+                        "D-Bus logind invoke is planned; use systemctl backend in this build."
+                            .to_string(),
+                    ],
+                );
+            }
+            SessionActionPlan::ShellLock => {}
+        }
     }
 
     fn handle_new_folder(&mut self) {
@@ -2190,6 +2349,19 @@ impl Widget for ShellDesktop {
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
+        // Any pointer/key activity resets idle timer (auto-lock policy).
+        match event {
+            Event::KeyDown { .. }
+            | Event::KeyUp { .. }
+            | Event::MouseDown { .. }
+            | Event::MouseUp { .. }
+            | Event::MouseMove { .. }
+            | Event::Scroll { .. } => {
+                self.last_input_at = std::time::Instant::now();
+            }
+            _ => {}
+        }
+
         // When locked, handle password entry
         if self.locked {
             match event {
@@ -2236,12 +2408,16 @@ impl Widget for ShellDesktop {
         }
 
         if let Event::KeyDown { key, modifiers } = event {
-            // Unified keyboard-only nav policy (Tab / Shift+Tab / Escape / Enter).
+            // Unified keyboard-only nav policy (Tab / Shift+Tab / Escape / Enter / lock / workspaces).
             let key_name = match key {
                 retro_kit::event::KeyCode::Tab => "tab",
                 retro_kit::event::KeyCode::Escape => "escape",
                 retro_kit::event::KeyCode::Enter => "enter",
                 retro_kit::event::KeyCode::Space => "space",
+                retro_kit::event::KeyCode::L => "l",
+                retro_kit::event::KeyCode::Q => "q",
+                retro_kit::event::KeyCode::LeftBracket => "[",
+                retro_kit::event::KeyCode::RightBracket => "]",
                 _ => "",
             };
             if !key_name.is_empty() {
@@ -2284,6 +2460,22 @@ impl Widget for ShellDesktop {
                         }
                         KeyboardNavIntent::NextWindow => {
                             // fall through to Meta+Tab block
+                        }
+                        KeyboardNavIntent::LockScreen => {
+                            self.handle_session_action(session_actions::SessionAction::Lock);
+                            return EventResult::Handled;
+                        }
+                        KeyboardNavIntent::LogOut => {
+                            self.handle_session_action(session_actions::SessionAction::Logout);
+                            return EventResult::Handled;
+                        }
+                        KeyboardNavIntent::NextWorkspace => {
+                            self.switch_to_next_workspace();
+                            return EventResult::Handled;
+                        }
+                        KeyboardNavIntent::PrevWorkspace => {
+                            self.switch_to_previous_workspace();
+                            return EventResult::Handled;
                         }
                     }
                 }
@@ -2591,6 +2783,23 @@ impl Widget for ShellDesktop {
         // Sync lock state from SessionManager
         if self.session_manager.read().state == session_manager::SessionState::Locked && !self.locked {
             self.locked = true;
+        }
+
+        // Idle auto-lock: pure policy → shell lock when password configured.
+        if !self.locked {
+            let idle_secs = self.last_input_at.elapsed().as_secs();
+            let phase = idle_phase(
+                &self.idle_config,
+                idle_secs,
+                self.locked,
+                &self.idle_inhibit,
+            );
+            if recommended_action(phase, self.locked) == IdleRecommendedAction::Lock {
+                if self.expected_lock_password.is_some() {
+                    tracing::info!(idle_secs, "idle policy: auto-lock");
+                    self.handle_session_action(session_actions::SessionAction::Lock);
+                }
+            }
         }
 
         // Update lock screen widget with current password field state

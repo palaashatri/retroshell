@@ -81,6 +81,135 @@ pub fn check_packaging_health(layout: &SessionPackagingLayout) -> PackagingHealt
     }
 }
 
+/// Greeter → session readiness checklist (pure content validation + files).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GreeterSessionReadiness {
+    pub packaging: PackagingHealth,
+    pub wayland_desktop_valid: bool,
+    pub xsession_desktop_valid: bool,
+    pub start_script_executable_bit: bool,
+    pub desktop_names_ok: bool,
+    pub notes: Vec<String>,
+}
+
+impl GreeterSessionReadiness {
+    /// True when files exist, desktops validate, and start script is present.
+    /// Does **not** claim a live display manager was exercised.
+    pub fn install_ready(&self) -> bool {
+        self.packaging.all_ok()
+            && self.wayland_desktop_valid
+            && self.xsession_desktop_valid
+            && self.desktop_names_ok
+    }
+
+    pub fn score_points(&self) -> u8 {
+        let mut n = 0u8;
+        if self.packaging.wayland_session_ok {
+            n += 15;
+        }
+        if self.packaging.xsession_ok {
+            n += 15;
+        }
+        if self.packaging.start_script_ok {
+            n += 15;
+        }
+        if self.packaging.user_service_ok {
+            n += 10;
+        }
+        if self.wayland_desktop_valid {
+            n += 15;
+        }
+        if self.xsession_desktop_valid {
+            n += 15;
+        }
+        if self.desktop_names_ok {
+            n += 10;
+        }
+        if self.start_script_executable_bit {
+            n += 5;
+        }
+        n
+    }
+}
+
+/// Probe greeter session readiness from layout paths (reads desktop files).
+pub fn check_greeter_session_readiness(layout: &SessionPackagingLayout) -> GreeterSessionReadiness {
+    let packaging = check_packaging_health(layout);
+    let mut notes = Vec::new();
+
+    let wayland_desktop_valid = read_and_validate(&layout.wayland_session_desktop, &mut notes);
+    let xsession_desktop_valid = read_and_validate(&layout.xsession_desktop, &mut notes);
+
+    let desktop_names_ok = desktop_names_present(&layout.wayland_session_desktop)
+        || desktop_names_present(&layout.xsession_desktop);
+    if !desktop_names_ok {
+        notes.push("DesktopNames not set on session .desktop files".into());
+    }
+
+    let start_script_executable_bit = is_executable(&layout.start_script);
+    if packaging.start_script_ok && !start_script_executable_bit {
+        notes.push("start-retroshell exists but executable bit not set".into());
+    }
+
+    if packaging.all_ok() && wayland_desktop_valid && xsession_desktop_valid {
+        notes.push(
+            "Install artifacts OK — live greeter login still requires DM + seat on target host"
+                .into(),
+        );
+    }
+
+    GreeterSessionReadiness {
+        packaging,
+        wayland_desktop_valid,
+        xsession_desktop_valid,
+        start_script_executable_bit,
+        desktop_names_ok,
+        notes,
+    }
+}
+
+fn read_and_validate(path: &Path, notes: &mut Vec<String>) -> bool {
+    match std::fs::read_to_string(path) {
+        Ok(content) => match validate_session_desktop(&content) {
+            Ok(()) => true,
+            Err(errs) => {
+                notes.push(format!("{}: {}", path.display(), errs.join("; ")));
+                false
+            }
+        },
+        Err(e) => {
+            notes.push(format!("cannot read {}: {e}", path.display()));
+            false
+        }
+    }
+}
+
+fn desktop_names_present(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|c| {
+            let keys = parse_desktop_keys(&c);
+            keys.get("DesktopNames")
+                .map(|v| !v.is_empty())
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
 /// Parse `Key=Value` lines from a `.desktop` file into a map.
 ///
 /// - Ignores blank lines and comments (`#...`).
@@ -293,5 +422,17 @@ Type=Application
                 panic!("{} failed validate: {errs:?}", path.display());
             });
         }
+    }
+
+    #[test]
+    fn greeter_session_readiness_repo() {
+        let root = repo_root();
+        let layout = SessionPackagingLayout::from_repo_packaging(&root);
+        let ready = check_greeter_session_readiness(&layout);
+        assert!(
+            ready.install_ready(),
+            "repo packaging should be greeter-install-ready: {ready:?}"
+        );
+        assert!(ready.score_points() >= 90, "score={}", ready.score_points());
     }
 }

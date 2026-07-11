@@ -81,13 +81,18 @@ impl SessionManager {
     }
 
     pub fn logout(&mut self) {
+        self.logout_without_exit();
+        std::process::exit(0);
+    }
+
+    /// Clear session state without terminating the process (caller may exit).
+    pub fn logout_without_exit(&mut self) {
         self.logged_in = false;
         self.locked = false;
         self.state = SessionState::LoggedOut;
         self.login_timestamp = None;
         self.pending_action = Some(SessionAction::Logout);
         self.save_state();
-        std::process::exit(0);
     }
 
     pub fn lock(&mut self) {

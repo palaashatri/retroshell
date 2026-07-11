@@ -133,17 +133,15 @@ impl MenuServer {
             );
         system_menu.add_separator();
         system_menu
-            .add_action("Quit RetroShell")
-            .with_action("shell.quit")
-            .with_shortcut(
-                KeyCode::Q,
-                Modifiers {
-                    shift: false,
-                    control: false,
-                    alt: false,
-                    meta: true,
-                },
-            );
+            .add_action("Sleep")
+            .with_action("shell.suspend");
+        system_menu
+            .add_action("Restart...")
+            .with_action("shell.reboot");
+        system_menu
+            .add_action("Shut Down...")
+            .with_action("shell.power_off");
+        system_menu.add_separator();
         system_menu
             .add_action("Log Out...")
             .with_action("shell.log_out")
@@ -151,6 +149,18 @@ impl MenuServer {
                 KeyCode::Q,
                 Modifiers {
                     shift: true,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+        system_menu
+            .add_action("Quit RetroShell")
+            .with_action("shell.quit")
+            .with_shortcut(
+                KeyCode::Q,
+                Modifiers {
+                    shift: false,
                     control: false,
                     alt: false,
                     meta: true,
@@ -685,12 +695,17 @@ fn append_workspace_items(window_menu: &mut Menu) {
             },
         );
     window_menu.add_separator();
-    for index in 0..4 {
+    // Eight desktops aligned with compositor WORKSPACE_COUNT.
+    for index in 0..8 {
         let key = match index {
             0 => KeyCode::Key1,
             1 => KeyCode::Key2,
             2 => KeyCode::Key3,
-            _ => KeyCode::Key4,
+            3 => KeyCode::Key4,
+            4 => KeyCode::Key5,
+            5 => KeyCode::Key6,
+            6 => KeyCode::Key7,
+            _ => KeyCode::Key8,
         };
         let action = format!("workspace.switch.{}", index);
         window_menu

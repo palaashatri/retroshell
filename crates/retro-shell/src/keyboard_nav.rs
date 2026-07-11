@@ -17,6 +17,14 @@ pub enum KeyboardNavIntent {
     Dismiss,
     /// Cycle windows (Meta+Tab) — handled separately in shell.
     NextWindow,
+    /// Lock screen (Meta+L / Ctrl+Meta+L).
+    LockScreen,
+    /// Log out (Meta+Shift+Q).
+    LogOut,
+    /// Next workspace (Meta+]).
+    NextWorkspace,
+    /// Previous workspace (Meta+[).
+    PrevWorkspace,
 }
 
 /// Pure: map key + modifiers to a nav intent (no OS deps).
@@ -33,6 +41,21 @@ pub fn keyboard_nav_intent(
     if meta || control || alt {
         if meta && key == "tab" {
             return Some(KeyboardNavIntent::NextWindow);
+        }
+        // Meta+L or Ctrl+Meta+L → lock
+        if meta && key == "l" {
+            return Some(KeyboardNavIntent::LockScreen);
+        }
+        // Meta+Shift+Q → log out
+        if meta && shift && key == "q" {
+            return Some(KeyboardNavIntent::LogOut);
+        }
+        // Meta+] / Meta+[ → workspaces
+        if meta && (key == "]" || key == "bracketright") {
+            return Some(KeyboardNavIntent::NextWorkspace);
+        }
+        if meta && (key == "[" || key == "bracketleft") {
+            return Some(KeyboardNavIntent::PrevWorkspace);
         }
         return None;
     }
@@ -110,6 +133,26 @@ mod tests {
         assert_eq!(
             keyboard_nav_intent("Space", false, false, false, false),
             Some(KeyboardNavIntent::Activate)
+        );
+    }
+
+    #[test]
+    fn lock_logout_workspace_intents() {
+        assert_eq!(
+            keyboard_nav_intent("l", false, true, false, false),
+            Some(KeyboardNavIntent::LockScreen)
+        );
+        assert_eq!(
+            keyboard_nav_intent("q", true, true, false, false),
+            Some(KeyboardNavIntent::LogOut)
+        );
+        assert_eq!(
+            keyboard_nav_intent("]", false, true, false, false),
+            Some(KeyboardNavIntent::NextWorkspace)
+        );
+        assert_eq!(
+            keyboard_nav_intent("[", false, true, false, false),
+            Some(KeyboardNavIntent::PrevWorkspace)
         );
     }
 

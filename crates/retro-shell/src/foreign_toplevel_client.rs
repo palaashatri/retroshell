@@ -35,12 +35,7 @@ pub fn apply_foreign_toplevel_list_event(
             if registry.get(&handle_id).is_some() {
                 registry.update(&handle_id, Some(title), Some(app_id), None);
             } else {
-                registry.add(ForeignToplevelEntry {
-                    handle_id,
-                    title,
-                    app_id,
-                    pid: None,
-                });
+                registry.add(ForeignToplevelEntry::new(handle_id, title, app_id, None));
             }
         }
         ForeignToplevelListEvent::Closed { handle_id } => {

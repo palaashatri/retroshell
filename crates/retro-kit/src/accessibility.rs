@@ -18,14 +18,17 @@
 //! - **No live tree re-export**: the D-Bus tree is snapshotted at register time;
 //!   focus/selection changes update pure helpers + optional signals only until
 //!   re-register/sync lands.
-//! - **No `org.a11y.atspi.Text` / `EditableText`**: text fields export role + Focus
-//!   only; Orca cannot read caret, selection, or typed content via AT-SPI.
-//! - **No `org.a11y.atspi.Component`**: extents / window coords are not on the bus.
+//! - **`org.a11y.atspi.Text` is exported on D-Bus** for text-bearing roles at
+//!   registration (label snapshot + caret props). **Live typing is not synced**
+//!   until re-register; Orca may still miss mid-session edits.
+//! - **`org.a11y.atspi.Component` is exported** with GetExtents/Contains; extents
+//!   are often zero until layout bounds are filled into the tree.
 //! - **`DoAction` is advisory**: Action methods return success for valid indices
-//!   but do not drive the real toolkit focus or activation path.
+//!   but do not drive the real toolkit focus or activation path (shell has a
+//!   separate pure action map in `retro_shell::a11y_actions`).
 //! - **Shallow nesting**: only one child level under flat nodes is exported.
-//! - **No Selection / Table / Value / Collection** interfaces for lists/trees/sliders.
-//! - **No relation set** (label-for, controlled-by, etc.).
+//! - **Selection / Table / Value** pure helpers are partial; full Collection not shipped.
+//! - **Relation set** pure helpers only ([`AccessibleRelation`]).
 //! - **Shell chrome tree is structural**, not bound to live menu/dock widgets.
 //!
 //! Raising Orca-usable domain means keeping roles/actions present and testable,
@@ -220,15 +223,32 @@ pub fn default_accessibility_tree(app_name: &str) -> AccessibilityTree {
 ///
 /// Order of top-level nodes matches [`ChromeFocusRegion::ORDER`]:
 /// menu bar → desktop (with icon list items) → dock (with launch buttons),
-/// plus a frame named `app_name`.
+/// plus a frame named `app_name` and a notification region.
 ///
 /// This is **not** wired to live widgets; it deepens the exported tree for
-/// ATs and unit tests. Orca still lacks events/text/component (see module docs).
+/// ATs and unit tests. Orca still incomplete (see module docs).
 pub fn shell_chrome_accessibility_tree(app_name: &str) -> AccessibilityTree {
     let mut tree = AccessibilityTree::new();
 
     let mut menu_bar = AccessibilityNode::new(AccessibilityRole::MenuBar, "Menu Bar");
-    for title in ["Apple", "File", "Edit", "View", "Window", "Help"] {
+    // Retro system menu with session actions discoverable by ATs.
+    let mut retro = AccessibilityNode::new(AccessibilityRole::Menu, "Retro");
+    for item in [
+        "About RetroShell",
+        "System Settings…",
+        "Lock Screen",
+        "Sleep",
+        "Restart…",
+        "Shut Down…",
+        "Log Out…",
+        "Quit RetroShell",
+    ] {
+        retro
+            .children
+            .push(AccessibilityNode::new(AccessibilityRole::MenuItem, item));
+    }
+    menu_bar.children.push(retro);
+    for title in ["File", "Edit", "View", "Window", "Help"] {
         let mut menu = AccessibilityNode::new(AccessibilityRole::Menu, title);
         menu.children
             .push(AccessibilityNode::new(AccessibilityRole::MenuItem, title));
@@ -245,13 +265,20 @@ pub fn shell_chrome_accessibility_tree(app_name: &str) -> AccessibilityTree {
     tree.add(desktop);
 
     let mut dock = AccessibilityNode::new(AccessibilityRole::Dock, "Dock");
-    for app in ["Finder", "Terminal", "Settings"] {
+    for app in ["Finder", "Terminal", "Settings", "TextEdit", "Calculator"] {
         dock.children
             .push(AccessibilityNode::new(AccessibilityRole::Button, app));
     }
     tree.add(dock);
 
     tree.add(AccessibilityNode::new(AccessibilityRole::Window, app_name));
+
+    let mut notify = AccessibilityNode::new(AccessibilityRole::Notification, "Notification Center");
+    notify
+        .children
+        .push(AccessibilityNode::new(AccessibilityRole::List, "Notifications"));
+    tree.add(notify);
+
     tree
 }
 
@@ -375,11 +402,205 @@ pub fn role_has_actions(role: AccessibilityRole) -> bool {
     !actions_for_role(role).is_empty()
 }
 
-/// Interface names for a node with the given role (Accessible ± Action).
+/// AT-SPI Text interface name.
+pub const ATSPI_TEXT_IFACE: &str = "org.a11y.atspi.Text";
+
+/// AT-SPI Component interface name.
+pub const ATSPI_COMPONENT_IFACE: &str = "org.a11y.atspi.Component";
+
+/// Pure in-process text content + caret/selection for AT-SPI Text queries.
+///
+/// Not exported on D-Bus yet — callers use this for toolkit tests and future
+/// bus wiring. Character offsets are UTF-8 byte indices for simplicity in tests
+/// (real AT-SPI uses UTF-16 offsets; conversion can land with bus export).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AccessibleTextState {
+    pub text: String,
+    pub caret_offset: usize,
+    pub selection_start: usize,
+    pub selection_end: usize,
+}
+
+impl AccessibleTextState {
+    pub fn new(text: impl Into<String>) -> Self {
+        let text = text.into();
+        let len = text.len();
+        Self {
+            text,
+            caret_offset: len,
+            selection_start: 0,
+            selection_end: 0,
+        }
+    }
+
+    pub fn character_count(&self) -> i32 {
+        self.text.chars().count() as i32
+    }
+
+    pub fn get_text(&self, start: usize, end: usize) -> String {
+        let end = end.min(self.text.len());
+        let start = start.min(end);
+        // Byte-oriented slice with char boundary clamp.
+        let start = floor_char_boundary(&self.text, start);
+        let end = floor_char_boundary(&self.text, end);
+        self.text[start..end].to_string()
+    }
+
+    pub fn set_caret(&mut self, offset: usize) {
+        self.caret_offset = floor_char_boundary(&self.text, offset.min(self.text.len()));
+    }
+
+    pub fn set_selection(&mut self, start: usize, end: usize) {
+        let start = floor_char_boundary(&self.text, start.min(self.text.len()));
+        let end = floor_char_boundary(&self.text, end.min(self.text.len()));
+        if start <= end {
+            self.selection_start = start;
+            self.selection_end = end;
+        } else {
+            self.selection_start = end;
+            self.selection_end = start;
+        }
+    }
+
+    pub fn selected_text(&self) -> String {
+        self.get_text(self.selection_start, self.selection_end)
+    }
+}
+
+fn floor_char_boundary(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Pure Component extents (screen-relative logical pixels).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AccessibleComponent {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+impl AccessibleComponent {
+    pub fn from_rect(r: Rect) -> Self {
+        Self {
+            x: r.x as i32,
+            y: r.y as i32,
+            width: r.width.max(0.0) as i32,
+            height: r.height.max(0.0) as i32,
+        }
+    }
+
+    pub fn contains_point(self, px: i32, py: i32) -> bool {
+        px >= self.x
+            && py >= self.y
+            && px < self.x.saturating_add(self.width)
+            && py < self.y.saturating_add(self.height)
+    }
+
+    /// AT-SPI GetExtents-style 4-tuple.
+    pub fn extents(self) -> (i32, i32, i32, i32) {
+        (self.x, self.y, self.width, self.height)
+    }
+}
+
+/// AT-SPI relation type (subset used by shell).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AccessibleRelationKind {
+    LabelFor,
+    LabelledBy,
+    ControlledBy,
+    ControllerFor,
+    MemberOf,
+}
+
+impl AccessibleRelationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LabelFor => "label-for",
+            Self::LabelledBy => "labelled-by",
+            Self::ControlledBy => "controlled-by",
+            Self::ControllerFor => "controller-for",
+            Self::MemberOf => "member-of",
+        }
+    }
+}
+
+/// One relation edge: `from_path` —kind→ `to_path`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessibleRelation {
+    pub kind: AccessibleRelationKind,
+    pub from_path: String,
+    pub to_path: String,
+}
+
+/// Pure Selection model for lists (selected child indices).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AccessibleSelectionState {
+    pub selected: Vec<usize>,
+    pub multi: bool,
+}
+
+impl AccessibleSelectionState {
+    pub fn select(&mut self, index: usize) {
+        if self.multi {
+            if !self.selected.contains(&index) {
+                self.selected.push(index);
+            }
+        } else {
+            self.selected = vec![index];
+        }
+    }
+
+    pub fn deselect(&mut self, index: usize) {
+        self.selected.retain(|&i| i != index);
+    }
+
+    pub fn clear(&mut self) {
+        self.selected.clear();
+    }
+
+    pub fn is_selected(&self, index: usize) -> bool {
+        self.selected.contains(&index)
+    }
+
+    pub fn n_selected(&self) -> usize {
+        self.selected.len()
+    }
+}
+
+/// Whether this role should advertise Text (pure; bus export separate).
+pub fn role_has_text(role: AccessibilityRole) -> bool {
+    matches!(
+        role,
+        AccessibilityRole::TextField
+            | AccessibilityRole::Label
+            | AccessibilityRole::StaticText
+            | AccessibilityRole::MenuItem
+    )
+}
+
+/// Whether this role should advertise Component extents.
+pub fn role_has_component(role: AccessibilityRole) -> bool {
+    !matches!(role, AccessibilityRole::Unknown)
+}
+
+/// Interface names for a node with the given role (Accessible ± Action ± Text ± Component).
 pub fn interfaces_for_role(role: AccessibilityRole) -> Vec<String> {
     let mut ifaces = vec![ATSPI_ACCESSIBLE_IFACE.to_string()];
     if role_has_actions(role) {
         ifaces.push(ATSPI_ACTION_IFACE.to_string());
+    }
+    if role_has_text(role) {
+        ifaces.push(ATSPI_TEXT_IFACE.to_string());
+    }
+    if role_has_component(role) {
+        ifaces.push(ATSPI_COMPONENT_IFACE.to_string());
     }
     ifaces
 }
@@ -1524,6 +1745,99 @@ impl AtspiAction {
     }
 }
 
+/// D-Bus `org.a11y.atspi.Text` — snapshot of label/entry text at register time.
+///
+/// Caret/selection are initialized to end-of-text / empty. Live typing is not
+/// mirrored until re-register/sync lands (Orca may still miss live edits).
+struct AtspiText {
+    state: AccessibleTextState,
+}
+
+impl AtspiText {
+    fn from_label(label: &str) -> Self {
+        Self {
+            state: AccessibleTextState::new(label),
+        }
+    }
+}
+
+#[interface(name = "org.a11y.atspi.Text")]
+impl AtspiText {
+    #[zbus(property, name = "CharacterCount")]
+    fn character_count(&self) -> i32 {
+        self.state.character_count()
+    }
+
+    #[zbus(property, name = "CaretOffset")]
+    fn caret_offset(&self) -> i32 {
+        self.state.caret_offset as i32
+    }
+
+    fn get_text(&self, start_offset: i32, end_offset: i32) -> String {
+        let start = start_offset.max(0) as usize;
+        let end = if end_offset < 0 {
+            self.state.text.len()
+        } else {
+            end_offset as usize
+        };
+        self.state.get_text(start, end)
+    }
+
+    fn get_n_selections(&self) -> i32 {
+        if self.state.selection_start != self.state.selection_end {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn get_selection(&self, selection_num: i32) -> fdo::Result<(i32, i32)> {
+        if selection_num != 0 || self.state.selection_start == self.state.selection_end {
+            return Err(fdo::Error::InvalidArgs("no such selection".into()));
+        }
+        Ok((
+            self.state.selection_start as i32,
+            self.state.selection_end as i32,
+        ))
+    }
+}
+
+/// D-Bus `org.a11y.atspi.Component` — extents snapshot (often 0 until layout sync).
+struct AtspiComponent {
+    component: AccessibleComponent,
+}
+
+impl AtspiComponent {
+    fn from_node(node: &AccessibilityNode) -> Self {
+        let component = if node.rect.width > 0.0 || node.rect.height > 0.0 {
+            AccessibleComponent::from_rect(node.rect)
+        } else {
+            AccessibleComponent::default()
+        };
+        Self { component }
+    }
+}
+
+#[interface(name = "org.a11y.atspi.Component")]
+impl AtspiComponent {
+    /// GetExtents(coord_type) → (x, y, width, height). coord_type ignored (screen).
+    fn get_extents(&self, _coord_type: u32) -> (i32, i32, i32, i32) {
+        self.component.extents()
+    }
+
+    fn get_position(&self, _coord_type: u32) -> (i32, i32) {
+        (self.component.x, self.component.y)
+    }
+
+    fn get_size(&self) -> (i32, i32) {
+        (self.component.width, self.component.height)
+    }
+
+    fn contains(&self, x: i32, y: i32, _coord_type: u32) -> bool {
+        self.component.contains_point(x, y)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Registration (session / a11y bus)
 // ---------------------------------------------------------------------------
@@ -1574,8 +1888,8 @@ pub fn register_at_spi_app(app_name: &str) -> Result<(), Box<dyn std::error::Err
 
 /// Register with the structural shell chrome tree (menu bar / desktop / dock).
 ///
-/// Still Orca-incomplete (no live events/text/component); richer than a single
-/// window node so ATs see chrome roles and Action interfaces.
+/// Still Orca-incomplete (events best-effort; text/component are register-time
+/// snapshots, not live layout/typing). Richer than a single window node.
 pub fn register_at_spi_shell_chrome(app_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let tree = shell_chrome_accessibility_tree(app_name);
     register_at_spi_app_with_tree(app_name, &tree)
@@ -1725,6 +2039,12 @@ pub fn register_at_spi_app_with_tree(
                 if role_has_actions(child.role) {
                     server.at(cpath.as_str(), AtspiAction::from_role(child.role))?;
                 }
+                if role_has_text(child.role) {
+                    server.at(cpath.as_str(), AtspiText::from_label(&child.label))?;
+                }
+                if role_has_component(child.role) {
+                    server.at(cpath.as_str(), AtspiComponent::from_node(child))?;
+                }
             }
 
             let obj = AtspiAccessible {
@@ -1744,6 +2064,12 @@ pub fn register_at_spi_app_with_tree(
             server.at(path.as_str(), obj)?;
             if role_has_actions(node.role) {
                 server.at(path.as_str(), AtspiAction::from_role(node.role))?;
+            }
+            if role_has_text(node.role) {
+                server.at(path.as_str(), AtspiText::from_label(&node.label))?;
+            }
+            if role_has_component(node.role) {
+                server.at(path.as_str(), AtspiComponent::from_node(node))?;
             }
         }
     }
@@ -2029,10 +2355,76 @@ mod tests {
         let button = interfaces_for_role(AccessibilityRole::Button);
         assert!(button.iter().any(|s| s == ATSPI_ACCESSIBLE_IFACE));
         assert!(button.iter().any(|s| s == ATSPI_ACTION_IFACE));
+        assert!(button.iter().any(|s| s == ATSPI_COMPONENT_IFACE));
 
         let label = interfaces_for_role(AccessibilityRole::Label);
         assert!(label.iter().any(|s| s == ATSPI_ACCESSIBLE_IFACE));
         assert!(!label.iter().any(|s| s == ATSPI_ACTION_IFACE));
+        assert!(label.iter().any(|s| s == ATSPI_TEXT_IFACE));
+
+        let entry = interfaces_for_role(AccessibilityRole::TextField);
+        assert!(entry.iter().any(|s| s == ATSPI_TEXT_IFACE));
+    }
+
+    #[test]
+    fn accessible_text_state_caret_and_selection() {
+        let mut t = AccessibleTextState::new("hello world");
+        assert_eq!(t.character_count(), 11);
+        t.set_selection(0, 5);
+        assert_eq!(t.selected_text(), "hello");
+        t.set_caret(6);
+        assert_eq!(t.caret_offset, 6);
+        assert_eq!(t.get_text(6, 11), "world");
+    }
+
+    #[test]
+    fn accessible_component_contains_and_extents() {
+        let c = AccessibleComponent {
+            x: 10,
+            y: 20,
+            width: 100,
+            height: 50,
+        };
+        assert!(c.contains_point(10, 20));
+        assert!(c.contains_point(109, 69));
+        assert!(!c.contains_point(110, 20));
+        assert_eq!(c.extents(), (10, 20, 100, 50));
+    }
+
+    #[test]
+    fn accessible_selection_single_and_multi() {
+        let mut s = AccessibleSelectionState {
+            multi: false,
+            ..Default::default()
+        };
+        s.select(2);
+        s.select(5);
+        assert_eq!(s.selected, vec![5]);
+        s.multi = true;
+        s.select(2);
+        assert_eq!(s.n_selected(), 2);
+        s.deselect(5);
+        assert!(s.is_selected(2));
+    }
+
+    #[test]
+    fn shell_chrome_includes_session_menu_items() {
+        let tree = shell_chrome_accessibility_tree("RetroShell");
+        // menu bar is first node; Retro submenu has Lock Screen
+        let menu_bar = &tree.nodes[0];
+        let retro = menu_bar
+            .children
+            .iter()
+            .find(|n| n.label == "Retro")
+            .expect("Retro menu");
+        assert!(retro
+            .children
+            .iter()
+            .any(|c| c.label == "Lock Screen"));
+        assert!(tree
+            .nodes
+            .iter()
+            .any(|n| n.role == AccessibilityRole::Notification));
     }
 
     #[test]

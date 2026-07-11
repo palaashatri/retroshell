@@ -1574,6 +1574,44 @@ impl WorkspaceState {
             dist
         )
     }
+
+    /// Window ids that should be painted / presented on the active workspace
+    /// (sorted). Used by the frame path to hide surfaces on other desktops.
+    pub fn visible_window_ids(&self) -> Vec<&str> {
+        self.windows_on(self.active)
+    }
+
+    /// Pure composition filter: keep only `candidate_ids` that are visible
+    /// on the active workspace. Untracked ids are dropped (strict mode).
+    pub fn filter_visible<'a>(&self, candidate_ids: &[&'a str]) -> Vec<&'a str> {
+        let mut out: Vec<&str> = candidate_ids
+            .iter()
+            .copied()
+            .filter(|id| self.is_visible(id))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// Lenient filter: untracked ids pass through (shell-internal surfaces).
+    pub fn filter_visible_or_untracked<'a>(&self, candidate_ids: &[&'a str]) -> Vec<&'a str> {
+        candidate_ids
+            .iter()
+            .copied()
+            .filter(|id| match self.windows.get(*id) {
+                Some(ws) => *ws == self.active && self.active.is_valid(),
+                None => true,
+            })
+            .collect()
+    }
+
+    /// Apply a workspace assignment from window rules (clamped id).
+    pub fn apply_rule_workspace(&mut self, window_id: impl Into<String>, workspace_index: u8) -> bool {
+        match WorkspaceId::new(workspace_index) {
+            Some(ws) => self.assign_window(window_id, ws),
+            None => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2429,6 +2467,24 @@ mod tests {
         assert!(st.assign_window("w", WorkspaceId(4)));
         assert_eq!(st.workspace_of("w"), Some(WorkspaceId(4)));
         assert_eq!(st.windows.len(), 1);
+    }
+
+    #[test]
+    fn workspace_composition_filter() {
+        let mut st = WorkspaceState::new();
+        assert!(st.assign_window("a", WorkspaceId(0)));
+        assert!(st.assign_window("b", WorkspaceId(1)));
+        assert!(st.apply_rule_workspace("c", 0));
+        assert_eq!(st.visible_window_ids(), vec!["a", "c"]);
+        let filtered = st.filter_visible(&["a", "b", "c", "ghost"]);
+        assert_eq!(filtered, vec!["a", "c"]);
+        let lenient = st.filter_visible_or_untracked(&["a", "b", "ghost"]);
+        assert!(lenient.contains(&"a"));
+        assert!(lenient.contains(&"ghost"));
+        assert!(!lenient.contains(&"b"));
+        st.cycle_next();
+        assert!(st.is_visible("b"));
+        assert!(!st.is_visible("a"));
     }
 
     #[test]

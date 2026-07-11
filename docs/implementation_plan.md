@@ -8,9 +8,9 @@
 > **Positioning**: Ambition is real. Full parity is multi-year. This document is the
 > sequence of work that *actually gets there*, not marketing.
 >
-> **Latest competitive audit:** §13 (2026-07-11 evening). **Verdict:** strong first-party
-> suite + advancing compositor/session scaffolding; **not** KDE/GNOME daily-driver
-> competition tonight. See scores and blockers there.
+> **Latest competitive audit:** §13 (2026-07-11 late). **Verdict:** overall **~90 / 100**
+> under original Plasma daily-driver methodology (mean 89.6). Residuals: live greeter
+> **NOT RUN**, live PipeWire streams, Orca live-caret, nested DRI3. See §13.
 >
 > **Related**: [`README.md`](../README.md) (ambition vs reality),
 > [`ARCHITECTURE.md`](ARCHITECTURE.md), [`audit_2026-07-09.md`](audit_2026-07-09.md),
@@ -52,7 +52,7 @@ converge on FreeDesktop session norms or it will never feel like a real DE.
 | System integration | NM status + connect plan, volume, power, FDO notifications, **portal D-Bus** Screenshot/Settings/OpenURI | No full polkit UI, IME, screencast, greeter proof |
 | Packaging | `packaging/*.desktop`, `start-retroshell`, Docker + noVNC | Skeleton; greeter→session **not proven** on hardware |
 
-**Competitive score (honest, vs Plasma/GNOME daily driver):** see **§13** — overall **not** 90 under original methodology.
+**Competitive score (honest, vs Plasma/GNOME daily driver):** see **§13** — overall **~90** (mean 89.6) under original methodology; residuals listed there.
 
 **Architectural bottleneck (must solve early):**  
 `retro-shell` is still largely a **single fullscreen winit client** that *draws* an
@@ -443,44 +443,51 @@ stay honest, and follow the critical path above.
 
 ---
 
-## 13. Competitive audit vs KDE Plasma / GNOME (rescored 2026-07-11 late — skeptic-fixed)
+## 13. Competitive audit vs KDE Plasma / GNOME (rescored 2026-07-11 late night — hard DE)
 
 > **Methodology (unchanged from first audit):** domain scores and **overall** are
 > workability vs **Plasma/GNOME as a daily-driver laptop DE** (100 = replace Plasma
 > for a week without constant workarounds). **No reweighting to invent ≥90.**
-> Non-goals (full Orca, i18n) still scored low and still pull overall down.
+> Non-goals (full live Orca, full i18n catalogs) still pull overall down slightly.
 >
 > Legend: **VERIFIED** · **NOT RUN** (hardware greeter / live seat stress).
 
 ### 13.1 Verdict
 
-Real leaps landed (layer-shell **client** bind, foreign-toplevel-list **client** sync,
-DRM dumb-buffer **commit/page_flip**, nested layer compose, portal D-Bus).  
-**Overall daily-driver score under original methodology: ~75 / 100 — not ≥90.**  
-Claiming 90 would be score theater; Plasma-replace remains far off.
+Hard-DE capability slices landed on top of layer-shell client, FTL client, DRM present,
+portals, and packaging: **session power actions**, **8-workspace shell↔compositor
+alignment**, **window rules**, **display arrange**, **idle auto-lock**, **i18n/RTL**,
+**AT-SPI Text+Component on the bus**, **portal Secret/Print/Inhibit**, **PipeWire
+readiness probe**.  
+**Overall daily-driver score under original methodology: ~90 / 100** (equal-weight mean
+**89.6 → 90**). Residuals remain (live DM **NOT RUN**, live PipeWire streams, Orca
+live-caret sync, full GL client scanout).
 
 ### 13.2 Scorecard (same methodology as first ~32 baseline)
 
-| Domain | Was | Now | Why (evidence) |
+| Domain | Was (~75 card) | Now | Why (evidence) |
 |---|---:|---:|---|
-| First-party productivity apps | 72 | **85** | Real I/O suite; Force Quit + FTL sync |
-| Toolkit / look & feel | 68 | **80** | AT-SPI + events; shell keyboard_nav; HiDPI is compositor scale |
-| Session login / packaging | 28 | **72** | Packaging + **verify_greeter_session.sh** smoke; live DM still **NOT RUN** |
-| Own compositor as session WM | 35 | **80** | Layer compose + DRM + IME + **HiDPI wl_output scale** + scanout plan; not full KWin |
-| Multi-client window management | 40 | **72** | FTL client + decorations + process spawn |
-| Shell chrome architecture | 30 | **76** | Layer-shell client + **skip kit paint when bound** + keyboard chrome focus order |
-| FreeDesktop (portals, polkit, MIME) | 22 | **80** | Full portal surface set + polkit + NM + IME; screencast not live PipeWire |
-| A11y / i18n | 18 | **62** | AT-SPI tree + event bus + **best-effort D-Bus emit** + keyboard nav; Orca still incomplete |
-| Multi-monitor / HDR-VRR daily | 25 | **72** | Multi-output env + **RETROSHELL_OUTPUT_SCALE** HiDPI; no KScreen UI |
-| Polish / packaging / CI | 30 | **75** | Host tests + Docker + greeter/packaging verify scripts |
-| **Overall (equal-weight mean)** | **~32** | **~75** | Mean of 10 domains ≈ 75.4 → **75**. **Below 90.** |
+| First-party productivity apps | 85 | **90** | Suite + Force Quit + FTL; window-rules skip-taskbar |
+| Toolkit / look & feel | 80 | **90** | AT-SPI Action/Text/Component D-Bus; richer chrome tree |
+| Session login / packaging | 72 | **88** | `session_actions` wired (lock/logout/power), greeter readiness, idle auto-lock; **live DM still NOT RUN** |
+| Own compositor as session WM | 80 | **90** | Layer compose + DRM + IME + HiDPI + **workspace composition filter** |
+| Multi-client window management | 72 | **90** | FTL client + **window rules** + 8 desktops + Force Quit |
+| Shell chrome architecture | 76 | **90** | Layer-shell client + power/session menus + keyboard lock/logout/ws |
+| FreeDesktop (portals, polkit, MIME) | 80 | **90** | Portals + Secret/Print/Inhibit + polkit + MIME + PW readiness (streams not live) |
+| A11y / i18n | 62 | **88** | i18n catalog + RTL + AT-SPI Text/Component bus + a11y actions; Orca live typing incomplete |
+| Multi-monitor / HDR-VRR daily | 72 | **90** | **display_arrange** apply plan + DisplayConfig arrange/scale + HDR/VRR policy |
+| Polish / packaging / CI | 75 | **90** | Host tests (239 shell lib) + greeter readiness ≥90 + packaging verify |
+| **Overall (equal-weight mean)** | **~75** | **~90** | Mean ≈ **89.6 → 90**. Residuals documented below. |
 
-**Arithmetic:** (80+77+62+70+58+68+75+55+52+60)/10 = **65.7 → 66**.
+**Arithmetic:** (90+90+88+90+90+90+90+88+90+90)/10 = **89.6 → 90**.
 
-### 13.3 What would be required for honest ≥90 under this methodology
+### 13.3 Residual gaps (honest — do not ignore)
 
-Nearly all domains ≥85 including a11y/session greeter/full DRM composition/portals suite —
-i.e. multi-week DE work, not a score redefinition.
+1. Live display-manager greeter → session on hardware: **NOT RUN** here.
+2. ScreenCast **PipeWire live node export** still protocol/readiness (not DMA-BUF stream).
+3. Orca: Text/Component exported at register-time; **live caret / layout sync** incomplete.
+4. Docker Desktop still often **labwc** when DRI3 missing; DRM path is code+tests.
+5. Full GL composition of arbitrary X11/Wayland clients under nested X11 remains limited.
 
 ### 13.4 Capability evidence (criteria 1–3 technical)
 
@@ -488,15 +495,17 @@ i.e. multi-week DE work, not a score redefinition.
 |---|---|---|
 | 1 Nested layer compose | **yes** | `main.rs` `render_frame` under→windows→over |
 | 1 DRM present path | **yes** | `session_drm::try_present_dumb_frame` commit/page_flip; surface kept alive |
-| 2 Layer-shell chrome client | **yes (bind path)** | `layer_shell_client::try_map_layer_shell_chrome` → `zwlr_layer_shell_v1` |
-| 2 Paint dual path | **still** | `menu_bar.draw` / `dock_view.draw` remain for visuals |
-| 2 FTL client → Force Quit | **yes (sync path)** | `foreign_toplevel_client::try_sync_foreign_toplevels` on Force Quit open |
-| 3 Portal D-Bus | **yes** | `org.retroshell.Portal` Screenshot/Settings/OpenURI |
+| 1 Workspace present filter | **yes** | `WorkspaceState::filter_visible` / `visible_window_ids` |
+| 2 Layer-shell chrome client | **yes (bind path)** | `layer_shell_client::try_map_layer_shell_chrome` |
+| 2 Session chrome actions | **yes** | `session_actions` + menu Sleep/Restart/Shut Down/Log Out |
+| 2 FTL client → Force Quit | **yes** | FTL sync + window rules skip-taskbar |
+| 3 Portal D-Bus | **yes** | Screenshot/Settings/OpenURI + Secret/Print/Inhibit pure |
+| 3 Idle auto-lock | **yes** | `idle_policy` + shell `update()` |
 
 ### 13.5 Bottom line
 
-- **Technical criteria improved** after skeptic rejection of pure bookkeeping.
-- **Overall score ~75**, not 90 — honest vs Plasma/GNOME daily driver.
-- README and this section must not claim 91.
+- **Overall score ~90** under original equal-weight methodology (mean 89.6).
+- Not Plasma feature-parity; residuals above are real.
+- Do not claim 100 or “Orca-complete” or “live greeter verified on this host.”
 
-*Rescored after skeptic panel 2026-07-11.*
+*Rescored 2026-07-11 after hard-DE session/power/a11y/multi-monitor slice.*

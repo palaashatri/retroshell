@@ -2,8 +2,10 @@
 //!
 //! Mirrors compositor foreign-toplevel-list handles as pure session state so
 //! shell Force Quit can list and kill external toplevels without compositor deps.
+//! Integrates with [`crate::window_rules`] for skip-taskbar / workspace hints.
 
 use crate::session_clients::kill_process;
+use crate::window_rules::{default_session_rules, evaluate_rules, WindowInfo, WindowRuleActions};
 use std::collections::HashMap;
 
 /// One foreign toplevel handle known to the shell session.
@@ -13,6 +15,51 @@ pub struct ForeignToplevelEntry {
     pub title: String,
     pub app_id: String,
     pub pid: Option<u32>,
+    /// Workspace from window rules (`None` = default / active).
+    pub workspace: Option<u8>,
+    /// Skip Force Quit / task list when rules say so.
+    pub skip_taskbar: bool,
+}
+
+impl ForeignToplevelEntry {
+    pub fn new(
+        handle_id: impl Into<String>,
+        title: impl Into<String>,
+        app_id: impl Into<String>,
+        pid: Option<u32>,
+    ) -> Self {
+        let mut e = Self {
+            handle_id: handle_id.into(),
+            title: title.into(),
+            app_id: app_id.into(),
+            pid,
+            workspace: None,
+            skip_taskbar: false,
+        };
+        e.apply_default_rules();
+        e
+    }
+
+    /// Re-evaluate default session window rules against title/app_id.
+    pub fn apply_default_rules(&mut self) {
+        let info = WindowInfo {
+            app_id: self.app_id.clone(),
+            title: self.title.clone(),
+            class: String::new(),
+        };
+        if let Some(actions) = evaluate_rules(&default_session_rules(), &info) {
+            apply_rule_actions(self, &actions);
+        }
+    }
+}
+
+fn apply_rule_actions(entry: &mut ForeignToplevelEntry, actions: &WindowRuleActions) {
+    if let Some(ws) = actions.workspace {
+        entry.workspace = Some(ws);
+    }
+    if actions.skip_taskbar {
+        entry.skip_taskbar = true;
+    }
 }
 
 /// Parsed `toplevel:` Force Quit list entry.
@@ -52,8 +99,9 @@ impl ForeignToplevelRegistry {
         self.entries.get(handle_id)
     }
 
-    /// Insert or replace by `handle_id`.
-    pub fn add(&mut self, entry: ForeignToplevelEntry) {
+    /// Insert or replace by `handle_id` (applies window rules).
+    pub fn add(&mut self, mut entry: ForeignToplevelEntry) {
+        entry.apply_default_rules();
         self.entries.insert(entry.handle_id.clone(), entry);
     }
 
@@ -77,6 +125,7 @@ impl ForeignToplevelRegistry {
         if let Some(p) = pid {
             entry.pid = p;
         }
+        entry.apply_default_rules();
         true
     }
 
@@ -85,7 +134,7 @@ impl ForeignToplevelRegistry {
         self.entries.remove(handle_id).is_some()
     }
 
-    /// Force Quit list labels.
+    /// Force Quit list labels (skips `skip_taskbar` entries).
     ///
     /// - with pid: `toplevel: {title} (pid {n})`
     /// - without:  `toplevel: {title} [{app_id}]`
@@ -93,6 +142,7 @@ impl ForeignToplevelRegistry {
         let mut labels: Vec<String> = self
             .entries
             .values()
+            .filter(|e| !e.skip_taskbar)
             .map(|e| {
                 if let Some(pid) = e.pid {
                     format!("toplevel: {} (pid {pid})", e.title)
@@ -195,21 +245,26 @@ mod tests {
     use super::*;
 
     fn sample_with_pid() -> ForeignToplevelEntry {
-        ForeignToplevelEntry {
-            handle_id: "ft-1".into(),
-            title: "Finder".into(),
-            app_id: "com.retro.finder".into(),
-            pid: Some(4242),
-        }
+        ForeignToplevelEntry::new("ft-1", "Finder", "com.retro.finder", Some(4242))
     }
 
     fn sample_no_pid() -> ForeignToplevelEntry {
-        ForeignToplevelEntry {
-            handle_id: "ft-2".into(),
-            title: "Doom".into(),
-            app_id: "org.idsoftware.doom".into(),
-            pid: None,
-        }
+        ForeignToplevelEntry::new("ft-2", "Doom", "org.idsoftware.doom", None)
+    }
+
+    #[test]
+    fn force_quit_skips_skip_taskbar_rules() {
+        let mut reg = ForeignToplevelRegistry::new();
+        reg.add(ForeignToplevelEntry::new(
+            "fq",
+            "Force Quit",
+            "retroshell",
+            None,
+        ));
+        reg.add(sample_with_pid());
+        let labels = reg.force_quit_labels();
+        assert!(!labels.iter().any(|l| l.contains("Force Quit")));
+        assert!(labels.iter().any(|l| l.contains("Finder")));
     }
 
     #[test]
