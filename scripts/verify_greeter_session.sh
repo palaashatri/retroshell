@@ -36,9 +36,21 @@ echo "==> DesktopNames=RetroShell on both session desktops"
 grep -q "DesktopNames=RetroShell" "$ROOT/packaging/retroshell.desktop"
 grep -q "DesktopNames=RetroShell" "$ROOT/packaging/retroshell-wayland.desktop"
 
-echo "==> TryExec present (greeter can probe binary)"
-grep -q "TryExec=" "$ROOT/packaging/retroshell.desktop" \
-  || grep -q "TryExec=" "$ROOT/packaging/retroshell-wayland.desktop"
+echo "==> TryExec present on both session desktops (greeter can probe binary)"
+grep -q "TryExec=start-retroshell" "$ROOT/packaging/retroshell.desktop"
+grep -q "TryExec=start-retroshell" "$ROOT/packaging/retroshell-wayland.desktop"
+
+echo "==> Keywords consistent on both session desktops"
+grep -q "Keywords=RetroShell;Wayland;Desktop;" "$ROOT/packaging/retroshell.desktop"
+grep -q "Keywords=RetroShell;Wayland;Desktop;" "$ROOT/packaging/retroshell-wayland.desktop"
+
+echo "==> install-session-files.sh dry-run"
+test -x "$ROOT/scripts/install-session-files.sh"
+DRY_LOG="$(mktemp)"
+"$ROOT/scripts/install-session-files.sh" --dry-run --prefix /tmp/retroshell-greeter-dryrun >"$DRY_LOG"
+grep -q "wayland-sessions/retroshell.desktop" "$DRY_LOG"
+grep -q "bin/start-retroshell" "$DRY_LOG"
+rm -f "$DRY_LOG"
 
 echo
 echo "greeter session packaging smoke PASSED (no live DM required)"

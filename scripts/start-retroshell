@@ -9,12 +9,24 @@
 #   RETROSHELL_COMPOSITOR=labwc|retro-compositor
 #   RETROSHELL_FORCE_LABWC=1          — same as COMPOSITOR=labwc
 #   RETROSHELL_COMPOSITOR_WAIT_SECS   — how long to wait for compositor (default 3)
+#   RETROSHELL_OUTPUTS_LAYOUT         — multi-monitor layout blob (re-exported if set)
 #   WLR_BACKENDS / WLR_RENDERER_ALLOW_SOFTWARE — passed through to labwc if set
+#
+# Compositor selection is always logged honestly (preferred vs fallback reason).
 set -euo pipefail
 
 export XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-wayland}"
 export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-RetroShell}"
 export DESKTOP_SESSION="${DESKTOP_SESSION:-retroshell}"
+
+# Re-export multi-monitor layout when the greeter/user session already set it so
+# retro-shell display_arrange can read the same env (EmitLayoutEnv key).
+if [ -n "${RETROSHELL_OUTPUTS_LAYOUT:-}" ]; then
+  export RETROSHELL_OUTPUTS_LAYOUT
+  echo "start-retroshell: RETROSHELL_OUTPUTS_LAYOUT is set (len=${#RETROSHELL_OUTPUTS_LAYOUT}); re-exported for session"
+else
+  echo "start-retroshell: RETROSHELL_OUTPUTS_LAYOUT unset (single-output / default arrange)"
+fi
 
 if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
   export XDG_RUNTIME_DIR="/run/user/$(id -u)"
@@ -25,6 +37,7 @@ chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
 WAIT_SECS="${RETROSHELL_COMPOSITOR_WAIT_SECS:-3}"
 COMPOSITOR_LOG="${XDG_RUNTIME_DIR}/retro-compositor.log"
 COMPOSITOR_PID=""
+SELECTED_COMPOSITOR=""
 
 die() {
   echo "start-retroshell: $*" >&2
@@ -164,35 +177,49 @@ start_retro_compositor() {
 
 choice="${RETROSHELL_COMPOSITOR:-}"
 if [ -n "${RETROSHELL_FORCE_LABWC:-}" ]; then
-  echo "start-retroshell: RETROSHELL_FORCE_LABWC is set → labwc"
+  echo "start-retroshell: compositor selection: forced labwc (RETROSHELL_FORCE_LABWC set)"
   choice="labwc"
+elif [ -n "$choice" ]; then
+  echo "start-retroshell: compositor selection: explicit RETROSHELL_COMPOSITOR=$choice"
+else
+  echo "start-retroshell: compositor selection: default (prefer retro-compositor, honest labwc fallback)"
 fi
 
 case "${choice}" in
   labwc)
     start_labwc
+    SELECTED_COMPOSITOR="labwc"
     ;;
   retro-compositor)
     if ! start_retro_compositor; then
-      die "RETROSHELL_COMPOSITOR=retro-compositor requested but compositor failed to start"
+      die "RETROSHELL_COMPOSITOR=retro-compositor requested but compositor failed to start (no silent fallback)"
     fi
+    SELECTED_COMPOSITOR="retro-compositor"
     ;;
   "")
     # Default: prefer retro-compositor when present and not forced off
     if resolve_bin retro-compositor >/dev/null 2>&1; then
+      echo "start-retroshell: retro-compositor found on PATH; attempting preferred session compositor"
       if ! start_retro_compositor; then
-        echo "start-retroshell: falling back to labwc (DRI3/GPU path unavailable or compositor crashed)"
+        echo "start-retroshell: preferred compositor failed — falling back to labwc (not claiming retro-compositor is live)"
+        echo "start-retroshell: common causes: missing DRI3, nested X without GPU, or early crash (see log above)"
         start_labwc
+        SELECTED_COMPOSITOR="labwc (fallback)"
+      else
+        SELECTED_COMPOSITOR="retro-compositor"
       fi
     else
-      echo "start-retroshell: retro-compositor not found; using labwc"
+      echo "start-retroshell: retro-compositor not found on PATH or target/{release,debug}; using labwc"
       start_labwc
+      SELECTED_COMPOSITOR="labwc (no retro-compositor binary)"
     fi
     ;;
   *)
     die "unknown RETROSHELL_COMPOSITOR='$choice' (use labwc or retro-compositor)"
     ;;
 esac
+
+echo "start-retroshell: active compositor path: ${SELECTED_COMPOSITOR:-unknown}"
 
 SHELL_BIN="$(resolve_bin retro-shell)" || die "retro-shell not found on PATH or in target/{release,debug}"
 echo "start-retroshell: exec retro-shell ($SHELL_BIN) on WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-unset}"

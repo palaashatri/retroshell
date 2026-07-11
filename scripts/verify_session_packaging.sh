@@ -47,7 +47,7 @@ check_desktop_keys() {
   local file_fail=0
   local key
 
-  for key in Name Exec Type; do
+  for key in Name Exec Type DesktopNames TryExec Keywords; do
     if ! grep -qE "^${key}=" "$file"; then
       err "$file missing required key: $key"
       file_fail=1
@@ -58,10 +58,13 @@ check_desktop_keys() {
     return
   fi
 
-  local name exec_val type_val
+  local name exec_val type_val desktop_names try_exec keywords
   name="$(grep -E '^Name=' "$file" | head -1 | cut -d= -f2-)"
   exec_val="$(grep -E '^Exec=' "$file" | head -1 | cut -d= -f2-)"
   type_val="$(grep -E '^Type=' "$file" | head -1 | cut -d= -f2-)"
+  desktop_names="$(grep -E '^DesktopNames=' "$file" | head -1 | cut -d= -f2-)"
+  try_exec="$(grep -E '^TryExec=' "$file" | head -1 | cut -d= -f2-)"
+  keywords="$(grep -E '^Keywords=' "$file" | head -1 | cut -d= -f2-)"
 
   if [ -z "$name" ]; then
     err "$file: Name is empty"
@@ -75,9 +78,21 @@ check_desktop_keys() {
     err "$file: Exec must contain start-retroshell (got '$exec_val')"
     file_fail=1
   fi
+  if [ "$desktop_names" != "RetroShell" ]; then
+    err "$file: DesktopNames must be RetroShell (got '$desktop_names')"
+    file_fail=1
+  fi
+  if [[ "$try_exec" != *start-retroshell* ]]; then
+    err "$file: TryExec must contain start-retroshell (got '$try_exec')"
+    file_fail=1
+  fi
+  if [ "$keywords" != "RetroShell;Wayland;Desktop;" ]; then
+    err "$file: Keywords must be RetroShell;Wayland;Desktop; (got '$keywords')"
+    file_fail=1
+  fi
 
   if [ "$file_fail" -eq 0 ]; then
-    ok "$file keys: Name='$name' Type='$type_val' Exec='$exec_val'"
+    ok "$file keys: Name='$name' Type='$type_val' Exec='$exec_val' DesktopNames='$desktop_names'"
   fi
 }
 

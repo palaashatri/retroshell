@@ -35,6 +35,26 @@ relative to the script when you run it from a git checkout without installing.
 Wayland greeters load sessions from `/usr/share/wayland-sessions/` (system) or
 sometimes `/usr/local/share/wayland-sessions/`.
 
+Preferred (dry-run first; default `PREFIX=/usr/local`):
+
+```bash
+./scripts/install-session-files.sh --dry-run
+sudo ./scripts/install-session-files.sh --prefix /usr/local
+# system-wide greeter paths often need --prefix /usr
+sudo ./scripts/install-session-files.sh --prefix /usr
+```
+
+This installs:
+
+| Destination under `$PREFIX` | Source |
+|-----------------------------|--------|
+| `share/wayland-sessions/retroshell.desktop` | `packaging/retroshell-wayland.desktop` |
+| `share/xsessions/retroshell.desktop` | `packaging/retroshell.desktop` |
+| `bin/start-retroshell` | `scripts/start-retroshell` |
+| `lib/systemd/user/retroshell.service` | `packaging/retroshell.service` |
+
+Manual equivalent:
+
 ```bash
 # System-wide (typical)
 sudo install -Dm644 packaging/retroshell-wayland.desktop \
@@ -108,6 +128,7 @@ container entrypoint.
 | `RETROSHELL_COMPOSITOR` | `labwc` or `retro-compositor` |
 | `RETROSHELL_FORCE_LABWC` | Non-empty → force labwc |
 | `RETROSHELL_COMPOSITOR_WAIT_SECS` | Startup grace period (default `3`) |
+| `RETROSHELL_OUTPUTS_LAYOUT` | Multi-monitor layout blob; re-exported when set for `display_arrange` |
 | `RETROSHELL_KEEP_DISPLAY` | Set to `1` to keep `DISPLAY` when exec’ing the shell |
 | `WLR_BACKENDS` | If already set, passed through to labwc as-is |
 | `WLR_RENDERER_ALLOW_SOFTWARE` | Used with nested x11 labwc (default `1` when nested) |
