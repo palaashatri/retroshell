@@ -623,9 +623,16 @@ impl ShellDesktop {
     fn dispatch_a11y_invoke(&mut self, invoke_id: &str) {
         match classify_a11y_invoke(invoke_id) {
             A11yDispatchTarget::ChromeMenuActivate => {
-                // MenuBar has no public "open index" API; keyboard chrome nav still works.
-                if !self.menu_bar.menus.is_empty() {
-                    tracing::debug!("a11y chrome.menu.activate (log-only: menu open stub)");
+                // Open the system/Retro menu (index 0). Prefer title "Retro" when present.
+                if let Some(idx) = self
+                    .menu_bar
+                    .menus
+                    .iter()
+                    .position(|m| m.title == "Retro")
+                {
+                    let _ = self.menu_bar.open_menu_at(idx);
+                } else {
+                    let _ = self.menu_bar.open_first_menu();
                 }
             }
             A11yDispatchTarget::ChromeDockActivate => {
@@ -4104,6 +4111,35 @@ mod tests {
 
         desktop.dispatch_a11y_invoke("workspace.previous");
         assert_eq!(desktop.active_workspace(), 0);
+    }
+
+    #[test]
+    fn a11y_dispatch_chrome_menu_activate_opens_system_menu() {
+        let (mut desktop, _) = test_desktop();
+        assert!(desktop.menu_bar.open_menu.is_none());
+        assert!(
+            desktop
+                .menu_bar
+                .menus
+                .iter()
+                .any(|m| m.title == "Retro"),
+            "precondition: system Retro menu present"
+        );
+
+        desktop.dispatch_a11y_invoke("chrome.menu.activate");
+        let retro_idx = desktop
+            .menu_bar
+            .menus
+            .iter()
+            .position(|m| m.title == "Retro")
+            .expect("Retro menu");
+        assert_eq!(desktop.menu_bar.open_menu, Some(retro_idx));
+
+        desktop.menu_bar.close();
+        assert!(desktop.menu_bar.open_menu.is_none());
+
+        desktop.dispatch_a11y_invoke("chrome.menu.system");
+        assert_eq!(desktop.menu_bar.open_menu, Some(retro_idx));
     }
 
     #[test]

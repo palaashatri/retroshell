@@ -118,7 +118,7 @@ pub fn session_root_actions() -> Vec<AccessibleAction> {
 /// is auditable without spinning up a full desktop.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum A11yDispatchTarget {
-    /// System menu open (currently log-only / navigable via keyboard).
+    /// Open the system/Retro menu via kit MenuBar `open_menu_at` / `open_first_menu`.
     ChromeMenuActivate,
     /// Launch or focus first dock item.
     ChromeDockActivate,
@@ -150,10 +150,9 @@ impl A11yDispatchTarget {
     /// Whether dispatch runs a real shell side effect (not just a debug log).
     pub fn is_live(&self) -> bool {
         match self {
-            Self::ChromeMenuActivate | Self::ChromeDockMenu | Self::ChromeDesktopMenu | Self::Unknown => {
-                false
-            }
-            Self::ChromeDockActivate
+            Self::ChromeDockMenu | Self::ChromeDesktopMenu | Self::Unknown => false,
+            Self::ChromeMenuActivate
+            | Self::ChromeDockActivate
             | Self::ChromeDesktopOpen
             | Self::ChromeWindowActivateNext
             | Self::ChromeWindowClose
@@ -463,7 +462,8 @@ mod tests {
         assert!(a11y_invoke_is_live("workspace.next"));
         assert!(a11y_invoke_is_live("chrome.dock.activate"));
         assert!(a11y_invoke_is_live("chrome.desktop.open"));
-        assert!(!a11y_invoke_is_live("chrome.menu.activate"));
+        assert!(a11y_invoke_is_live("chrome.menu.activate"));
+        assert!(a11y_invoke_is_live("chrome.menu.system"));
         assert!(!a11y_invoke_is_live("chrome.dock.menu"));
         assert!(!a11y_invoke_is_live("chrome.desktop.menu"));
         assert!(!a11y_invoke_is_live("not.a.real.action"));

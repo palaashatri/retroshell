@@ -35,11 +35,28 @@ impl MenuBar {
     }
 
     pub fn open_menu(&mut self, index: usize) {
+        let _ = self.open_menu_at(index);
+    }
+
+    /// Open the top-level menu at `index`. Returns `true` if the index was valid.
+    ///
+    /// Pure state update (no layout/event side effects) — suitable for a11y
+    /// invoke and keyboard activation.
+    pub fn open_menu_at(&mut self, index: usize) -> bool {
         if index < self.menus.len() {
             self.open_menu = Some(index);
             self.hovered_menu = Some(index);
             self.hovered_item = None;
+            true
+        } else {
+            false
         }
+    }
+
+    /// Open the first top-level menu (typically the system / app menu).
+    /// Returns `true` if the menu bar has at least one menu.
+    pub fn open_first_menu(&mut self) -> bool {
+        self.open_menu_at(0)
     }
 
     pub fn close(&mut self) {
@@ -299,5 +316,35 @@ mod tests {
 
         assert_eq!(menu_bar.last_action.as_deref(), Some("open"));
         assert_eq!(menu_bar.open_menu, None);
+    }
+
+    #[test]
+    fn open_menu_at_opens_by_index_and_rejects_oob() {
+        let mut menu_bar = test_menu_bar();
+        assert!(menu_bar.open_menu.is_none());
+
+        assert!(menu_bar.open_menu_at(1));
+        assert_eq!(menu_bar.open_menu, Some(1));
+        assert_eq!(menu_bar.hovered_menu, Some(1));
+        assert!(menu_bar.hovered_item.is_none());
+
+        assert!(!menu_bar.open_menu_at(99));
+        // Invalid index leaves the previously open menu alone.
+        assert_eq!(menu_bar.open_menu, Some(1));
+
+        assert!(menu_bar.open_menu_at(0));
+        assert_eq!(menu_bar.open_menu, Some(0));
+    }
+
+    #[test]
+    fn open_first_menu_opens_index_zero() {
+        let mut menu_bar = test_menu_bar();
+        assert!(menu_bar.open_first_menu());
+        assert_eq!(menu_bar.open_menu, Some(0));
+        assert_eq!(menu_bar.hovered_menu, Some(0));
+
+        let mut empty = MenuBar::new(vec![]);
+        assert!(!empty.open_first_menu());
+        assert!(empty.open_menu.is_none());
     }
 }
