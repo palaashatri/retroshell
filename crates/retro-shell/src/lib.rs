@@ -1,4 +1,5 @@
 pub mod application_registry;
+pub mod atspi_bus;
 pub mod audio;
 pub mod capture;
 pub mod chrome_protocol;
@@ -8,6 +9,7 @@ pub mod fdo_notifications;
 pub mod foreign_toplevel;
 pub mod foreign_toplevel_client;
 pub mod layer_shell_client;
+pub mod keyboard_nav;
 pub mod launch_services;
 pub mod menu_server;
 pub mod network_connect;
@@ -25,6 +27,11 @@ pub mod window_manager;
 pub mod workspace_manager;
 
 pub use application_registry::ApplicationRegistry;
+pub use atspi_bus::{
+    atspi_dbus_connection_available, chrome_focus_atspi_path, drain_in_process_events,
+    emit_chrome_focus, in_process_event_count, serialize_chrome_focus_for_dbus,
+    try_emit_accessible_event, EmitAccessibleResult,
+};
 pub use audio::{get_volume, set_volume};
 pub use capture::{start_recording, stop_recording, take_screenshot};
 pub use chrome_protocol::{
@@ -40,6 +47,9 @@ pub use foreign_toplevel::{
 pub use foreign_toplevel_client::{
     apply_foreign_toplevel_list_event, apply_foreign_toplevel_list_events,
     try_sync_foreign_toplevels, ForeignToplevelListEvent,
+};
+pub use keyboard_nav::{
+    apply_chrome_nav, is_dismissable_window_title, keyboard_nav_intent, KeyboardNavIntent,
 };
 pub use layer_shell_client::{
     chrome_to_layer_shell_requests, layer_shell_bind_summary, try_map_layer_shell_chrome,
@@ -2189,15 +2199,57 @@ impl Widget for ShellDesktop {
         }
 
         if let Event::KeyDown { key, modifiers } = event {
-            // Plain Tab: cycle keyboard chrome focus (menu → desktop → windows → dock).
-            if !modifiers.meta
-                && !modifiers.control
-                && !modifiers.alt
-                && *key == retro_kit::event::KeyCode::Tab
-            {
-                self.chrome_focus = next_chrome_focus(self.chrome_focus);
-                tracing::debug!(focus = ?self.chrome_focus, "chrome keyboard focus advanced");
-                return EventResult::Handled;
+            // Unified keyboard-only nav policy (Tab / Shift+Tab / Escape / Enter).
+            let key_name = match key {
+                retro_kit::event::KeyCode::Tab => "tab",
+                retro_kit::event::KeyCode::Escape => "escape",
+                retro_kit::event::KeyCode::Enter => "enter",
+                retro_kit::event::KeyCode::Space => "space",
+                _ => "",
+            };
+            if !key_name.is_empty() {
+                if let Some(intent) = keyboard_nav_intent(
+                    key_name,
+                    modifiers.shift,
+                    modifiers.meta,
+                    modifiers.control,
+                    modifiers.alt,
+                ) {
+                    match intent {
+                        KeyboardNavIntent::NextChromeRegion
+                        | KeyboardNavIntent::PrevChromeRegion => {
+                            self.chrome_focus = apply_chrome_nav(self.chrome_focus, intent);
+                            // Best-effort AT-SPI Focus: in-process always; D-Bus if registered.
+                            let emit = crate::atspi_bus::emit_chrome_focus(self.chrome_focus);
+                            tracing::debug!(
+                                focus = ?self.chrome_focus,
+                                ?intent,
+                                dbus = emit.dbus_emitted,
+                                "chrome focus"
+                            );
+                            return EventResult::Handled;
+                        }
+                        KeyboardNavIntent::Dismiss => {
+                            // Close topmost dismissable transient window.
+                            if let Some(id) = self
+                                .windows
+                                .iter()
+                                .rev()
+                                .find(|w| is_dismissable_window_title(w.window.title()))
+                                .map(|w| w.id)
+                            {
+                                self.close_window(id);
+                                return EventResult::Handled;
+                            }
+                        }
+                        KeyboardNavIntent::Activate => {
+                            // Enter on Force Quit list is handled by window widgets below.
+                        }
+                        KeyboardNavIntent::NextWindow => {
+                            // fall through to Meta+Tab block
+                        }
+                    }
+                }
             }
             // Cmd+Tab: cycle focus through non-minimized windows on the active workspace
             if modifiers.meta && *key == retro_kit::event::KeyCode::Tab {

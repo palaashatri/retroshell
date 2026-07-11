@@ -87,6 +87,14 @@ pub fn session_mode_summary(kind: CompositorBackendKind) -> String {
     }
 }
 
+/// Combined honest session note: backend kind + output scale policy.
+///
+/// Scale is pure compositor policy (logical→physical). Nested X11 may still
+/// present a 1:1 framebuffer until the backend applies buffer scale.
+pub fn session_mode_note(kind: CompositorBackendKind, scale: OutputScale) -> String {
+    format!("{}; {}", session_mode_summary(kind), output_scale_summary(scale))
+}
+
 pub const DEFAULT_OUTPUT_W: i32 = 1024;
 pub const DEFAULT_OUTPUT_H: i32 = 768;
 pub const DEFAULT_WINDOW_W: i32 = 640;
@@ -532,6 +540,197 @@ pub fn outputs_from_env_values(
         }
     }
     vec![OutputConfig::from_env_values(width, height)]
+}
+
+// ---------------------------------------------------------------------------
+// HiDPI / output scale (pure policy)
+// ---------------------------------------------------------------------------
+
+/// Fractional output scale as a reduced rational (Wayland-style buffer scale).
+///
+/// Examples: 1× → `1/1`, 2× → `2/1`, 1.5× → `3/2`. Pure value type — no I/O.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct OutputScale {
+    pub numerator: u32,
+    pub denominator: u32,
+}
+
+impl Default for OutputScale {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl OutputScale {
+    /// 1× scale (no HiDPI).
+    pub const IDENTITY: Self = Self {
+        numerator: 1,
+        denominator: 1,
+    };
+
+    /// Construct a scale if both parts are non-zero; reduces by GCD.
+    pub fn new(numerator: u32, denominator: u32) -> Option<Self> {
+        if numerator == 0 || denominator == 0 {
+            return None;
+        }
+        Some(Self {
+            numerator,
+            denominator,
+        }
+        .reduced())
+    }
+
+    /// Floating-point scale factor (`numerator / denominator`).
+    pub fn as_f64(self) -> f64 {
+        self.numerator as f64 / self.denominator as f64
+    }
+
+    /// Pure env parse: `Some("2")` / `Some("1.5")` / `Some("3/2")` → scale;
+    /// unset / empty / invalid → `None` (caller uses [`OutputScale::IDENTITY`]).
+    pub fn from_env_value(value: Option<&str>) -> Option<Self> {
+        let value = value?.trim();
+        if value.is_empty() {
+            return None;
+        }
+        parse_output_scale(value)
+    }
+
+    /// Reduce by greatest common divisor (always non-zero parts).
+    pub fn reduced(self) -> Self {
+        let g = gcd_u32(self.numerator, self.denominator);
+        Self {
+            numerator: self.numerator / g,
+            denominator: self.denominator / g,
+        }
+    }
+
+    /// True when scale is exactly 1×.
+    pub fn is_identity(self) -> bool {
+        self.reduced() == Self::IDENTITY
+    }
+}
+
+/// Parse an output scale string.
+///
+/// Accepted forms:
+/// - integer: `"2"` → 2/1
+/// - decimal: `"1.5"` → 3/2 (up to 3 fractional digits, reduced)
+/// - fraction: `"3/2"` → 3/2
+///
+/// Rejects empty, non-positive, zero denominator, and non-finite values.
+pub fn parse_output_scale(raw: &str) -> Option<OutputScale> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    if let Some((num_s, den_s)) = s.split_once('/') {
+        let num: u32 = num_s.trim().parse().ok()?;
+        let den: u32 = den_s.trim().parse().ok()?;
+        return OutputScale::new(num, den);
+    }
+
+    // Integer without decimal point.
+    if !s.contains('.') {
+        let n: u32 = s.parse().ok()?;
+        return OutputScale::new(n, 1);
+    }
+
+    // Decimal: convert via fixed-point (max 3 fractional digits) then reduce.
+    let v: f64 = s.parse().ok()?;
+    if !v.is_finite() || v <= 0.0 {
+        return None;
+    }
+    // Cap to a sane compositor range (Wayland scale is typically ≤ 8).
+    if v > 64.0 {
+        return None;
+    }
+    const PLACE: u32 = 1000;
+    let num = (v * f64::from(PLACE)).round();
+    if num <= 0.0 || num > f64::from(u32::MAX) {
+        return None;
+    }
+    OutputScale::new(num as u32, PLACE)
+}
+
+/// Read `RETROSHELL_OUTPUT_SCALE` (e.g. `2`, `1.5`, `3/2`).
+///
+/// Returns `None` when unset or invalid so callers can default to 1×.
+pub fn detect_output_scale_from_env() -> Option<OutputScale> {
+    OutputScale::from_env_value(std::env::var("RETROSHELL_OUTPUT_SCALE").ok().as_deref())
+}
+
+/// Scale a logical size to physical pixels (ceil, never undersized).
+///
+/// `physical = ceil(logical * numerator / denominator)`.
+pub fn scale_logical_to_physical(size: (i32, i32), scale: OutputScale) -> (i32, i32) {
+    (
+        scale_dim_logical_to_physical(size.0, scale),
+        scale_dim_logical_to_physical(size.1, scale),
+    )
+}
+
+/// Scale a physical size to logical coordinates (floor).
+///
+/// `logical = floor(physical * denominator / numerator)`.
+pub fn scale_physical_to_logical(size: (i32, i32), scale: OutputScale) -> (i32, i32) {
+    (
+        scale_dim_physical_to_logical(size.0, scale),
+        scale_dim_physical_to_logical(size.1, scale),
+    )
+}
+
+/// Apply scale to an [`OutputConfig`] treated as **logical** dimensions.
+///
+/// Returns physical width/height for framebuffer / buffer allocation. Pure:
+/// does not mutate global state or store scale on the config (config remains a
+/// size only). Identity scale is a no-op.
+pub fn apply_scale_to_output_config(cfg: OutputConfig, scale: OutputScale) -> OutputConfig {
+    let (width, height) = scale_logical_to_physical((cfg.width, cfg.height), scale);
+    OutputConfig {
+        width: width.max(1),
+        height: height.max(1),
+    }
+}
+
+/// One-line log label for output scale policy.
+pub fn output_scale_summary(scale: OutputScale) -> String {
+    let s = scale.reduced();
+    format!(
+        "output_scale={}/{} ({:.2}x)",
+        s.numerator,
+        s.denominator,
+        s.as_f64()
+    )
+}
+
+fn scale_dim_logical_to_physical(logical: i32, scale: OutputScale) -> i32 {
+    if logical <= 0 {
+        return logical.min(0);
+    }
+    let num = i64::from(scale.numerator);
+    let den = i64::from(scale.denominator).max(1);
+    let v = (i64::from(logical) * num + den - 1) / den;
+    i32::try_from(v).unwrap_or(i32::MAX).max(1)
+}
+
+fn scale_dim_physical_to_logical(physical: i32, scale: OutputScale) -> i32 {
+    if physical <= 0 {
+        return physical.min(0);
+    }
+    let num = i64::from(scale.numerator).max(1);
+    let den = i64::from(scale.denominator);
+    let v = (i64::from(physical) * den) / num;
+    i32::try_from(v).unwrap_or(i32::MAX).max(0)
+}
+
+fn gcd_u32(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a.max(1)
 }
 
 /// Compositor display policy (HDR / VRR / refresh / color space).
@@ -1220,6 +1419,195 @@ mod tests {
         let labwc = session_mode_summary(CompositorBackendKind::LabwcFallback);
         assert!(labwc.contains("labwc"));
         assert!(labwc.contains("fallback") || labwc.contains("not retro-compositor"));
+    }
+
+    #[test]
+    fn parse_output_scale_integer_fraction_decimal() {
+        assert_eq!(
+            parse_output_scale("2"),
+            Some(OutputScale {
+                numerator: 2,
+                denominator: 1
+            })
+        );
+        assert_eq!(
+            parse_output_scale("1"),
+            Some(OutputScale {
+                numerator: 1,
+                denominator: 1
+            })
+        );
+        assert_eq!(
+            parse_output_scale("3/2"),
+            Some(OutputScale {
+                numerator: 3,
+                denominator: 2
+            })
+        );
+        assert_eq!(
+            parse_output_scale(" 4 / 2 "),
+            Some(OutputScale {
+                numerator: 2,
+                denominator: 1
+            })
+        );
+        assert_eq!(
+            parse_output_scale("1.5"),
+            Some(OutputScale {
+                numerator: 3,
+                denominator: 2
+            })
+        );
+        assert_eq!(
+            parse_output_scale("1.25"),
+            Some(OutputScale {
+                numerator: 5,
+                denominator: 4
+            })
+        );
+        assert_eq!(
+            parse_output_scale("2.0"),
+            Some(OutputScale {
+                numerator: 2,
+                denominator: 1
+            })
+        );
+    }
+
+    #[test]
+    fn parse_output_scale_rejects_invalid() {
+        assert_eq!(parse_output_scale(""), None);
+        assert_eq!(parse_output_scale("   "), None);
+        assert_eq!(parse_output_scale("0"), None);
+        assert_eq!(parse_output_scale("0/1"), None);
+        assert_eq!(parse_output_scale("1/0"), None);
+        assert_eq!(parse_output_scale("-1"), None);
+        assert_eq!(parse_output_scale("nope"), None);
+        assert_eq!(parse_output_scale("1.5.0"), None);
+        // Integer path allows any positive u32
+        assert_eq!(
+            parse_output_scale("8"),
+            Some(OutputScale {
+                numerator: 8,
+                denominator: 1
+            })
+        );
+        // Decimal above 64 rejected; bare integer "100" still accepted
+        assert_eq!(parse_output_scale("65.0"), None);
+        assert_eq!(
+            parse_output_scale("100"),
+            Some(OutputScale {
+                numerator: 100,
+                denominator: 1
+            })
+        );
+    }
+
+    #[test]
+    fn output_scale_as_f64_and_from_env_value() {
+        let s = OutputScale::new(3, 2).unwrap();
+        assert!((s.as_f64() - 1.5).abs() < 1e-9);
+        assert!(OutputScale::IDENTITY.is_identity());
+        assert!(!s.is_identity());
+
+        assert_eq!(
+            OutputScale::from_env_value(Some("2")),
+            Some(OutputScale {
+                numerator: 2,
+                denominator: 1
+            })
+        );
+        assert_eq!(
+            OutputScale::from_env_value(Some("1.5")),
+            Some(OutputScale {
+                numerator: 3,
+                denominator: 2
+            })
+        );
+        assert_eq!(
+            OutputScale::from_env_value(Some("3/2")),
+            Some(OutputScale {
+                numerator: 3,
+                denominator: 2
+            })
+        );
+        assert_eq!(OutputScale::from_env_value(None), None);
+        assert_eq!(OutputScale::from_env_value(Some("")), None);
+        assert_eq!(OutputScale::from_env_value(Some("  ")), None);
+        assert_eq!(OutputScale::from_env_value(Some("bogus")), None);
+    }
+
+    #[test]
+    fn scale_logical_to_physical_and_back() {
+        let two = OutputScale::new(2, 1).unwrap();
+        assert_eq!(scale_logical_to_physical((100, 50), two), (200, 100));
+        assert_eq!(scale_physical_to_logical((200, 100), two), (100, 50));
+
+        let half_extra = OutputScale::new(3, 2).unwrap(); // 1.5×
+        assert_eq!(scale_logical_to_physical((100, 50), half_extra), (150, 75));
+        assert_eq!(scale_physical_to_logical((150, 75), half_extra), (100, 50));
+
+        // Ceil on odd logical under 1.5×: ceil(101 * 3 / 2) = ceil(151.5) = 152
+        assert_eq!(scale_logical_to_physical((101, 1), half_extra), (152, 2));
+
+        let id = OutputScale::IDENTITY;
+        assert_eq!(scale_logical_to_physical((1024, 768), id), (1024, 768));
+        assert_eq!(scale_physical_to_logical((1024, 768), id), (1024, 768));
+    }
+
+    #[test]
+    fn apply_scale_to_output_config_physical_size() {
+        let cfg = OutputConfig {
+            width: 1024,
+            height: 768,
+        };
+        assert_eq!(
+            apply_scale_to_output_config(cfg, OutputScale::IDENTITY),
+            cfg
+        );
+        assert_eq!(
+            apply_scale_to_output_config(cfg, OutputScale::new(2, 1).unwrap()),
+            OutputConfig {
+                width: 2048,
+                height: 1536
+            }
+        );
+        assert_eq!(
+            apply_scale_to_output_config(cfg, OutputScale::new(3, 2).unwrap()),
+            OutputConfig {
+                width: 1536,
+                height: 1152
+            }
+        );
+        // Pure: original cfg unchanged semantics (Copy; re-check identity)
+        assert_eq!(cfg.width, 1024);
+    }
+
+    #[test]
+    fn output_scale_summary_and_session_mode_note() {
+        let scale = OutputScale::new(3, 2).unwrap();
+        let sum = output_scale_summary(scale);
+        assert!(sum.contains("output_scale=3/2"));
+        assert!(sum.contains("1.50") || sum.contains("1.5"));
+
+        let note = session_mode_note(CompositorBackendKind::NestedX11, scale);
+        assert!(note.contains("nested_x11"));
+        assert!(note.contains("output_scale=3/2"));
+        assert!(note.contains("session_mode="));
+
+        let drm_note = session_mode_note(
+            CompositorBackendKind::SessionDrm,
+            OutputScale::new(2, 1).unwrap(),
+        );
+        assert!(drm_note.contains("session_drm"));
+        assert!(drm_note.contains("2/1"));
+    }
+
+    #[test]
+    fn scale_zero_and_negative_dims_do_not_inflate() {
+        let two = OutputScale::new(2, 1).unwrap();
+        assert_eq!(scale_logical_to_physical((0, 0), two), (0, 0));
+        assert_eq!(scale_logical_to_physical((-4, 10), two), (0.min(-4), 20));
     }
 
     #[test]

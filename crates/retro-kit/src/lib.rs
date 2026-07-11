@@ -28,16 +28,19 @@ pub mod window;
 pub mod workspace_grid_view;
 
 pub use accessibility::{
-    actions_for_role, at_spi_registration_info, atspi_object_path, atspi_object_path_with_label,
-    chrome_focus_indices, default_accessibility_tree, flat_index_from_atspi_path, focus_changed,
-    focusable_indices, interfaces_for_role, next_chrome_focus_index, next_chrome_focus_region,
-    prev_chrome_focus_region, register_at_spi_app, register_at_spi_app_with_tree,
-    register_at_spi_shell_chrome, role_has_actions, role_to_atspi_role, sanitize_path_segment,
-    shell_chrome_accessibility_tree, state_to_atspi_bitset, AccessibleAction, AccessibleEvent,
-    AccessibleEventKind, AccessibilityEventBus, AccessibilityNode, AccessibilityRole,
-    AccessibilityState, AccessibilityTree, AtSpiRegistrationInfo, ChromeFocusRegion, EventQueue,
-    ACTION_ACTIVATE, ACTION_FOCUS, ACTION_PRESS, ATSPI_ACCESSIBLE_IFACE, ATSPI_ACCESSIBLE_PREFIX,
-    ATSPI_ACTION_IFACE, ATSPI_APPLICATION_IFACE, ATSPI_NULL_PATH, ATSPI_ROOT_PATH,
+    actions_for_role, at_spi_connection_available, at_spi_registration_info, atspi_object_path,
+    atspi_object_path_with_label, chrome_focus_indices, default_accessibility_tree,
+    flat_index_from_atspi_path, focus_changed, focusable_indices, interfaces_for_role,
+    next_chrome_focus_index, next_chrome_focus_region, prev_chrome_focus_region,
+    register_at_spi_app, register_at_spi_app_with_tree, register_at_spi_shell_chrome,
+    role_has_actions, role_to_atspi_role, sanitize_path_segment, serialize_event_for_dbus,
+    shell_chrome_accessibility_tree, state_to_atspi_bitset, try_emit_atspi_dbus_event,
+    AccessibleAction, AccessibleEvent, AccessibleEventKind, AccessibilityEventBus,
+    AccessibilityNode, AccessibilityRole, AccessibilityState, AccessibilityTree,
+    AtSpiRegistrationInfo, ChromeFocusRegion, EventQueue, SerializedAtspiEvent, ACTION_ACTIVATE,
+    ACTION_FOCUS, ACTION_PRESS, ATSPI_ACCESSIBLE_IFACE, ATSPI_ACCESSIBLE_PREFIX, ATSPI_ACTION_IFACE,
+    ATSPI_APPLICATION_IFACE, ATSPI_EVENT_FOCUS_IFACE, ATSPI_EVENT_OBJECT_IFACE, ATSPI_NULL_PATH,
+    ATSPI_ROOT_PATH,
 };
 pub use button::Button;
 pub use clipboard::Clipboard;

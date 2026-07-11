@@ -30,11 +30,13 @@ mod linux {
     use std::time::Duration;
 
     use retro_compositor::{
-        cascade_position, detect_dri3_from_env, layout_outputs_side_by_side, move_to_top,
-        next_cascade_offset, outputs_from_env, select_backend_kind, selection_bytes_for_mime_with_text_fallback,
-        session_mode_summary, text_input_capability_from_env, text_input_capability_summary,
-        topmost_window_at, total_output_size, CompositorBackendKind, DisplayPolicy,
-        TextInputCapability, WindowGeometry, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+        apply_scale_to_output_config, cascade_position, detect_dri3_from_env,
+        detect_output_scale_from_env, layout_outputs_side_by_side, move_to_top, next_cascade_offset,
+        output_scale_summary, outputs_from_env, select_backend_kind,
+        selection_bytes_for_mime_with_text_fallback, session_mode_note, session_mode_summary,
+        text_input_capability_from_env, text_input_capability_summary, topmost_window_at,
+        total_output_size, CompositorBackendKind, DisplayPolicy, OutputScale, TextInputCapability,
+        WindowGeometry, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
     };
     use retro_compositor::frame_timing::{FrameScheduler, RefreshRate};
     use retro_compositor::hdr::HdrCapabilities;
@@ -67,7 +69,7 @@ mod linux {
             pointer::{ButtonEvent, CursorImageStatus, MotionEvent},
             Seat, SeatHandler, SeatState,
         },
-        output::{Mode, Output, PhysicalProperties, Subpixel},
+        output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
         reexports::{
             calloop::{EventLoop, LoopHandle, LoopSignal},
             wayland_server::{
@@ -1319,13 +1321,20 @@ mod linux {
     }
 
     /// Create one or more wl_output globals laid out side-by-side.
+    ///
+    /// `scale` is advertised on each output (HiDPI). Mode sizes stay logical
+    /// width×height from config; scale is the wl_output scale factor.
     fn create_outputs(
         display_handle: &DisplayHandle,
         configs: &[retro_compositor::OutputConfig],
         refresh_mhz: i32,
+        scale: OutputScale,
     ) -> (Vec<Output>, Size<i32, Physical>) {
+        let scale_i32 = scale.as_f64().round().max(1.0) as i32;
         let laid_out = layout_outputs_side_by_side(configs);
         let total = total_output_size(&laid_out);
+        // Physical canvas size for the nested X11 window (logical × scale).
+        let total_phys = apply_scale_to_output_config(total, scale);
         let mut outputs = Vec::with_capacity(laid_out.len());
 
         for (i, o) in laid_out.iter().enumerate() {
@@ -1346,24 +1355,26 @@ mod linux {
             output.change_current_state(
                 Some(mode),
                 Some(Transform::Normal),
-                None,
+                Some(Scale::Integer(scale_i32)),
                 Some((o.x, o.y).into()),
             );
             output.set_preferred(mode);
             output.create_global::<RetroCompositor>(display_handle);
             tracing::info!(
-                "wl_output {} {}x{} at ({},{}) refresh={} mHz",
+                "wl_output {} {}x{} at ({},{}) refresh={} mHz {}",
                 i + 1,
                 o.config.width,
                 o.config.height,
                 o.x,
                 o.y,
-                refresh_mhz
+                refresh_mhz,
+                output_scale_summary(scale)
             );
             outputs.push(output);
         }
 
-        let output_size = Size::<i32, Physical>::from((total.width, total.height));
+        let output_size =
+            Size::<i32, Physical>::from((total_phys.width, total_phys.height));
         (outputs, output_size)
     }
 
@@ -1592,16 +1603,22 @@ mod linux {
         seat.add_keyboard(XkbConfig::default(), 200, 25)?;
         seat.add_pointer();
 
-        // ---- Outputs (P1.2 multi-output) ----
+        // ---- Outputs (P1.2 multi-output) + HiDPI scale ----
+        let output_scale = detect_output_scale_from_env().unwrap_or(OutputScale::IDENTITY);
+        eprintln!(
+            "[retro-compositor] {}",
+            session_mode_note(backend_kind, output_scale)
+        );
         let output_configs = outputs_from_env();
         let (outputs, output_size) =
-            create_outputs(&display_handle, &output_configs, refresh_mhz);
-        if output_configs.len() > 1 {
+            create_outputs(&display_handle, &output_configs, refresh_mhz, output_scale);
+        if output_configs.len() > 1 || !output_scale.is_identity() {
             eprintln!(
-                "[retro-compositor] multi-output: {} heads, canvas {}x{}",
+                "[retro-compositor] multi-output/scale: {} heads, canvas {}x{} {}",
                 output_configs.len(),
                 output_size.w,
-                output_size.h
+                output_size.h,
+                output_scale_summary(output_scale)
             );
         }
 

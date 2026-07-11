@@ -6,13 +6,18 @@
 //! - `org.a11y.atspi.Action` on actionable roles (Activate / Press / Focus)
 //! - Pure keyboard chrome focus-order policy (menu bar → desktop icons → dock)
 //! - Session / a11y-bus registration with best-effort registry `Socket.Embed`
+//! - Pure [`serialize_event_for_dbus`] + best-effort D-Bus signal emission via
+//!   [`try_emit_atspi_dbus_event`] when registration holds a connection
+//! - In-process [`AccessibilityEventBus`] always works (tests + toolkit path)
 //!
 //! # Orca-incomplete (honest — do not claim “Orca complete”)
-//! - **No D-Bus AT-SPI event emission**: an in-process [`AccessibilityEventBus`]
-//!   queues Focus / StateChanged / etc. for toolkit + tests, but those events are
-//!   **not** yet signalled on the atspi bus (`org.a11y.atspi.Event.Object`, …).
+//! - **D-Bus event emission is best-effort only**: may fail without an AT-SPI
+//!   registry / a11y bus / prior [`register_at_spi_app_with_tree`]. In-process
+//!   queue always succeeds. Orca may still miss events if registry Embed failed
+//!   or listeners never attached.
 //! - **No live tree re-export**: the D-Bus tree is snapshotted at register time;
-//!   focus/selection changes update pure helpers only until re-register/sync lands.
+//!   focus/selection changes update pure helpers + optional signals only until
+//!   re-register/sync lands.
 //! - **No `org.a11y.atspi.Text` / `EditableText`**: text fields export role + Focus
 //!   only; Orca cannot read caret, selection, or typed content via AT-SPI.
 //! - **No `org.a11y.atspi.Component`**: extents / window coords are not on the bus.
@@ -65,6 +70,12 @@ pub const ATSPI_ACCESSIBLE_IFACE: &str = "org.a11y.atspi.Accessible";
 
 /// Interface name for the application root.
 pub const ATSPI_APPLICATION_IFACE: &str = "org.a11y.atspi.Application";
+
+/// AT-SPI Object event interface (`StateChanged`, `BoundsChanged`, …).
+pub const ATSPI_EVENT_OBJECT_IFACE: &str = "org.a11y.atspi.Event.Object";
+
+/// AT-SPI Focus event interface (signal `Focus`).
+pub const ATSPI_EVENT_FOCUS_IFACE: &str = "org.a11y.atspi.Event.Focus";
 
 /// Build the D-Bus object path for the Nth flat accessibility-tree node.
 ///
@@ -532,13 +543,13 @@ pub fn focusable_indices(tree: &AccessibilityTree) -> Vec<usize> {
 }
 
 // ---------------------------------------------------------------------------
-// In-process AT-SPI-shaped events (pure — not yet on the D-Bus atspi bus)
+// In-process AT-SPI-shaped events + pure D-Bus serialization
 // ---------------------------------------------------------------------------
 
 /// Kind of accessibility event mirrored after common AT-SPI Object / Focus events.
 ///
-/// Names are toolkit-facing; mapping onto exact `org.a11y.atspi.Event.*` signal
-/// names happens only when D-Bus emission is wired (not yet).
+/// Toolkit-facing tags; use [`serialize_event_for_dbus`] for exact
+/// `org.a11y.atspi.Event.*` interface / member names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AccessibleEventKind {
     /// Keyboard / AT focus moved to (or left) an accessible.
@@ -556,7 +567,7 @@ pub enum AccessibleEventKind {
 }
 
 impl AccessibleEventKind {
-    /// Stable string tag for tests and future D-Bus signal naming.
+    /// Stable string tag for tests and logs (not always the D-Bus member name).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Focus => "Focus",
@@ -566,6 +577,98 @@ impl AccessibleEventKind {
             Self::ObjectCreated => "ObjectCreated",
             Self::ObjectDestroyed => "ObjectDestroyed",
         }
+    }
+}
+
+/// Pure D-Bus signal fields for an AT-SPI accessibility event.
+///
+/// Body layout matches the AT-SPI2 event tuple `(s, i, i, …)` detail fields as
+/// plain strings / `i32`s — no zvariant dependency on the pure path. Full bus
+/// emission wraps `any_data` as a D-Bus variant and appends an empty properties
+/// dict (`a{sv}`) in [`try_emit_atspi_dbus_event`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SerializedAtspiEvent {
+    /// D-Bus interface, e.g. `org.a11y.atspi.Event.Object`.
+    pub interface: &'static str,
+    /// Signal member name, e.g. `StateChanged` or `Focus`.
+    pub member: &'static str,
+    /// Object path of the emitting accessible.
+    pub path: String,
+    /// String detail (state name, ChildrenChanged "add"/"remove", …).
+    pub detail: String,
+    pub detail1: i32,
+    pub detail2: i32,
+    /// Free-form string payload (serialized as D-Bus variant on emit).
+    pub any_data: String,
+}
+
+/// Map a pure [`AccessibleEvent`] to AT-SPI D-Bus signal coordinates.
+///
+/// Pure helper — does **not** touch D-Bus. Emission is separate and best-effort.
+///
+/// # Mapping notes
+/// - `Focus` → `org.a11y.atspi.Event.Focus` / `Focus`
+/// - `StateChanged` → `Event.Object` / `StateChanged` (`detail` = state name)
+/// - `BoundsChanged` / `ActiveDescendantChanged` → matching `Event.Object` members
+/// - `ObjectCreated` / `ObjectDestroyed` → `ChildrenChanged` with `detail` `add`/`remove`
+///   (AT-SPI has no Create/Destroy object signals)
+pub fn serialize_event_for_dbus(event: &AccessibleEvent) -> SerializedAtspiEvent {
+    match event.kind {
+        AccessibleEventKind::Focus => SerializedAtspiEvent {
+            interface: ATSPI_EVENT_FOCUS_IFACE,
+            member: "Focus",
+            path: event.path.clone(),
+            detail: String::new(),
+            detail1: event.detail1,
+            detail2: event.detail2,
+            any_data: event.any_data.clone(),
+        },
+        AccessibleEventKind::StateChanged => SerializedAtspiEvent {
+            interface: ATSPI_EVENT_OBJECT_IFACE,
+            member: "StateChanged",
+            path: event.path.clone(),
+            // AT-SPI puts the state name in the detail string field.
+            detail: event.any_data.clone(),
+            detail1: event.detail1,
+            detail2: event.detail2,
+            any_data: String::new(),
+        },
+        AccessibleEventKind::BoundsChanged => SerializedAtspiEvent {
+            interface: ATSPI_EVENT_OBJECT_IFACE,
+            member: "BoundsChanged",
+            path: event.path.clone(),
+            detail: String::new(),
+            detail1: event.detail1,
+            detail2: event.detail2,
+            any_data: event.any_data.clone(),
+        },
+        AccessibleEventKind::ActiveDescendantChanged => SerializedAtspiEvent {
+            interface: ATSPI_EVENT_OBJECT_IFACE,
+            member: "ActiveDescendantChanged",
+            path: event.path.clone(),
+            detail: String::new(),
+            detail1: event.detail1,
+            detail2: event.detail2,
+            any_data: event.any_data.clone(),
+        },
+        AccessibleEventKind::ObjectCreated => SerializedAtspiEvent {
+            interface: ATSPI_EVENT_OBJECT_IFACE,
+            member: "ChildrenChanged",
+            path: event.path.clone(),
+            detail: "add".to_string(),
+            detail1: event.detail1,
+            detail2: event.detail2,
+            any_data: event.any_data.clone(),
+        },
+        AccessibleEventKind::ObjectDestroyed => SerializedAtspiEvent {
+            interface: ATSPI_EVENT_OBJECT_IFACE,
+            member: "ChildrenChanged",
+            path: event.path.clone(),
+            detail: "remove".to_string(),
+            detail1: event.detail1,
+            detail2: event.detail2,
+            any_data: event.any_data.clone(),
+        },
     }
 }
 
@@ -659,13 +762,15 @@ impl AccessibleEvent {
 
 /// Pure in-process event queue for accessibility notifications.
 ///
-/// # Honest limitation — D-Bus not wired
+/// # Honest split: in-process vs D-Bus
 ///
-/// This bus is **in-process only**. Pushing events does **not** emit AT-SPI D-Bus
-/// signals on the accessibility bus (`org.a11y.atspi.Event.Object`,
-/// `org.a11y.atspi.Event.Focus`, registry listeners, etc.). Orca and other remote
-/// ATs will not see these until emission is connected to the atspi bus. Use this
-/// type for toolkit-side consumers and unit tests of event policy.
+/// Pushing here **always** works in-process. It does **not** by itself emit
+/// AT-SPI D-Bus signals. For best-effort bus emission (when registration holds
+/// a connection), use [`try_emit_atspi_dbus_event`] or the shell
+/// `atspi_bus` wrapper that queues here **and** tries D-Bus.
+///
+/// Without an AT-SPI registry / session bus, D-Bus emission fails silently and
+/// only this queue retains events. Orca will not see in-process-only events.
 ///
 /// Alias-style name: callers may also think of this as an `EventQueue`.
 #[derive(Debug, Default, Clone)]
@@ -768,10 +873,77 @@ pub fn flat_index_from_atspi_path(path: &str) -> Option<usize> {
 
 /// Free helper: push a Focus event onto `bus` for `path`.
 ///
-/// Same as [`AccessibilityEventBus::focus_changed`]. D-Bus signal emission is
-/// **not** performed.
+/// Same as [`AccessibilityEventBus::focus_changed`]. Does not emit D-Bus;
+/// pair with [`try_emit_atspi_dbus_event`] when a bus connection is desired.
 pub fn focus_changed(bus: &mut AccessibilityEventBus, path: impl Into<String>) {
     bus.focus_changed(path);
+}
+
+/// Best-effort emit of `event` on the process AT-SPI registration connection.
+///
+/// Returns `true` only when a D-Bus signal was successfully sent. Returns
+/// `false` when no registration connection exists (common on macOS CI, or when
+/// session/a11y bus was unavailable at register time), the path is invalid, or
+/// `emit_signal` fails. Callers must still push to an in-process bus if they
+/// need guaranteed local delivery.
+///
+/// # Honest limitation
+/// Registry listeners / Orca may still not receive the signal if Embed failed
+/// or no AT is listening — emission success only means the message left our
+/// connection.
+pub fn try_emit_atspi_dbus_event(event: &AccessibleEvent) -> bool {
+    let serialized = serialize_event_for_dbus(event);
+    let Ok(guard) = REGISTRATION.lock() else {
+        return false;
+    };
+    let Some(reg) = guard.as_ref() else {
+        return false;
+    };
+    emit_serialized_on_connection(&reg.connection, &serialized)
+}
+
+fn emit_serialized_on_connection(conn: &Connection, s: &SerializedAtspiEvent) -> bool {
+    use std::collections::HashMap;
+    use zbus::zvariant::Value;
+
+    // AT-SPI2 event body: s i i v a{sv}
+    let props: HashMap<&str, Value<'_>> = HashMap::new();
+    let body = (
+        s.detail.as_str(),
+        s.detail1,
+        s.detail2,
+        Value::from(s.any_data.as_str()),
+        props,
+    );
+    match conn.emit_signal(
+        None::<&str>,
+        s.path.as_str(),
+        s.interface,
+        s.member,
+        &body,
+    ) {
+        Ok(()) => {
+            tracing::debug!(
+                path = %s.path,
+                interface = s.interface,
+                member = s.member,
+                detail = %s.detail,
+                detail1 = s.detail1,
+                "AT-SPI D-Bus accessibility event emitted"
+            );
+            true
+        }
+        Err(err) => {
+            tracing::debug!(
+                path = %s.path,
+                interface = s.interface,
+                member = s.member,
+                error = %err,
+                "AT-SPI D-Bus accessibility event emit failed (best-effort)"
+            );
+            false
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1067,8 +1239,10 @@ impl AccessibilityTree {
     /// StateChanged focused on/off transitions) onto `bus`.
     ///
     /// # Honest limitation
-    /// Events stay on the in-process [`AccessibilityEventBus`]. They are **not**
-    /// emitted as D-Bus AT-SPI signals yet.
+    /// Events are pushed on the in-process [`AccessibilityEventBus`] only.
+    /// Callers that want best-effort D-Bus emission should also invoke
+    /// [`try_emit_atspi_dbus_event`] (or the shell `atspi_bus` helper) for each
+    /// drained event — this method does not touch the bus connection.
     pub fn focus_changed(&mut self, path: &str, bus: &mut AccessibilityEventBus) {
         let target = flat_index_from_atspi_path(path);
 
@@ -1356,8 +1530,9 @@ impl AtspiAction {
 
 /// Keeps the a11y (or session) bus connection alive for the process lifetime.
 struct AtSpiRegistration {
-    /// Retained so exported objects remain available to ATs.
-    _connection: Connection,
+    /// Retained so exported objects remain available to ATs, and reused for
+    /// best-effort [`try_emit_atspi_dbus_event`] signal emission.
+    connection: Connection,
     app_name: String,
     child_count: usize,
     bus_name: String,
@@ -1610,7 +1785,7 @@ pub fn register_at_spi_app_with_tree(
 
     if let Ok(mut guard) = REGISTRATION.lock() {
         *guard = Some(AtSpiRegistration {
-            _connection: conn,
+            connection: conn,
             app_name: app_name.to_string(),
             child_count: child_paths.len(),
             bus_name,
@@ -1619,6 +1794,17 @@ pub fn register_at_spi_app_with_tree(
     }
 
     Ok(())
+}
+
+/// True when a process-lifetime AT-SPI connection is held (objects may be on bus).
+///
+/// Does not guarantee registry Embed or that ATs are listening.
+pub fn at_spi_connection_available() -> bool {
+    REGISTRATION
+        .lock()
+        .ok()
+        .map(|g| g.is_some())
+        .unwrap_or(false)
 }
 
 fn a11y_bus_address(session: &Connection) -> Result<String, Box<dyn std::error::Error>> {
@@ -1991,6 +2177,74 @@ mod tests {
             AccessibleEventKind::ObjectDestroyed.as_str(),
             "ObjectDestroyed"
         );
+    }
+
+    // ----- Pure D-Bus serialize path ---------------------------------------
+
+    #[test]
+    fn serialize_focus_event_for_dbus() {
+        let path = atspi_object_path(0);
+        let event = AccessibleEvent::focus(&path);
+        let s = serialize_event_for_dbus(&event);
+        assert_eq!(s.interface, ATSPI_EVENT_FOCUS_IFACE);
+        assert_eq!(s.member, "Focus");
+        assert_eq!(s.path, path);
+        assert_eq!(s.detail, "");
+        assert_eq!(s.detail1, 1);
+        assert_eq!(s.detail2, 0);
+        assert_eq!(s.any_data, "");
+    }
+
+    #[test]
+    fn serialize_state_changed_puts_state_name_in_detail() {
+        let path = atspi_object_path(1);
+        let event = AccessibleEvent::state_changed(&path, "focused", true);
+        let s = serialize_event_for_dbus(&event);
+        assert_eq!(s.interface, ATSPI_EVENT_OBJECT_IFACE);
+        assert_eq!(s.member, "StateChanged");
+        assert_eq!(s.path, path);
+        assert_eq!(s.detail, "focused");
+        assert_eq!(s.detail1, 1);
+        assert_eq!(s.detail2, 0);
+        assert_eq!(s.any_data, "");
+    }
+
+    #[test]
+    fn serialize_bounds_and_active_descendant() {
+        let bounds = serialize_event_for_dbus(&AccessibleEvent::bounds_changed("/p"));
+        assert_eq!(bounds.interface, ATSPI_EVENT_OBJECT_IFACE);
+        assert_eq!(bounds.member, "BoundsChanged");
+        assert_eq!(bounds.path, "/p");
+
+        let ad = serialize_event_for_dbus(&AccessibleEvent::active_descendant_changed(
+            "/parent", "/child",
+        ));
+        assert_eq!(ad.member, "ActiveDescendantChanged");
+        assert_eq!(ad.path, "/parent");
+        assert_eq!(ad.any_data, "/child");
+    }
+
+    #[test]
+    fn serialize_object_lifecycle_as_children_changed() {
+        let created = serialize_event_for_dbus(&AccessibleEvent::object_created("/n"));
+        assert_eq!(created.interface, ATSPI_EVENT_OBJECT_IFACE);
+        assert_eq!(created.member, "ChildrenChanged");
+        assert_eq!(created.detail, "add");
+
+        let destroyed = serialize_event_for_dbus(&AccessibleEvent::object_destroyed("/n"));
+        assert_eq!(destroyed.member, "ChildrenChanged");
+        assert_eq!(destroyed.detail, "remove");
+    }
+
+    #[test]
+    fn try_emit_without_registration_returns_false() {
+        // Pure host/CI path: no AT-SPI registration held → no D-Bus emit.
+        // (If some other test registered, availability may be true; still must
+        // not panic. When unavailable, emit is definitively false.)
+        if !at_spi_connection_available() {
+            let event = AccessibleEvent::focus(atspi_object_path(0));
+            assert!(!try_emit_atspi_dbus_event(&event));
+        }
     }
 
     #[test]
