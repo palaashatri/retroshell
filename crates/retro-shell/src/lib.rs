@@ -170,7 +170,8 @@ pub use session_clients::{
 pub use session_manager::SessionManager;
 pub use session_packaging::{
     check_greeter_session_readiness, check_packaging_health, parse_desktop_keys,
-    validate_session_desktop, GreeterSessionReadiness, PackagingHealth, SessionPackagingLayout,
+    session_entry_smoke_report, validate_session_desktop, GreeterSessionReadiness, PackagingHealth,
+    SessionEntrySmokeReport, SessionPackagingLayout,
 };
 pub use session_recovery::{
     recovery_plan, should_attempt_recovery, CheckpointClient, RecoveryStep, SessionCheckpoint,
@@ -687,8 +688,11 @@ impl ShellDesktop {
                     self.toggle_window_minimized(id);
                 }
             }
-            A11yDispatchTarget::ChromeDockMenu | A11yDispatchTarget::ChromeDesktopMenu => {
-                tracing::debug!(invoke_id, "a11y context menu invoke (log-only: no popup yet)");
+            A11yDispatchTarget::ChromeDockMenu => {
+                self.open_dock_context_menu_window();
+            }
+            A11yDispatchTarget::ChromeDesktopMenu => {
+                self.open_desktop_context_menu_window();
             }
             A11yDispatchTarget::MenuAction(action) => {
                 // shell.lock / shell.log_out / shell.notification_center /
@@ -2246,6 +2250,57 @@ impl ShellDesktop {
         lines: impl IntoIterator<Item = String>,
     ) {
         self.open_message_window(title, lines);
+    }
+
+    /// a11y `chrome.dock.menu`: status/context shell window listing dock items.
+    fn open_dock_context_menu_window(&mut self) {
+        const TITLE: &str = "Dock Menu";
+        for window in &self.windows {
+            if window.window.title() == TITLE {
+                self.focus_window(window.id);
+                return;
+            }
+        }
+        let dock = self.dock.read();
+        let mut lines = vec!["Dock items:".to_string()];
+        if dock.items.is_empty() {
+            lines.push("(no dock items)".to_string());
+        } else {
+            for (i, item) in dock.items.iter().enumerate() {
+                let state = format!("{:?}", item.state);
+                lines.push(format!(
+                    "{}. {} [{}] {}",
+                    i + 1,
+                    item.label,
+                    item.app_id,
+                    state
+                ));
+            }
+        }
+        drop(dock);
+        self.open_shell_status_window(TITLE, lines);
+    }
+
+    /// a11y `chrome.desktop.menu`: status/context shell window listing desktop icons.
+    fn open_desktop_context_menu_window(&mut self) {
+        const TITLE: &str = "Desktop Menu";
+        for window in &self.windows {
+            if window.window.title() == TITLE {
+                self.focus_window(window.id);
+                return;
+            }
+        }
+        let mut lines = vec!["Desktop icons:".to_string()];
+        if self.desktop.items.is_empty() {
+            lines.push("(no desktop icons)".to_string());
+        } else {
+            for (i, item) in self.desktop.items.iter().enumerate() {
+                let selected = if item.selected { " [selected]" } else { "" };
+                let icon = item.icon.as_deref().unwrap_or("-");
+                lines.push(format!("{}. {} ({}){}", i + 1, item.label, icon, selected));
+            }
+        }
+        self.open_shell_status_window(TITLE, lines);
     }
 
     fn refresh_active_folder_window(&mut self) {
@@ -4437,6 +4492,80 @@ mod tests {
 
         desktop.dispatch_a11y_invoke("chrome.menu.system");
         assert_eq!(desktop.menu_bar.open_menu, Some(retro_idx));
+    }
+
+    #[test]
+    fn a11y_dispatch_chrome_dock_menu_opens_status_window() {
+        let (mut desktop, _) = test_desktop();
+        assert!(!desktop.dock.read().items.is_empty(), "precondition: dock items");
+
+        desktop.dispatch_a11y_invoke("chrome.dock.menu");
+        assert!(
+            desktop
+                .windows
+                .iter()
+                .any(|w| w.window.title() == "Dock Menu"),
+            "chrome.dock.menu should open a Dock Menu status window"
+        );
+
+        // Second invoke focuses existing window rather than spawning another.
+        let count = desktop
+            .windows
+            .iter()
+            .filter(|w| w.window.title() == "Dock Menu")
+            .count();
+        desktop.dispatch_a11y_invoke("chrome.dock.menu");
+        let count_after = desktop
+            .windows
+            .iter()
+            .filter(|w| w.window.title() == "Dock Menu")
+            .count();
+        assert_eq!(count, count_after);
+        assert_eq!(
+            desktop
+                .windows
+                .last()
+                .map(|w| w.window.title()),
+            Some("Dock Menu")
+        );
+    }
+
+    #[test]
+    fn a11y_dispatch_chrome_desktop_menu_opens_status_window() {
+        let (mut desktop, _) = test_desktop();
+        assert!(
+            !desktop.desktop.items.is_empty(),
+            "precondition: desktop icons"
+        );
+
+        desktop.dispatch_a11y_invoke("chrome.desktop.menu");
+        assert!(
+            desktop
+                .windows
+                .iter()
+                .any(|w| w.window.title() == "Desktop Menu"),
+            "chrome.desktop.menu should open a Desktop Menu status window"
+        );
+
+        let count = desktop
+            .windows
+            .iter()
+            .filter(|w| w.window.title() == "Desktop Menu")
+            .count();
+        desktop.dispatch_a11y_invoke("chrome.desktop.menu");
+        let count_after = desktop
+            .windows
+            .iter()
+            .filter(|w| w.window.title() == "Desktop Menu")
+            .count();
+        assert_eq!(count, count_after);
+        assert_eq!(
+            desktop
+                .windows
+                .last()
+                .map(|w| w.window.title()),
+            Some("Desktop Menu")
+        );
     }
 
     #[test]

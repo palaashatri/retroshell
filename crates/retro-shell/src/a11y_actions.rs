@@ -122,11 +122,11 @@ pub enum A11yDispatchTarget {
     ChromeMenuActivate,
     /// Launch or focus first dock item.
     ChromeDockActivate,
-    /// Dock item context menu (log-only).
+    /// Dock item context menu — opens a status shell window listing dock items.
     ChromeDockMenu,
     /// Open selected desktop icon.
     ChromeDesktopOpen,
-    /// Desktop context menu (log-only).
+    /// Desktop context menu — opens a status shell window listing desktop icons.
     ChromeDesktopMenu,
     /// Focus next non-minimized window on the active workspace.
     ChromeWindowActivateNext,
@@ -150,10 +150,12 @@ impl A11yDispatchTarget {
     /// Whether dispatch runs a real shell side effect (not just a debug log).
     pub fn is_live(&self) -> bool {
         match self {
-            Self::ChromeDockMenu | Self::ChromeDesktopMenu | Self::Unknown => false,
+            Self::Unknown => false,
             Self::ChromeMenuActivate
             | Self::ChromeDockActivate
+            | Self::ChromeDockMenu
             | Self::ChromeDesktopOpen
+            | Self::ChromeDesktopMenu
             | Self::ChromeWindowActivateNext
             | Self::ChromeWindowClose
             | Self::ChromeWindowMinimize
@@ -464,8 +466,8 @@ mod tests {
         assert!(a11y_invoke_is_live("chrome.desktop.open"));
         assert!(a11y_invoke_is_live("chrome.menu.activate"));
         assert!(a11y_invoke_is_live("chrome.menu.system"));
-        assert!(!a11y_invoke_is_live("chrome.dock.menu"));
-        assert!(!a11y_invoke_is_live("chrome.desktop.menu"));
+        assert!(a11y_invoke_is_live("chrome.dock.menu"));
+        assert!(a11y_invoke_is_live("chrome.desktop.menu"));
         assert!(!a11y_invoke_is_live("not.a.real.action"));
     }
 
