@@ -31,8 +31,8 @@ mod linux {
 
     use retro_compositor::{
         apply_scale_to_output_config, cascade_position, detect_dri3_from_env,
-        detect_output_scale_from_env, layout_outputs_side_by_side, move_to_top, next_cascade_offset,
-        output_scale_summary, outputs_from_env, select_backend_kind,
+        detect_output_scale_from_env, layout_mode_from_env, layout_outputs, move_to_top,
+        next_cascade_offset, output_scale_summary, outputs_from_env, select_backend_kind,
         selection_bytes_for_mime_with_text_fallback, session_mode_note, session_mode_summary,
         text_input_capability_from_env, text_input_capability_summary, topmost_window_at,
         total_output_size, CompositorBackendKind, DisplayPolicy, OutputScale, TextInputCapability,
@@ -1331,7 +1331,8 @@ mod linux {
         scale: OutputScale,
     ) -> (Vec<Output>, Size<i32, Physical>) {
         let scale_i32 = scale.as_f64().round().max(1.0) as i32;
-        let laid_out = layout_outputs_side_by_side(configs);
+        let layout_mode = layout_mode_from_env();
+        let laid_out = layout_outputs(configs, layout_mode);
         let total = total_output_size(&laid_out);
         // Physical canvas size for the nested X11 window (logical × scale).
         let total_phys = apply_scale_to_output_config(total, scale);

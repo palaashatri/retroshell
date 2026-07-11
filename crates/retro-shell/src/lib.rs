@@ -24,7 +24,9 @@ pub mod power;
 pub mod session_clients;
 pub mod session_manager;
 pub mod session_packaging;
+pub mod session_recovery;
 pub mod shell_scale;
+pub mod startup_budget;
 pub mod theme_manager;
 pub mod window_manager;
 pub mod workspace_manager;
@@ -107,13 +109,22 @@ pub use session_packaging::{
     check_packaging_health, parse_desktop_keys, validate_session_desktop, PackagingHealth,
     SessionPackagingLayout,
 };
+pub use session_recovery::{
+    recovery_plan, should_attempt_recovery, CheckpointClient, RecoveryStep, SessionCheckpoint,
+};
 pub use shell_scale::{
     detect_shell_scale_from_env, parse_shell_scale, scale_layout_dim, scaled_chrome_insets,
     ShellScale,
 };
+pub use startup_budget::{
+    default_desktop_budget, overall_ok, record_phase, total_elapsed_ms, PhaseResult, StartupBudget,
+    StartupPhase,
+};
 pub use theme_manager::ThemeManager;
 pub use window_manager::WindowManager;
-pub use workspace_manager::WorkspaceManager;
+pub use workspace_manager::{
+    WorkspaceManager, COMPOSITOR_WORKSPACE_COUNT, SHELL_DESKTOP_COUNT,
+};
 
 use parking_lot::RwLock;
 use retro_kit::event::MouseButton;

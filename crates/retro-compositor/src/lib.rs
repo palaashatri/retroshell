@@ -2,6 +2,7 @@
 
 pub mod frame_timing;
 pub mod hdr;
+pub mod perf_budget;
 
 /// DRM/KMS + libseat session path (Linux only). Nested X11 lives in the binary.
 #[cfg(target_os = "linux")]
@@ -443,12 +444,49 @@ impl OutputConfig {
     }
 }
 
-/// One logical output with a compositor-space origin (side-by-side layout).
+/// One logical output with a compositor-space origin.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LaidOutOutput {
     pub config: OutputConfig,
     pub x: i32,
     pub y: i32,
+}
+
+/// Multi-output arrangement policy (pure).
+///
+/// Default is [`OutputLayoutMode::SideBySide`]. Selected via
+/// `RETROSHELL_OUTPUT_LAYOUT` (`side` | `stack` | `grid`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub enum OutputLayoutMode {
+    /// Left-to-right along Y=0 (default).
+    #[default]
+    SideBySide,
+    /// Top-to-bottom along X=0.
+    Stacked,
+    /// Two-column grid: pairs left-to-right per row, then next row.
+    Grid,
+}
+
+/// Parse `RETROSHELL_OUTPUT_LAYOUT` value (`side` | `stack` | `grid`).
+///
+/// Unset, empty, or unrecognised → [`OutputLayoutMode::SideBySide`] (default).
+pub fn parse_layout_mode(value: Option<&str>) -> OutputLayoutMode {
+    let Some(raw) = value else {
+        return OutputLayoutMode::SideBySide;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "side" | "side-by-side" | "side_by_side" | "sbs" | "horizontal" => {
+            OutputLayoutMode::SideBySide
+        }
+        "stack" | "stacked" | "vertical" => OutputLayoutMode::Stacked,
+        "grid" | "2col" | "two-column" | "two_column" => OutputLayoutMode::Grid,
+        _ => OutputLayoutMode::SideBySide,
+    }
+}
+
+/// Read layout mode from `RETROSHELL_OUTPUT_LAYOUT` (default side-by-side).
+pub fn layout_mode_from_env() -> OutputLayoutMode {
+    parse_layout_mode(std::env::var("RETROSHELL_OUTPUT_LAYOUT").ok().as_deref())
 }
 
 /// Parse `RETROSHELL_OUTPUTS=WxH,WxH` (comma-separated). Invalid tokens are skipped.
@@ -483,6 +521,15 @@ pub fn parse_outputs_spec(spec: &str) -> Vec<OutputConfig> {
     out
 }
 
+/// Dispatch layout by [`OutputLayoutMode`].
+pub fn layout_outputs(configs: &[OutputConfig], mode: OutputLayoutMode) -> Vec<LaidOutOutput> {
+    match mode {
+        OutputLayoutMode::SideBySide => layout_outputs_side_by_side(configs),
+        OutputLayoutMode::Stacked => layout_outputs_stacked(configs),
+        OutputLayoutMode::Grid => layout_outputs_grid(configs),
+    }
+}
+
 /// Lay out outputs left-to-right starting at (0,0). Y is always 0 for the simple
 /// side-by-side policy used under the nested X11 backend.
 pub fn layout_outputs_side_by_side(outputs: &[OutputConfig]) -> Vec<LaidOutOutput> {
@@ -495,6 +542,60 @@ pub fn layout_outputs_side_by_side(outputs: &[OutputConfig]) -> Vec<LaidOutOutpu
             y: 0,
         });
         x = x.saturating_add(config.width);
+    }
+    result
+}
+
+/// Lay out outputs top-to-bottom starting at (0,0). X is always 0.
+pub fn layout_outputs_stacked(outputs: &[OutputConfig]) -> Vec<LaidOutOutput> {
+    let mut y = 0;
+    let mut result = Vec::with_capacity(outputs.len());
+    for config in outputs {
+        result.push(LaidOutOutput {
+            config: *config,
+            x: 0,
+            y,
+        });
+        y = y.saturating_add(config.height);
+    }
+    result
+}
+
+/// Lay out outputs in a 2-column grid (left-to-right within each row, then down).
+///
+/// Pair `(2k, 2k+1)` share a row at the current `y`. The right output is placed
+/// at `x = left.width`. Row height is `max(left.height, right.height)` (or just
+/// the single output height for a trailing odd entry).
+pub fn layout_outputs_grid(outputs: &[OutputConfig]) -> Vec<LaidOutOutput> {
+    let mut result = Vec::with_capacity(outputs.len());
+    let mut y = 0;
+    let mut i = 0;
+    while i < outputs.len() {
+        let left = outputs[i];
+        if i + 1 < outputs.len() {
+            let right = outputs[i + 1];
+            result.push(LaidOutOutput {
+                config: left,
+                x: 0,
+                y,
+            });
+            result.push(LaidOutOutput {
+                config: right,
+                x: left.width,
+                y,
+            });
+            let row_h = left.height.max(right.height);
+            y = y.saturating_add(row_h);
+            i += 2;
+        } else {
+            result.push(LaidOutOutput {
+                config: left,
+                x: 0,
+                y,
+            });
+            y = y.saturating_add(left.height);
+            i += 1;
+        }
     }
     result
 }
@@ -891,6 +992,43 @@ pub fn selection_bytes_for_mime_with_text_fallback<'a>(
     None
 }
 
+/// Canonical mime offer list for a server-set text selection (Wayland + X11 bridge).
+pub fn text_selection_mime_offers() -> &'static [&'static str] {
+    &[
+        "text/plain;charset=utf-8",
+        "text/plain",
+        "UTF8_STRING",
+        "TEXT",
+        "STRING",
+        "text/html",
+    ]
+}
+
+/// Build a selection store from UTF-8 text with standard mime offers.
+pub fn selection_store_from_utf8_text(text: &str) -> HashMap<String, Vec<u8>> {
+    let bytes = text.as_bytes().to_vec();
+    let mut store = HashMap::new();
+    for mime in text_selection_mime_offers() {
+        if *mime == "text/html" {
+            let html = format!(
+                "<pre>{}</pre>",
+                text.replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+            );
+            store.insert((*mime).to_string(), html.into_bytes());
+        } else {
+            store.insert((*mime).to_string(), bytes.clone());
+        }
+    }
+    store
+}
+
+/// Pure: whether a client mime request is satisfied by store (with text fallback).
+pub fn selection_can_satisfy(store: &HashMap<String, Vec<u8>>, mime: &str) -> bool {
+    selection_bytes_for_mime_with_text_fallback(store, mime).is_some()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WindowGeometry {
     pub x: i32,
@@ -1221,6 +1359,223 @@ pub fn prefer_full_redraw(damage: DamageRect, output_w: i32, output_h: i32) -> b
     damage.area() * 2 >= out
 }
 
+// ---------------------------------------------------------------------------
+// Virtual workspaces (pure) — compositor-backed desktop model
+// ---------------------------------------------------------------------------
+
+/// Fixed number of virtual workspaces (indices `0..WORKSPACE_COUNT`).
+pub const WORKSPACE_COUNT: u8 = 8;
+
+/// Workspace index in `0..WORKSPACE_COUNT` (eight desktops).
+///
+/// Construct via [`WorkspaceId::new`] to reject out-of-range values. The raw
+/// field is public for pattern matching / serialization, but methods that take
+/// a [`WorkspaceId`] still validate `0..WORKSPACE_COUNT`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct WorkspaceId(pub u8);
+
+impl WorkspaceId {
+    /// First workspace (`0`).
+    pub const FIRST: Self = Self(0);
+    /// Last workspace (`WORKSPACE_COUNT - 1`).
+    pub const LAST: Self = Self(WORKSPACE_COUNT - 1);
+
+    /// Valid id in `0..WORKSPACE_COUNT`, or `None`.
+    pub fn new(id: u8) -> Option<Self> {
+        if id < WORKSPACE_COUNT {
+            Some(Self(id))
+        } else {
+            None
+        }
+    }
+
+    /// Raw index (`0..7` when valid).
+    pub fn get(self) -> u8 {
+        self.0
+    }
+
+    /// `usize` form for indexing vectors / shell interop.
+    pub fn as_usize(self) -> usize {
+        usize::from(self.0)
+    }
+
+    /// True when `0 <= id < WORKSPACE_COUNT`.
+    pub fn is_valid(self) -> bool {
+        self.0 < WORKSPACE_COUNT
+    }
+
+    /// Next workspace, wrapping `LAST → FIRST`. Invalid ids normalize to `FIRST`.
+    pub fn next_wrapping(self) -> Self {
+        if !self.is_valid() {
+            return Self::FIRST;
+        }
+        Self((self.0 + 1) % WORKSPACE_COUNT)
+    }
+
+    /// Previous workspace, wrapping `FIRST → LAST`. Invalid ids normalize to `LAST`.
+    pub fn prev_wrapping(self) -> Self {
+        if !self.is_valid() {
+            return Self::LAST;
+        }
+        if self.0 == 0 {
+            Self::LAST
+        } else {
+            Self(self.0 - 1)
+        }
+    }
+
+    /// All workspace ids in order (`0..WORKSPACE_COUNT`).
+    pub fn all() -> impl Iterator<Item = Self> {
+        (0..WORKSPACE_COUNT).map(Self)
+    }
+}
+
+impl std::fmt::Display for WorkspaceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Pure virtual-desktop state: which workspace is active and which workspace
+/// each mapped window lives on.
+///
+/// Window keys are opaque id strings (compositor surface id, uuid, app+title,
+/// etc.). Visibility is membership on the active workspace only — untracked
+/// keys are not visible.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceState {
+    pub active: WorkspaceId,
+    /// `window_id → workspace`.
+    pub windows: HashMap<String, WorkspaceId>,
+}
+
+impl Default for WorkspaceState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WorkspaceState {
+    /// Empty mapping, active workspace `0`.
+    pub fn new() -> Self {
+        Self {
+            active: WorkspaceId::FIRST,
+            windows: HashMap::new(),
+        }
+    }
+
+    /// Insert or update a window's workspace assignment.
+    ///
+    /// Invalid `workspace` is clamped via reject: returns `false` and leaves
+    /// state unchanged. Valid assignment returns `true`.
+    pub fn assign_window(&mut self, window_id: impl Into<String>, workspace: WorkspaceId) -> bool {
+        if !workspace.is_valid() {
+            return false;
+        }
+        self.windows.insert(window_id.into(), workspace);
+        true
+    }
+
+    /// Move an **already tracked** window to another workspace.
+    ///
+    /// Returns `false` if the window is unknown or `workspace` is invalid.
+    pub fn move_to_workspace(&mut self, window_id: &str, workspace: WorkspaceId) -> bool {
+        if !workspace.is_valid() {
+            return false;
+        }
+        match self.windows.get_mut(window_id) {
+            Some(slot) => {
+                *slot = workspace;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Remove a window from tracking. Returns its previous workspace if known.
+    pub fn remove_window(&mut self, window_id: &str) -> Option<WorkspaceId> {
+        self.windows.remove(window_id)
+    }
+
+    /// Switch the active workspace. Returns `false` if `workspace` is invalid.
+    pub fn activate(&mut self, workspace: WorkspaceId) -> bool {
+        if !workspace.is_valid() {
+            return false;
+        }
+        self.active = workspace;
+        true
+    }
+
+    /// Window ids currently assigned to `workspace` (sorted for stable logs/tests).
+    pub fn windows_on(&self, workspace: WorkspaceId) -> Vec<&str> {
+        let mut out: Vec<&str> = self
+            .windows
+            .iter()
+            .filter(|(_, ws)| **ws == workspace)
+            .map(|(id, _)| id.as_str())
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// True when the window is tracked and lives on the active workspace.
+    pub fn is_visible(&self, window_id: &str) -> bool {
+        match self.windows.get(window_id) {
+            Some(ws) => *ws == self.active && self.active.is_valid(),
+            None => false,
+        }
+    }
+
+    /// Workspace of a tracked window, if any.
+    pub fn workspace_of(&self, window_id: &str) -> Option<WorkspaceId> {
+        self.windows.get(window_id).copied()
+    }
+
+    /// Cycle active workspace forward (`0→1→…→7→0`).
+    pub fn cycle_next(&mut self) {
+        self.active = self.active.next_wrapping();
+    }
+
+    /// Cycle active workspace backward (`0→7→…→1→0`).
+    pub fn cycle_prev(&mut self) {
+        self.active = self.active.prev_wrapping();
+    }
+
+    /// Count of windows on each workspace (`len == WORKSPACE_COUNT`).
+    pub fn counts_per_workspace(&self) -> [usize; WORKSPACE_COUNT as usize] {
+        let mut counts = [0usize; WORKSPACE_COUNT as usize];
+        for ws in self.windows.values() {
+            if ws.is_valid() {
+                counts[ws.as_usize()] += 1;
+            }
+        }
+        counts
+    }
+
+    /// One-line label for compositor / session logs.
+    pub fn summary_line(&self) -> String {
+        let counts = self.counts_per_workspace();
+        let visible = counts
+            .get(self.active.as_usize())
+            .copied()
+            .unwrap_or(0);
+        let dist: String = counts
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("{i}:{c}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "workspace active={}/{} windows={} visible={} dist=[{}]",
+            self.active.get(),
+            WORKSPACE_COUNT,
+            self.windows.len(),
+            visible,
+            dist
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1289,6 +1644,127 @@ mod tests {
             OutputConfig {
                 width: 300,
                 height: 80
+            }
+        );
+    }
+
+    #[test]
+    fn parse_layout_mode_side_stack_grid_and_default() {
+        assert_eq!(parse_layout_mode(None), OutputLayoutMode::SideBySide);
+        assert_eq!(parse_layout_mode(Some("")), OutputLayoutMode::SideBySide);
+        assert_eq!(parse_layout_mode(Some("nope")), OutputLayoutMode::SideBySide);
+        assert_eq!(parse_layout_mode(Some("side")), OutputLayoutMode::SideBySide);
+        assert_eq!(parse_layout_mode(Some("SIDE")), OutputLayoutMode::SideBySide);
+        assert_eq!(parse_layout_mode(Some("stack")), OutputLayoutMode::Stacked);
+        assert_eq!(parse_layout_mode(Some("stacked")), OutputLayoutMode::Stacked);
+        assert_eq!(parse_layout_mode(Some("grid")), OutputLayoutMode::Grid);
+        assert_eq!(OutputLayoutMode::default(), OutputLayoutMode::SideBySide);
+    }
+
+    #[test]
+    fn layout_outputs_dispatches_to_mode() {
+        let outs = parse_outputs_spec("100x50,200x80");
+        assert_eq!(
+            layout_outputs(&outs, OutputLayoutMode::SideBySide),
+            layout_outputs_side_by_side(&outs)
+        );
+        assert_eq!(
+            layout_outputs(&outs, OutputLayoutMode::Stacked),
+            layout_outputs_stacked(&outs)
+        );
+        assert_eq!(
+            layout_outputs(&outs, OutputLayoutMode::Grid),
+            layout_outputs_grid(&outs)
+        );
+    }
+
+    #[test]
+    fn layout_stacked_origins_and_sizes() {
+        let outs = parse_outputs_spec("100x50,200x80");
+        let laid = layout_outputs_stacked(&outs);
+        assert_eq!(laid.len(), 2);
+        assert_eq!(laid[0].x, 0);
+        assert_eq!(laid[0].y, 0);
+        assert_eq!(laid[0].config, outs[0]);
+        assert_eq!(laid[1].x, 0);
+        assert_eq!(laid[1].y, 50);
+        assert_eq!(laid[1].config, outs[1]);
+        assert_eq!(
+            total_output_size(&laid),
+            OutputConfig {
+                width: 200,
+                height: 130
+            }
+        );
+
+        // Three outputs stack strictly by height.
+        let three = parse_outputs_spec("10x20,30x40,50x60");
+        let laid3 = layout_outputs(&three, OutputLayoutMode::Stacked);
+        assert_eq!(laid3[0].y, 0);
+        assert_eq!(laid3[1].y, 20);
+        assert_eq!(laid3[2].y, 60);
+        assert_eq!(
+            total_output_size(&laid3),
+            OutputConfig {
+                width: 50,
+                height: 120
+            }
+        );
+    }
+
+    #[test]
+    fn layout_grid_origins_and_sizes() {
+        // Two outputs → single row: left at (0,0), right at (left.w, 0).
+        let two = parse_outputs_spec("100x50,200x80");
+        let laid2 = layout_outputs_grid(&two);
+        assert_eq!(laid2.len(), 2);
+        assert_eq!(laid2[0].x, 0);
+        assert_eq!(laid2[0].y, 0);
+        assert_eq!(laid2[0].config.width, 100);
+        assert_eq!(laid2[0].config.height, 50);
+        assert_eq!(laid2[1].x, 100);
+        assert_eq!(laid2[1].y, 0);
+        assert_eq!(laid2[1].config.width, 200);
+        assert_eq!(laid2[1].config.height, 80);
+        assert_eq!(
+            total_output_size(&laid2),
+            OutputConfig {
+                width: 300,
+                height: 80
+            }
+        );
+
+        // Three outputs → row0 pair + trailing single on next row.
+        // Row height = max(50, 80) = 80; third at (0, 80).
+        let three = parse_outputs_spec("100x50,200x80,120x40");
+        let laid3 = layout_outputs_grid(&three);
+        assert_eq!(laid3.len(), 3);
+        assert_eq!((laid3[0].x, laid3[0].y), (0, 0));
+        assert_eq!((laid3[1].x, laid3[1].y), (100, 0));
+        assert_eq!((laid3[2].x, laid3[2].y), (0, 80));
+        assert_eq!(laid3[2].config, three[2]);
+        assert_eq!(
+            total_output_size(&laid3),
+            OutputConfig {
+                width: 300,
+                height: 120
+            }
+        );
+
+        // Four outputs → two full rows.
+        let four = parse_outputs_spec("10x20,30x40,50x60,70x80");
+        let laid4 = layout_outputs(&four, OutputLayoutMode::Grid);
+        assert_eq!((laid4[0].x, laid4[0].y), (0, 0));
+        assert_eq!((laid4[1].x, laid4[1].y), (10, 0));
+        // row_h0 = max(20,40)=40
+        assert_eq!((laid4[2].x, laid4[2].y), (0, 40));
+        assert_eq!((laid4[3].x, laid4[3].y), (50, 40));
+        // total w = max(10+30, 50+70)=120; h = 40+max(60,80)=120
+        assert_eq!(
+            total_output_size(&laid4),
+            OutputConfig {
+                width: 120,
+                height: 120
             }
         );
     }
@@ -1410,6 +1886,17 @@ mod tests {
             selection_bytes_for_mime_with_text_fallback(&store, "image/png"),
             None
         );
+    }
+
+    #[test]
+    fn selection_store_from_utf8_offers_and_satisfies() {
+        let store = selection_store_from_utf8_text("hi <b>");
+        assert!(selection_can_satisfy(&store, "text/plain"));
+        assert!(selection_can_satisfy(&store, "UTF8_STRING"));
+        assert!(selection_can_satisfy(&store, "text/html"));
+        let html = selection_bytes_for_mime(&store, "text/html").unwrap();
+        assert!(std::str::from_utf8(html).unwrap().contains("&lt;b&gt;"));
+        assert!(!selection_can_satisfy(&store, "image/png"));
     }
 
     #[test]
@@ -1809,6 +2296,139 @@ mod tests {
             1000,
             1000
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Virtual workspaces
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn workspace_id_new_validates_range() {
+        assert_eq!(WorkspaceId::new(0), Some(WorkspaceId(0)));
+        assert_eq!(WorkspaceId::new(7), Some(WorkspaceId(7)));
+        assert_eq!(WorkspaceId::new(8), None);
+        assert_eq!(WorkspaceId::new(255), None);
+        assert!(WorkspaceId::FIRST.is_valid());
+        assert!(WorkspaceId::LAST.is_valid());
+        assert_eq!(WorkspaceId::LAST.get(), WORKSPACE_COUNT - 1);
+        assert_eq!(WorkspaceId::all().count(), usize::from(WORKSPACE_COUNT));
+        assert_eq!(
+            WorkspaceId::all().map(|w| w.get()).collect::<Vec<_>>(),
+            (0..WORKSPACE_COUNT).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn workspace_id_cycle_wrapping() {
+        assert_eq!(WorkspaceId(0).next_wrapping(), WorkspaceId(1));
+        assert_eq!(WorkspaceId(6).next_wrapping(), WorkspaceId(7));
+        assert_eq!(WorkspaceId(7).next_wrapping(), WorkspaceId(0));
+        assert_eq!(WorkspaceId(0).prev_wrapping(), WorkspaceId(7));
+        assert_eq!(WorkspaceId(1).prev_wrapping(), WorkspaceId(0));
+        assert_eq!(WorkspaceId(7).prev_wrapping(), WorkspaceId(6));
+        // Invalid raw ids normalize rather than panic
+        assert_eq!(WorkspaceId(9).next_wrapping(), WorkspaceId::FIRST);
+        assert_eq!(WorkspaceId(9).prev_wrapping(), WorkspaceId::LAST);
+    }
+
+    #[test]
+    fn workspace_assign_move_and_visibility() {
+        let mut st = WorkspaceState::new();
+        assert_eq!(st.active, WorkspaceId::FIRST);
+        assert!(st.windows.is_empty());
+
+        assert!(st.assign_window("finder", WorkspaceId(0)));
+        assert!(st.assign_window("term", WorkspaceId(2)));
+        assert!(st.assign_window("edit", WorkspaceId(2)));
+        // invalid workspace rejected
+        assert!(!st.assign_window("ghost", WorkspaceId(8)));
+        assert!(!st.windows.contains_key("ghost"));
+
+        assert!(st.is_visible("finder"));
+        assert!(!st.is_visible("term"));
+        assert!(!st.is_visible("missing"));
+
+        assert_eq!(st.windows_on(WorkspaceId(2)), vec!["edit", "term"]);
+        assert_eq!(st.windows_on(WorkspaceId(0)), vec!["finder"]);
+        assert!(st.windows_on(WorkspaceId(1)).is_empty());
+
+        assert!(st.move_to_workspace("term", WorkspaceId(0)));
+        assert!(st.is_visible("term"));
+        assert_eq!(st.workspace_of("term"), Some(WorkspaceId(0)));
+        assert!(!st.move_to_workspace("nope", WorkspaceId(1)));
+        assert!(!st.move_to_workspace("term", WorkspaceId(99)));
+
+        assert_eq!(st.remove_window("edit"), Some(WorkspaceId(2)));
+        assert_eq!(st.remove_window("edit"), None);
+    }
+
+    #[test]
+    fn workspace_activate_and_cycle() {
+        let mut st = WorkspaceState::new();
+        assert!(st.activate(WorkspaceId(3)));
+        assert_eq!(st.active, WorkspaceId(3));
+        assert!(!st.activate(WorkspaceId(8)));
+        assert_eq!(st.active, WorkspaceId(3));
+
+        st.cycle_next();
+        assert_eq!(st.active, WorkspaceId(4));
+        assert!(st.activate(WorkspaceId(7)));
+        st.cycle_next();
+        assert_eq!(st.active, WorkspaceId(0));
+        st.cycle_prev();
+        assert_eq!(st.active, WorkspaceId(7));
+
+        // Full wrap tour: 8 next/prev steps from 0 returns to 0
+        assert!(st.activate(WorkspaceId(0)));
+        for _ in 0..WORKSPACE_COUNT {
+            st.cycle_next();
+        }
+        assert_eq!(st.active, WorkspaceId(0));
+        for _ in 0..WORKSPACE_COUNT {
+            st.cycle_prev();
+        }
+        assert_eq!(st.active, WorkspaceId(0));
+    }
+
+    #[test]
+    fn workspace_summary_line_and_counts() {
+        let mut st = WorkspaceState::new();
+        st.assign_window("a", WorkspaceId(0));
+        st.assign_window("b", WorkspaceId(0));
+        st.assign_window("c", WorkspaceId(3));
+        assert!(st.activate(WorkspaceId(0)));
+        let line = st.summary_line();
+        assert!(line.contains("active=0/8"), "line={line}");
+        assert!(line.contains("windows=3"), "line={line}");
+        assert!(line.contains("visible=2"), "line={line}");
+        assert!(line.contains("0:2"), "line={line}");
+        assert!(line.contains("3:1"), "line={line}");
+
+        let counts = st.counts_per_workspace();
+        assert_eq!(counts[0], 2);
+        assert_eq!(counts[3], 1);
+        assert_eq!(counts.iter().sum::<usize>(), 3);
+
+        // Reassign updates counts; visibility follows active
+        assert!(st.assign_window("a", WorkspaceId(3)));
+        assert!(!st.is_visible("a"));
+        assert!(st.activate(WorkspaceId(3)));
+        assert!(st.is_visible("a"));
+        assert!(st.is_visible("c"));
+        assert!(!st.is_visible("b"));
+    }
+
+    #[test]
+    fn workspace_state_default_and_display() {
+        let st = WorkspaceState::default();
+        assert_eq!(st, WorkspaceState::new());
+        assert_eq!(format!("{}", WorkspaceId(5)), "5");
+        // assign overwrites previous workspace
+        let mut st = WorkspaceState::new();
+        assert!(st.assign_window("w", WorkspaceId(1)));
+        assert!(st.assign_window("w", WorkspaceId(4)));
+        assert_eq!(st.workspace_of("w"), Some(WorkspaceId(4)));
+        assert_eq!(st.windows.len(), 1);
     }
 
     #[test]
