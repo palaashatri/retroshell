@@ -65,7 +65,7 @@ mod linux {
         create_screencast_session_with_backend_note, handle_file_chooser_open,
         handle_file_chooser_save, handle_portal_screenshot_request, plan_open_uri,
         portal_screenshot_uri_for, portal_screenshots_dir, read_all_portal_settings,
-        read_portal_setting, select_screencast_sources, start_screencast,
+        read_portal_setting, select_screencast_sources, start_screencast_with_readiness,
         take_portal_style_screenshot_with, OpenUriAction, PortalFileChooserRequest,
         PortalScreencastRequest, PortalScreencastSession, PortalScreenshotRequest,
     };
@@ -429,22 +429,16 @@ mod linux {
             session_id: &str,
             _options: HashMap<String, OwnedValue>,
         ) -> (u32, HashMap<String, OwnedValue>) {
-            // Refresh readiness at Start so note reflects current socket state.
+            // Refresh readiness at Start via pure path so note reflects socket state.
             let readiness = crate::screencast_pw::probe_screencast_readiness_host();
-            let host_note = crate::portal::screencast_backend_note(&readiness);
             let outcome = with_screencast_sessions(|map| {
-                let Some(session) = map.get_mut(session_id) else {
-                    return None;
-                };
-                session.backend_note = host_note.clone();
-                match start_screencast(session) {
-                    Ok(()) => Some((session.streams.clone(), session.backend_note.clone())),
-                    Err(_) => None,
-                }
+                let session = map.get_mut(session_id)?;
+                start_screencast_with_readiness(session, &readiness).ok()
             });
             match outcome {
-                Some((streams, note)) if !streams.is_empty() => {
-                    let summary = streams
+                Some(started) if !started.streams.is_empty() => {
+                    let summary = started
+                        .streams
                         .iter()
                         .map(|s| {
                             format!(
@@ -458,12 +452,13 @@ mod linux {
                     if let Ok(v) = OwnedValue::try_from(Value::from(summary)) {
                         results.insert("streams".into(), v);
                     }
-                    if let Some(first) = streams.first() {
+                    if let Some(first) = started.streams.first() {
                         if let Ok(v) = OwnedValue::try_from(Value::from(first.node_id)) {
                             results.insert("node_id".into(), v);
                         }
                     }
-                    if let Ok(v) = OwnedValue::try_from(Value::from(note)) {
+                    // Honest backend string (portal_stub | pipewire_socket_present).
+                    if let Ok(v) = OwnedValue::try_from(Value::from(started.note)) {
                         results.insert("note".into(), v);
                     }
                     (0u32, results)

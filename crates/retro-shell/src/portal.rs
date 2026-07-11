@@ -468,9 +468,22 @@ pub fn select_screencast_sources(
     Ok(())
 }
 
+/// Pure ScreenCast Start outcome: non-empty stub streams + honest backend note.
+///
+/// D-Bus Start maps `streams` / `note` into the results dict. Streams remain
+/// protocol placeholders — no live PipeWire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreencastStartOutcome {
+    pub streams: Vec<ScreencastStream>,
+    pub note: String,
+}
+
 /// Pure ScreenCast Start: requires at least one stream (protocol-level stubs only).
 ///
-/// On success marks the session started. Streams remain placeholders — no live PipeWire.
+/// On success marks the session started and guarantees a non-empty
+/// [`PortalScreencastSession::backend_note`] (defaults to
+/// [`SCREENCAST_NOTE_PORTAL_STUB`] if create left it blank). Streams remain
+/// placeholders — no live PipeWire.
 pub fn start_screencast(session: &mut PortalScreencastSession) -> Result<(), String> {
     if session.streams.is_empty() {
         return Err("no streams to start".into());
@@ -480,8 +493,27 @@ pub fn start_screencast(session: &mut PortalScreencastSession) -> Result<(), Str
     }
     // CreateSession already supplies a default stream; SelectSources is optional for the
     // simplified path so Start can succeed after create alone.
+    if session.backend_note.trim().is_empty() {
+        session.backend_note = SCREENCAST_NOTE_PORTAL_STUB.to_string();
+    }
     session.started = true;
     Ok(())
+}
+
+/// Pure Start path that refreshes the honesty note from a readiness probe, then starts.
+///
+/// Used by the D-Bus Start handler so Create and Start share the same probe→note map
+/// ([`screencast_backend_note`]). Returns [`ScreencastStartOutcome`] for results encoding.
+pub fn start_screencast_with_readiness(
+    session: &mut PortalScreencastSession,
+    ready: &crate::screencast_pw::ScreencastReadiness,
+) -> Result<ScreencastStartOutcome, String> {
+    apply_screencast_readiness(session, ready);
+    start_screencast(session)?;
+    Ok(ScreencastStartOutcome {
+        streams: session.streams.clone(),
+        note: session.backend_note.clone(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -809,6 +841,72 @@ mod tests {
         // Start still succeeds with stubs — note does not imply live streams.
         start_screencast(&mut session).unwrap();
         assert!(session.started);
+    }
+
+    /// Structural: create → start pure path (real handlers) keeps non-empty streams
+    /// and an honest backend note forced via `create_screencast_session_with_backend_note`.
+    #[test]
+    fn screencast_create_start_note_on_real_pure_path() {
+        for forced in [
+            SCREENCAST_NOTE_PORTAL_STUB,
+            SCREENCAST_NOTE_PIPEWIRE_SOCKET,
+        ] {
+            let mut session = create_screencast_session_with_backend_note(
+                PortalScreencastRequest::default(),
+                forced,
+            );
+            start_screencast(&mut session).unwrap();
+            assert!(
+                !session.streams.is_empty(),
+                "Start must leave non-empty streams (forced note {forced})"
+            );
+            assert!(
+                session.backend_note.contains("portal_stub")
+                    || session.backend_note.contains("pipewire"),
+                "note must be honest after Start: {:?}",
+                session.backend_note
+            );
+            assert_eq!(session.backend_note, forced);
+            assert!(session.started);
+        }
+
+        // Probe-driven Start (same pure path D-Bus uses).
+        let ready_stub =
+            crate::screencast_pw::probe_screencast_readiness(None, false, false);
+        let mut session = create_screencast_session(PortalScreencastRequest::default());
+        let outcome = start_screencast_with_readiness(&mut session, &ready_stub).unwrap();
+        assert!(!outcome.streams.is_empty());
+        assert!(
+            outcome.note.contains("portal_stub") || outcome.note.contains("pipewire"),
+            "probe Start note must be honest: {:?}",
+            outcome.note
+        );
+        assert_eq!(outcome.note, SCREENCAST_NOTE_PORTAL_STUB);
+
+        let ready_pw = crate::screencast_pw::probe_screencast_readiness(
+            Some("/run/user/1000"),
+            true,
+            false,
+        );
+        let mut session = create_screencast_session(PortalScreencastRequest::default());
+        let outcome = start_screencast_with_readiness(&mut session, &ready_pw).unwrap();
+        assert!(!outcome.streams.is_empty());
+        assert!(
+            outcome.note.contains("portal_stub") || outcome.note.contains("pipewire"),
+            "probe Start note must be honest: {:?}",
+            outcome.note
+        );
+        assert_eq!(outcome.note, SCREENCAST_NOTE_PIPEWIRE_SOCKET);
+        // Empty note at Start is filled with portal_stub (honesty default).
+        let mut blank = create_screencast_session(PortalScreencastRequest::default());
+        blank.backend_note.clear();
+        start_screencast(&mut blank).unwrap();
+        assert!(!blank.streams.is_empty());
+        assert!(
+            blank.backend_note.contains("portal_stub")
+                || blank.backend_note.contains("pipewire")
+        );
+        assert_eq!(blank.backend_note, SCREENCAST_NOTE_PORTAL_STUB);
     }
 
     #[test]
