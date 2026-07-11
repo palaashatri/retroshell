@@ -528,6 +528,128 @@ pub fn parse_outputs_spec(spec: &str) -> Vec<OutputConfig> {
     out
 }
 
+/// One entry from shell `RETROSHELL_OUTPUTS_LAYOUT`
+/// (`name:WIDTHxHEIGHT@x,y:sSCALE`, semicolon-separated).
+///
+/// Produced by `retro-shell` display arrange (`EmitLayoutEnv`). Nested compositor
+/// places logical `wl_output`s at these positions; scale percent is retained for
+/// logging / future per-output scale (global scale still comes from
+/// `RETROSHELL_OUTPUT_SCALE` on the nested path).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LayoutOutputEntry {
+    pub name: String,
+    pub config: OutputConfig,
+    pub x: i32,
+    pub y: i32,
+    /// Scale percent (100 = 1×). Invalid/missing in the token → 100.
+    pub scale_percent: u32,
+}
+
+impl LayoutOutputEntry {
+    /// Convert to compositor-space [`LaidOutOutput`] (drops name/scale).
+    pub fn to_laid_out(&self) -> LaidOutOutput {
+        LaidOutOutput {
+            config: self.config,
+            x: self.x,
+            y: self.y,
+        }
+    }
+}
+
+/// Parse `RETROSHELL_OUTPUTS_LAYOUT` from shell display arrange.
+///
+/// Format (per head, `;`-separated):
+/// `name:WIDTHxHEIGHT@x,y:sSCALE`
+///
+/// Example: `eDP-1:1920x1080@0,0:s100;HDMI-1:2560x1440@1920,0:s100`
+///
+/// Invalid tokens are skipped. Returns empty when nothing valid remains.
+/// Positions may be negative (extended left/up); size must be positive.
+pub fn parse_outputs_layout_spec(spec: &str) -> Vec<LayoutOutputEntry> {
+    let mut out = Vec::new();
+    for part in spec.split(';') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some(entry) = parse_one_outputs_layout_entry(part) {
+            out.push(entry);
+        }
+    }
+    out
+}
+
+/// Parse a single `name:WxH@x,y:sNN` token. Returns `None` on garbage.
+fn parse_one_outputs_layout_entry(part: &str) -> Option<LayoutOutputEntry> {
+    // name:rest — output names are connector-style (eDP-1, HDMI-A-1); first ':' splits.
+    let (name_raw, rest) = part.split_once(':')?;
+    let name = name_raw.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    // Optional trailing :sSCALE (shell always emits it; tolerate absence).
+    let (geom, scale_percent) = match rest.rsplit_once(":s") {
+        Some((g, s)) => {
+            let pct = s.trim().parse::<u32>().ok().filter(|&p| p > 0).unwrap_or(100);
+            (g, pct)
+        }
+        None => (rest, 100u32),
+    };
+
+    // geom = WIDTHxHEIGHT@x,y
+    let (size, pos) = geom.split_once('@')?;
+    let (w_str, h_str) = size
+        .split_once('x')
+        .or_else(|| size.split_once('X'))?;
+    let (x_str, y_str) = pos.split_once(',')?;
+
+    let w = w_str.trim().parse::<i32>().ok()?;
+    let h = h_str.trim().parse::<i32>().ok()?;
+    let x = x_str.trim().parse::<i32>().ok()?;
+    let y = y_str.trim().parse::<i32>().ok()?;
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+
+    Some(LayoutOutputEntry {
+        name: name.to_string(),
+        config: OutputConfig {
+            width: w,
+            height: h,
+        },
+        x,
+        y,
+        scale_percent,
+    })
+}
+
+/// Convert layout-spec entries to laid-out outputs (positions preserved).
+pub fn laid_out_from_layout_entries(entries: &[LayoutOutputEntry]) -> Vec<LaidOutOutput> {
+    entries.iter().map(LayoutOutputEntry::to_laid_out).collect()
+}
+
+/// Human-readable one-line summary of a parsed layout-spec (for honest startup logs).
+pub fn outputs_layout_spec_summary(entries: &[LayoutOutputEntry]) -> String {
+    if entries.is_empty() {
+        return "layout-spec: (empty)".into();
+    }
+    let heads: Vec<String> = entries
+        .iter()
+        .map(|e| {
+            format!(
+                "{} {}x{}@({},{}) s{}",
+                e.name, e.config.width, e.config.height, e.x, e.y, e.scale_percent
+            )
+        })
+        .collect();
+    format!(
+        "layout-spec: {} head(s): {}",
+        entries.len(),
+        heads.join("; ")
+    )
+}
+
 /// Dispatch layout by [`OutputLayoutMode`].
 pub fn layout_outputs(configs: &[OutputConfig], mode: OutputLayoutMode) -> Vec<LaidOutOutput> {
     match mode {
@@ -628,6 +750,9 @@ pub fn total_output_size(laid_out: &[LaidOutOutput]) -> OutputConfig {
 ///
 /// - If `RETROSHELL_OUTPUTS` parses to one or more sizes, use those.
 /// - Otherwise fall back to a single `OutputConfig::from_env()` (WIDTH/HEIGHT).
+///
+/// Prefer [`resolve_laid_out_outputs_from_env`] when absolute positions from
+/// `RETROSHELL_OUTPUTS_LAYOUT` should win (shell display arrange).
 pub fn outputs_from_env() -> Vec<OutputConfig> {
     outputs_from_env_values(
         std::env::var("RETROSHELL_OUTPUTS").ok(),
@@ -648,6 +773,126 @@ pub fn outputs_from_env_values(
         }
     }
     vec![OutputConfig::from_env_values(width, height)]
+}
+
+/// Where nested multi-output geometry came from (for honest logs).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum OutputsLayoutSource {
+    /// Shell `RETROSHELL_OUTPUTS_LAYOUT` (`name:WxH@x,y:sNN;...`).
+    LayoutSpec,
+    /// `RETROSHELL_OUTPUTS` sizes + `RETROSHELL_OUTPUT_LAYOUT` mode.
+    OutputsSpec,
+    /// Single default / WIDTH×HEIGHT fallback.
+    Default,
+}
+
+/// Resolved nested logical outputs with origin positions and connector names.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedOutputsLayout {
+    pub laid_out: Vec<LaidOutOutput>,
+    /// Connector names when known (`eDP-1`, …); synthetic `X11-N` when not.
+    pub names: Vec<String>,
+    pub source: OutputsLayoutSource,
+}
+
+impl ResolvedOutputsLayout {
+    /// One-line summary for startup logs.
+    pub fn summary(&self) -> String {
+        let heads: Vec<String> = self
+            .laid_out
+            .iter()
+            .enumerate()
+            .map(|(i, o)| {
+                let name = self
+                    .names
+                    .get(i)
+                    .map(|s| s.as_str())
+                    .unwrap_or("?");
+                format!(
+                    "{} {}x{}@({},{})",
+                    name, o.config.width, o.config.height, o.x, o.y
+                )
+            })
+            .collect();
+        let src = match self.source {
+            OutputsLayoutSource::LayoutSpec => "RETROSHELL_OUTPUTS_LAYOUT",
+            OutputsLayoutSource::OutputsSpec => "RETROSHELL_OUTPUTS+layout-mode",
+            OutputsLayoutSource::Default => "default",
+        };
+        format!(
+            "outputs source={src} {} head(s): {}",
+            self.laid_out.len(),
+            if heads.is_empty() {
+                "(none)".into()
+            } else {
+                heads.join("; ")
+            }
+        )
+    }
+}
+
+/// Resolve laid-out outputs for nested startup (pure).
+///
+/// Preference:
+/// 1. `layout_spec` (`RETROSHELL_OUTPUTS_LAYOUT`) when it parses to ≥1 entry
+/// 2. else `outputs_spec` / width / height via [`outputs_from_env_values`] + `layout_mode`
+pub fn resolve_laid_out_outputs_from_env_values(
+    layout_spec: Option<&str>,
+    outputs_spec: Option<String>,
+    width: Option<String>,
+    height: Option<String>,
+    layout_mode: OutputLayoutMode,
+) -> ResolvedOutputsLayout {
+    if let Some(spec) = layout_spec {
+        let entries = parse_outputs_layout_spec(spec);
+        if !entries.is_empty() {
+            let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+            let laid_out = laid_out_from_layout_entries(&entries);
+            return ResolvedOutputsLayout {
+                laid_out,
+                names,
+                source: OutputsLayoutSource::LayoutSpec,
+            };
+        }
+    }
+
+    let had_outputs_spec = outputs_spec
+        .as_ref()
+        .map(|s| !parse_outputs_spec(s).is_empty())
+        .unwrap_or(false);
+    let had_size_env = width.is_some() || height.is_some();
+    let source = if had_outputs_spec || had_size_env {
+        OutputsLayoutSource::OutputsSpec
+    } else {
+        OutputsLayoutSource::Default
+    };
+
+    let configs = outputs_from_env_values(outputs_spec, width, height);
+    let laid_out = layout_outputs(&configs, layout_mode);
+    let names: Vec<String> = (0..laid_out.len())
+        .map(|i| format!("X11-{}", i + 1))
+        .collect();
+    ResolvedOutputsLayout {
+        laid_out,
+        names,
+        source,
+    }
+}
+
+/// Nested startup: read env and resolve laid-out outputs.
+///
+/// Prefers `RETROSHELL_OUTPUTS_LAYOUT`, else `RETROSHELL_OUTPUTS` + layout mode,
+/// else WIDTH/HEIGHT defaults.
+pub fn resolve_laid_out_outputs_from_env() -> ResolvedOutputsLayout {
+    resolve_laid_out_outputs_from_env_values(
+        std::env::var("RETROSHELL_OUTPUTS_LAYOUT")
+            .ok()
+            .as_deref(),
+        std::env::var("RETROSHELL_OUTPUTS").ok(),
+        std::env::var("RETROSHELL_COMPOSITOR_WIDTH").ok(),
+        std::env::var("RETROSHELL_COMPOSITOR_HEIGHT").ok(),
+        layout_mode_from_env(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1675,6 +1920,126 @@ mod tests {
                 height: 600
             }]
         );
+    }
+
+    #[test]
+    fn parse_outputs_layout_spec_dual_and_positions() {
+        let spec = "eDP-1:1920x1080@0,0:s100;HDMI-1:2560x1440@1920,0:s100";
+        let entries = parse_outputs_layout_spec(spec);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "eDP-1");
+        assert_eq!(
+            entries[0].config,
+            OutputConfig {
+                width: 1920,
+                height: 1080
+            }
+        );
+        assert_eq!((entries[0].x, entries[0].y), (0, 0));
+        assert_eq!(entries[0].scale_percent, 100);
+        assert_eq!(entries[1].name, "HDMI-1");
+        assert_eq!(
+            entries[1].config,
+            OutputConfig {
+                width: 2560,
+                height: 1440
+            }
+        );
+        assert_eq!((entries[1].x, entries[1].y), (1920, 0));
+        assert_eq!(entries[1].scale_percent, 100);
+
+        let laid = laid_out_from_layout_entries(&entries);
+        assert_eq!(laid.len(), 2);
+        assert_eq!(laid[1].x, 1920);
+        assert_eq!(
+            total_output_size(&laid),
+            OutputConfig {
+                width: 1920 + 2560,
+                height: 1440
+            }
+        );
+
+        let summary = outputs_layout_spec_summary(&entries);
+        assert!(summary.contains("eDP-1"), "summary={summary}");
+        assert!(summary.contains("HDMI-1"), "summary={summary}");
+    }
+
+    #[test]
+    fn parse_outputs_layout_spec_stacked_negative_and_scale() {
+        // Extended down + HiDPI scale on secondary.
+        let spec = "eDP-1:1280x800@0,0:s100;DP-1:1920x1080@0,800:s200";
+        let entries = parse_outputs_layout_spec(spec);
+        assert_eq!(entries.len(), 2);
+        assert_eq!((entries[1].x, entries[1].y), (0, 800));
+        assert_eq!(entries[1].scale_percent, 200);
+
+        // Negative origin (secondary to the left).
+        let left = parse_outputs_layout_spec("HDMI-1:800x600@-800,0:s100;eDP-1:1920x1080@0,0:s100");
+        assert_eq!(left.len(), 2);
+        assert_eq!(left[0].x, -800);
+        assert_eq!(left[0].name, "HDMI-1");
+    }
+
+    #[test]
+    fn parse_outputs_layout_spec_skips_garbage_tolerates_missing_scale() {
+        assert!(parse_outputs_layout_spec("").is_empty());
+        assert!(parse_outputs_layout_spec("nope").is_empty());
+        assert!(parse_outputs_layout_spec("bad;also-bad").is_empty());
+        // Missing :sNN → default scale 100.
+        let no_scale = parse_outputs_layout_spec("eDP-1:800x600@10,20");
+        assert_eq!(no_scale.len(), 1);
+        assert_eq!(no_scale[0].scale_percent, 100);
+        assert_eq!((no_scale[0].x, no_scale[0].y), (10, 20));
+        // Mixed: keep valid only.
+        let mixed = parse_outputs_layout_spec("junk;eDP-1:640x480@0,0:s100;0x0@0,0:s100");
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(mixed[0].name, "eDP-1");
+        assert_eq!(mixed[0].config.width, 640);
+    }
+
+    #[test]
+    fn resolve_laid_out_prefers_layout_spec_over_outputs() {
+        let resolved = resolve_laid_out_outputs_from_env_values(
+            Some("eDP-1:1920x1080@0,0:s100;HDMI-1:1280x720@1920,100:s150"),
+            Some("800x600,640x480".into()), // would win only if layout missing
+            Some("9999".into()),
+            Some("9999".into()),
+            OutputLayoutMode::SideBySide,
+        );
+        assert_eq!(resolved.source, OutputsLayoutSource::LayoutSpec);
+        assert_eq!(resolved.laid_out.len(), 2);
+        assert_eq!(resolved.names, vec!["eDP-1".to_string(), "HDMI-1".to_string()]);
+        assert_eq!((resolved.laid_out[1].x, resolved.laid_out[1].y), (1920, 100));
+        assert_eq!(resolved.laid_out[1].config.width, 1280);
+        let s = resolved.summary();
+        assert!(s.contains("RETROSHELL_OUTPUTS_LAYOUT"), "summary={s}");
+        assert!(s.contains("eDP-1"), "summary={s}");
+    }
+
+    #[test]
+    fn resolve_laid_out_falls_back_to_outputs_spec_and_default() {
+        let multi = resolve_laid_out_outputs_from_env_values(
+            Some("garbage"),
+            Some("100x50,200x80".into()),
+            None,
+            None,
+            OutputLayoutMode::Stacked,
+        );
+        assert_eq!(multi.source, OutputsLayoutSource::OutputsSpec);
+        assert_eq!(multi.laid_out.len(), 2);
+        assert_eq!(multi.laid_out[1].y, 50); // stacked
+        assert_eq!(multi.names[0], "X11-1");
+
+        let def = resolve_laid_out_outputs_from_env_values(
+            None,
+            None,
+            None,
+            None,
+            OutputLayoutMode::SideBySide,
+        );
+        assert_eq!(def.source, OutputsLayoutSource::Default);
+        assert_eq!(def.laid_out.len(), 1);
+        assert_eq!(def.laid_out[0].config, OutputConfig::default());
     }
 
     #[test]

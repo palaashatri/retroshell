@@ -5,7 +5,8 @@
 //!   - Exposes a Wayland socket so retro-shell (winit/wgpu) can connect
 //!   - Implements xdg_shell, wl_shm, wl_seat for basic window management
 //!   - Implements wl_data_device selection send (clipboard + primary store)
-//!   - Optionally multi-output via RETROSHELL_OUTPUTS=WxH,WxH
+//!   - Optionally multi-output via RETROSHELL_OUTPUTS=WxH,WxH or
+//!     RETROSHELL_OUTPUTS_LAYOUT (shell display arrange: name:WxH@x,y:sNN;...)
 //!   - Optionally starts XWayland (best-effort under nested X11)
 //!
 //! Linux-only: requires libgbm, libdrm, libEGL, libxcb and libwayland-server.
@@ -32,13 +33,12 @@ mod linux {
     use retro_compositor::{
         apply_scale_to_output_config, assign_new_window_to_active, cascade_position,
         detect_dri3_from_env, detect_output_scale_from_env, focus_window_after_workspace_switch,
-        layout_mode_from_env, layout_outputs, move_to_top, next_cascade_offset,
-        output_scale_summary, outputs_from_env, select_backend_kind,
-        selection_bytes_for_mime_with_text_fallback, session_mode_note, session_mode_summary,
-        text_input_capability_from_env, text_input_capability_summary, topmost_window_at,
-        total_output_size, window_paint_source, CompositorBackendKind, DisplayPolicy, OutputScale,
-        TextInputCapability, WindowGeometry, WindowPaintSource, WorkspaceId, WorkspaceState,
-        DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+        move_to_top, next_cascade_offset, output_scale_summary, resolve_laid_out_outputs_from_env,
+        select_backend_kind, selection_bytes_for_mime_with_text_fallback, session_mode_note,
+        session_mode_summary, text_input_capability_from_env, text_input_capability_summary,
+        topmost_window_at, total_output_size, window_paint_source, CompositorBackendKind,
+        DisplayPolicy, LaidOutOutput, OutputScale, TextInputCapability, WindowGeometry,
+        WindowPaintSource, WorkspaceId, WorkspaceState, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
     };
     use retro_compositor::frame_timing::{FrameScheduler, RefreshRate};
     use retro_compositor::hdr::HdrCapabilities;
@@ -1450,28 +1450,35 @@ mod linux {
         }
     }
 
-    /// Create one or more wl_output globals laid out side-by-side.
+    /// Create one or more wl_output globals at the given logical origins.
     ///
-    /// `scale` is advertised on each output (HiDPI). Mode sizes stay logical
-    /// width×height from config; scale is the wl_output scale factor.
+    /// `laid_out` positions come from shell `RETROSHELL_OUTPUTS_LAYOUT` or from
+    /// `RETROSHELL_OUTPUTS` + layout mode. `names` are connector names when known
+    /// (else synthetic `X11-N`). `scale` is advertised on each output (HiDPI);
+    /// mode sizes stay logical width×height; scale is the wl_output scale factor.
+    ///
+    /// Nested path only places logical outputs — no DRM modeset for external
+    /// connectors in this pass.
     fn create_outputs(
         display_handle: &DisplayHandle,
-        configs: &[retro_compositor::OutputConfig],
+        laid_out: &[LaidOutOutput],
+        names: &[String],
         refresh_mhz: i32,
         scale: OutputScale,
     ) -> (Vec<Output>, Size<i32, Physical>) {
         let scale_i32 = scale.as_f64().round().max(1.0) as i32;
-        let layout_mode = layout_mode_from_env();
-        let laid_out = layout_outputs(configs, layout_mode);
-        let total = total_output_size(&laid_out);
+        let total = total_output_size(laid_out);
         // Physical canvas size for the nested X11 window (logical × scale).
         let total_phys = apply_scale_to_output_config(total, scale);
         let mut outputs = Vec::with_capacity(laid_out.len());
 
         for (i, o) in laid_out.iter().enumerate() {
-            let name = format!("X11-{}", i + 1);
+            let name = names
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("X11-{}", i + 1));
             let output = Output::new(
-                name,
+                name.clone(),
                 PhysicalProperties {
                     size: (0, 0).into(),
                     subpixel: Subpixel::Unknown,
@@ -1492,8 +1499,9 @@ mod linux {
             output.set_preferred(mode);
             output.create_global::<RetroCompositor>(display_handle);
             tracing::info!(
-                "wl_output {} {}x{} at ({},{}) refresh={} mHz {}",
+                "wl_output {} ({}) {}x{} at ({},{}) refresh={} mHz {}",
                 i + 1,
+                name,
                 o.config.width,
                 o.config.height,
                 o.x,
@@ -1740,13 +1748,21 @@ mod linux {
             "[retro-compositor] {}",
             session_mode_note(backend_kind, output_scale)
         );
-        let output_configs = outputs_from_env();
-        let (outputs, output_size) =
-            create_outputs(&display_handle, &output_configs, refresh_mhz, output_scale);
-        if output_configs.len() > 1 || !output_scale.is_identity() {
+        // Prefer RETROSHELL_OUTPUTS_LAYOUT (shell display arrange), else
+        // RETROSHELL_OUTPUTS + layout mode, else WIDTH/HEIGHT defaults.
+        let resolved = resolve_laid_out_outputs_from_env();
+        eprintln!("[retro-compositor] {}", resolved.summary());
+        let (outputs, output_size) = create_outputs(
+            &display_handle,
+            &resolved.laid_out,
+            &resolved.names,
+            refresh_mhz,
+            output_scale,
+        );
+        if resolved.laid_out.len() > 1 || !output_scale.is_identity() {
             eprintln!(
                 "[retro-compositor] multi-output/scale: {} heads, canvas {}x{} {}",
-                output_configs.len(),
+                resolved.laid_out.len(),
                 output_size.w,
                 output_size.h,
                 output_scale_summary(output_scale)
