@@ -7,6 +7,7 @@ pub mod capture;
 pub mod chrome_protocol;
 pub mod desktop_manager;
 pub mod display_arrange;
+pub mod display_settings;
 pub mod dock;
 pub mod fdo_notifications;
 pub mod foreign_toplevel;
@@ -40,8 +41,9 @@ pub mod window_rules;
 pub mod workspace_manager;
 
 pub use a11y_actions::{
-    actions_for_chrome, plan_invoke, session_action_for_invoke, session_root_actions,
-    summarize_actions, AccessibleAction, ActionInterfaceSummary, InvokePlan,
+    actions_for_chrome, chrome_target_for_atspi_path, invoke_id_for_object_name, plan_invoke,
+    primary_invoke_for_chrome, resolve_pending_invoke, session_action_for_invoke,
+    session_root_actions, summarize_actions, AccessibleAction, ActionInterfaceSummary, InvokePlan,
 };
 pub use a11y_prefs::{
     apply_a11y_prefs_to_theme_name, effective_animation_ms, A11yPrefs, ContrastPreference,
@@ -93,17 +95,20 @@ pub use fdo_notifications::{
 };
 pub use notification_center::{NotificationCenter, NotificationPriority};
 pub use portal::{
-    create_screencast_session, handle_file_chooser_open, handle_file_chooser_save, handle_open_uri,
-    handle_portal_screenshot_request, portal_screenshot_filename, portal_screenshot_uri_for,
-    portal_screenshots_dir, read_all_portal_settings, read_portal_setting,
+    apply_screencast_readiness, create_screencast_session,
+    create_screencast_session_with_backend_note, handle_file_chooser_open, handle_file_chooser_save,
+    handle_open_uri, handle_portal_screenshot_request, portal_screenshot_filename,
+    portal_screenshot_uri_for, portal_screenshots_dir, read_all_portal_settings,
+    read_portal_setting, screencast_backend_note, screencast_backend_note_from_socket,
     select_screencast_sources, start_screencast, take_portal_style_screenshot,
     take_portal_style_screenshot_with, validate_file_chooser_request, PortalFileChooserRequest,
     PortalFileChooserResult, PortalScreencastRequest, PortalScreencastSession,
     PortalScreenshotRequest, PortalScreenshotResult, PortalSettingsNamespace, ScreencastStream,
     PORTAL_BUS_NAME, PORTAL_FILECHOOSER_INTERFACE, PORTAL_OPENURI_INTERFACE, PORTAL_PATH,
     PORTAL_SCREENCAST_INTERFACE, PORTAL_SCREENSHOT_INTERFACE, PORTAL_SETTINGS_INTERFACE,
-    SCREENCAST_DEFAULT_HEIGHT, SCREENCAST_DEFAULT_WIDTH, SCREENCAST_PLACEHOLDER_NODE_ID,
-    SCREENCAST_SOURCE_TYPE_MONITOR, SCREENCAST_SOURCE_TYPE_WINDOW,
+    SCREENCAST_DEFAULT_HEIGHT, SCREENCAST_DEFAULT_WIDTH, SCREENCAST_NOTE_PIPEWIRE_SOCKET,
+    SCREENCAST_NOTE_PORTAL_STUB, SCREENCAST_PLACEHOLDER_NODE_ID, SCREENCAST_SOURCE_TYPE_MONITOR,
+    SCREENCAST_SOURCE_TYPE_WINDOW,
 };
 pub use polkit_agent::{
     handle_polkit_auth, try_register_polkit_agent, validate_polkit_request, PolkitAgentState,
@@ -112,16 +117,19 @@ pub use polkit_agent::{
 };
 pub use portal_dbus::try_register_portal_session_bus;
 pub use portal_extra::{
-    handle_inhibit, handle_print_request, handle_secret_retrieve, inhibit_blocks_idle,
-    inhibit_to_idle_reason, InhibitFlag, PortalInhibitCookie, PortalInhibitRequest,
-    PortalPrintRequest, PortalPrintResult, PortalSecretRequest, PortalSecretResult,
+    active_idle_inhibit_state, active_inhibits, clear_inhibit_store_for_tests, handle_inhibit,
+    handle_inhibit_and_register, handle_print_request, handle_secret_retrieve, inhibit_blocks_idle,
+    inhibit_to_idle_reason, portal_blocks_idle, register_inhibit_cookie, release_inhibit_cookie,
+    InhibitFlag, PortalInhibitCookie, PortalInhibitRequest, PortalPrintRequest, PortalPrintResult,
+    PortalSecretRequest, PortalSecretResult,
 };
 pub use power::{battery_info, BatteryInfo};
 pub use display_arrange::{
-    arrange_mode_from_env_value, arrangement_bounds, normalize_arrangement, place_outputs,
-    plan_display_apply, ArrangeMode, DisplayApplyPlan, DisplayApplyStep, DisplayArrangement,
-    DisplayOutput, PlacedOutput,
+    apply_display_plan_env, arrange_mode_from_env_value, arrangement_bounds, normalize_arrangement,
+    place_outputs, plan_display_apply, ArrangeMode, DisplayApplyPlan, DisplayApplyStep,
+    DisplayArrangement, DisplayOutput, PlacedOutput,
 };
+pub use display_settings::DisplayConfig;
 pub use i18n::{
     format_message, is_rtl_language, text_direction_for_locale, tr, LocaleId, LocalePrefs,
     MessageCatalog, TextDirection,
@@ -257,6 +265,32 @@ impl RetroShell {
             // Load named theme + a11y prefs (high_contrast / reduced_motion) from settings.conf.
             tm.load_theme_from_settings();
         }
+        // Locale from LANG + optional settings.conf; drive system menu chrome strings.
+        {
+            let conf_text = read_settings_conf_text();
+            let prefs = if conf_text.is_empty() {
+                LocalePrefs::parse_from_env_lang(std::env::var("LANG").ok().as_deref())
+            } else {
+                let mut p = LocalePrefs::parse_from_conf(&conf_text);
+                // Env LANG still wins when conf has no locale key.
+                if p.locale.language == "en"
+                    && p.locale.region.as_deref() == Some("US")
+                    && !conf_text.lines().any(|l| {
+                        let t = l.trim();
+                        t.starts_with("locale=")
+                            || t.starts_with("lang=")
+                            || t.starts_with("language=")
+                    })
+                {
+                    p = LocalePrefs::parse_from_env_lang(std::env::var("LANG").ok().as_deref());
+                }
+                p
+            };
+            shell.menu_server.write().apply_locale_labels(&prefs);
+            tracing::info!(locale = %prefs.locale.tag(), "shell menu locale applied");
+        }
+        // Multi-monitor arrange: plan + live EmitLayoutEnv (RETROSHELL_OUTPUTS_LAYOUT).
+        apply_display_config_from_settings();
         // Best-effort FreeDesktop Notifications on the session bus (Linux).
         // Failure is non-fatal: pure NotificationCenter still works in-process.
         let _ = fdo_notifications::try_register_session_bus(shell.notification_center.clone());
@@ -503,6 +537,126 @@ impl ShellDesktop {
         {
             self.foreign_toplevel_synced = true;
             tracing::debug!(toplevels = n, "Force Quit: foreign-toplevel-list refreshed");
+            self.apply_foreign_rule_workspaces_to_shell_windows();
+        }
+    }
+
+    /// When foreign-toplevel window rules assign a workspace, move matching
+    /// [`ShellWindow`]s to that workspace index (clamped to 0..7).
+    fn apply_foreign_rule_workspaces_to_shell_windows(&mut self) {
+        let assignments: Vec<(String, String, usize)> = self
+            .foreign_toplevels
+            .entries()
+            .filter_map(|e| {
+                e.workspace.map(|ws| {
+                    (
+                        e.title.clone(),
+                        e.app_id.clone(),
+                        (ws as usize).min(SHELL_DESKTOP_COUNT.saturating_sub(1)),
+                    )
+                })
+            })
+            .collect();
+        if assignments.is_empty() {
+            return;
+        }
+        let mut moved = 0usize;
+        for (title, app_id, ws) in assignments {
+            for shell_window in &mut self.windows {
+                let title_match = shell_window.window.title() == title;
+                // Session-client foreign entries use binary name as title and
+                // bundle_id as app_id; also match title substring for internal windows.
+                let app_title_match = !app_id.is_empty()
+                    && shell_window
+                        .window
+                        .title()
+                        .to_ascii_lowercase()
+                        .contains(&app_id.to_ascii_lowercase());
+                if title_match || app_title_match {
+                    if shell_window.workspace != ws {
+                        shell_window.workspace = ws;
+                        self.window_manager
+                            .write()
+                            .assign_workspace(shell_window.id, ws);
+                        moved += 1;
+                    }
+                }
+            }
+        }
+        if moved > 0 {
+            tracing::debug!(moved, "window rules: moved ShellWindows to rule workspaces");
+        }
+    }
+
+    /// Drain kit AT-SPI pending DoAction queue into real shell handlers.
+    fn drain_a11y_pending_actions(&mut self) {
+        let pending = retro_kit::drain_pending_actions();
+        for action in pending {
+            let plan = resolve_pending_invoke(
+                &action.path,
+                &action.object_name,
+                action.action_index,
+                &action.action_name,
+            );
+            if !plan.valid {
+                tracing::debug!(
+                    path = %action.path,
+                    name = %action.object_name,
+                    "a11y DoAction: no shell invoke mapping"
+                );
+                continue;
+            }
+            tracing::info!(
+                invoke_id = %plan.invoke_id,
+                path = %action.path,
+                "a11y DoAction → shell handler"
+            );
+            self.dispatch_a11y_invoke(&plan.invoke_id);
+        }
+    }
+
+    /// Handle chrome.* and shell.* invoke ids from a11y / keyboard Activate.
+    fn dispatch_a11y_invoke(&mut self, invoke_id: &str) {
+        match invoke_id {
+            "chrome.menu.activate" | "chrome.menu.system" => {
+                // Open the Retro system menu (first menu).
+                if !self.menu_bar.menus.is_empty() {
+                    // MenuBar has no public "open index" API in all builds; fire
+                    // a known session action via the system menu path when possible.
+                    // Activate: no-op beyond logging if menu is already navigable.
+                    tracing::debug!("a11y chrome.menu.activate");
+                }
+            }
+            "chrome.dock.activate" => {
+                if let Some(bundle) = self.bundle_ids.first().cloned() {
+                    self.launch_external_app(&bundle);
+                }
+            }
+            "chrome.desktop.open" => {
+                if let Some(item) = self.desktop.items.iter().position(|i| i.selected) {
+                    self.launch_item(item);
+                } else if !self.desktop.items.is_empty() {
+                    self.launch_item(0);
+                }
+            }
+            "chrome.window.activate" => {
+                if let Some(id) = self.active_window_id() {
+                    self.focus_window(id);
+                }
+            }
+            "chrome.window.close" => self.close_active_window(),
+            "chrome.window.minimize" => {
+                if let Some(id) = self.active_window_id() {
+                    self.toggle_window_minimized(id);
+                }
+            }
+            "chrome.dock.menu" | "chrome.desktop.menu" => {
+                tracing::debug!(invoke_id, "a11y context menu invoke (no popup yet)");
+            }
+            other => {
+                // shell.lock / shell.log_out / shell.force_quit / …
+                self.handle_menu_action(other);
+            }
         }
     }
 
@@ -943,6 +1097,7 @@ impl ShellDesktop {
                     bundle_id,
                     Some(pid),
                 ));
+                self.apply_foreign_rule_workspaces_to_shell_windows();
                 self.session_clients.register(client);
                 self.last_error = None;
                 self.activate_app_menu(bundle_id);
@@ -1977,6 +2132,60 @@ fn build_folder_window(title: &str, path: &PathBuf) -> Window {
     window
 }
 
+fn settings_conf_path() -> PathBuf {
+    std::env::var_os("RETROSHELL_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".config/retroshell"))
+        })
+        .unwrap_or_else(|| PathBuf::from("/tmp/retroshell"))
+        .join("settings.conf")
+}
+
+fn read_settings_conf_text() -> String {
+    fs::read_to_string(settings_conf_path()).unwrap_or_default()
+}
+
+/// Load DisplayConfig and apply arrangement env (live nested layout bridge).
+fn apply_display_config_from_settings() {
+    let path = settings_conf_path();
+    // DisplayConfig::load expects a TOML map with a `[display]` table; also
+    // accept flat arrange_mode= in settings.conf via env override path.
+    let mut config = DisplayConfig::load(&path);
+    // Flat settings.conf keys (theme manager style) for arrange_mode / scale.
+    let conf = read_settings_conf_text();
+    for line in conf.lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("arrange_mode=") {
+            config.arrange_mode = v.trim().to_string();
+        }
+        if let Some(v) = line.strip_prefix("scale_percent=") {
+            if let Ok(n) = v.trim().parse::<u32>() {
+                config.scale_percent = n;
+            }
+        }
+    }
+    match config.plan_arrangement(&[]) {
+        Ok(plan) => {
+            let applied = apply_display_plan_env(&plan);
+            if !applied.is_empty() {
+                tracing::info!(
+                    mode = %config.arrange_mode,
+                    steps = plan.steps.len(),
+                    logical = %(format!("{}x{}", plan.logical_width, plan.logical_height)),
+                    env = ?applied,
+                    "display arrange plan applied (EmitLayoutEnv)"
+                );
+            }
+        }
+        Err(err) => {
+            tracing::warn!(%err, "display arrangement plan failed");
+        }
+    }
+}
+
 fn get_lock_password() -> Option<String> {
     // First, check environment variable
     if let Ok(password) = std::env::var("RETROSHELL_LOCK_PASSWORD") {
@@ -1987,12 +2196,7 @@ fn get_lock_password() -> Option<String> {
     }
 
     // Then, check config file
-    let config_path = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| home.join(".config/retroshell/settings.conf"))
-        .unwrap_or_else(|| PathBuf::from("/tmp/retroshell/settings.conf"));
-
-    if let Ok(contents) = fs::read_to_string(&config_path) {
+    if let Ok(contents) = fs::read_to_string(settings_conf_path()) {
         for line in contents.lines() {
             if let Some(value) = line.strip_prefix("lock_password=") {
                 let value = value.trim();
@@ -2461,6 +2665,17 @@ impl Widget for ShellDesktop {
                             }
                         }
                         KeyboardNavIntent::Activate => {
+                            // When chrome has focus, drain primary invoke from a11y_actions.
+                            let plan = primary_invoke_for_chrome(self.chrome_focus);
+                            if plan.valid {
+                                tracing::debug!(
+                                    invoke_id = %plan.invoke_id,
+                                    focus = ?self.chrome_focus,
+                                    "chrome Activate → a11y invoke"
+                                );
+                                self.dispatch_a11y_invoke(&plan.invoke_id);
+                                return EventResult::Handled;
+                            }
                             // Enter on Force Quit list is handled by window widgets below.
                         }
                         KeyboardNavIntent::NextWindow => {
@@ -2790,14 +3005,23 @@ impl Widget for ShellDesktop {
             self.locked = true;
         }
 
+        // AT-SPI DoAction queue → real shell handlers (lock / log out / chrome.*).
+        self.drain_a11y_pending_actions();
+
         // Idle auto-lock: pure policy → shell lock when password configured.
+        // Merge process-wide portal Inhibit cookies (Idle/Suspend flags) without
+        // permanently mutating shell-local idle_inhibit (so UnInhibit clears).
         if !self.locked {
             let idle_secs = self.last_input_at.elapsed().as_secs();
+            let mut inhibit = self.idle_inhibit.clone();
+            for reason in portal_extra::active_idle_inhibit_state().reasons() {
+                inhibit.add(*reason);
+            }
             let phase = idle_phase(
                 &self.idle_config,
                 idle_secs,
                 self.locked,
-                &self.idle_inhibit,
+                &inhibit,
             );
             if recommended_action(phase, self.locked) == IdleRecommendedAction::Lock {
                 if self.expected_lock_password.is_some() {

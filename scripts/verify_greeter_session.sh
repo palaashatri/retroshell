@@ -32,5 +32,13 @@ grep -q "Type=Application" "$ROOT/packaging/retroshell-wayland.desktop" \
 echo "==> systemd user unit ExecStart"
 grep -q "start-retroshell" "$ROOT/packaging/retroshell.service"
 
+echo "==> DesktopNames=RetroShell on both session desktops"
+grep -q "DesktopNames=RetroShell" "$ROOT/packaging/retroshell.desktop"
+grep -q "DesktopNames=RetroShell" "$ROOT/packaging/retroshell-wayland.desktop"
+
+echo "==> TryExec present (greeter can probe binary)"
+grep -q "TryExec=" "$ROOT/packaging/retroshell.desktop" \
+  || grep -q "TryExec=" "$ROOT/packaging/retroshell-wayland.desktop"
+
 echo
 echo "greeter session packaging smoke PASSED (no live DM required)"

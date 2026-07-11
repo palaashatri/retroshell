@@ -316,6 +316,25 @@ pub fn arrange_mode_from_env_value(value: Option<&str>) -> ArrangeMode {
     value.and_then(ArrangeMode::parse).unwrap_or_default()
 }
 
+/// Live apply: set process env vars for every [`DisplayApplyStep::EmitLayoutEnv`].
+///
+/// Returns the `(key, value)` pairs that were applied. Other plan steps
+/// (Place / Disable / SetPrimary) are left for compositor/DRM paths — this
+/// helper only bridges the nested layout env contract
+/// (`RETROSHELL_OUTPUTS_LAYOUT`).
+pub fn apply_display_plan_env(plan: &DisplayApplyPlan) -> Vec<(String, String)> {
+    let mut applied = Vec::new();
+    for step in &plan.steps {
+        if let DisplayApplyStep::EmitLayoutEnv { key, value } = step {
+            // SAFETY: single-threaded shell startup / settings path; layout env
+            // is process-local configuration for nested compositor children.
+            std::env::set_var(key, value);
+            applied.push((key.clone(), value.clone()));
+        }
+    }
+    applied
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,5 +414,24 @@ mod tests {
             arrange_mode_from_env_value(Some("stack")),
             ArrangeMode::ExtendDown
         );
+    }
+
+    #[test]
+    fn apply_display_plan_env_sets_layout() {
+        let mut arr = dual();
+        arr.outputs[0].is_primary = true;
+        let plan = plan_display_apply(&arr).unwrap();
+        let applied = apply_display_plan_env(&plan);
+        assert!(
+            applied
+                .iter()
+                .any(|(k, _)| k == "RETROSHELL_OUTPUTS_LAYOUT"),
+            "expected RETROSHELL_OUTPUTS_LAYOUT in {applied:?}"
+        );
+        let val = std::env::var("RETROSHELL_OUTPUTS_LAYOUT").expect("env set");
+        assert!(val.contains("eDP-1"), "layout value={val}");
+        assert!(val.contains("HDMI-1"), "layout value={val}");
+        // Cleanup so other tests are not polluted.
+        std::env::remove_var("RETROSHELL_OUTPUTS_LAYOUT");
     }
 }

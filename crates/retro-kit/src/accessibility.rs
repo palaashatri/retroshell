@@ -23,9 +23,11 @@
 //!   until re-register; Orca may still miss mid-session edits.
 //! - **`org.a11y.atspi.Component` is exported** with GetExtents/Contains; extents
 //!   are often zero until layout bounds are filled into the tree.
-//! - **`DoAction` is advisory**: Action methods return success for valid indices
-//!   but do not drive the real toolkit focus or activation path (shell has a
-//!   separate pure action map in `retro_shell::a11y_actions`).
+//! - **`DoAction`**: valid indices push onto [`drain_pending_actions`] **and**
+//!   invoke process-local handlers from [`register_action_invoke_handler`]
+//!   (`OnceLock`/`Mutex`/`Vec`). Shell drains the queue in `update()` into real
+//!   chrome/session handlers. Still not Orca-complete (snapshot tree, no live
+//!   widget drive for every control).
 //! - **Shallow nesting**: only one child level under flat nodes is exported.
 //! - **Selection / Table / Value** pure helpers are partial; full Collection not shipped.
 //! - **Relation set** pure helpers only ([`AccessibleRelation`]).
@@ -36,12 +38,117 @@
 
 use crate::Rect;
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use zbus::blocking::connection::Builder as ConnectionBuilder;
 use zbus::blocking::Connection;
 use zbus::zvariant::OwnedObjectPath;
 use zbus::{fdo, interface};
+
+// ---------------------------------------------------------------------------
+// In-process pending DoAction queue (live bridge for shell / tests)
+// ---------------------------------------------------------------------------
+
+/// One AT-SPI `DoAction` request retained for the toolkit/shell to drain.
+///
+/// Pure + live: D-Bus `DoAction` and test helpers both push here. The shell
+/// drains in `update()` and maps paths / object names onto real handlers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingAccessibleAction {
+    /// Accessible object path that received DoAction.
+    pub path: String,
+    /// Accessible `Name` at register time (menu item label, button label, …).
+    pub object_name: String,
+    /// Action index passed to DoAction.
+    pub action_index: i32,
+    /// Canonical action name (`Activate`, `Press`, `Focus`, …).
+    pub action_name: String,
+}
+
+fn pending_action_queue() -> &'static Mutex<VecDeque<PendingAccessibleAction>> {
+    static Q: OnceLock<Mutex<VecDeque<PendingAccessibleAction>>> = OnceLock::new();
+    Q.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+/// Push a DoAction request onto the process-local queue (always works in-process).
+pub fn push_pending_action(action: PendingAccessibleAction) {
+    if let Ok(mut q) = pending_action_queue().lock() {
+        q.push_back(action);
+    }
+}
+
+/// Drain all pending DoAction requests (FIFO). Used by shell `update()` and tests.
+pub fn drain_pending_actions() -> Vec<PendingAccessibleAction> {
+    pending_action_queue()
+        .lock()
+        .map(|mut q| q.drain(..).collect())
+        .unwrap_or_default()
+}
+
+/// Number of queued DoAction requests.
+pub fn pending_action_count() -> usize {
+    pending_action_queue()
+        .lock()
+        .map(|q| q.len())
+        .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// Process-local DoAction callback registry (host-safe; no D-Bus required)
+// ---------------------------------------------------------------------------
+
+/// Handler for AT-SPI `DoAction`: `(action_name, object_path) -> handled`.
+///
+/// First handler that returns `true` stops the chain. Shell may register
+/// handlers for action names; tests register pure counters. Safe on macOS.
+pub type ActionInvokeHandler = Box<dyn FnMut(&str, &str) -> bool + Send>;
+
+fn action_invoke_handlers() -> &'static Mutex<Vec<ActionInvokeHandler>> {
+    static HANDLERS: OnceLock<Mutex<Vec<ActionInvokeHandler>>> = OnceLock::new();
+    HANDLERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Register a process-local handler invoked from D-Bus / pure `DoAction`.
+pub fn register_action_invoke_handler<F>(handler: F)
+where
+    F: FnMut(&str, &str) -> bool + Send + 'static,
+{
+    if let Ok(mut guard) = action_invoke_handlers().lock() {
+        guard.push(Box::new(handler));
+    }
+}
+
+/// Remove all process-local action handlers (tests / shell teardown).
+pub fn clear_action_invoke_handlers() {
+    if let Ok(mut guard) = action_invoke_handlers().lock() {
+        guard.clear();
+    }
+}
+
+/// Number of registered invoke handlers (tests).
+pub fn action_invoke_handler_count() -> usize {
+    action_invoke_handlers()
+        .lock()
+        .map(|g| g.len())
+        .unwrap_or(0)
+}
+
+/// Invoke registered handlers for `(action_name, object_path)`.
+///
+/// Returns `true` if any handler reported handled. Host-safe (no D-Bus).
+pub fn try_invoke_registered_action(action_name: &str, object_path: &str) -> bool {
+    match action_invoke_handlers().lock() {
+        Ok(mut guard) => {
+            for handler in guard.iter_mut() {
+                if handler(action_name, object_path) {
+                    return true;
+                }
+            }
+            false
+        }
+        Err(_) => false,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // AT-SPI2 constants & pure helpers (no D-Bus required)
@@ -289,8 +396,8 @@ pub fn shell_chrome_accessibility_tree(app_name: &str) -> AccessibilityTree {
 /// Canonical AT-SPI actions RetroShell exposes on interactive nodes.
 ///
 /// Names match common AT-SPI / ATK action strings so Orca and similar ATs can
-/// discover them via `org.a11y.atspi.Action`. Invoking `DoAction` on the bus is
-/// still advisory (see module-level Orca-incomplete notes).
+/// discover them via `org.a11y.atspi.Action`. Invoking `DoAction` on the bus
+/// queues a [`PendingAccessibleAction`] for the shell to drain (see module notes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AccessibleAction {
     /// Primary activation (default click / open / invoke).
@@ -1677,15 +1784,19 @@ impl AtspiApplication {
 
 /// `org.a11y.atspi.Action` — Activate / Press / Focus for actionable nodes.
 ///
-/// `DoAction` validates the index and returns `true` when in range. It does
-/// **not** drive live UI (Orca-incomplete; see module docs).
+/// `DoAction` validates the index, queues a [`PendingAccessibleAction`], calls
+/// process-local invoke handlers, and returns `true` when in range.
 struct AtspiAction {
+    path: String,
+    object_name: String,
     actions: Vec<AccessibleAction>,
 }
 
 impl AtspiAction {
-    fn from_role(role: AccessibilityRole) -> Self {
+    fn from_role(role: AccessibilityRole, path: impl Into<String>, object_name: impl Into<String>) -> Self {
         Self {
+            path: path.into(),
+            object_name: object_name.into(),
             actions: actions_for_role(role),
         }
     }
@@ -1724,9 +1835,24 @@ impl AtspiAction {
         Ok(self.get(index)?.key_binding().to_string())
     }
 
-    /// Advisory only — does not activate real toolkit widgets.
+    /// Queue pending action + call process-local invoke handlers (host-safe).
     fn do_action(&self, index: i32) -> fdo::Result<bool> {
-        let _ = self.get(index)?;
+        let action = self.get(index)?;
+        let action_name = action.name().to_string();
+        push_pending_action(PendingAccessibleAction {
+            path: self.path.clone(),
+            object_name: self.object_name.clone(),
+            action_index: index,
+            action_name: action_name.clone(),
+        });
+        let handled = try_invoke_registered_action(&action_name, &self.path);
+        if handled {
+            tracing::debug!(
+                action = %action_name,
+                path = %self.path,
+                "AT-SPI DoAction claimed by process-local callback"
+            );
+        }
         Ok(true)
     }
 
@@ -2037,7 +2163,10 @@ pub fn register_at_spi_app_with_tree(
                 };
                 server.at(cpath.as_str(), child_obj)?;
                 if role_has_actions(child.role) {
-                    server.at(cpath.as_str(), AtspiAction::from_role(child.role))?;
+                    server.at(
+                        cpath.as_str(),
+                        AtspiAction::from_role(child.role, &cpath, &child.label),
+                    )?;
                 }
                 if role_has_text(child.role) {
                     server.at(cpath.as_str(), AtspiText::from_label(&child.label))?;
@@ -2063,7 +2192,10 @@ pub fn register_at_spi_app_with_tree(
             };
             server.at(path.as_str(), obj)?;
             if role_has_actions(node.role) {
-                server.at(path.as_str(), AtspiAction::from_role(node.role))?;
+                server.at(
+                    path.as_str(),
+                    AtspiAction::from_role(node.role, &path, &node.label),
+                )?;
             }
             if role_has_text(node.role) {
                 server.at(path.as_str(), AtspiText::from_label(&node.label))?;
@@ -2348,6 +2480,53 @@ mod tests {
         assert!(actions_for_role(AccessibilityRole::StaticText).is_empty());
         assert!(actions_for_role(AccessibilityRole::Window).is_empty());
         assert!(actions_for_role(AccessibilityRole::Unknown).is_empty());
+    }
+
+    #[test]
+    fn pending_action_queue_push_drain() {
+        // Isolate from other tests that may have left items.
+        let _ = drain_pending_actions();
+        assert_eq!(pending_action_count(), 0);
+        push_pending_action(PendingAccessibleAction {
+            path: "/org/a11y/atspi/accessible/0".into(),
+            object_name: "Menu Bar".into(),
+            action_index: 0,
+            action_name: ACTION_FOCUS.into(),
+        });
+        assert_eq!(pending_action_count(), 1);
+        let drained = drain_pending_actions();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].object_name, "Menu Bar");
+        assert_eq!(pending_action_count(), 0);
+    }
+
+    #[test]
+    fn action_invoke_handler_registry() {
+        clear_action_invoke_handlers();
+        assert_eq!(action_invoke_handler_count(), 0);
+        assert!(!try_invoke_registered_action(ACTION_ACTIVATE, "/x"));
+
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits2 = hits.clone();
+        register_action_invoke_handler(move |name, path| {
+            if name == ACTION_ACTIVATE && path.ends_with("/2") {
+                hits2.fetch_add(1, Ordering::SeqCst);
+                true
+            } else {
+                false
+            }
+        });
+        assert_eq!(action_invoke_handler_count(), 1);
+        assert!(try_invoke_registered_action(
+            ACTION_ACTIVATE,
+            "/org/a11y/atspi/accessible/2"
+        ));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert!(!try_invoke_registered_action(ACTION_FOCUS, "/org/a11y/atspi/accessible/2"));
+        clear_action_invoke_handlers();
+        assert_eq!(action_invoke_handler_count(), 0);
     }
 
     #[test]

@@ -93,13 +93,15 @@ pub struct GreeterSessionReadiness {
 }
 
 impl GreeterSessionReadiness {
-    /// True when files exist, desktops validate, and start script is present.
-    /// Does **not** claim a live display manager was exercised.
+    /// True when files exist, desktops validate, DesktopNames present, and the
+    /// start script is executable. Does **not** claim a live display manager
+    /// was exercised.
     pub fn install_ready(&self) -> bool {
         self.packaging.all_ok()
             && self.wayland_desktop_valid
             && self.xsession_desktop_valid
             && self.desktop_names_ok
+            && self.start_script_executable_bit
     }
 
     pub fn score_points(&self) -> u8 {
@@ -141,9 +143,9 @@ pub fn check_greeter_session_readiness(layout: &SessionPackagingLayout) -> Greet
     let xsession_desktop_valid = read_and_validate(&layout.xsession_desktop, &mut notes);
 
     let desktop_names_ok = desktop_names_present(&layout.wayland_session_desktop)
-        || desktop_names_present(&layout.xsession_desktop);
+        && desktop_names_present(&layout.xsession_desktop);
     if !desktop_names_ok {
-        notes.push("DesktopNames not set on session .desktop files".into());
+        notes.push("DesktopNames=RetroShell required on both wayland-sessions and xsessions entries".into());
     }
 
     let start_script_executable_bit = is_executable(&layout.start_script);
@@ -151,9 +153,33 @@ pub fn check_greeter_session_readiness(layout: &SessionPackagingLayout) -> Greet
         notes.push("start-retroshell exists but executable bit not set".into());
     }
 
-    if packaging.all_ok() && wayland_desktop_valid && xsession_desktop_valid {
+    // Systemd user unit sanity (ExecStart points at start-retroshell).
+    if packaging.user_service_ok {
+        match std::fs::read_to_string(&layout.user_service) {
+            Ok(unit) => {
+                if !unit.contains("start-retroshell") {
+                    notes.push("user service unit does not reference start-retroshell".into());
+                } else {
+                    notes.push("user service unit references start-retroshell".into());
+                }
+            }
+            Err(e) => notes.push(format!("cannot read user service: {e}")),
+        }
+    }
+
+    if packaging.all_ok()
+        && wayland_desktop_valid
+        && xsession_desktop_valid
+        && desktop_names_ok
+        && start_script_executable_bit
+    {
         notes.push(
             "Install artifacts OK — live greeter login still requires DM + seat on target host"
+                .into(),
+        );
+    } else if packaging.all_ok() && wayland_desktop_valid && xsession_desktop_valid {
+        notes.push(
+            "Packaging present and desktops validate; check DesktopNames / executable bit for full install_ready"
                 .into(),
         );
     }
@@ -242,6 +268,10 @@ pub fn parse_desktop_keys(content: &str) -> HashMap<String, String> {
 /// - `Type=Application`
 /// - `Exec` containing `start-retroshell`
 /// - `Name` non-empty
+/// - `DesktopNames` containing `RetroShell` (when present; recommended)
+///
+/// Soft checks (warnings via notes path, not hard errors unless absent on
+/// readiness probe): `TryExec` should also mention `start-retroshell`.
 ///
 /// Returns `Ok(())` on success, or `Err` with one message per failed rule.
 pub fn validate_session_desktop(content: &str) -> Result<(), Vec<String>> {
@@ -266,6 +296,22 @@ pub fn validate_session_desktop(content: &str) -> Result<(), Vec<String>> {
         Some(name) if !name.is_empty() => {}
         Some(_) => errors.push("Name must be non-empty".to_string()),
         None => errors.push("missing required key: Name".to_string()),
+    }
+
+    // DesktopNames is required for install_ready greeter checklist.
+    match keys.get("DesktopNames").map(String::as_str) {
+        Some(names) if names.split(';').any(|n| n.trim() == "RetroShell") => {}
+        Some(names) if !names.is_empty() => {
+            // Present but not RetroShell — still valid Type/Exec, note as error
+            // only when empty; non-RetroShell is a soft failure for readiness.
+            if !names.to_ascii_lowercase().contains("retro") {
+                errors.push(format!(
+                    "DesktopNames should include RetroShell (got '{names}')"
+                ));
+            }
+        }
+        Some(_) => errors.push("DesktopNames must be non-empty".to_string()),
+        None => errors.push("missing recommended key: DesktopNames=RetroShell".to_string()),
     }
 
     if errors.is_empty() {
@@ -344,6 +390,7 @@ DesktopNames=RetroShell
 Name=RetroShell
 Exec=start-retroshell
 Type=Application
+DesktopNames=RetroShell
 ";
         assert!(validate_session_desktop(content).is_ok());
     }
@@ -354,8 +401,20 @@ Type=Application
 Name=RetroShell
 Exec=/usr/local/bin/start-retroshell
 Type=Application
+DesktopNames=RetroShell
 ";
         assert!(validate_session_desktop(content).is_ok());
+    }
+
+    #[test]
+    fn validate_session_desktop_requires_desktop_names() {
+        let content = "\
+Name=RetroShell
+Exec=start-retroshell
+Type=Application
+";
+        let err = validate_session_desktop(content).unwrap_err();
+        assert!(err.iter().any(|e| e.contains("DesktopNames")));
     }
 
     #[test]

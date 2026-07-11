@@ -7,9 +7,9 @@ fn main() {
     // Best-effort AT-SPI2 registration with structural shell chrome tree
     // (menu bar → desktop icons → dock + window). Connection is retained for
     // best-effort Focus/Object event emission from shell Tab chrome focus.
-    // Still Orca-incomplete: no Text/Component interfaces, live tree sync, or
-    // real DoAction routing. D-Bus events fail open when registry/bus absent;
-    // in-process AccessibilityEventBus always works.
+    // DoAction queues in-process for shell update() to drain into real handlers.
+    // Still Orca-incomplete: no live tree re-export; D-Bus events fail open when
+    // registry/bus absent; in-process AccessibilityEventBus always works.
     match retro_kit::register_at_spi_shell_chrome("RetroShell") {
         Ok(()) => {
             if retro_kit::at_spi_registration_info().is_some() {

@@ -330,4 +330,18 @@ mod tests {
         assert!(apply_toplevel_force_quit(&mut reg, &target2));
         assert!(reg.is_empty());
     }
+
+    #[test]
+    fn terminal_app_id_gets_workspace_from_rules() {
+        let entry = ForeignToplevelEntry::new(
+            "term-1",
+            "bash",
+            "org.retroshell.Terminal",
+            Some(99),
+        );
+        assert_eq!(entry.workspace, Some(1), "default terminal rule → workspace 1");
+        // Shell clamps workspace to 0..7 when applying to ShellWindow.
+        let clamped = (entry.workspace.unwrap() as usize).min(7);
+        assert_eq!(clamped, 1);
+    }
 }

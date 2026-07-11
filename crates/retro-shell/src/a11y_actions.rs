@@ -2,6 +2,8 @@
 //!
 //! Maps focus targets and common widgets to named actions an AT can invoke.
 //! Not a full Orca stack — provides stable action names + invoke plans.
+//! Live path: kit `DoAction` → pending queue → shell `update()` drains via
+//! [`resolve_pending_invoke`] / [`primary_invoke_for_chrome`].
 
 use crate::chrome_protocol::ChromeFocusTarget;
 use crate::session_actions::SessionAction;
@@ -149,6 +151,95 @@ pub fn plan_invoke(actions: &[AccessibleAction], index: i32) -> InvokePlan {
     }
 }
 
+/// Primary (index 0) invoke for the focused chrome region — used by keyboard Activate.
+pub fn primary_invoke_for_chrome(target: ChromeFocusTarget) -> InvokePlan {
+    plan_invoke(&actions_for_chrome(target), 0)
+}
+
+/// Map an AT-SPI accessible path to a chrome focus target when it is a chrome region root.
+///
+/// Indices match [`retro_kit::shell_chrome_accessibility_tree`]:
+/// menu bar `0`, desktop `1`, dock `2`, window frame `3`.
+pub fn chrome_target_for_atspi_path(path: &str) -> Option<ChromeFocusTarget> {
+    let path = path.trim_end_matches('/');
+    // Nested children (…/cN) are not the chrome root itself.
+    if path.contains("/c") {
+        return None;
+    }
+    match path {
+        "/org/a11y/atspi/accessible/0" => Some(ChromeFocusTarget::MenuBar),
+        "/org/a11y/atspi/accessible/1" => Some(ChromeFocusTarget::DesktopIcons),
+        "/org/a11y/atspi/accessible/2" => Some(ChromeFocusTarget::Dock),
+        "/org/a11y/atspi/accessible/3" => Some(ChromeFocusTarget::Windows),
+        _ => None,
+    }
+}
+
+/// Map a known accessible object name (menu item label / a11y Name) to a shell invoke id.
+pub fn invoke_id_for_object_name(name: &str) -> Option<&'static str> {
+    let n = name.trim();
+    // English structural tree labels (register-time shell chrome tree).
+    match n {
+        "Lock Screen" | "lock-screen" => Some("shell.lock"),
+        "Log Out…" | "Log Out..." | "log-out" => Some("shell.log_out"),
+        "Sleep" | "Suspend" => Some("shell.suspend"),
+        "Restart…" | "Restart..." | "Reboot" => Some("shell.reboot"),
+        "Shut Down…" | "Shut Down..." | "Power Off" => Some("shell.power_off"),
+        "Force Quit..." | "Force Quit…" => Some("shell.force_quit"),
+        "Notification Center..." | "Notification Center…" => Some("shell.notification_center"),
+        "System Settings..." | "System Settings…" => Some("shell.settings"),
+        "About RetroShell" => Some("shell.about"),
+        "Quit RetroShell" => Some("shell.quit"),
+        _ => None,
+    }
+}
+
+/// Resolve a kit pending DoAction into a shell invoke plan (pure).
+///
+/// Priority:
+/// 1. Known object Name → menu/session invoke id (nested menu items, buttons)
+/// 2. Chrome region path + action index → [`actions_for_chrome`]
+/// 3. Application root → session root actions by index
+/// 4. Focus-only on chrome root still yields chrome primary when index is Focus
+pub fn resolve_pending_invoke(
+    path: &str,
+    object_name: &str,
+    action_index: i32,
+    action_name: &str,
+) -> InvokePlan {
+    if let Some(id) = invoke_id_for_object_name(object_name) {
+        return InvokePlan {
+            invoke_id: id.into(),
+            valid: true,
+        };
+    }
+
+    if let Some(target) = chrome_target_for_atspi_path(path) {
+        let actions = actions_for_chrome(target);
+        // Kit exposes Focus as the only action on MenuBar/Dock/Desktop; map Focus
+        // and Activate-style indices onto shell chrome invoke plans by index, or
+        // primary on Focus (index 0 for kit Focus-only roles).
+        if action_name.eq_ignore_ascii_case("Focus") || action_name.eq_ignore_ascii_case("Activate")
+        {
+            // Prefer primary shell action for region activation.
+            let plan = primary_invoke_for_chrome(target);
+            if plan.valid {
+                return plan;
+            }
+        }
+        return plan_invoke(&actions, action_index);
+    }
+
+    if path == "/org/a11y/atspi/accessible/root" || path.ends_with("/root") {
+        return plan_invoke(&session_root_actions(), action_index);
+    }
+
+    InvokePlan {
+        invoke_id: String::new(),
+        valid: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,5 +264,37 @@ mod tests {
         assert!(!plan_invoke(&a, 99).valid);
         let s = summarize_actions("/org/a11y/atspi/accessible/3", &a);
         assert_eq!(s.n_actions, a.len() as i32);
+    }
+
+    #[test]
+    fn resolve_pending_lock_by_name() {
+        let p = resolve_pending_invoke(
+            "/org/a11y/atspi/accessible/0/c0",
+            "Lock Screen",
+            0,
+            "Activate",
+        );
+        assert!(p.valid);
+        assert_eq!(p.invoke_id, "shell.lock");
+    }
+
+    #[test]
+    fn resolve_chrome_path_primary() {
+        let p = resolve_pending_invoke(
+            "/org/a11y/atspi/accessible/2",
+            "Dock",
+            0,
+            "Focus",
+        );
+        assert!(p.valid);
+        assert_eq!(p.invoke_id, "chrome.dock.activate");
+        assert_eq!(
+            chrome_target_for_atspi_path("/org/a11y/atspi/accessible/0"),
+            Some(ChromeFocusTarget::MenuBar)
+        );
+        assert_eq!(
+            primary_invoke_for_chrome(ChromeFocusTarget::MenuBar).invoke_id,
+            "chrome.menu.activate"
+        );
     }
 }

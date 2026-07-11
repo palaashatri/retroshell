@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use crate::i18n::{tr, LocalePrefs};
+
 pub struct MenuServer {
     pub menus: Vec<Menu>,
     pub active_app: Option<String>,
@@ -47,6 +49,34 @@ impl MenuServer {
         server
     }
 
+    /// Re-label session actions that have i18n keys (locale from LANG / prefs).
+    pub fn apply_locale_labels(&mut self, prefs: &LocalePrefs) {
+        let loc = &prefs.locale;
+        let label_for = |action_id: &str| -> Option<String> {
+            match action_id {
+                "shell.lock" => Some(tr("menu.lock_screen", loc)),
+                "shell.log_out" | "shell.logout" => Some(tr("menu.log_out", loc)),
+                "shell.suspend" | "shell.sleep" => Some(tr("menu.suspend", loc)),
+                "shell.reboot" | "shell.restart" => Some(tr("menu.reboot", loc)),
+                "shell.power_off" | "shell.shutdown" | "shell.poweroff" => {
+                    Some(tr("menu.power_off", loc))
+                }
+                "shell.quit" => Some(tr("menu.quit", loc)),
+                "shell.force_quit" => Some(tr("menu.force_quit", loc)),
+                "shell.notification_center" => Some(tr("menu.notification_center", loc)),
+                "shell.about" => Some(tr("menu.about", loc)),
+                _ => None,
+            }
+        };
+        for menu in &mut self.menus {
+            for item in &mut menu.items {
+                if let Some(label) = label_for(&item.action_id) {
+                    item.label = label;
+                }
+            }
+        }
+    }
+
     /// Refresh menu-bar status items for battery and network (best-effort).
     pub fn refresh_status_items(&mut self) {
         use crate::network_manager::get_network_status;
@@ -84,6 +114,11 @@ impl MenuServer {
     }
 
     fn setup_default_menus(&mut self) {
+        // Locale from LANG (or defaults); settings.conf locale applied at shell startup
+        // via `apply_locale_to_system_menu` when conf is loaded.
+        let locale = LocalePrefs::parse_from_env_lang(std::env::var("LANG").ok().as_deref());
+        let loc = &locale.locale;
+
         let mut system_menu = Menu::new("Retro");
         system_menu
             .add_action("About RetroShell")
@@ -107,7 +142,7 @@ impl MenuServer {
             .with_action("shell.clear_notifications");
         system_menu.add_separator();
         system_menu
-            .add_action("Lock Screen")
+            .add_action(tr("menu.lock_screen", loc))
             .with_action("shell.lock")
             .with_shortcut(
                 KeyCode::L,
@@ -133,17 +168,17 @@ impl MenuServer {
             );
         system_menu.add_separator();
         system_menu
-            .add_action("Sleep")
+            .add_action(tr("menu.suspend", loc))
             .with_action("shell.suspend");
         system_menu
-            .add_action("Restart...")
+            .add_action(tr("menu.reboot", loc))
             .with_action("shell.reboot");
         system_menu
-            .add_action("Shut Down...")
+            .add_action(tr("menu.power_off", loc))
             .with_action("shell.power_off");
         system_menu.add_separator();
         system_menu
-            .add_action("Log Out...")
+            .add_action(tr("menu.log_out", loc))
             .with_action("shell.log_out")
             .with_shortcut(
                 KeyCode::Q,
@@ -155,7 +190,7 @@ impl MenuServer {
                 },
             );
         system_menu
-            .add_action("Quit RetroShell")
+            .add_action(tr("menu.quit", loc))
             .with_action("shell.quit")
             .with_shortcut(
                 KeyCode::Q,
