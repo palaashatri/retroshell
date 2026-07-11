@@ -268,7 +268,7 @@ mod linux {
     fn option_string_loose(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
         let value = options.get(key)?;
         // Display-based fallback for string-like values.
-        let s = format!("{value}");
+        let s = format!("{value:?}");
         let s = s.trim().trim_matches('"');
         if s.is_empty() || s == "()" {
             None
