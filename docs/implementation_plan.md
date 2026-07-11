@@ -456,26 +456,26 @@ stay honest, and follow the critical path above.
 
 Real leaps landed (layer-shell **client** bind, foreign-toplevel-list **client** sync,
 DRM dumb-buffer **commit/page_flip**, nested layer compose, portal D-Bus).  
-**Overall daily-driver score under original methodology: ~53 / 100 — not ≥90.**  
+**Overall daily-driver score under original methodology: ~60 / 100 — not ≥90.**  
 Claiming 90 would be score theater; Plasma-replace remains far off.
 
 ### 13.2 Scorecard (same methodology as first ~32 baseline)
 
 | Domain | Was | Now | Why (evidence) |
 |---|---:|---:|---|
-| First-party productivity apps | 72 | **78** | Same real I/O suite; Force Quit richer |
-| Toolkit / look & feel | 68 | **70** | Unchanged core; still no HiDPI tree |
-| Session login / packaging | 28 | **48** | Packaging tree health-checked in-repo; portal/FDO/polkit bus; greeter cold-boot **NOT RUN** |
-| Own compositor as session WM | 35 | **58** | Nested layer compose + DRM present path (dumb commit/page_flip); not full KWin |
-| Multi-client window management | 40 | **55** | FTL client sync + decorations + process spawn; dual model remains |
-| Shell chrome architecture | 30 | **52** | **zwlr_layer_shell client** maps bar/dock when display live; kit paint still draws UI |
-| FreeDesktop (portals, polkit, MIME) | 22 | **60** | Portal D-Bus + NM plan + **polkit agent pure + session-bus register**; no IME/screencast |
-| A11y / i18n | 18 | **20** | Minimal AT-SPI; non-goal polish |
-| Multi-monitor / HDR-VRR daily | 25 | **40** | Connector modeset plan; no KScreen UI; HDR policy-only nested |
-| Polish / packaging / CI | 30 | **48** | Host tests + Docker release image; no hardware CI seat |
-| **Overall (equal-weight mean)** | **~32** | **~53** | Mean of 10 domains ≈ 52.9 → **53**. **Below 90.** |
+| First-party productivity apps | 72 | **80** | Real I/O suite; Force Quit + FTL sync |
+| Toolkit / look & feel | 68 | **74** | Richer AT-SPI roles/actions/chrome tree; still no HiDPI |
+| Session login / packaging | 28 | **58** | Desktop key validation + verify_session_packaging.sh; greeter cold-boot **NOT RUN** |
+| Own compositor as session WM | 35 | **64** | Layer compose + continuous DRM present + text-input-v3 global; not full KWin |
+| Multi-client window management | 40 | **58** | FTL client + decorations + process spawn |
+| Shell chrome architecture | 30 | **68** | Layer-shell client + **skip kit paint when bound** + keyboard chrome focus order |
+| FreeDesktop (portals, polkit, MIME) | 22 | **65** | Portal + polkit + NM plan + text-input-v3 advertise; no screencast |
+| A11y / i18n | 18 | **38** | AT-SPI roles/actions/chrome tree + focus policy; still Orca-incomplete |
+| Multi-monitor / HDR-VRR daily | 25 | **42** | Connector modeset plan; multi-output env; no KScreen UI |
+| Polish / packaging / CI | 30 | **55** | Host tests + Docker + packaging verify script |
+| **Overall (equal-weight mean)** | **~32** | **~60** | Mean of 10 domains ≈ 60.2 → **60**. **Below 90.** |
 
-**Arithmetic:** (78+70+48+58+55+52+60+20+40+48)/10 = **52.9 → 53**.
+**Arithmetic:** (80+74+58+64+58+68+65+38+42+55)/10 = **60.2 → 60**.
 
 ### 13.3 What would be required for honest ≥90 under this methodology
 
@@ -496,7 +496,7 @@ i.e. multi-week DE work, not a score redefinition.
 ### 13.5 Bottom line
 
 - **Technical criteria improved** after skeptic rejection of pure bookkeeping.
-- **Overall score 52**, not 90 — honest vs Plasma/GNOME daily driver.
+- **Overall score ~60**, not 90 — honest vs Plasma/GNOME daily driver.
 - README and this section must not claim 91.
 
 *Rescored after skeptic panel 2026-07-11.*

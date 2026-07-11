@@ -27,7 +27,10 @@ pub mod workspace_manager;
 pub use application_registry::ApplicationRegistry;
 pub use audio::{get_volume, set_volume};
 pub use capture::{start_recording, stop_recording, take_screenshot};
-pub use chrome_protocol::{ChromeRole, ChromeSession, ProtocolChromeSurface};
+pub use chrome_protocol::{
+    chrome_focus_order, next_chrome_focus, should_paint_kit_chrome, ChromeFocusTarget, ChromeRole,
+    ChromeSession, ProtocolChromeSurface,
+};
 pub use desktop_manager::DesktopManager;
 pub use dock::Dock;
 pub use foreign_toplevel::{
@@ -73,7 +76,10 @@ pub use session_clients::{
     ForceQuitTarget, SessionClientRegistry,
 };
 pub use session_manager::SessionManager;
-pub use session_packaging::{check_packaging_health, PackagingHealth, SessionPackagingLayout};
+pub use session_packaging::{
+    check_packaging_health, parse_desktop_keys, validate_session_desktop, PackagingHealth,
+    SessionPackagingLayout,
+};
 pub use theme_manager::ThemeManager;
 pub use window_manager::WindowManager;
 pub use workspace_manager::WorkspaceManager;
@@ -2113,12 +2119,18 @@ impl Widget for ShellDesktop {
         {
             active.window.draw(theme);
         }
-        self.dock_view.draw(theme);
+        // When layer-shell chrome is bound, menu bar / dock are protocol surfaces —
+        // skip kit dual-paint so chrome is not overdrawn in the shell canvas.
+        if should_paint_kit_chrome(self.layer_shell_bound) {
+            self.dock_view.draw(theme);
+        }
         // Draw notification banners on top of windows and dock, below menu bar
         for popup in &self.notification_popup_windows {
             popup.draw(theme);
         }
-        self.menu_bar.draw(theme);
+        if should_paint_kit_chrome(self.layer_shell_bound) {
+            self.menu_bar.draw(theme);
+        }
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {

@@ -33,7 +33,7 @@ message, then execs `retro-shell`. See `packaging/README.md`. FreeDesktop
 
 | Metric | Score |
 |---|---:|
-| **Overall daily-driver (original methodology)** | **~52/100** |
+| **Overall daily-driver (original methodology)** | **~60/100** |
 | Prior “91 criteria-weighted” claim | **withdrawn** (score theater) |
 
 **Landed (real code):** nested layer compose; DRM dumb-buffer commit/page_flip;

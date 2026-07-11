@@ -28,11 +28,15 @@ pub mod window;
 pub mod workspace_grid_view;
 
 pub use accessibility::{
-    at_spi_registration_info, atspi_object_path, atspi_object_path_with_label,
-    default_accessibility_tree, register_at_spi_app, register_at_spi_app_with_tree,
-    role_to_atspi_role, sanitize_path_segment, state_to_atspi_bitset, AccessibilityNode,
-    AccessibilityRole, AccessibilityState, AccessibilityTree, AtSpiRegistrationInfo,
-    ATSPI_ACCESSIBLE_PREFIX, ATSPI_NULL_PATH, ATSPI_ROOT_PATH,
+    actions_for_role, at_spi_registration_info, atspi_object_path, atspi_object_path_with_label,
+    chrome_focus_indices, default_accessibility_tree, focusable_indices, interfaces_for_role,
+    next_chrome_focus_index, next_chrome_focus_region, prev_chrome_focus_region,
+    register_at_spi_app, register_at_spi_app_with_tree, register_at_spi_shell_chrome,
+    role_has_actions, role_to_atspi_role, sanitize_path_segment, shell_chrome_accessibility_tree,
+    state_to_atspi_bitset, AccessibleAction, AccessibilityNode, AccessibilityRole,
+    AccessibilityState, AccessibilityTree, AtSpiRegistrationInfo, ChromeFocusRegion,
+    ACTION_ACTIVATE, ACTION_FOCUS, ACTION_PRESS, ATSPI_ACCESSIBLE_IFACE, ATSPI_ACCESSIBLE_PREFIX,
+    ATSPI_ACTION_IFACE, ATSPI_APPLICATION_IFACE, ATSPI_NULL_PATH, ATSPI_ROOT_PATH,
 };
 pub use button::Button;
 pub use clipboard::Clipboard;

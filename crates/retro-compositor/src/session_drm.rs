@@ -398,8 +398,11 @@ pub fn run_drm_session() -> Result<()> {
         }
     }
     // Retain surface for the process lifetime so create_surface is not a no-op.
-    let _drm_surface_keepalive = drm_surface;
-    let _scanout_armed = scanout_armed;
+    // Re-present periodically so scanout is continuous when armed (not one-shot).
+    let mut drm_surface_keepalive = drm_surface;
+    let scanout_armed = scanout_armed;
+    let present_w = modeset_plan.mode_w;
+    let present_h = modeset_plan.mode_h;
 
     // Wayland socket
     let socket = ListeningSocketSource::new_auto().context("ListeningSocketSource")?;
@@ -538,16 +541,28 @@ pub fn run_drm_session() -> Result<()> {
     };
 
     eprintln!(
-        "[retro-compositor] DRM session loop running (Wayland + seat + udev + libinput + layer-shell + foreign-toplevel)"
+        "[retro-compositor] DRM session loop running (Wayland + seat + udev + libinput + layer-shell + foreign-toplevel; scanout_armed={scanout_armed})"
     );
+    let mut frame_i: u64 = 0;
     while state.running {
         let _ = frame_scheduler.record_frame();
+        // Continuous present: re-issue dumb pageflip ~1 Hz when scanout armed
+        // so the path stays live (full damage-tracked GL scanout is follow-on).
+        if scanout_armed && frame_i % 60 == 0 {
+            if let Some(surface) = drm_surface_keepalive.as_ref() {
+                if let Err(err) = try_present_dumb_frame(surface, present_w, present_h) {
+                    tracing::debug!(error = %err, "periodic DRM present failed");
+                }
+            }
+        }
+        frame_i = frame_i.wrapping_add(1);
         event_loop
             .dispatch(Some(Duration::from_millis(16)), &mut state)
             .context("event_loop.dispatch")?;
         let _ = display.dispatch_clients(&mut state);
         display.flush_clients().context("flush_clients")?;
     }
+    let _ = drm_surface_keepalive;
 
     Ok(())
 }

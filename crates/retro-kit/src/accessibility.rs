@@ -1,3 +1,28 @@
+//! AT-SPI2 accessibility export and pure a11y helpers for RetroShell.
+//!
+//! # What works today
+//! - Role name + numeric `AtspiRole` mapping for kit chrome and widgets
+//! - Flat (+ one nested level) `AccessibilityTree` → D-Bus `Accessible` objects
+//! - `org.a11y.atspi.Action` on actionable roles (Activate / Press / Focus)
+//! - Pure keyboard chrome focus-order policy (menu bar → desktop icons → dock)
+//! - Session / a11y-bus registration with best-effort registry `Socket.Embed`
+//!
+//! # Orca-incomplete (honest — do not claim “Orca complete”)
+//! - **No live tree sync**: tree is snapshotted at register time; focus/selection
+//!   changes are not pushed as AT-SPI events (`Object:StateChanged:focused`, etc.).
+//! - **No `org.a11y.atspi.Text` / `EditableText`**: text fields export role + Focus
+//!   only; Orca cannot read caret, selection, or typed content via AT-SPI.
+//! - **No `org.a11y.atspi.Component`**: extents / window coords are not on the bus.
+//! - **`DoAction` is advisory**: Action methods return success for valid indices
+//!   but do not drive the real toolkit focus or activation path.
+//! - **Shallow nesting**: only one child level under flat nodes is exported.
+//! - **No Selection / Table / Value / Collection** interfaces for lists/trees/sliders.
+//! - **No relation set** (label-for, controlled-by, etc.).
+//! - **Shell chrome tree is structural**, not bound to live menu/dock widgets.
+//!
+//! Raising Orca-usable domain means keeping roles/actions present and testable,
+//! not claiming full assistive-tech parity.
+
 use crate::Rect;
 use std::sync::Mutex;
 
@@ -18,6 +43,24 @@ pub const ATSPI_NULL_PATH: &str = "/org/a11y/atspi/null";
 
 /// Prefix for per-node accessible object paths.
 pub const ATSPI_ACCESSIBLE_PREFIX: &str = "/org/a11y/atspi/accessible";
+
+/// AT-SPI Action name: primary activation (menu item, list item, default click).
+pub const ACTION_ACTIVATE: &str = "Activate";
+
+/// AT-SPI Action name: press (buttons and similar push controls).
+pub const ACTION_PRESS: &str = "Press";
+
+/// AT-SPI Action name: move keyboard focus to the object.
+pub const ACTION_FOCUS: &str = "Focus";
+
+/// Interface name advertised for actionable accessibles.
+pub const ATSPI_ACTION_IFACE: &str = "org.a11y.atspi.Action";
+
+/// Interface name for every accessible object.
+pub const ATSPI_ACCESSIBLE_IFACE: &str = "org.a11y.atspi.Accessible";
+
+/// Interface name for the application root.
+pub const ATSPI_APPLICATION_IFACE: &str = "org.a11y.atspi.Application";
 
 /// Build the D-Bus object path for the Nth flat accessibility-tree node.
 ///
@@ -60,44 +103,47 @@ pub fn atspi_object_path_with_label(index: usize, role_name: &str, label: &str) 
 }
 
 /// Map a RetroShell role to the numeric `AtspiRole` enum value.
+///
+/// Values from atspi-constants.h / org.a11y.atspi.Accessible.GetRole docs.
+/// Exhaustive match — adding a role without a mapping is a compile error.
 pub fn role_to_atspi_role(role: AccessibilityRole) -> u32 {
-    // Values from atspi-constants.h / org.a11y.atspi.Accessible.GetRole docs.
     match role {
-        AccessibilityRole::Window => 23,       // FRAME
-        AccessibilityRole::Button => 43,       // BUTTON
-        AccessibilityRole::Checkbox => 7,      // CHECK_BOX
-        AccessibilityRole::RadioButton => 44,  // RADIO_BUTTON
-        AccessibilityRole::TextField => 79,    // ENTRY
-        AccessibilityRole::Label => 29,        // LABEL
-        AccessibilityRole::List => 31,         // LIST
-        AccessibilityRole::ListItem => 32,     // LIST_ITEM
-        AccessibilityRole::Tree => 65,         // TREE
-        AccessibilityRole::TreeItem => 91,     // TREE_ITEM
-        AccessibilityRole::Menu => 33,         // MENU
-        AccessibilityRole::MenuItem => 35,     // MENU_ITEM
-        AccessibilityRole::MenuBar => 34,      // MENU_BAR
-        AccessibilityRole::Toolbar => 63,      // TOOL_BAR
-        AccessibilityRole::ScrollBar => 48,    // SCROLL_BAR
-        AccessibilityRole::Slider => 51,       // SLIDER
-        AccessibilityRole::ProgressBar => 42,  // PROGRESS_BAR
-        AccessibilityRole::Dialog => 16,       // DIALOG
-        AccessibilityRole::Tab => 37,          // PAGE_TAB
-        AccessibilityRole::TabGroup => 38,     // PAGE_TAB_LIST
-        AccessibilityRole::Image => 27,        // IMAGE
-        AccessibilityRole::Link => 88,         // LINK
-        AccessibilityRole::Group => 39,        // PANEL
-        AccessibilityRole::Table => 55,        // TABLE
-        AccessibilityRole::TableCell => 56,    // TABLE_CELL
-        AccessibilityRole::TableRow => 90,     // TABLE_ROW
-        AccessibilityRole::Column => 57,       // TABLE_COLUMN_HEADER
-        AccessibilityRole::Row => 58,          // TABLE_ROW_HEADER
-        AccessibilityRole::StaticText => 116,  // STATIC
-        AccessibilityRole::ComboBox => 11,     // COMBO_BOX
-        AccessibilityRole::SplitView => 53,    // SPLIT_PANE
+        AccessibilityRole::Window => 23,        // FRAME
+        AccessibilityRole::Button => 43,        // PUSH_BUTTON
+        AccessibilityRole::Checkbox => 7,       // CHECK_BOX
+        AccessibilityRole::RadioButton => 44,   // RADIO_BUTTON
+        AccessibilityRole::TextField => 79,     // ENTRY
+        AccessibilityRole::Label => 29,         // LABEL
+        AccessibilityRole::List => 31,          // LIST
+        AccessibilityRole::ListItem => 32,      // LIST_ITEM
+        AccessibilityRole::Tree => 65,          // TREE
+        AccessibilityRole::TreeItem => 91,      // TREE_ITEM
+        AccessibilityRole::Menu => 33,          // MENU
+        AccessibilityRole::MenuItem => 35,      // MENU_ITEM
+        AccessibilityRole::MenuBar => 34,       // MENU_BAR
+        AccessibilityRole::Toolbar => 63,       // TOOL_BAR
+        AccessibilityRole::ScrollBar => 48,     // SCROLL_BAR
+        AccessibilityRole::Slider => 51,        // SLIDER
+        AccessibilityRole::ProgressBar => 42,   // PROGRESS_BAR
+        AccessibilityRole::Dialog => 16,        // DIALOG
+        AccessibilityRole::Tab => 37,           // PAGE_TAB
+        AccessibilityRole::TabGroup => 38,      // PAGE_TAB_LIST
+        AccessibilityRole::Image => 27,         // IMAGE
+        AccessibilityRole::Link => 88,          // LINK
+        AccessibilityRole::Group => 39,         // PANEL
+        AccessibilityRole::Table => 55,         // TABLE
+        AccessibilityRole::TableCell => 56,     // TABLE_CELL
+        AccessibilityRole::TableRow => 90,      // TABLE_ROW
+        AccessibilityRole::Column => 57,        // TABLE_COLUMN_HEADER
+        AccessibilityRole::Row => 58,           // TABLE_ROW_HEADER
+        AccessibilityRole::StaticText => 116,   // STATIC
+        AccessibilityRole::ComboBox => 11,      // COMBO_BOX
+        AccessibilityRole::SplitView => 53,     // SPLIT_PANE
         AccessibilityRole::Notification => 101, // NOTIFICATION
-        AccessibilityRole::Dock => 63,         // TOOL_BAR
-        AccessibilityRole::Desktop => 14,      // DESKTOP_FRAME
-        AccessibilityRole::Unknown => 67,      // UNKNOWN
+        // Dock has no dedicated AtspiRole; TOOL_BAR is the closest structural match.
+        AccessibilityRole::Dock => 63, // TOOL_BAR
+        AccessibilityRole::Desktop => 14, // DESKTOP_FRAME
+        AccessibilityRole::Unknown => 67, // UNKNOWN
     }
 }
 
@@ -116,7 +162,7 @@ pub fn state_to_atspi_bitset(state: &AccessibilityState, role: AccessibilityRole
         bits |= 1u64 << 30; // VISIBLE
         bits |= 1u64 << 25; // SHOWING
     }
-    if role.is_focusable() {
+    if role.is_focusable() || role.is_chrome_focus_target() {
         bits |= 1u64 << 11; // FOCUSABLE
     }
     if state.focused {
@@ -155,11 +201,337 @@ pub fn default_accessibility_tree(app_name: &str) -> AccessibilityTree {
     tree
 }
 
+/// Structural shell chrome tree for desktop AT-SPI export.
+///
+/// Order of top-level nodes matches [`ChromeFocusRegion::ORDER`]:
+/// menu bar → desktop (with icon list items) → dock (with launch buttons),
+/// plus a frame named `app_name`.
+///
+/// This is **not** wired to live widgets; it deepens the exported tree for
+/// ATs and unit tests. Orca still lacks events/text/component (see module docs).
+pub fn shell_chrome_accessibility_tree(app_name: &str) -> AccessibilityTree {
+    let mut tree = AccessibilityTree::new();
+
+    let mut menu_bar = AccessibilityNode::new(AccessibilityRole::MenuBar, "Menu Bar");
+    for title in ["Apple", "File", "Edit", "View", "Window", "Help"] {
+        let mut menu = AccessibilityNode::new(AccessibilityRole::Menu, title);
+        menu.children
+            .push(AccessibilityNode::new(AccessibilityRole::MenuItem, title));
+        menu_bar.children.push(menu);
+    }
+    tree.add(menu_bar);
+
+    let mut desktop = AccessibilityNode::new(AccessibilityRole::Desktop, "Desktop");
+    for icon in ["Home", "Trash", "Applications"] {
+        desktop
+            .children
+            .push(AccessibilityNode::new(AccessibilityRole::ListItem, icon));
+    }
+    tree.add(desktop);
+
+    let mut dock = AccessibilityNode::new(AccessibilityRole::Dock, "Dock");
+    for app in ["Finder", "Terminal", "Settings"] {
+        dock.children
+            .push(AccessibilityNode::new(AccessibilityRole::Button, app));
+    }
+    tree.add(dock);
+
+    tree.add(AccessibilityNode::new(AccessibilityRole::Window, app_name));
+    tree
+}
+
+// ---------------------------------------------------------------------------
+// AccessibleAction — pure Activate / Press / Focus set
+// ---------------------------------------------------------------------------
+
+/// Canonical AT-SPI actions RetroShell exposes on interactive nodes.
+///
+/// Names match common AT-SPI / ATK action strings so Orca and similar ATs can
+/// discover them via `org.a11y.atspi.Action`. Invoking `DoAction` on the bus is
+/// still advisory (see module-level Orca-incomplete notes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AccessibleAction {
+    /// Primary activation (default click / open / invoke).
+    Activate,
+    /// Press for push-button style controls.
+    Press,
+    /// Move keyboard focus to the object.
+    Focus,
+}
+
+impl AccessibleAction {
+    /// All shipped action variants (order is stable for regression tests).
+    pub const ALL: [AccessibleAction; 3] = [
+        AccessibleAction::Activate,
+        AccessibleAction::Press,
+        AccessibleAction::Focus,
+    ];
+
+    /// AT-SPI action name string.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Activate => ACTION_ACTIVATE,
+            Self::Press => ACTION_PRESS,
+            Self::Focus => ACTION_FOCUS,
+        }
+    }
+
+    /// Human-readable description for `GetDescription`.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Activate => "Activates the accessible object",
+            Self::Press => "Presses the control",
+            Self::Focus => "Gives keyboard focus to the object",
+        }
+    }
+
+    /// Key binding string for AT-SPI (empty when toolkit-owned / unknown).
+    pub fn key_binding(self) -> &'static str {
+        match self {
+            Self::Activate => "Return",
+            Self::Press => "space",
+            Self::Focus => "",
+        }
+    }
+
+    /// Parse a canonical action name (case-sensitive AT-SPI form).
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            ACTION_ACTIVATE => Some(Self::Activate),
+            ACTION_PRESS => Some(Self::Press),
+            ACTION_FOCUS => Some(Self::Focus),
+            _ => None,
+        }
+    }
+}
+
+/// Actions advertised for a role on the AT-SPI Action interface.
+///
+/// Pure policy — no D-Bus. Removing Activate/Press/Focus coverage for these
+/// roles should fail unit tests in this module.
+pub fn actions_for_role(role: AccessibilityRole) -> Vec<AccessibleAction> {
+    use AccessibleAction::*;
+    match role {
+        AccessibilityRole::Button | AccessibilityRole::Link => {
+            vec![Activate, Press, Focus]
+        }
+        AccessibilityRole::MenuItem
+        | AccessibilityRole::ListItem
+        | AccessibilityRole::TreeItem
+        | AccessibilityRole::Checkbox
+        | AccessibilityRole::RadioButton
+        | AccessibilityRole::Tab => {
+            vec![Activate, Focus]
+        }
+        AccessibilityRole::TextField
+        | AccessibilityRole::Slider
+        | AccessibilityRole::ComboBox
+        | AccessibilityRole::MenuBar
+        | AccessibilityRole::Dock
+        | AccessibilityRole::Desktop
+        | AccessibilityRole::Menu
+        | AccessibilityRole::Toolbar => {
+            vec![Focus]
+        }
+        AccessibilityRole::Window
+        | AccessibilityRole::Label
+        | AccessibilityRole::List
+        | AccessibilityRole::Tree
+        | AccessibilityRole::ScrollBar
+        | AccessibilityRole::ProgressBar
+        | AccessibilityRole::Dialog
+        | AccessibilityRole::TabGroup
+        | AccessibilityRole::Image
+        | AccessibilityRole::Group
+        | AccessibilityRole::Table
+        | AccessibilityRole::TableCell
+        | AccessibilityRole::TableRow
+        | AccessibilityRole::Column
+        | AccessibilityRole::Row
+        | AccessibilityRole::StaticText
+        | AccessibilityRole::SplitView
+        | AccessibilityRole::Notification
+        | AccessibilityRole::Unknown => Vec::new(),
+    }
+}
+
+/// Whether this role should advertise `org.a11y.atspi.Action`.
+pub fn role_has_actions(role: AccessibilityRole) -> bool {
+    !actions_for_role(role).is_empty()
+}
+
+/// Interface names for a node with the given role (Accessible ± Action).
+pub fn interfaces_for_role(role: AccessibilityRole) -> Vec<String> {
+    let mut ifaces = vec![ATSPI_ACCESSIBLE_IFACE.to_string()];
+    if role_has_actions(role) {
+        ifaces.push(ATSPI_ACTION_IFACE.to_string());
+    }
+    ifaces
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard-only chrome navigation policy (pure)
+// ---------------------------------------------------------------------------
+
+/// Shell chrome regions in keyboard-only focus cycle order.
+///
+/// Pure policy used by shell keyboard paths (F6-style) and tests. Not a full
+/// focus manager — live routing still belongs in the shell event loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChromeFocusRegion {
+    /// Global menu bar.
+    MenuBar,
+    /// Desktop icon field (list items under the desktop frame).
+    DesktopIcons,
+    /// Application dock.
+    Dock,
+}
+
+impl ChromeFocusRegion {
+    /// Fixed keyboard cycle: menu bar → desktop icons → dock → (wrap).
+    pub const ORDER: [ChromeFocusRegion; 3] = [
+        ChromeFocusRegion::MenuBar,
+        ChromeFocusRegion::DesktopIcons,
+        ChromeFocusRegion::Dock,
+    ];
+
+    /// Next region in the chrome cycle (wraps).
+    pub fn next(self) -> Self {
+        match self {
+            Self::MenuBar => Self::DesktopIcons,
+            Self::DesktopIcons => Self::Dock,
+            Self::Dock => Self::MenuBar,
+        }
+    }
+
+    /// Previous region in the chrome cycle (wraps).
+    pub fn prev(self) -> Self {
+        match self {
+            Self::MenuBar => Self::Dock,
+            Self::DesktopIcons => Self::MenuBar,
+            Self::Dock => Self::DesktopIcons,
+        }
+    }
+
+    /// Primary accessibility role for this chrome region.
+    pub fn primary_role(self) -> AccessibilityRole {
+        match self {
+            Self::MenuBar => AccessibilityRole::MenuBar,
+            Self::DesktopIcons => AccessibilityRole::Desktop,
+            Self::Dock => AccessibilityRole::Dock,
+        }
+    }
+
+    /// True if `role` belongs to this chrome region (container or children).
+    pub fn matches_role(self, role: AccessibilityRole) -> bool {
+        match self {
+            Self::MenuBar => matches!(
+                role,
+                AccessibilityRole::MenuBar
+                    | AccessibilityRole::Menu
+                    | AccessibilityRole::MenuItem
+            ),
+            Self::DesktopIcons => matches!(
+                role,
+                AccessibilityRole::Desktop | AccessibilityRole::ListItem | AccessibilityRole::Image
+            ),
+            Self::Dock => matches!(
+                role,
+                AccessibilityRole::Dock | AccessibilityRole::Button | AccessibilityRole::Toolbar
+            ),
+        }
+    }
+
+    /// Map a role to its chrome region, if any.
+    pub fn from_role(role: AccessibilityRole) -> Option<Self> {
+        for region in Self::ORDER {
+            // Prefer primary container roles for ambiguous children (Button also
+            // appears outside the dock). Container match first.
+            if role == region.primary_role() {
+                return Some(region);
+            }
+        }
+        match role {
+            AccessibilityRole::Menu | AccessibilityRole::MenuItem => Some(Self::MenuBar),
+            AccessibilityRole::ListItem | AccessibilityRole::Image => Some(Self::DesktopIcons),
+            // Buttons are not uniquely dock; callers should use tree position.
+            _ => None,
+        }
+    }
+}
+
+/// Advance chrome focus region for keyboard-only navigation.
+///
+/// `current = None` starts at the first region (menu bar).
+pub fn next_chrome_focus_region(current: Option<ChromeFocusRegion>) -> ChromeFocusRegion {
+    match current {
+        None => ChromeFocusRegion::ORDER[0],
+        Some(r) => r.next(),
+    }
+}
+
+/// Step backward through chrome regions.
+pub fn prev_chrome_focus_region(current: Option<ChromeFocusRegion>) -> ChromeFocusRegion {
+    match current {
+        None => *ChromeFocusRegion::ORDER.last().unwrap(),
+        Some(r) => r.prev(),
+    }
+}
+
+/// Flat indices of top-level tree nodes matching chrome cycle order.
+///
+/// Looks for the first top-level node whose role is the region's primary role,
+/// in [`ChromeFocusRegion::ORDER`]. Used to test keyboard path wiring against
+/// a structural tree without a live compositor.
+pub fn chrome_focus_indices(tree: &AccessibilityTree) -> Vec<(ChromeFocusRegion, usize)> {
+    let mut out = Vec::new();
+    for region in ChromeFocusRegion::ORDER {
+        if let Some((idx, _)) = tree
+            .nodes()
+            .iter()
+            .enumerate()
+            .find(|(_, n)| n.role == region.primary_role())
+        {
+            out.push((region, idx));
+        }
+    }
+    out
+}
+
+/// Next chrome flat index after `current` (wraps within available chrome nodes).
+pub fn next_chrome_focus_index(tree: &AccessibilityTree, current: Option<usize>) -> Option<usize> {
+    let order = chrome_focus_indices(tree);
+    if order.is_empty() {
+        return None;
+    }
+    let positions: Vec<usize> = order.iter().map(|(_, i)| *i).collect();
+    match current {
+        None => Some(positions[0]),
+        Some(cur) => {
+            if let Some(pos) = positions.iter().position(|&i| i == cur) {
+                Some(positions[(pos + 1) % positions.len()])
+            } else {
+                Some(positions[0])
+            }
+        }
+    }
+}
+
+/// Focusable node indices in tree order (flat nodes only, not nested children).
+pub fn focusable_indices(tree: &AccessibilityTree) -> Vec<usize> {
+    tree.nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.role.is_focusable() || n.role.is_chrome_focus_target())
+        .map(|(i, _)| i)
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Role / state / node / tree
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AccessibilityRole {
     Window,
     Button,
@@ -199,6 +571,45 @@ pub enum AccessibilityRole {
 }
 
 impl AccessibilityRole {
+    /// Every known role (stable order for exhaustive regression tests).
+    pub const ALL: [AccessibilityRole; 35] = [
+        Self::Window,
+        Self::Button,
+        Self::Checkbox,
+        Self::RadioButton,
+        Self::TextField,
+        Self::Label,
+        Self::List,
+        Self::ListItem,
+        Self::Tree,
+        Self::TreeItem,
+        Self::Menu,
+        Self::MenuItem,
+        Self::MenuBar,
+        Self::Toolbar,
+        Self::ScrollBar,
+        Self::Slider,
+        Self::ProgressBar,
+        Self::Dialog,
+        Self::Tab,
+        Self::TabGroup,
+        Self::Image,
+        Self::Link,
+        Self::Group,
+        Self::Table,
+        Self::TableCell,
+        Self::TableRow,
+        Self::Column,
+        Self::Row,
+        Self::StaticText,
+        Self::ComboBox,
+        Self::SplitView,
+        Self::Notification,
+        Self::Dock,
+        Self::Desktop,
+        Self::Unknown,
+    ];
+
     /// Returns the AT-SPI2 role name string for this role.
     pub fn role_name(&self) -> &'static str {
         match self {
@@ -234,13 +645,15 @@ impl AccessibilityRole {
             Self::ComboBox => "combo box",
             Self::SplitView => "split pane",
             Self::Notification => "alert",
+            // Dock reuses tool-bar naming in AT-SPI (no dock-specific role name).
             Self::Dock => "tool bar",
             Self::Desktop => "desktop frame",
             Self::Unknown => "unknown",
         }
     }
 
-    /// Returns true if an element with this role can receive keyboard focus.
+    /// Returns true if an element with this role can receive keyboard focus
+    /// as a typical interactive control (not chrome region containers).
     pub fn is_focusable(&self) -> bool {
         matches!(
             self,
@@ -255,6 +668,15 @@ impl AccessibilityRole {
                 | Self::Slider
                 | Self::ComboBox
                 | Self::Link
+        )
+    }
+
+    /// True for shell chrome containers that participate in the keyboard-only
+    /// F6-style cycle even when not classic interactive widgets.
+    pub fn is_chrome_focus_target(&self) -> bool {
+        matches!(
+            self,
+            Self::MenuBar | Self::Desktop | Self::Dock | Self::Menu | Self::Toolbar
         )
     }
 }
@@ -323,6 +745,11 @@ impl AccessibilityNode {
     /// Returns true if this node's role can receive keyboard focus.
     pub fn is_focusable(&self) -> bool {
         self.role.is_focusable()
+    }
+
+    /// Actions advertised for this node's role.
+    pub fn actions(&self) -> Vec<AccessibleAction> {
+        actions_for_role(self.role)
     }
 }
 
@@ -574,6 +1001,76 @@ impl AtspiApplication {
     }
 }
 
+/// `org.a11y.atspi.Action` — Activate / Press / Focus for actionable nodes.
+///
+/// `DoAction` validates the index and returns `true` when in range. It does
+/// **not** drive live UI (Orca-incomplete; see module docs).
+struct AtspiAction {
+    actions: Vec<AccessibleAction>,
+}
+
+impl AtspiAction {
+    fn from_role(role: AccessibilityRole) -> Self {
+        Self {
+            actions: actions_for_role(role),
+        }
+    }
+
+    fn get(&self, index: i32) -> fdo::Result<&AccessibleAction> {
+        if index < 0 {
+            return Err(fdo::Error::InvalidArgs(format!(
+                "action index {index} out of range"
+            )));
+        }
+        self.actions.get(index as usize).ok_or_else(|| {
+            fdo::Error::InvalidArgs(format!(
+                "action index {index} out of range (count={})",
+                self.actions.len()
+            ))
+        })
+    }
+}
+
+#[interface(name = "org.a11y.atspi.Action")]
+impl AtspiAction {
+    #[zbus(property, name = "NActions")]
+    fn n_actions(&self) -> i32 {
+        self.actions.len() as i32
+    }
+
+    fn get_description(&self, index: i32) -> fdo::Result<String> {
+        Ok(self.get(index)?.description().to_string())
+    }
+
+    fn get_name(&self, index: i32) -> fdo::Result<String> {
+        Ok(self.get(index)?.name().to_string())
+    }
+
+    fn get_key_binding(&self, index: i32) -> fdo::Result<String> {
+        Ok(self.get(index)?.key_binding().to_string())
+    }
+
+    /// Advisory only — does not activate real toolkit widgets.
+    fn do_action(&self, index: i32) -> fdo::Result<bool> {
+        let _ = self.get(index)?;
+        Ok(true)
+    }
+
+    /// `(name, description, keybinding)` triples for all actions.
+    fn get_actions(&self) -> Vec<(String, String, String)> {
+        self.actions
+            .iter()
+            .map(|a| {
+                (
+                    a.name().to_string(),
+                    a.description().to_string(),
+                    a.key_binding().to_string(),
+                )
+            })
+            .collect()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Registration (session / a11y bus)
 // ---------------------------------------------------------------------------
@@ -614,9 +1111,19 @@ pub fn at_spi_registration_info() -> Option<AtSpiRegistrationInfo> {
 /// Register this process as an AT-SPI2 application with a default tree.
 ///
 /// Builds a minimal one-window tree named `app_name`. See
-/// [`register_at_spi_app_with_tree`] for details.
+/// [`register_at_spi_app_with_tree`] for details. Prefer
+/// [`register_at_spi_shell_chrome`] for the desktop shell process.
 pub fn register_at_spi_app(app_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let tree = default_accessibility_tree(app_name);
+    register_at_spi_app_with_tree(app_name, &tree)
+}
+
+/// Register with the structural shell chrome tree (menu bar / desktop / dock).
+///
+/// Still Orca-incomplete (no live events/text/component); richer than a single
+/// window node so ATs see chrome roles and Action interfaces.
+pub fn register_at_spi_shell_chrome(app_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let tree = shell_chrome_accessibility_tree(app_name);
     register_at_spi_app_with_tree(app_name, &tree)
 }
 
@@ -627,7 +1134,8 @@ pub fn register_at_spi_app(app_name: &str) -> Result<(), Box<dyn std::error::Err
 /// 2. Prefer the dedicated accessibility bus via `org.a11y.Bus.GetAddress`; fall
 ///    back to the session bus when the a11y bus is not running.
 /// 3. Export `/org/a11y/atspi/accessible/root` with Application + Accessible.
-/// 4. Export each flat tree node as `/org/a11y/atspi/accessible/{i}`.
+/// 4. Export each flat tree node as `/org/a11y/atspi/accessible/{i}` with
+///    Action when [`role_has_actions`].
 /// 5. Best-effort `Socket.Embed` with the AT-SPI registry.
 ///
 /// Returns `Ok(())` after a successful object export. When no D-Bus session is
@@ -722,8 +1230,8 @@ pub fn register_at_spi_app_with_tree(
             ),
             accessible_id: "root".to_string(),
             interfaces: vec![
-                "org.a11y.atspi.Accessible".to_string(),
-                "org.a11y.atspi.Application".to_string(),
+                ATSPI_ACCESSIBLE_IFACE.to_string(),
+                ATSPI_APPLICATION_IFACE.to_string(),
             ],
         };
         server.at(ATSPI_ROOT_PATH, root)?;
@@ -757,9 +1265,12 @@ pub fn register_at_spi_app_with_tree(
                     index_in_parent: j as i32,
                     state: state_to_atspi_bitset(&child.state, child.role),
                     accessible_id: format!("n{i}_c{j}"),
-                    interfaces: vec!["org.a11y.atspi.Accessible".to_string()],
+                    interfaces: interfaces_for_role(child.role),
                 };
                 server.at(cpath.as_str(), child_obj)?;
+                if role_has_actions(child.role) {
+                    server.at(cpath.as_str(), AtspiAction::from_role(child.role))?;
+                }
             }
 
             let obj = AtspiAccessible {
@@ -774,9 +1285,12 @@ pub fn register_at_spi_app_with_tree(
                 index_in_parent: i as i32,
                 state: state_to_atspi_bitset(&node.state, node.role),
                 accessible_id: format!("n{i}"),
-                interfaces: vec!["org.a11y.atspi.Accessible".to_string()],
+                interfaces: interfaces_for_role(node.role),
             };
             server.at(path.as_str(), obj)?;
+            if role_has_actions(node.role) {
+                server.at(path.as_str(), AtspiAction::from_role(node.role))?;
+            }
         }
     }
 
@@ -812,7 +1326,7 @@ pub fn register_at_spi_app_with_tree(
         root = ATSPI_ROOT_PATH,
         children = child_paths.len(),
         embedded,
-        "AT-SPI2 Accessible tree exported"
+        "AT-SPI2 Accessible tree exported (Action on actionable roles; still Orca-incomplete)"
     );
 
     if let Ok(mut guard) = REGISTRATION.lock() {
@@ -893,10 +1407,38 @@ mod tests {
 
     #[test]
     fn role_to_atspi_role_known_values() {
+        // Core chrome + widget roles required for shell a11y.
         assert_eq!(role_to_atspi_role(AccessibilityRole::Button), 43);
         assert_eq!(role_to_atspi_role(AccessibilityRole::Window), 23);
         assert_eq!(role_to_atspi_role(AccessibilityRole::TextField), 79);
+        assert_eq!(role_to_atspi_role(AccessibilityRole::MenuBar), 34);
+        assert_eq!(role_to_atspi_role(AccessibilityRole::ListItem), 32);
+        assert_eq!(role_to_atspi_role(AccessibilityRole::Dock), 63);
+        assert_eq!(role_to_atspi_role(AccessibilityRole::Desktop), 14);
         assert_eq!(role_to_atspi_role(AccessibilityRole::Unknown), 67);
+    }
+
+    #[test]
+    fn role_to_atspi_role_covers_all_roles() {
+        // Fails at compile time if ALL grows without match arms; at runtime
+        // ensures every role maps to a non-zero / known-ish value.
+        for role in AccessibilityRole::ALL {
+            let n = role_to_atspi_role(role);
+            assert!(n > 0, "role {role:?} mapped to 0");
+            assert!(!role.role_name().is_empty(), "empty role_name for {role:?}");
+        }
+        assert_eq!(AccessibilityRole::ALL.len(), 35);
+    }
+
+    #[test]
+    fn role_names_for_chrome_and_core_widgets() {
+        assert_eq!(AccessibilityRole::MenuBar.role_name(), "menu bar");
+        assert_eq!(AccessibilityRole::Dock.role_name(), "tool bar");
+        assert_eq!(AccessibilityRole::Button.role_name(), "push button");
+        assert_eq!(AccessibilityRole::TextField.role_name(), "text");
+        assert_eq!(AccessibilityRole::Window.role_name(), "frame");
+        assert_eq!(AccessibilityRole::ListItem.role_name(), "list item");
+        assert_eq!(AccessibilityRole::Desktop.role_name(), "desktop frame");
     }
 
     #[test]
@@ -909,6 +1451,23 @@ mod tests {
         assert_ne!(bits[0] & (1 << 24), 0);
         assert_ne!(bits[0] & (1 << 25), 0);
         assert_ne!(bits[0] & (1 << 30), 0);
+    }
+
+    #[test]
+    fn state_bitset_chrome_targets_are_focusable() {
+        let state = AccessibilityState::default();
+        for role in [
+            AccessibilityRole::MenuBar,
+            AccessibilityRole::Desktop,
+            AccessibilityRole::Dock,
+        ] {
+            let bits = state_to_atspi_bitset(&state, role);
+            assert_ne!(
+                bits[0] & (1 << 11),
+                0,
+                "{role:?} should set FOCUSABLE for chrome keyboard path"
+            );
+        }
     }
 
     #[test]
@@ -934,5 +1493,206 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert_eq!(tree.nodes()[0].label, "Demo");
         assert_eq!(tree.nodes()[0].role, AccessibilityRole::Window);
+    }
+
+    // ----- AccessibleAction -------------------------------------------------
+
+    #[test]
+    fn accessible_action_names_are_stable() {
+        // Removing or renaming these breaks AT clients — fail hard.
+        assert_eq!(AccessibleAction::Activate.name(), "Activate");
+        assert_eq!(AccessibleAction::Press.name(), "Press");
+        assert_eq!(AccessibleAction::Focus.name(), "Focus");
+        assert_eq!(AccessibleAction::ALL.len(), 3);
+        for a in AccessibleAction::ALL {
+            assert_eq!(AccessibleAction::from_name(a.name()), Some(a));
+            assert!(!a.description().is_empty());
+        }
+        assert_eq!(ACTION_ACTIVATE, "Activate");
+        assert_eq!(ACTION_PRESS, "Press");
+        assert_eq!(ACTION_FOCUS, "Focus");
+    }
+
+    #[test]
+    fn actions_for_button_include_activate_press_focus() {
+        let actions = actions_for_role(AccessibilityRole::Button);
+        assert!(actions.contains(&AccessibleAction::Activate));
+        assert!(actions.contains(&AccessibleAction::Press));
+        assert!(actions.contains(&AccessibleAction::Focus));
+        assert_eq!(actions.len(), 3);
+    }
+
+    #[test]
+    fn actions_for_text_field_include_focus() {
+        let actions = actions_for_role(AccessibilityRole::TextField);
+        assert_eq!(actions, vec![AccessibleAction::Focus]);
+    }
+
+    #[test]
+    fn actions_for_list_item_include_activate_and_focus() {
+        let actions = actions_for_role(AccessibilityRole::ListItem);
+        assert!(actions.contains(&AccessibleAction::Activate));
+        assert!(actions.contains(&AccessibleAction::Focus));
+        assert!(!actions.contains(&AccessibleAction::Press));
+    }
+
+    #[test]
+    fn actions_for_chrome_regions_include_focus() {
+        for role in [
+            AccessibilityRole::MenuBar,
+            AccessibilityRole::Desktop,
+            AccessibilityRole::Dock,
+        ] {
+            let actions = actions_for_role(role);
+            assert!(
+                actions.contains(&AccessibleAction::Focus),
+                "{role:?} must advertise Focus for keyboard-only chrome path"
+            );
+        }
+    }
+
+    #[test]
+    fn actions_for_static_roles_are_empty() {
+        assert!(actions_for_role(AccessibilityRole::Label).is_empty());
+        assert!(actions_for_role(AccessibilityRole::StaticText).is_empty());
+        assert!(actions_for_role(AccessibilityRole::Window).is_empty());
+        assert!(actions_for_role(AccessibilityRole::Unknown).is_empty());
+    }
+
+    #[test]
+    fn interfaces_for_role_advertise_action_when_present() {
+        let button = interfaces_for_role(AccessibilityRole::Button);
+        assert!(button.iter().any(|s| s == ATSPI_ACCESSIBLE_IFACE));
+        assert!(button.iter().any(|s| s == ATSPI_ACTION_IFACE));
+
+        let label = interfaces_for_role(AccessibilityRole::Label);
+        assert!(label.iter().any(|s| s == ATSPI_ACCESSIBLE_IFACE));
+        assert!(!label.iter().any(|s| s == ATSPI_ACTION_IFACE));
+    }
+
+    #[test]
+    fn node_actions_delegate_to_role() {
+        let node = AccessibilityNode::new(AccessibilityRole::Button, "OK");
+        assert_eq!(node.actions(), actions_for_role(AccessibilityRole::Button));
+    }
+
+    // ----- Chrome keyboard policy ------------------------------------------
+
+    #[test]
+    fn chrome_focus_region_order_is_menu_desktop_dock() {
+        assert_eq!(
+            ChromeFocusRegion::ORDER,
+            [
+                ChromeFocusRegion::MenuBar,
+                ChromeFocusRegion::DesktopIcons,
+                ChromeFocusRegion::Dock,
+            ]
+        );
+        assert_eq!(
+            ChromeFocusRegion::MenuBar.next(),
+            ChromeFocusRegion::DesktopIcons
+        );
+        assert_eq!(
+            ChromeFocusRegion::DesktopIcons.next(),
+            ChromeFocusRegion::Dock
+        );
+        assert_eq!(ChromeFocusRegion::Dock.next(), ChromeFocusRegion::MenuBar);
+        assert_eq!(ChromeFocusRegion::MenuBar.prev(), ChromeFocusRegion::Dock);
+    }
+
+    #[test]
+    fn next_chrome_focus_region_starts_at_menu_bar() {
+        assert_eq!(
+            next_chrome_focus_region(None),
+            ChromeFocusRegion::MenuBar
+        );
+        assert_eq!(
+            next_chrome_focus_region(Some(ChromeFocusRegion::MenuBar)),
+            ChromeFocusRegion::DesktopIcons
+        );
+        assert_eq!(
+            prev_chrome_focus_region(None),
+            ChromeFocusRegion::Dock
+        );
+    }
+
+    #[test]
+    fn chrome_region_primary_roles() {
+        assert_eq!(
+            ChromeFocusRegion::MenuBar.primary_role(),
+            AccessibilityRole::MenuBar
+        );
+        assert_eq!(
+            ChromeFocusRegion::DesktopIcons.primary_role(),
+            AccessibilityRole::Desktop
+        );
+        assert_eq!(
+            ChromeFocusRegion::Dock.primary_role(),
+            AccessibilityRole::Dock
+        );
+    }
+
+    #[test]
+    fn shell_chrome_tree_has_menu_desktop_dock_window() {
+        let tree = shell_chrome_accessibility_tree("RetroShell");
+        assert!(tree.len() >= 4);
+        assert_eq!(tree.nodes()[0].role, AccessibilityRole::MenuBar);
+        assert_eq!(tree.nodes()[1].role, AccessibilityRole::Desktop);
+        assert_eq!(tree.nodes()[2].role, AccessibilityRole::Dock);
+        assert_eq!(tree.nodes()[3].role, AccessibilityRole::Window);
+        assert_eq!(tree.nodes()[3].label, "RetroShell");
+
+        // Nested structure for AT depth
+        assert!(!tree.nodes()[0].children.is_empty());
+        assert!(tree.nodes()[1]
+            .children
+            .iter()
+            .all(|c| c.role == AccessibilityRole::ListItem));
+        assert!(tree.nodes()[2]
+            .children
+            .iter()
+            .all(|c| c.role == AccessibilityRole::Button));
+    }
+
+    #[test]
+    fn chrome_focus_indices_follow_cycle_order() {
+        let tree = shell_chrome_accessibility_tree("RetroShell");
+        let indices = chrome_focus_indices(&tree);
+        assert_eq!(indices.len(), 3);
+        assert_eq!(indices[0].0, ChromeFocusRegion::MenuBar);
+        assert_eq!(indices[1].0, ChromeFocusRegion::DesktopIcons);
+        assert_eq!(indices[2].0, ChromeFocusRegion::Dock);
+        assert_eq!(indices[0].1, 0);
+        assert_eq!(indices[1].1, 1);
+        assert_eq!(indices[2].1, 2);
+    }
+
+    #[test]
+    fn next_chrome_focus_index_cycles() {
+        let tree = shell_chrome_accessibility_tree("RetroShell");
+        assert_eq!(next_chrome_focus_index(&tree, None), Some(0));
+        assert_eq!(next_chrome_focus_index(&tree, Some(0)), Some(1));
+        assert_eq!(next_chrome_focus_index(&tree, Some(1)), Some(2));
+        assert_eq!(next_chrome_focus_index(&tree, Some(2)), Some(0));
+        // Unknown current → start of cycle
+        assert_eq!(next_chrome_focus_index(&tree, Some(99)), Some(0));
+    }
+
+    #[test]
+    fn next_chrome_focus_index_empty_tree() {
+        let tree = AccessibilityTree::new();
+        assert_eq!(next_chrome_focus_index(&tree, None), None);
+    }
+
+    #[test]
+    fn focusable_indices_includes_chrome_and_interactive() {
+        let mut tree = AccessibilityTree::new();
+        tree.add(AccessibilityNode::new(AccessibilityRole::MenuBar, "MB"));
+        tree.add(AccessibilityNode::new(AccessibilityRole::Label, "L"));
+        tree.add(AccessibilityNode::new(AccessibilityRole::Button, "B"));
+        let idx = focusable_indices(&tree);
+        assert!(idx.contains(&0)); // chrome MenuBar
+        assert!(!idx.contains(&1)); // Label
+        assert!(idx.contains(&2)); // Button
     }
 }

@@ -2,6 +2,8 @@
 //! layer-shell role surfaces — not ShellWindow paint-rects.
 //!
 //! Pure geometry / session state; testable on any host (including macOS).
+//! When [`should_paint_kit_chrome`] is false (layer-shell client bound), the
+//! shell skips kit paint for menu bar/dock so chrome is not dual-drawn.
 
 /// Layer-shell chrome role for protocol surfaces owned by the shell session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -168,9 +170,62 @@ impl ChromeSession {
     }
 }
 
+/// Whether the shell should still paint menu bar / dock with kit widgets.
+///
+/// - `layer_shell_bound == true` → **false** (protocol chrome owns presentation)
+/// - otherwise → **true** (fallback paint for environments without layer-shell)
+pub fn should_paint_kit_chrome(layer_shell_bound: bool) -> bool {
+    !layer_shell_bound
+}
+
+/// Keyboard-only focus ring order for session chrome + desktop content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChromeFocusTarget {
+    MenuBar,
+    DesktopIcons,
+    Windows,
+    Dock,
+}
+
+/// Pure focus cycle for keyboard-only navigation (Orca-adjacent path).
+pub fn chrome_focus_order() -> &'static [ChromeFocusTarget] {
+    &[
+        ChromeFocusTarget::MenuBar,
+        ChromeFocusTarget::DesktopIcons,
+        ChromeFocusTarget::Windows,
+        ChromeFocusTarget::Dock,
+    ]
+}
+
+/// Next focus target after `current` (wraps).
+pub fn next_chrome_focus(current: ChromeFocusTarget) -> ChromeFocusTarget {
+    let order = chrome_focus_order();
+    let i = order.iter().position(|t| *t == current).unwrap_or(0);
+    order[(i + 1) % order.len()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn should_paint_kit_chrome_false_when_layer_bound() {
+        assert!(should_paint_kit_chrome(false));
+        assert!(!should_paint_kit_chrome(true));
+    }
+
+    #[test]
+    fn chrome_focus_cycles() {
+        assert_eq!(
+            next_chrome_focus(ChromeFocusTarget::MenuBar),
+            ChromeFocusTarget::DesktopIcons
+        );
+        assert_eq!(
+            next_chrome_focus(ChromeFocusTarget::Dock),
+            ChromeFocusTarget::MenuBar
+        );
+        assert_eq!(chrome_focus_order().len(), 4);
+    }
 
     #[test]
     fn bootstrap_default_creates_mapped_menu_and_dock() {

@@ -32,8 +32,9 @@ mod linux {
     use retro_compositor::{
         cascade_position, detect_dri3_from_env, layout_outputs_side_by_side, move_to_top,
         next_cascade_offset, outputs_from_env, select_backend_kind, selection_bytes_for_mime_with_text_fallback,
-        session_mode_summary, topmost_window_at, total_output_size, CompositorBackendKind,
-        DisplayPolicy, WindowGeometry, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+        session_mode_summary, text_input_capability_from_env, text_input_capability_summary,
+        topmost_window_at, total_output_size, CompositorBackendKind, DisplayPolicy,
+        TextInputCapability, WindowGeometry, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
     };
     use retro_compositor::frame_timing::{FrameScheduler, RefreshRate};
     use retro_compositor::hdr::HdrCapabilities;
@@ -205,6 +206,8 @@ mod linux {
         layer_shell_state: WlrLayerShellState,
         foreign_toplevel_list: ForeignToplevelListState,
         _xdg_decoration_state: XdgDecorationState,
+        /// Present when RETROSHELL_TEXT_INPUT enables text-input-v3 global.
+        _text_input_state: Option<smithay::wayland::text_input::TextInputManagerState>,
 
         seat: Seat<RetroCompositor>,
         /// Registered wl_output objects (one or more; multi-output via RETROSHELL_OUTPUTS).
@@ -1000,6 +1003,9 @@ mod linux {
 
     smithay::delegate_xdg_decoration!(RetroCompositor);
 
+    // text-input-v3 manager (global advertised when policy enables it)
+    smithay::delegate_text_input_manager!(RetroCompositor);
+
     // -----------------------------------------------------------------------
     // OutputHandler (required by delegate_output!)
     // -----------------------------------------------------------------------
@@ -1502,6 +1508,32 @@ mod linux {
             ForeignToplevelListState::new::<RetroCompositor>(&display_handle);
         let xdg_decoration_state = XdgDecorationState::new::<RetroCompositor>(&display_handle);
 
+        // text-input-v3 global when RETROSHELL_TEXT_INPUT requests it (default: on)
+        let text_input_cap = text_input_capability_from_env(
+            std::env::var("RETROSHELL_TEXT_INPUT")
+                .ok()
+                .as_deref()
+                .or(Some("v3")),
+        );
+        let text_input_state = if matches!(
+            text_input_cap,
+            TextInputCapability::TextInputV3 | TextInputCapability::InputMethodAndTextInput
+        ) {
+            eprintln!(
+                "[retro-compositor] {}",
+                text_input_capability_summary(text_input_cap)
+            );
+            Some(smithay::wayland::text_input::TextInputManagerState::new::<
+                RetroCompositor,
+            >(&display_handle))
+        } else {
+            eprintln!(
+                "[retro-compositor] {}",
+                text_input_capability_summary(TextInputCapability::None)
+            );
+            None
+        };
+
         // Seat: keyboard + pointer
         let mut seat: Seat<RetroCompositor> =
             seat_state.new_wl_seat(&display_handle, "seat0");
@@ -1629,6 +1661,7 @@ mod linux {
             layer_shell_state,
             foreign_toplevel_list,
             _xdg_decoration_state: xdg_decoration_state,
+            _text_input_state: text_input_state,
             seat,
             outputs,
             running: true,

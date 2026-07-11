@@ -4,11 +4,13 @@ fn main() {
     tracing_subscriber::fmt::init();
     tracing::info!("Starting RetroShell...");
 
-    // Best-effort AT-SPI2 registration (real D-Bus objects when a session bus exists).
-    match retro_kit::register_at_spi_app("RetroShell") {
+    // Best-effort AT-SPI2 registration with structural shell chrome tree
+    // (menu bar → desktop icons → dock + window). Still Orca-incomplete:
+    // no live events, Text/Component interfaces, or real DoAction routing.
+    match retro_kit::register_at_spi_shell_chrome("RetroShell") {
         Ok(()) => {
             if retro_kit::at_spi_registration_info().is_some() {
-                tracing::info!("AT-SPI2 accessibility registration active");
+                tracing::info!("AT-SPI2 accessibility registration active (shell chrome tree)");
             } else {
                 tracing::info!("AT-SPI2 skipped (no session bus or registry)");
             }
