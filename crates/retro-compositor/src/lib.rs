@@ -930,6 +930,39 @@ pub fn text_input_capability_summary(cap: TextInputCapability) -> &'static str {
     }
 }
 
+/// One client surface placement for DRM scanout composition planning (pure).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScanoutElement {
+    pub id: String,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    /// Higher paints above.
+    pub z: i32,
+}
+
+/// Pure: sort scanout elements back-to-front for a DRM present pass.
+pub fn plan_scanout_paint_order(elements: &mut [ScanoutElement]) {
+    elements.sort_by(|a, b| a.z.cmp(&b.z).then_with(|| a.id.cmp(&b.id)));
+}
+
+/// Pure: clip element rect to output bounds; returns None if fully outside.
+pub fn clip_scanout_element_to_output(
+    el: &ScanoutElement,
+    out_w: i32,
+    out_h: i32,
+) -> Option<(i32, i32, i32, i32)> {
+    let x0 = el.x.max(0);
+    let y0 = el.y.max(0);
+    let x1 = (el.x + el.w).min(out_w);
+    let y1 = (el.y + el.h).min(out_h);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some((x0, y0, x1 - x0, y1 - y0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1299,5 +1332,49 @@ mod tests {
             TextInputCapability::InputMethodAndTextInput
         );
         assert!(text_input_capability_summary(TextInputCapability::TextInputV3).contains("v3"));
+    }
+
+    #[test]
+    fn plan_scanout_paint_order_and_clip() {
+        let mut els = vec![
+            ScanoutElement {
+                id: "top".into(),
+                x: 10,
+                y: 10,
+                w: 100,
+                h: 100,
+                z: 2,
+            },
+            ScanoutElement {
+                id: "bot".into(),
+                x: 0,
+                y: 0,
+                w: 50,
+                h: 50,
+                z: 0,
+            },
+        ];
+        plan_scanout_paint_order(&mut els);
+        assert_eq!(els[0].id, "bot");
+        assert_eq!(els[1].id, "top");
+        assert_eq!(
+            clip_scanout_element_to_output(&els[1], 80, 80),
+            Some((10, 10, 70, 70))
+        );
+        assert_eq!(
+            clip_scanout_element_to_output(
+                &ScanoutElement {
+                    id: "out".into(),
+                    x: 100,
+                    y: 100,
+                    w: 10,
+                    h: 10,
+                    z: 0
+                },
+                50,
+                50
+            ),
+            None
+        );
     }
 }

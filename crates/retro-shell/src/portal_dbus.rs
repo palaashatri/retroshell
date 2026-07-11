@@ -2,7 +2,11 @@
 //!
 //! Host tests never open D-Bus. On Linux, [`try_register_portal_session_bus`]
 //! best-effort claims [`crate::portal::PORTAL_BUS_NAME`] and serves Screenshot,
-//! Settings, and OpenURI interfaces that call pure handlers in [`crate::portal`].
+//! Settings, OpenURI, FileChooser, and ScreenCast interfaces that call pure
+//! handlers in [`crate::portal`].
+//!
+//! ScreenCast streams exposed on the bus are protocol-level stubs (`node_id`
+//! placeholders) — PipeWire is not started or connected.
 
 use crate::portal::{PORTAL_BUS_NAME, PORTAL_PATH};
 
@@ -14,7 +18,8 @@ pub fn try_register_portal_session_bus() -> bool {
     #[cfg(target_os = "linux")]
     {
         use crate::portal::{
-            PORTAL_OPENURI_INTERFACE, PORTAL_SCREENSHOT_INTERFACE, PORTAL_SETTINGS_INTERFACE,
+            PORTAL_OPENURI_INTERFACE, PORTAL_SCREENCAST_INTERFACE, PORTAL_SCREENSHOT_INTERFACE,
+            PORTAL_SETTINGS_INTERFACE,
         };
         match linux::register() {
             Ok(()) => {
@@ -24,6 +29,7 @@ pub fn try_register_portal_session_bus() -> bool {
                     screenshot = PORTAL_SCREENSHOT_INTERFACE,
                     settings = PORTAL_SETTINGS_INTERFACE,
                     openuri = PORTAL_OPENURI_INTERFACE,
+                    screencast = PORTAL_SCREENCAST_INTERFACE,
                     "RetroShell portal handlers registered on session bus"
                 );
                 true
@@ -48,10 +54,12 @@ pub fn try_register_portal_session_bus() -> bool {
 mod linux {
     use super::*;
     use crate::portal::{
-        handle_file_chooser_open, handle_file_chooser_save, handle_open_uri,
-        handle_portal_screenshot_request, portal_screenshot_uri_for, portal_screenshots_dir,
-        read_all_portal_settings, read_portal_setting, take_portal_style_screenshot_with,
-        PortalFileChooserRequest, PortalScreenshotRequest, PORTAL_FILECHOOSER_INTERFACE,
+        create_screencast_session, handle_file_chooser_open, handle_file_chooser_save,
+        handle_open_uri, handle_portal_screenshot_request, portal_screenshot_uri_for,
+        portal_screenshots_dir, read_all_portal_settings, read_portal_setting,
+        select_screencast_sources, start_screencast, take_portal_style_screenshot_with,
+        PortalFileChooserRequest, PortalScreencastRequest, PortalScreencastSession,
+        PortalScreenshotRequest,
     };
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -250,6 +258,181 @@ mod linux {
         }
     }
 
+    /// ScreenCast session map (session_id → pure session state).
+    ///
+    /// Streams are protocol stubs only — `node_id` values are placeholders.
+    static SCREENCAST_SESSIONS: StdMutex<Option<HashMap<String, PortalScreencastSession>>> =
+        StdMutex::new(None);
+
+    fn with_screencast_sessions<R>(
+        f: impl FnOnce(&mut HashMap<String, PortalScreencastSession>) -> R,
+    ) -> R {
+        let mut guard = SCREENCAST_SESSIONS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            *guard = Some(HashMap::new());
+        }
+        f(guard.as_mut().expect("initialized screencast map"))
+    }
+
+    struct PortalScreencastIface;
+
+    #[interface(name = "org.freedesktop.impl.portal.ScreenCast")]
+    impl PortalScreencastIface {
+        /// Simplified CreateSession — pure handler; returns `(response, results)`.
+        ///
+        /// `results["session_id"]` is the handle for SelectSources / Start.
+        /// Stream `node_id` values are placeholders (not live PipeWire).
+        fn create_session(
+            &self,
+            _handle: zbus::zvariant::ObjectPath<'_>,
+            _app_id: &str,
+            _parent_window: &str,
+            options: HashMap<String, OwnedValue>,
+        ) -> (u32, HashMap<String, OwnedValue>) {
+            let types = option_u32(&options, "types").unwrap_or(1); // default monitor
+            let multiple = option_bool(&options, "multiple").unwrap_or(false);
+            let cursor_mode = option_u32(&options, "cursor_mode")
+                .or_else(|| option_u32(&options, "cursor-mode"))
+                .unwrap_or(0);
+            let req = PortalScreencastRequest {
+                types,
+                multiple,
+                cursor_mode,
+            };
+            let session = create_screencast_session(req);
+            let session_id = session.session_id.clone();
+            with_screencast_sessions(|map| {
+                map.insert(session_id.clone(), session);
+            });
+            let mut results: HashMap<String, OwnedValue> = HashMap::new();
+            if let Ok(v) = OwnedValue::try_from(Value::from(session_id)) {
+                results.insert("session_id".into(), v);
+            }
+            (0u32, results)
+        }
+
+        /// Simplified SelectSources — binds source node_id placeholders on the session.
+        ///
+        /// `source_ids` is a comma-separated list in options["source_ids"] (e.g. `"42"` or
+        /// `"7,9"`) for zbus-friendly string encoding in this simplified backend.
+        fn select_sources(
+            &self,
+            _handle: zbus::zvariant::ObjectPath<'_>,
+            _app_id: &str,
+            session_id: &str,
+            options: HashMap<String, OwnedValue>,
+        ) -> u32 {
+            let ids = option_string_loose(&options, "source_ids")
+                .or_else(|| option_string_loose(&options, "sources"))
+                .map(|s| {
+                    s.split(|c: char| c == ',' || c == ' ' || c == '\n')
+                        .filter_map(|p| p.trim().parse::<u32>().ok())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            // Allow types/multiple updates before select if present.
+            let types = option_u32(&options, "types");
+            let multiple = option_bool(&options, "multiple");
+            let cursor_mode = option_u32(&options, "cursor_mode")
+                .or_else(|| option_u32(&options, "cursor-mode"));
+
+            let ok = with_screencast_sessions(|map| {
+                let Some(session) = map.get_mut(session_id) else {
+                    return false;
+                };
+                if let Some(t) = types {
+                    session.types = t;
+                }
+                if let Some(m) = multiple {
+                    session.multiple = m;
+                }
+                if let Some(c) = cursor_mode {
+                    session.cursor_mode = c;
+                }
+                // Empty source_ids keeps the create-time default monitor stub selected.
+                let source_ids = if ids.is_empty() {
+                    session
+                        .streams
+                        .iter()
+                        .map(|s| s.node_id)
+                        .collect::<Vec<_>>()
+                } else {
+                    ids
+                };
+                select_screencast_sources(session, &source_ids).is_ok()
+            });
+            if ok {
+                0
+            } else {
+                2
+            }
+        }
+
+        /// Simplified Start — pure handler; streams are non-empty stubs on success.
+        ///
+        /// Returns `(response, results)` with `streams` as a newline-joined summary
+        /// `node_id:widthxheight:source_type` (protocol stubs only).
+        fn start(
+            &self,
+            _handle: zbus::zvariant::ObjectPath<'_>,
+            _app_id: &str,
+            _parent_window: &str,
+            session_id: &str,
+            _options: HashMap<String, OwnedValue>,
+        ) -> (u32, HashMap<String, OwnedValue>) {
+            let outcome = with_screencast_sessions(|map| {
+                let Some(session) = map.get_mut(session_id) else {
+                    return None;
+                };
+                match start_screencast(session) {
+                    Ok(()) => Some(session.streams.clone()),
+                    Err(_) => None,
+                }
+            });
+            match outcome {
+                Some(streams) if !streams.is_empty() => {
+                    let summary = streams
+                        .iter()
+                        .map(|s| {
+                            format!(
+                                "{}:{}x{}:{}",
+                                s.node_id, s.width, s.height, s.source_type
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let mut results: HashMap<String, OwnedValue> = HashMap::new();
+                    if let Ok(v) = OwnedValue::try_from(Value::from(summary)) {
+                        results.insert("streams".into(), v);
+                    }
+                    if let Some(first) = streams.first() {
+                        if let Ok(v) = OwnedValue::try_from(Value::from(first.node_id)) {
+                            results.insert("node_id".into(), v);
+                        }
+                    }
+                    (0u32, results)
+                }
+                _ => (2u32, HashMap::new()),
+            }
+        }
+    }
+
+    fn option_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
+        let value = options.get(key)?;
+        if let Ok(v) = u32::try_from(value) {
+            return Some(v);
+        }
+        if let Ok(v) = i32::try_from(value) {
+            return Some(v as u32);
+        }
+        if let Ok(v) = u64::try_from(value) {
+            return Some(v as u32);
+        }
+        None
+    }
+
     fn option_bool(options: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
         let value = options.get(key)?;
         if let Ok(b) = bool::try_from(value) {
@@ -290,6 +473,7 @@ mod linux {
             .serve_at(PORTAL_PATH, PortalSettingsIface)?
             .serve_at(PORTAL_PATH, PortalOpenUriIface)?
             .serve_at(PORTAL_PATH, PortalFileChooserIface)?
+            .serve_at(PORTAL_PATH, PortalScreencastIface)?
             .build()?;
 
         if let Ok(mut guard) = REGISTRATION.lock() {

@@ -8,8 +8,11 @@
 //! - Session / a11y-bus registration with best-effort registry `Socket.Embed`
 //!
 //! # Orca-incomplete (honest — do not claim “Orca complete”)
-//! - **No live tree sync**: tree is snapshotted at register time; focus/selection
-//!   changes are not pushed as AT-SPI events (`Object:StateChanged:focused`, etc.).
+//! - **No D-Bus AT-SPI event emission**: an in-process [`AccessibilityEventBus`]
+//!   queues Focus / StateChanged / etc. for toolkit + tests, but those events are
+//!   **not** yet signalled on the atspi bus (`org.a11y.atspi.Event.Object`, …).
+//! - **No live tree re-export**: the D-Bus tree is snapshotted at register time;
+//!   focus/selection changes update pure helpers only until re-register/sync lands.
 //! - **No `org.a11y.atspi.Text` / `EditableText`**: text fields export role + Focus
 //!   only; Orca cannot read caret, selection, or typed content via AT-SPI.
 //! - **No `org.a11y.atspi.Component`**: extents / window coords are not on the bus.
@@ -24,6 +27,7 @@
 //! not claiming full assistive-tech parity.
 
 use crate::Rect;
+use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use zbus::blocking::connection::Builder as ConnectionBuilder;
@@ -528,6 +532,249 @@ pub fn focusable_indices(tree: &AccessibilityTree) -> Vec<usize> {
 }
 
 // ---------------------------------------------------------------------------
+// In-process AT-SPI-shaped events (pure — not yet on the D-Bus atspi bus)
+// ---------------------------------------------------------------------------
+
+/// Kind of accessibility event mirrored after common AT-SPI Object / Focus events.
+///
+/// Names are toolkit-facing; mapping onto exact `org.a11y.atspi.Event.*` signal
+/// names happens only when D-Bus emission is wired (not yet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AccessibleEventKind {
+    /// Keyboard / AT focus moved to (or left) an accessible.
+    Focus,
+    /// A state bit changed (e.g. focused, selected, checked).
+    StateChanged,
+    /// Component extents changed.
+    BoundsChanged,
+    /// Active descendant within a container changed.
+    ActiveDescendantChanged,
+    /// Accessible object created / added to the tree.
+    ObjectCreated,
+    /// Accessible object destroyed / removed from the tree.
+    ObjectDestroyed,
+}
+
+impl AccessibleEventKind {
+    /// Stable string tag for tests and future D-Bus signal naming.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Focus => "Focus",
+            Self::StateChanged => "StateChanged",
+            Self::BoundsChanged => "BoundsChanged",
+            Self::ActiveDescendantChanged => "ActiveDescendantChanged",
+            Self::ObjectCreated => "ObjectCreated",
+            Self::ObjectDestroyed => "ObjectDestroyed",
+        }
+    }
+}
+
+/// One queued accessibility event (AT-SPI-shaped payload).
+///
+/// Field layout follows the common AT-SPI event tuple:
+/// `(path, detail1, detail2, any_data)` plus a typed `kind`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessibleEvent {
+    /// D-Bus-style object path of the accessible that emitted the event.
+    pub path: String,
+    pub kind: AccessibleEventKind,
+    /// Primary integer detail (e.g. 1/0 for state on/off).
+    pub detail1: i32,
+    /// Secondary integer detail.
+    pub detail2: i32,
+    /// Free-form string payload (state name, role, etc.).
+    pub any_data: String,
+}
+
+impl AccessibleEvent {
+    /// Construct a Focus event for `path` (detail1 = 1, focused).
+    pub fn focus(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            kind: AccessibleEventKind::Focus,
+            detail1: 1,
+            detail2: 0,
+            any_data: String::new(),
+        }
+    }
+
+    /// Construct a StateChanged event (e.g. `any_data = "focused"`, detail1 = 1/0).
+    pub fn state_changed(path: impl Into<String>, state_name: &str, enabled: bool) -> Self {
+        Self {
+            path: path.into(),
+            kind: AccessibleEventKind::StateChanged,
+            detail1: if enabled { 1 } else { 0 },
+            detail2: 0,
+            any_data: state_name.to_string(),
+        }
+    }
+
+    /// Construct a BoundsChanged event.
+    pub fn bounds_changed(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            kind: AccessibleEventKind::BoundsChanged,
+            detail1: 0,
+            detail2: 0,
+            any_data: String::new(),
+        }
+    }
+
+    /// Construct an ActiveDescendantChanged event; `any_data` is the descendant path.
+    pub fn active_descendant_changed(
+        path: impl Into<String>,
+        descendant_path: impl Into<String>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            kind: AccessibleEventKind::ActiveDescendantChanged,
+            detail1: 0,
+            detail2: 0,
+            any_data: descendant_path.into(),
+        }
+    }
+
+    /// Construct an ObjectCreated event.
+    pub fn object_created(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            kind: AccessibleEventKind::ObjectCreated,
+            detail1: 0,
+            detail2: 0,
+            any_data: String::new(),
+        }
+    }
+
+    /// Construct an ObjectDestroyed event.
+    pub fn object_destroyed(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            kind: AccessibleEventKind::ObjectDestroyed,
+            detail1: 0,
+            detail2: 0,
+            any_data: String::new(),
+        }
+    }
+}
+
+/// Pure in-process event queue for accessibility notifications.
+///
+/// # Honest limitation — D-Bus not wired
+///
+/// This bus is **in-process only**. Pushing events does **not** emit AT-SPI D-Bus
+/// signals on the accessibility bus (`org.a11y.atspi.Event.Object`,
+/// `org.a11y.atspi.Event.Focus`, registry listeners, etc.). Orca and other remote
+/// ATs will not see these until emission is connected to the atspi bus. Use this
+/// type for toolkit-side consumers and unit tests of event policy.
+///
+/// Alias-style name: callers may also think of this as an `EventQueue`.
+#[derive(Debug, Default, Clone)]
+pub struct AccessibilityEventBus {
+    queue: VecDeque<AccessibleEvent>,
+}
+
+/// Type alias for callers that prefer queue naming.
+pub type EventQueue = AccessibilityEventBus;
+
+impl AccessibilityEventBus {
+    /// Empty bus.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of pending events.
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// True when no events are queued.
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    /// Append an event to the tail of the queue.
+    pub fn push(&mut self, event: AccessibleEvent) {
+        self.queue.push_back(event);
+    }
+
+    /// Remove and return the oldest event, if any.
+    pub fn pop(&mut self) -> Option<AccessibleEvent> {
+        self.queue.pop_front()
+    }
+
+    /// Drain all pending events in FIFO order, leaving the bus empty.
+    pub fn drain(&mut self) -> Vec<AccessibleEvent> {
+        self.queue.drain(..).collect()
+    }
+
+    /// Peek at pending events without removing them.
+    pub fn events(&self) -> impl Iterator<Item = &AccessibleEvent> {
+        self.queue.iter()
+    }
+
+    /// Push a Focus event for `path`.
+    ///
+    /// This is the pure helper used by tree focus-path hooks. Still not D-Bus.
+    pub fn focus_changed(&mut self, path: impl Into<String>) {
+        self.push(AccessibleEvent::focus(path));
+    }
+
+    /// Push StateChanged for focus on/off (any_data = `"focused"`).
+    pub fn focused_state_changed(&mut self, path: impl Into<String>, focused: bool) {
+        self.push(AccessibleEvent::state_changed(path, "focused", focused));
+    }
+
+    /// Push BoundsChanged for `path`.
+    pub fn bounds_changed(&mut self, path: impl Into<String>) {
+        self.push(AccessibleEvent::bounds_changed(path));
+    }
+
+    /// Push ActiveDescendantChanged.
+    pub fn active_descendant_changed(
+        &mut self,
+        path: impl Into<String>,
+        descendant_path: impl Into<String>,
+    ) {
+        self.push(AccessibleEvent::active_descendant_changed(
+            path,
+            descendant_path,
+        ));
+    }
+
+    /// Push ObjectCreated for `path`.
+    pub fn object_created(&mut self, path: impl Into<String>) {
+        self.push(AccessibleEvent::object_created(path));
+    }
+
+    /// Push ObjectDestroyed for `path`.
+    pub fn object_destroyed(&mut self, path: impl Into<String>) {
+        self.push(AccessibleEvent::object_destroyed(path));
+    }
+}
+
+/// Parse a flat node index from a canonical AT-SPI path, if present.
+///
+/// Accepts `/org/a11y/atspi/accessible/{n}` and optional label suffixes
+/// (`…/{n}/…`). Nested `…/{n}/c{j}` paths resolve to the flat parent index `n`.
+pub fn flat_index_from_atspi_path(path: &str) -> Option<usize> {
+    let prefix = format!("{ATSPI_ACCESSIBLE_PREFIX}/");
+    let rest = path.strip_prefix(&prefix)?;
+    let first = rest.split('/').next()?;
+    if first == "root" {
+        return None;
+    }
+    first.parse().ok()
+}
+
+/// Free helper: push a Focus event onto `bus` for `path`.
+///
+/// Same as [`AccessibilityEventBus::focus_changed`]. D-Bus signal emission is
+/// **not** performed.
+pub fn focus_changed(bus: &mut AccessibilityEventBus, path: impl Into<String>) {
+    bus.focus_changed(path);
+}
+
+// ---------------------------------------------------------------------------
 // Role / state / node / tree
 // ---------------------------------------------------------------------------
 
@@ -811,6 +1058,38 @@ impl AccessibilityTree {
     /// D-Bus object paths for each flat node (canonical numeric form).
     pub fn to_atspi_paths(&self) -> Vec<String> {
         (0..self.nodes.len()).map(atspi_object_path).collect()
+    }
+
+    /// Apply a focus change for the accessible at `path` and emit events.
+    ///
+    /// Updates flat-node `state.focused` when `path` maps to a flat index via
+    /// [`flat_index_from_atspi_path`], then pushes a Focus event (and
+    /// StateChanged focused on/off transitions) onto `bus`.
+    ///
+    /// # Honest limitation
+    /// Events stay on the in-process [`AccessibilityEventBus`]. They are **not**
+    /// emitted as D-Bus AT-SPI signals yet.
+    pub fn focus_changed(&mut self, path: &str, bus: &mut AccessibilityEventBus) {
+        let target = flat_index_from_atspi_path(path);
+
+        // Emit StateChanged for nodes whose focused bit flips.
+        for (i, node) in self.nodes.iter_mut().enumerate() {
+            let now = target == Some(i);
+            if node.state.focused != now {
+                let node_path = atspi_object_path(i);
+                bus.focused_state_changed(&node_path, now);
+                node.state.focused = now;
+            }
+        }
+
+        // Always emit the Focus event for the requested path (AT focus path).
+        bus.focus_changed(path);
+    }
+
+    /// Focus the flat node at `index` (canonical path) and emit events.
+    pub fn focus_changed_index(&mut self, index: usize, bus: &mut AccessibilityEventBus) {
+        let path = atspi_object_path(index);
+        self.focus_changed(&path, bus);
     }
 }
 
@@ -1694,5 +1973,206 @@ mod tests {
         assert!(idx.contains(&0)); // chrome MenuBar
         assert!(!idx.contains(&1)); // Label
         assert!(idx.contains(&2)); // Button
+    }
+
+    // ----- In-process event bus / focus path hooks -------------------------
+
+    #[test]
+    fn accessible_event_kind_tags_are_stable() {
+        assert_eq!(AccessibleEventKind::Focus.as_str(), "Focus");
+        assert_eq!(AccessibleEventKind::StateChanged.as_str(), "StateChanged");
+        assert_eq!(AccessibleEventKind::BoundsChanged.as_str(), "BoundsChanged");
+        assert_eq!(
+            AccessibleEventKind::ActiveDescendantChanged.as_str(),
+            "ActiveDescendantChanged"
+        );
+        assert_eq!(AccessibleEventKind::ObjectCreated.as_str(), "ObjectCreated");
+        assert_eq!(
+            AccessibleEventKind::ObjectDestroyed.as_str(),
+            "ObjectDestroyed"
+        );
+    }
+
+    #[test]
+    fn event_bus_push_pop_drain_fifo() {
+        let mut bus = AccessibilityEventBus::new();
+        assert!(bus.is_empty());
+        bus.push(AccessibleEvent::object_created("/org/a11y/atspi/accessible/0"));
+        bus.push(AccessibleEvent::object_destroyed("/org/a11y/atspi/accessible/1"));
+        assert_eq!(bus.len(), 2);
+
+        let first = bus.pop().expect("first event");
+        assert_eq!(first.kind, AccessibleEventKind::ObjectCreated);
+        assert_eq!(first.path, "/org/a11y/atspi/accessible/0");
+
+        let rest = bus.drain();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].kind, AccessibleEventKind::ObjectDestroyed);
+        assert!(bus.is_empty());
+        assert!(bus.pop().is_none());
+    }
+
+    #[test]
+    fn free_focus_changed_helper_pushes_focus_event() {
+        let mut bus = EventQueue::new();
+        let path = atspi_object_path(0);
+        focus_changed(&mut bus, &path);
+        let events = bus.drain();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, AccessibleEventKind::Focus);
+        assert_eq!(events[0].path, path);
+        assert_eq!(events[0].detail1, 1);
+        assert_eq!(events[0].detail2, 0);
+        assert!(events[0].any_data.is_empty());
+    }
+
+    #[test]
+    fn bus_focus_changed_emits_on_focus_path_helper() {
+        let mut bus = AccessibilityEventBus::new();
+        let path = atspi_object_path(2);
+        bus.focus_changed(&path);
+        let e = bus.pop().expect("Focus event");
+        assert_eq!(e, AccessibleEvent::focus(path));
+    }
+
+    #[test]
+    fn tree_focus_changed_pushes_focus_and_updates_state() {
+        let mut tree = AccessibilityTree::new();
+        tree.add(AccessibilityNode::new(AccessibilityRole::Button, "A"));
+        tree.add(AccessibilityNode::new(AccessibilityRole::Button, "B"));
+        let mut bus = AccessibilityEventBus::new();
+
+        let path0 = atspi_object_path(0);
+        tree.focus_changed(&path0, &mut bus);
+
+        assert!(tree.get(0).unwrap().state.focused);
+        assert!(!tree.get(1).unwrap().state.focused);
+
+        let events = bus.drain();
+        // StateChanged(focused=true) for index 0 + Focus event
+        assert!(
+            events
+                .iter()
+                .any(|e| e.kind == AccessibleEventKind::Focus && e.path == path0),
+            "expected Focus event for {path0}, got {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| {
+                e.kind == AccessibleEventKind::StateChanged
+                    && e.path == path0
+                    && e.any_data == "focused"
+                    && e.detail1 == 1
+            }),
+            "expected StateChanged focused=1 for path0, got {events:?}"
+        );
+
+        // Move focus to index 1 — previous loses focused, new gains it + Focus.
+        let path1 = atspi_object_path(1);
+        tree.focus_changed(&path1, &mut bus);
+        assert!(!tree.get(0).unwrap().state.focused);
+        assert!(tree.get(1).unwrap().state.focused);
+
+        let events = bus.drain();
+        assert!(events
+            .iter()
+            .any(|e| e.kind == AccessibleEventKind::Focus && e.path == path1));
+        assert!(events.iter().any(|e| {
+            e.kind == AccessibleEventKind::StateChanged
+                && e.path == path0
+                && e.any_data == "focused"
+                && e.detail1 == 0
+        }));
+        assert!(events.iter().any(|e| {
+            e.kind == AccessibleEventKind::StateChanged
+                && e.path == path1
+                && e.any_data == "focused"
+                && e.detail1 == 1
+        }));
+    }
+
+    #[test]
+    fn tree_focus_changed_index_uses_canonical_path() {
+        let mut tree = shell_chrome_accessibility_tree("RetroShell");
+        let mut bus = AccessibilityEventBus::new();
+        // Menu bar is index 0 in shell chrome tree.
+        tree.focus_changed_index(0, &mut bus);
+        assert!(tree.get(0).unwrap().state.focused);
+        let events = bus.drain();
+        assert!(events.iter().any(|e| {
+            e.kind == AccessibleEventKind::Focus && e.path == atspi_object_path(0)
+        }));
+    }
+
+    #[test]
+    fn chrome_focus_path_emits_focus_events_for_cycle() {
+        // Keyboard chrome path: next_chrome_focus_index + tree focus hooks.
+        let mut tree = shell_chrome_accessibility_tree("RetroShell");
+        let mut bus = AccessibilityEventBus::new();
+        let mut current: Option<usize> = None;
+        let mut focused_paths = Vec::new();
+
+        for _ in 0..3 {
+            let idx = next_chrome_focus_index(&tree, current).expect("chrome index");
+            tree.focus_changed_index(idx, &mut bus);
+            focused_paths.push(atspi_object_path(idx));
+            current = Some(idx);
+        }
+
+        let events = bus.drain();
+        let focus_paths: Vec<&str> = events
+            .iter()
+            .filter(|e| e.kind == AccessibleEventKind::Focus)
+            .map(|e| e.path.as_str())
+            .collect();
+        assert_eq!(
+            focus_paths,
+            vec![
+                focused_paths[0].as_str(),
+                focused_paths[1].as_str(),
+                focused_paths[2].as_str(),
+            ]
+        );
+        // Cycle order: menu bar (0) → desktop (1) → dock (2)
+        assert_eq!(focused_paths[0], atspi_object_path(0));
+        assert_eq!(focused_paths[1], atspi_object_path(1));
+        assert_eq!(focused_paths[2], atspi_object_path(2));
+        assert!(tree.get(2).unwrap().state.focused);
+        assert!(!tree.get(0).unwrap().state.focused);
+    }
+
+    #[test]
+    fn flat_index_from_atspi_path_parses_canonical_and_nested() {
+        assert_eq!(
+            flat_index_from_atspi_path("/org/a11y/atspi/accessible/3"),
+            Some(3)
+        );
+        assert_eq!(
+            flat_index_from_atspi_path("/org/a11y/atspi/accessible/3/c0"),
+            Some(3)
+        );
+        assert_eq!(
+            flat_index_from_atspi_path("/org/a11y/atspi/accessible/root"),
+            None
+        );
+        assert_eq!(flat_index_from_atspi_path("/other"), None);
+    }
+
+    #[test]
+    fn other_event_helpers_push_expected_kinds() {
+        let mut bus = AccessibilityEventBus::new();
+        bus.bounds_changed("/p");
+        bus.active_descendant_changed("/parent", "/child");
+        bus.object_created("/new");
+        bus.object_destroyed("/old");
+        let kinds: Vec<_> = bus.drain().into_iter().map(|e| e.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                AccessibleEventKind::BoundsChanged,
+                AccessibleEventKind::ActiveDescendantChanged,
+                AccessibleEventKind::ObjectCreated,
+                AccessibleEventKind::ObjectDestroyed,
+            ]
+        );
     }
 }

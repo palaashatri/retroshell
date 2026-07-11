@@ -58,13 +58,17 @@ pub use fdo_notifications::{
 };
 pub use notification_center::{NotificationCenter, NotificationPriority};
 pub use portal::{
-    handle_file_chooser_open, handle_file_chooser_save, handle_open_uri,
+    create_screencast_session, handle_file_chooser_open, handle_file_chooser_save, handle_open_uri,
     handle_portal_screenshot_request, portal_screenshot_filename, portal_screenshot_uri_for,
     portal_screenshots_dir, read_all_portal_settings, read_portal_setting,
-    take_portal_style_screenshot, take_portal_style_screenshot_with, validate_file_chooser_request,
-    PortalFileChooserRequest, PortalFileChooserResult, PortalScreenshotRequest,
-    PortalScreenshotResult, PortalSettingsNamespace, PORTAL_BUS_NAME, PORTAL_FILECHOOSER_INTERFACE,
-    PORTAL_OPENURI_INTERFACE, PORTAL_PATH, PORTAL_SCREENSHOT_INTERFACE, PORTAL_SETTINGS_INTERFACE,
+    select_screencast_sources, start_screencast, take_portal_style_screenshot,
+    take_portal_style_screenshot_with, validate_file_chooser_request, PortalFileChooserRequest,
+    PortalFileChooserResult, PortalScreencastRequest, PortalScreencastSession,
+    PortalScreenshotRequest, PortalScreenshotResult, PortalSettingsNamespace, ScreencastStream,
+    PORTAL_BUS_NAME, PORTAL_FILECHOOSER_INTERFACE, PORTAL_OPENURI_INTERFACE, PORTAL_PATH,
+    PORTAL_SCREENCAST_INTERFACE, PORTAL_SCREENSHOT_INTERFACE, PORTAL_SETTINGS_INTERFACE,
+    SCREENCAST_DEFAULT_HEIGHT, SCREENCAST_DEFAULT_WIDTH, SCREENCAST_PLACEHOLDER_NODE_ID,
+    SCREENCAST_SOURCE_TYPE_MONITOR, SCREENCAST_SOURCE_TYPE_WINDOW,
 };
 pub use polkit_agent::{
     handle_polkit_auth, try_register_polkit_agent, validate_polkit_request, PolkitAgentState,

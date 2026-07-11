@@ -456,7 +456,7 @@ stay honest, and follow the critical path above.
 
 Real leaps landed (layer-shell **client** bind, foreign-toplevel-list **client** sync,
 DRM dumb-buffer **commit/page_flip**, nested layer compose, portal D-Bus).  
-**Overall daily-driver score under original methodology: ~61 / 100 — not ≥90.**  
+**Overall daily-driver score under original methodology: ~63 / 100 — not ≥90.**  
 Claiming 90 would be score theater; Plasma-replace remains far off.
 
 ### 13.2 Scorecard (same methodology as first ~32 baseline)
@@ -464,18 +464,18 @@ Claiming 90 would be score theater; Plasma-replace remains far off.
 | Domain | Was | Now | Why (evidence) |
 |---|---:|---:|---|
 | First-party productivity apps | 72 | **80** | Real I/O suite; Force Quit + FTL sync |
-| Toolkit / look & feel | 68 | **74** | Richer AT-SPI roles/actions/chrome tree; still no HiDPI |
-| Session login / packaging | 28 | **58** | Desktop key validation + verify_session_packaging.sh; greeter cold-boot **NOT RUN** |
-| Own compositor as session WM | 35 | **64** | Layer compose + continuous DRM present + text-input-v3 global; not full KWin |
+| Toolkit / look & feel | 68 | **76** | AT-SPI + event bus hooks; still no HiDPI |
+| Session login / packaging | 28 | **62** | Packaging + **verify_greeter_session.sh** smoke; live DM still **NOT RUN** |
+| Own compositor as session WM | 35 | **68** | Layer compose + DRM present + **text-input-v3 + input-method-v2** + scanout plan helpers; not full KWin |
 | Multi-client window management | 40 | **58** | FTL client + decorations + process spawn |
 | Shell chrome architecture | 30 | **68** | Layer-shell client + **skip kit paint when bound** + keyboard chrome focus order |
-| FreeDesktop (portals, polkit, MIME) | 22 | **70** | Portal Screenshot/Settings/OpenURI/**FileChooser** + polkit + NM + text-input-v3; no screencast |
-| A11y / i18n | 18 | **42** | AT-SPI tree + Tab chrome focus cycle; still Orca-incomplete |
+| FreeDesktop (portals, polkit, MIME) | 22 | **74** | Portals + **ScreenCast protocol stub** + FileChooser + polkit + NM + IME globals |
+| A11y / i18n | 18 | **48** | AT-SPI tree + **in-process event bus** + Tab focus; D-Bus signals still open |
 | Multi-monitor / HDR-VRR daily | 25 | **42** | Connector modeset plan; multi-output env; no KScreen UI |
-| Polish / packaging / CI | 30 | **55** | Host tests + Docker + packaging verify script |
-| **Overall (equal-weight mean)** | **~32** | **~61** | Mean of 10 domains ≈ 61.1 → **61**. **Below 90.** |
+| Polish / packaging / CI | 30 | **58** | Host tests + Docker + greeter packaging smoke scripts |
+| **Overall (equal-weight mean)** | **~32** | **~63** | Mean of 10 domains ≈ 63.4 → **63**. **Below 90.** |
 
-**Arithmetic:** (80+74+58+64+58+68+70+42+42+55)/10 = **61.1 → 61**.
+**Arithmetic:** (80+76+62+68+58+68+74+48+42+58)/10 = **63.4 → 63**.
 
 ### 13.3 What would be required for honest ≥90 under this methodology
 
@@ -496,7 +496,7 @@ i.e. multi-week DE work, not a score redefinition.
 ### 13.5 Bottom line
 
 - **Technical criteria improved** after skeptic rejection of pure bookkeeping.
-- **Overall score ~61**, not 90 — honest vs Plasma/GNOME daily driver.
+- **Overall score ~63**, not 90 — honest vs Plasma/GNOME daily driver.
 - README and this section must not claim 91.
 
 *Rescored after skeptic panel 2026-07-11.*

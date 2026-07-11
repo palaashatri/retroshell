@@ -208,6 +208,10 @@ mod linux {
         _xdg_decoration_state: XdgDecorationState,
         /// Present when RETROSHELL_TEXT_INPUT enables text-input-v3 global.
         _text_input_state: Option<smithay::wayland::text_input::TextInputManagerState>,
+        /// Present when RETROSHELL_TEXT_INPUT=full|im enables input-method-v2.
+        _input_method_state: Option<smithay::wayland::input_method::InputMethodManagerState>,
+        /// Input-method popup surfaces (IME UI).
+        im_popups: Vec<smithay::wayland::input_method::PopupSurface>,
 
         seat: Seat<RetroCompositor>,
         /// Registered wl_output objects (one or more; multi-output via RETROSHELL_OUTPUTS).
@@ -1006,6 +1010,38 @@ mod linux {
     // text-input-v3 manager (global advertised when policy enables it)
     smithay::delegate_text_input_manager!(RetroCompositor);
 
+    // input-method-v2 (paired with text-input for IME clients)
+    impl smithay::wayland::input_method::InputMethodHandler for RetroCompositor {
+        fn new_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
+            tracing::debug!("input-method popup created");
+            self.im_popups.push(surface);
+        }
+
+        fn dismiss_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
+            self.im_popups.retain(|p| p != &surface);
+        }
+
+        fn popup_repositioned(&mut self, _surface: smithay::wayland::input_method::PopupSurface) {}
+
+        fn parent_geometry(
+            &self,
+            parent: &WlSurface,
+        ) -> smithay::utils::Rectangle<i32, Logical> {
+            // Use focused window geometry when the parent matches a toplevel.
+            for w in &self.windows {
+                if w.toplevel.wl_surface() == parent {
+                    return smithay::utils::Rectangle::new(
+                        w.position,
+                        w.size,
+                    );
+                }
+            }
+            smithay::utils::Rectangle::default()
+        }
+    }
+
+    smithay::delegate_input_method_manager!(RetroCompositor);
+
     // -----------------------------------------------------------------------
     // OutputHandler (required by delegate_output!)
     // -----------------------------------------------------------------------
@@ -1509,11 +1545,13 @@ mod linux {
         let xdg_decoration_state = XdgDecorationState::new::<RetroCompositor>(&display_handle);
 
         // text-input-v3 global when RETROSHELL_TEXT_INPUT requests it (default: on)
+        // Default "full" advertises text-input-v3 + input-method-v2 for IME clients.
+        // Set RETROSHELL_TEXT_INPUT=0 to disable, or v3 for text-input only.
         let text_input_cap = text_input_capability_from_env(
             std::env::var("RETROSHELL_TEXT_INPUT")
                 .ok()
                 .as_deref()
-                .or(Some("v3")),
+                .or(Some("full")),
         );
         let text_input_state = if matches!(
             text_input_cap,
@@ -1531,6 +1569,20 @@ mod linux {
                 "[retro-compositor] {}",
                 text_input_capability_summary(TextInputCapability::None)
             );
+            None
+        };
+        let input_method_state = if matches!(
+            text_input_cap,
+            TextInputCapability::InputMethodAndTextInput
+        ) {
+            eprintln!("[retro-compositor] input_method=zwp_input_method_v2");
+            Some(
+                smithay::wayland::input_method::InputMethodManagerState::new::<RetroCompositor, _>(
+                    &display_handle,
+                    |_client| true,
+                ),
+            )
+        } else {
             None
         };
 
@@ -1662,6 +1714,8 @@ mod linux {
             foreign_toplevel_list,
             _xdg_decoration_state: xdg_decoration_state,
             _text_input_state: text_input_state,
+            _input_method_state: input_method_state,
+            im_popups: Vec::new(),
             seat,
             outputs,
             running: true,

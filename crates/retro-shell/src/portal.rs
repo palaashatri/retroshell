@@ -1,4 +1,4 @@
-//! FreeDesktop portal-facing surface (xdg-desktop-portal Screenshot / Settings / OpenURI).
+//! FreeDesktop portal-facing surface (xdg-desktop-portal Screenshot / Settings / OpenURI / ScreenCast).
 //!
 //! Pure request/result types and handlers are portable (macOS host tests). Linux session-bus
 //! export lives in [`crate::portal_dbus`] and calls these pure functions.
@@ -14,12 +14,19 @@
 //! | Screenshot iface | [`PORTAL_SCREENSHOT_INTERFACE`] (`org.freedesktop.impl.portal.Screenshot`) |
 //! | Settings iface | [`PORTAL_SETTINGS_INTERFACE`] (`org.freedesktop.impl.portal.Settings`) |
 //! | OpenURI iface | [`PORTAL_OPENURI_INTERFACE`] (`org.freedesktop.impl.portal.OpenURI`) |
+//! | ScreenCast iface | [`PORTAL_SCREENCAST_INTERFACE`] (`org.freedesktop.impl.portal.ScreenCast`) |
 //!
 //! Local shell menus still use [`take_portal_style_screenshot`] (capture path) via
 //! `shell.portal_screenshot`.
+//!
+//! # ScreenCast note
+//!
+//! [`ScreencastStream`] values are **protocol-level stubs**. `node_id` fields are placeholders
+//! for a future PipeWire graph — this code does **not** create live PipeWire nodes or streams.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::capture::{take_screenshot, CaptureError};
 
@@ -39,6 +46,20 @@ pub const PORTAL_SETTINGS_INTERFACE: &str = "org.freedesktop.impl.portal.Setting
 pub const PORTAL_OPENURI_INTERFACE: &str = "org.freedesktop.impl.portal.OpenURI";
 /// FreeDesktop portal FileChooser implementation interface.
 pub const PORTAL_FILECHOOSER_INTERFACE: &str = "org.freedesktop.impl.portal.FileChooser";
+/// FreeDesktop portal ScreenCast implementation interface.
+pub const PORTAL_SCREENCAST_INTERFACE: &str = "org.freedesktop.impl.portal.ScreenCast";
+
+/// ScreenCast source type bit: monitors / outputs.
+pub const SCREENCAST_SOURCE_TYPE_MONITOR: u32 = 1;
+/// ScreenCast source type bit: application windows.
+pub const SCREENCAST_SOURCE_TYPE_WINDOW: u32 = 2;
+
+/// Default placeholder PipeWire-style node id (not a live graph node).
+pub const SCREENCAST_PLACEHOLDER_NODE_ID: u32 = 42;
+/// Default stub stream width.
+pub const SCREENCAST_DEFAULT_WIDTH: u32 = 1920;
+/// Default stub stream height.
+pub const SCREENCAST_DEFAULT_HEIGHT: u32 = 1080;
 
 // ---------------------------------------------------------------------------
 // Screenshot
@@ -284,6 +305,135 @@ pub fn handle_file_chooser_save(
 }
 
 // ---------------------------------------------------------------------------
+// ScreenCast
+// ---------------------------------------------------------------------------
+
+/// Options corresponding to xdg-desktop-portal ScreenCast SelectSources hints.
+///
+/// `types` is a bitfield of [`SCREENCAST_SOURCE_TYPE_MONITOR`] /
+/// [`SCREENCAST_SOURCE_TYPE_WINDOW`]. `cursor_mode` follows the portal cursor
+/// mode bits (Hidden=1, Embedded=2, Metadata=4) but is only recorded here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PortalScreencastRequest {
+    /// Source type bitfield (monitor / window).
+    pub types: u32,
+    /// When true, more than one source may be selected.
+    pub multiple: bool,
+    /// Cursor mode bitfield (recorded only; not applied to a live capture).
+    pub cursor_mode: u32,
+}
+
+/// One ScreenCast stream entry returned by Start.
+///
+/// **Stub:** `node_id` is a protocol-level placeholder, not a live PipeWire node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreencastStream {
+    /// Placeholder node id for portal clients (not a live PipeWire graph node).
+    pub node_id: u32,
+    pub width: u32,
+    pub height: u32,
+    /// Source type bit (monitor or window).
+    pub source_type: u32,
+}
+
+/// ScreenCast session state held by pure handlers (and by the D-Bus session map).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortalScreencastSession {
+    pub session_id: String,
+    /// Streams for Start; initially one monitor stub after create.
+    pub streams: Vec<ScreencastStream>,
+    /// Request options recorded at create.
+    pub types: u32,
+    pub multiple: bool,
+    pub cursor_mode: u32,
+    /// True after a successful [`select_screencast_sources`].
+    pub sources_selected: bool,
+    /// True after a successful [`start_screencast`].
+    pub started: bool,
+}
+
+static NEXT_SCREENCAST_SESSION: AtomicU64 = AtomicU64::new(1);
+
+fn default_source_type(types: u32) -> u32 {
+    if types & SCREENCAST_SOURCE_TYPE_MONITOR != 0 {
+        SCREENCAST_SOURCE_TYPE_MONITOR
+    } else if types & SCREENCAST_SOURCE_TYPE_WINDOW != 0 {
+        SCREENCAST_SOURCE_TYPE_WINDOW
+    } else {
+        // Portal clients that pass types=0 still get a monitor stub.
+        SCREENCAST_SOURCE_TYPE_MONITOR
+    }
+}
+
+fn placeholder_stream(node_id: u32, source_type: u32) -> ScreencastStream {
+    ScreencastStream {
+        node_id,
+        width: SCREENCAST_DEFAULT_WIDTH,
+        height: SCREENCAST_DEFAULT_HEIGHT,
+        source_type,
+    }
+}
+
+/// Pure ScreenCast CreateSession: assigns an incremental session id and one monitor stream stub.
+///
+/// The stream's `node_id` is a placeholder — PipeWire is not started or connected.
+pub fn create_screencast_session(req: PortalScreencastRequest) -> PortalScreencastSession {
+    let n = NEXT_SCREENCAST_SESSION.fetch_add(1, Ordering::Relaxed);
+    let source_type = default_source_type(req.types);
+    PortalScreencastSession {
+        session_id: format!("screencast-{n}"),
+        streams: vec![placeholder_stream(SCREENCAST_PLACEHOLDER_NODE_ID, source_type)],
+        types: req.types,
+        multiple: req.multiple,
+        cursor_mode: req.cursor_mode,
+        sources_selected: false,
+        started: false,
+    }
+}
+
+/// Pure ScreenCast SelectSources: bind `source_ids` as stream node_id placeholders.
+///
+/// Empty `source_ids` is an error (cancelled / nothing selected). When `multiple` is
+/// false, more than one id is rejected. Does not talk to PipeWire.
+pub fn select_screencast_sources(
+    session: &mut PortalScreencastSession,
+    source_ids: &[u32],
+) -> Result<(), String> {
+    if session.started {
+        return Err("session already started".into());
+    }
+    if source_ids.is_empty() {
+        return Err("no sources selected".into());
+    }
+    if !session.multiple && source_ids.len() > 1 {
+        return Err("multiple sources not allowed".into());
+    }
+    let source_type = default_source_type(session.types);
+    session.streams = source_ids
+        .iter()
+        .map(|&node_id| placeholder_stream(node_id, source_type))
+        .collect();
+    session.sources_selected = true;
+    Ok(())
+}
+
+/// Pure ScreenCast Start: requires at least one stream (protocol-level stubs only).
+///
+/// On success marks the session started. Streams remain placeholders — no live PipeWire.
+pub fn start_screencast(session: &mut PortalScreencastSession) -> Result<(), String> {
+    if session.streams.is_empty() {
+        return Err("no streams to start".into());
+    }
+    if session.started {
+        return Err("session already started".into());
+    }
+    // CreateSession already supplies a default stream; SelectSources is optional for the
+    // simplified path so Start can succeed after create alone.
+    session.started = true;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // OpenURI
 // ---------------------------------------------------------------------------
 
@@ -455,6 +605,68 @@ mod tests {
             PORTAL_FILECHOOSER_INTERFACE,
             "org.freedesktop.impl.portal.FileChooser"
         );
+        assert_eq!(
+            PORTAL_SCREENCAST_INTERFACE,
+            "org.freedesktop.impl.portal.ScreenCast"
+        );
+    }
+
+    #[test]
+    fn create_screencast_session_assigns_id_and_monitor_stream() {
+        let req = PortalScreencastRequest {
+            types: SCREENCAST_SOURCE_TYPE_MONITOR,
+            multiple: false,
+            cursor_mode: 1,
+        };
+        let a = create_screencast_session(req);
+        let b = create_screencast_session(req);
+        assert!(a.session_id.starts_with("screencast-"));
+        assert_ne!(a.session_id, b.session_id);
+        assert_eq!(a.streams.len(), 1);
+        assert_eq!(a.streams[0].source_type, SCREENCAST_SOURCE_TYPE_MONITOR);
+        assert_eq!(a.streams[0].node_id, SCREENCAST_PLACEHOLDER_NODE_ID);
+        assert_eq!(a.streams[0].width, SCREENCAST_DEFAULT_WIDTH);
+        assert_eq!(a.cursor_mode, 1);
+        assert!(!a.sources_selected);
+        assert!(!a.started);
+    }
+
+    #[test]
+    fn select_screencast_sources_updates_streams() {
+        let mut session = create_screencast_session(PortalScreencastRequest {
+            types: SCREENCAST_SOURCE_TYPE_MONITOR | SCREENCAST_SOURCE_TYPE_WINDOW,
+            multiple: true,
+            cursor_mode: 0,
+        });
+        assert!(select_screencast_sources(&mut session, &[]).is_err());
+        select_screencast_sources(&mut session, &[7, 9]).unwrap();
+        assert!(session.sources_selected);
+        assert_eq!(session.streams.len(), 2);
+        assert_eq!(session.streams[0].node_id, 7);
+        assert_eq!(session.streams[1].node_id, 9);
+    }
+
+    #[test]
+    fn select_screencast_sources_rejects_multiple_when_not_allowed() {
+        let mut session = create_screencast_session(PortalScreencastRequest {
+            types: SCREENCAST_SOURCE_TYPE_MONITOR,
+            multiple: false,
+            cursor_mode: 0,
+        });
+        assert!(select_screencast_sources(&mut session, &[1, 2]).is_err());
+    }
+
+    #[test]
+    fn start_screencast_requires_non_empty_streams() {
+        let mut session = create_screencast_session(PortalScreencastRequest::default());
+        start_screencast(&mut session).unwrap();
+        assert!(session.started);
+        assert!(!session.streams.is_empty());
+        assert!(start_screencast(&mut session).is_err());
+
+        let mut empty = create_screencast_session(PortalScreencastRequest::default());
+        empty.streams.clear();
+        assert!(start_screencast(&mut empty).is_err());
     }
 
     #[test]
