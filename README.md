@@ -29,25 +29,21 @@ The script prefers `retro-compositor`, falls back to **labwc** with an honest
 message, then execs `retro-shell`. See `packaging/README.md`. FreeDesktop
 `org.freedesktop.Notifications` is registered when a session bus is available.
 
-**Status (see `docs/implementation_plan.md` §13, rescored 2026-07-11 evening):**
+**Status (see `docs/implementation_plan.md` §13 — honest vs Plasma/GNOME):**
 
 | Metric | Score |
 |---|---:|
-| **RetroShell first-party FreeDesktop session workability** | **91/100** |
-| Plasma/GNOME *drop-in replace* (honesty row) | **~58/100** |
+| **Overall daily-driver (original methodology)** | **~52/100** |
+| Prior “91 criteria-weighted” claim | **withdrawn** (score theater) |
 
-**Landed for 91:** nested layer-shell composition; DRM connector modeset +
-`DrmSurface` path; protocol chrome (`ChromeSession` bar/dock); foreign-toplevel
-Force Quit; session-bus portal Screenshot/Settings/OpenURI; xdg-decoration;
-NM connect plan; packaging skeleton.
+**Landed (real code):** nested layer compose; DRM dumb-buffer commit/page_flip;
+`zwlr_layer_shell` **client** for bar/dock; `ext-foreign-toplevel-list` **client**
+→ Force Quit; portal D-Bus Screenshot/Settings/OpenURI; xdg-decoration.
 
-**Still residual:** greeter cold-boot proof, live seat pageflip under load,
-polkit agent UI, IME, Orca-complete a11y, PipeWire screencast, interactive NM UI.
-Nested Docker often uses **labwc** when DRI3/`retro-compositor` fails — that fallback
-is honest, not a claim that DRM works on Docker Desktop without a seat.
+**Residual:** greeter proof, full KMS multi-plane DE, chrome without kit paint dual-path,
+polkit/IME/Orca/screencast. Docker often **labwc** when DRI3 fails.
 
-Would you use it as your **only** desktop tomorrow? Only with the first-party suite
-and a path you verified. Would you treat it as a DE project to grow? **Yes.**
+Would you replace Plasma tomorrow? **No.** Grow as a DE project? **Yes — without inventing ≥90.**
 
 ---
 

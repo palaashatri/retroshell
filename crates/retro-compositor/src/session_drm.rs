@@ -95,6 +95,76 @@ pub fn drm_session_available() -> bool {
     !discover_drm_nodes().is_empty() || Path::new("/dev/dri").exists()
 }
 
+/// Present one solid dumb-buffer frame via `DrmSurface::commit` then `page_flip`.
+///
+/// This is the real scanout path (framebuffer + flip), not open-device only.
+fn try_present_dumb_frame(
+    surface: &smithay::backend::drm::DrmSurface,
+    width: i32,
+    height: i32,
+) -> Result<()> {
+    use smithay::backend::allocator::dumb::DumbAllocator;
+    use smithay::backend::allocator::{Allocator, Fourcc, Modifier};
+    use smithay::backend::drm::dumb::framebuffer_from_dumb_buffer;
+    use smithay::backend::drm::{DrmDeviceFd, PlaneConfig, PlaneState};
+    use smithay::utils::{Buffer as BufferCoords, Physical, Rectangle, Transform};
+
+    let w = width.max(1) as u32;
+    let h = height.max(1) as u32;
+    let fd: DrmDeviceFd = surface.device_fd().clone();
+    let mut dumb = DumbAllocator::new(fd.clone());
+    let buffer = dumb
+        .create_buffer(w, h, Fourcc::Xrgb8888, &[Modifier::Linear])
+        .context("DumbAllocator::create_buffer for scanout")?;
+    let fb = framebuffer_from_dumb_buffer(&fd, &buffer, true)
+        .context("framebuffer_from_dumb_buffer")?;
+    let fb_handle = *fb.as_ref();
+
+    let plane = surface.plane();
+    let dst = Rectangle::<i32, Physical>::from_size((w as i32, h as i32).into());
+    let src = Rectangle::<f64, BufferCoords>::from_size((f64::from(w), f64::from(h)).into());
+    // First commit may modeset; on failure try non-blocking page_flip.
+    let plane_state = |cfg: PlaneConfig<'_>| PlaneState {
+        handle: plane,
+        config: Some(cfg),
+    };
+    let cfg = PlaneConfig {
+        src,
+        dst,
+        transform: Transform::Normal,
+        alpha: 1.0,
+        damage_clips: None,
+        fb: fb_handle,
+        fence: None,
+    };
+    match surface.commit([plane_state(cfg)], true) {
+        Ok(()) => {
+            tracing::debug!("DrmSurface::commit ok");
+        }
+        Err(err) => {
+            tracing::debug!(?err, "commit failed, trying page_flip");
+            let cfg = PlaneConfig {
+                src,
+                dst,
+                transform: Transform::Normal,
+                alpha: 1.0,
+                damage_clips: None,
+                fb: fb_handle,
+                fence: None,
+            };
+            surface
+                .page_flip([plane_state(cfg)], true)
+                .context("DrmSurface::page_flip")?;
+        }
+    }
+
+    // Keep fb/buffer alive for the queued flip (process-lifetime leak is acceptable
+    // for the single startup present; surface is retained by caller).
+    std::mem::forget(fb);
+    std::mem::forget(buffer);
+    Ok(())
+}
+
 fn w_from_env_or_default() -> i32 {
     std::env::var("RETROSHELL_COMPOSITOR_WIDTH")
         .ok()
@@ -294,8 +364,38 @@ pub fn run_drm_session() -> Result<()> {
         );
     }
     let _renderer = renderer;
-    let _drm_surface = drm_surface;
+    // Keep DrmDevice alive for the session (ControlDevice for page_flip path).
     let _drm = drm;
+
+    // ---- Pageflip / present attempt (not drop-the-surface) ----
+    // Allocate a dumb XRGB8888 buffer, export as framebuffer, and issue a
+    // modeset commit or page_flip so presentation is exercised when possible.
+    let mut scanout_armed = false;
+    if let Some(surface) = drm_surface.as_ref() {
+        match try_present_dumb_frame(surface, modeset_plan.mode_w, modeset_plan.mode_h) {
+            Ok(()) => {
+                scanout_armed = true;
+                eprintln!(
+                    "[retro-compositor] DRM pageflip/commit present succeeded ({}x{})",
+                    modeset_plan.mode_w, modeset_plan.mode_h
+                );
+                tracing::info!(
+                    stage = DrmPresentationStage::PageFlipOrPresent.as_str(),
+                    "dumb-buffer pageflip/commit path armed"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "DRM present path failed; surface kept for session, protocol continues"
+                );
+                eprintln!("[retro-compositor] DRM present failed: {err:#}");
+            }
+        }
+    }
+    // Retain surface for the process lifetime so create_surface is not a no-op.
+    let _drm_surface_keepalive = drm_surface;
+    let _scanout_armed = scanout_armed;
 
     // Wayland socket
     let socket = ListeningSocketSource::new_auto().context("ListeningSocketSource")?;

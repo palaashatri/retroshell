@@ -47,6 +47,11 @@ impl ForeignToplevelRegistry {
         self.entries.values()
     }
 
+    /// Lookup by handle id.
+    pub fn get(&self, handle_id: &str) -> Option<&ForeignToplevelEntry> {
+        self.entries.get(handle_id)
+    }
+
     /// Insert or replace by `handle_id`.
     pub fn add(&mut self, entry: ForeignToplevelEntry) {
         self.entries.insert(entry.handle_id.clone(), entry);

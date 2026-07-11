@@ -6,6 +6,8 @@ pub mod desktop_manager;
 pub mod dock;
 pub mod fdo_notifications;
 pub mod foreign_toplevel;
+pub mod foreign_toplevel_client;
+pub mod layer_shell_client;
 pub mod launch_services;
 pub mod menu_server;
 pub mod network_connect;
@@ -29,6 +31,14 @@ pub use dock::Dock;
 pub use foreign_toplevel::{
     apply_toplevel_force_quit, parse_toplevel_force_quit, ForeignToplevelEntry,
     ForeignToplevelRegistry, ToplevelForceQuit,
+};
+pub use foreign_toplevel_client::{
+    apply_foreign_toplevel_list_event, apply_foreign_toplevel_list_events,
+    try_sync_foreign_toplevels, ForeignToplevelListEvent,
+};
+pub use layer_shell_client::{
+    chrome_to_layer_shell_requests, layer_shell_bind_summary, try_map_layer_shell_chrome,
+    LayerShellBindResult, LayerShellChromeRequest,
 };
 pub use launch_services::LaunchServices;
 pub use menu_server::MenuServer;
@@ -148,6 +158,25 @@ impl RetroShell {
         Ok(shell)
     }
 
+    /// Bind protocol session chrome (layer-shell) and sync foreign-toplevel list.
+    ///
+    /// Call after `WAYLAND_DISPLAY` is set (compositor/labwc running). Non-fatal.
+    pub(crate) fn attach_wayland_session_protocols(desktop: &mut ShellDesktop) {
+        if let Some(summary) = layer_shell_client::try_map_layer_shell_chrome(&desktop.chrome) {
+            tracing::info!(
+                surfaces = ?summary.mapped_namespaces,
+                "shell mapped layer-shell chrome"
+            );
+            desktop.layer_shell_bound = true;
+        }
+        if let Some(n) =
+            foreign_toplevel_client::try_sync_foreign_toplevels(&mut desktop.foreign_toplevels)
+        {
+            tracing::info!(toplevels = n, "shell synced foreign-toplevel-list");
+            desktop.foreign_toplevel_synced = true;
+        }
+    }
+
     pub fn run(&self) -> Result<()> {
         let mut app = retro_sdk::Application::new("RetroShell", "com.retro.shell");
         app.set_initial_size(Size::new(1280.0, 800.0));
@@ -202,10 +231,14 @@ struct ShellDesktop {
     expected_lock_password: Option<String>,
     /// Independent first-party app processes (compositor/labwc clients).
     session_clients: SessionClientRegistry,
-    /// Protocol-backed session chrome (layer-shell menu bar / dock), not paint-rects.
+    /// Protocol-backed session chrome (layer-shell menu bar / dock roles).
     chrome: ChromeSession,
-    /// Foreign-toplevel registry for task list / Force Quit.
+    /// Foreign-toplevel registry for task list / Force Quit (compositor-synced when possible).
     foreign_toplevels: ForeignToplevelRegistry,
+    /// True after a successful `zwlr_layer_shell_v1` chrome bind.
+    layer_shell_bound: bool,
+    /// True after a successful `ext_foreign_toplevel_list_v1` sync.
+    foreign_toplevel_synced: bool,
 }
 
 struct ShellWindow {
@@ -333,9 +366,23 @@ impl ShellDesktop {
             // Protocol chrome: menu bar (24) + dock (64) matching content_bounds insets.
             chrome: ChromeSession::bootstrap_default(1280, 800, 24, 64),
             foreign_toplevels: ForeignToplevelRegistry::new(),
+            layer_shell_bound: false,
+            foreign_toplevel_synced: false,
         };
+        // Map layer-shell chrome + sync foreign-toplevel list when a compositor is live.
+        RetroShell::attach_wayland_session_protocols(&mut shell);
         shell.open_finder_window();
         shell
+    }
+
+    /// Refresh foreign-toplevel list from the compositor before showing Force Quit.
+    fn refresh_foreign_toplevels_from_compositor(&mut self) {
+        if let Some(n) =
+            foreign_toplevel_client::try_sync_foreign_toplevels(&mut self.foreign_toplevels)
+        {
+            self.foreign_toplevel_synced = true;
+            tracing::debug!(toplevels = n, "Force Quit: foreign-toplevel-list refreshed");
+        }
     }
 
     fn launch_item(&mut self, index: usize) {
@@ -1458,6 +1505,8 @@ impl ShellDesktop {
     }
 
     fn open_force_quit_window(&mut self) {
+        // Pull live compositor-owned toplevels into Force Quit list.
+        self.refresh_foreign_toplevels_from_compositor();
         for window in &self.windows {
             if window.window.title() == "Force Quit" {
                 self.focus_window(window.id);
@@ -1477,7 +1526,7 @@ impl ShellDesktop {
 
         let mut layout = Layout::vertical(10.0);
         layout.add(Box::new(Label::new(
-            "Shell windows and external multi-client processes:",
+            "Shell windows, session clients, and compositor foreign-toplevels:",
         )));
 
         let mut items = Vec::new();
@@ -3095,7 +3144,7 @@ mod tests {
             let label = children[0].as_any().downcast_ref::<Label>().expect("label");
             assert_eq!(
                 label.text,
-                "Shell windows and external multi-client processes:"
+                "Shell windows, session clients, and compositor foreign-toplevels:"
             );
             let list = children[1].as_any().downcast_ref::<ListView>().expect("list");
             assert!(list

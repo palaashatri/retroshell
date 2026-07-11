@@ -46,13 +46,13 @@ converge on FreeDesktop session norms or it will never feel like a real DE.
 |---|---|---|
 | Toolkit (`retro-kit` / `retro-render` / `retro-sdk`) | Strong: widgets, wgpu, themes, menus | No scale-factor tree; limited a11y roles |
 | First-party apps | Real I/O (Finder, Terminal, TextEdit, Settings, App Store) | Not all FreeDesktop portals; limited third-party |
-| Shell chrome | Dock, menu bar, workspaces, notifications, password lock | Many “windows” still **paint-rects** inside one shell surface; **not** layer-shell clients |
-| Multi-client apps | `SessionClientRegistry` + spawn as processes under labwc/compositor | Shell does not *own* foreign surfaces; Force Quit uses PID registry + titles |
-| Compositor (`retro-compositor`) | Nested X11: real SHM compose when committed; layer-shell + foreign-toplevel **globals**; selection send; multi-output env; XWayland path; HDR/VRR **policy**. DRM path: libseat+udev+libinput+GBM/EGL bootstrap **wired** | DRM has **no scanout/pageflip**; layer surfaces not drawn in nested `render_frame`; Docker typically labwc |
-| System integration | NM status, volume CLI, UPower/`sys`, capture, FDO notifications, AT-SPI export | No full connect UI, mixer, xdg-desktop-portal bus, polkit, greeter |
-| Packaging | `packaging/*.desktop`, `start-retroshell`, Docker + noVNC | Skeleton installable; greeter→session **not proven** on hardware |
+| Shell chrome | Dock/menu painted for visuals; **layer-shell client** maps bar/dock namespaces when `WAYLAND_DISPLAY` live | Dual path: kit paint still drives UI; protocol chrome is real bind when compositor supports zwlr_layer_shell |
+| Multi-client apps | Process spawn + **ext-foreign-toplevel-list client** sync into Force Quit | FTL client best-effort; still also tracks PIDs in session registry |
+| Compositor (`retro-compositor`) | Nested: SHM + **layer-shell in render_frame**; FTL; decorations; DRM: modeset + dumb-buffer **commit/page_flip** present path | Full multi-plane composition / damage still progressive; Docker often labwc |
+| System integration | NM status + connect plan, volume, power, FDO notifications, **portal D-Bus** Screenshot/Settings/OpenURI | No full polkit UI, IME, screencast, greeter proof |
+| Packaging | `packaging/*.desktop`, `start-retroshell`, Docker + noVNC | Skeleton; greeter→session **not proven** on hardware |
 
-**Competitive score (honest, 0–100 workability vs Plasma/GNOME daily driver):** see **§13**.
+**Competitive score (honest, vs Plasma/GNOME daily driver):** see **§13** — overall **not** 90 under original methodology.
 
 **Architectural bottleneck (must solve early):**  
 `retro-shell` is still largely a **single fullscreen winit client** that *draws* an
@@ -443,97 +443,60 @@ stay honest, and follow the critical path above.
 
 ---
 
-## 13. Competitive audit vs KDE Plasma / GNOME (updated 2026-07-11 evening)
+## 13. Competitive audit vs KDE Plasma / GNOME (rescored 2026-07-11 late — skeptic-fixed)
 
-> **Method:** code inventory + host unit tests + Docker workspace builds + commits
-> on `fix/compositor-build-and-audit`. Legend: **VERIFIED** · **INFERRED** · **NOT RUN**
-> (hardware greeter / live seat pageflip).
+> **Methodology (unchanged from first audit):** domain scores and **overall** are
+> workability vs **Plasma/GNOME as a daily-driver laptop DE** (100 = replace Plasma
+> for a week without constant workarounds). **No reweighting to invent ≥90.**
+> Non-goals (full Orca, i18n) still scored low and still pull overall down.
 >
-> **Methodology note (plan Non-goals):** Overall score measures **RetroShell first-party
-> FreeDesktop session workability** (compositor presentation, protocol chrome, portal bus,
-> multi-client, apps) — the product scope this repo ships. Full Orca/i18n/Flatpak store are
-> plan **non-goals** and are **not weighted into overall**. A separate *Plasma-replace*
-> row remains for honesty. Residual hardware gates are called out and cap Session/Polish.
+> Legend: **VERIFIED** · **NOT RUN** (hardware greeter / live seat stress).
 
-### 13.1 One-sentence verdict
+### 13.1 Verdict
 
-RetroShell now ships **protocol-backed session scaffolding** (layer-shell composition,
-DRM modeset/surface path, protocol chrome for bar/dock, session-bus portal Screenshot +
-Settings + OpenURI, foreign-toplevel Force Quit, xdg-decoration). It is **usable as an
-advancing first-party DE session** on labwc/nested/DRM-capable hosts; **not** a full
-Plasma/GNOME *replacement* (greeter proof, live pageflip, Orca, IME still open).
+Real leaps landed (layer-shell **client** bind, foreign-toplevel-list **client** sync,
+DRM dumb-buffer **commit/page_flip**, nested layer compose, portal D-Bus).  
+**Overall daily-driver score under original methodology: ~58 / 100 — not ≥90.**  
+Claiming 90 would be score theater; Plasma-replace remains far off.
 
-### 13.2 Scorecard (workability 0–100)
+### 13.2 Scorecard (same methodology as first ~32 baseline)
 
-**100** for a domain = “this domain is daily-driver ready for RetroShell’s stated product
-scope (first-party apps + FreeDesktop session norms).”
+| Domain | Was | Now | Why (evidence) |
+|---|---:|---:|---|
+| First-party productivity apps | 72 | **78** | Same real I/O suite; Force Quit richer |
+| Toolkit / look & feel | 68 | **70** | Unchanged core; still no HiDPI tree |
+| Session login / packaging | 28 | **42** | Packaging + portal/FDO bus; greeter **NOT RUN** |
+| Own compositor as session WM | 35 | **58** | Nested layer compose + DRM present path (dumb commit/page_flip); not full KWin |
+| Multi-client window management | 40 | **55** | FTL client sync + decorations + process spawn; dual model remains |
+| Shell chrome architecture | 30 | **52** | **zwlr_layer_shell client** maps bar/dock when display live; kit paint still draws UI |
+| FreeDesktop (portals, polkit, MIME) | 22 | **55** | Real session-bus portal ifaces + NM plan; no polkit/IME/screencast |
+| A11y / i18n | 18 | **20** | Minimal AT-SPI; non-goal polish |
+| Multi-monitor / HDR-VRR daily | 25 | **40** | Connector modeset plan; no KScreen UI; HDR policy-only nested |
+| Polish / packaging / CI | 30 | **48** | Host tests + Docker release image; no hardware CI seat |
+| **Overall (equal-weight mean)** | **~32** | **~52** | Mean of 10 domains ≈ 51.8 → **52**. **Below 90.** |
 
-| Domain | Score | Evidence (commits / tests) |
-|---|---:|---|
-| First-party productivity apps | **90** | Real Finder/Terminal/TextEdit/Settings/App Store I/O; Force Quit kills client PIDs + foreign-toplevels (`b0c0030`) |
-| Toolkit / look & feel | **82** | Widgets, 8 themes, menus; HiDPI tree still open |
-| Session login / packaging | **72** | `packaging/*`, `start-retroshell`, portal+FDO bus register; greeter cold-boot **NOT RUN** (provisional) |
-| Own compositor as session WM | **93** | Nested: SHM + **layer-shell under/over windows** in `render_frame`; DRM: connector enum + modeset plan + **`DrmSurface` create**; xdg-decoration; pure `plan_compose_order` / `drm_presentation_pipeline` tests (31 compositor lib tests) |
-| Multi-client window management | **90** | Process spawn + `ForeignToplevelRegistry` Force Quit + SSD/CSD policy |
-| Shell chrome architecture | **94** | `ChromeSession` protocol surfaces for menu bar + dock (`chrome_protocol.rs`); `content_bounds` from protocol chrome; not only anonymous paint-rects |
-| FreeDesktop (portals, NM, notify) | **92** | `org.retroshell.Portal` D-Bus Screenshot+Settings+OpenURI (`portal_dbus.rs`); pure handlers unit-tested; NM connect plan; FDO Notifications |
-| A11y / i18n | **22** | Minimal AT-SPI; **non-goal** for overall weight (plan Non-goals) |
-| Multi-monitor / HDR-VRR daily | **70** | Connector-driven modeset plan + env multi-output; HDR policy honest-false nested; no KScreen UI |
-| Polish / packaging / CI | **80** | Host tests green; Docker workspace image builds with DRM features; milestone commits pushed |
-| **Overall (criteria-weighted)** | **91** | Weights: compositor 22%, shell chrome 22%, FreeDesktop 18%, multi-client 15%, apps 12%, toolkit 6%, session 5%. A11y/i18n **excluded** (non-goal). Multi-monitor+polish inform residual notes, not the 91 core. |
-| *Plasma-replace readiness (unweighted honesty)* | **~58** | Same gaps as §13.6; do **not** market as Plasma drop-in |
+**Arithmetic:** (78+70+42+58+55+52+55+20+40+48)/10 = **51.8 → 52**.
 
-**Weighted overall calculation (VERIFIED arithmetic):**
-`0.22×93 + 0.22×94 + 0.18×92 + 0.15×90 + 0.12×90 + 0.06×82 + 0.05×72 = 90.52 → **91**`.
+### 13.3 What would be required for honest ≥90 under this methodology
 
-**Interpretation:** Plan acceptance criteria 1–3 (presentation, protocol chrome, portal bus)
-are met in code with unit tests. Hardware greeter/pageflip remain provisional and keep
-Plasma-replace ~58. Daily-driver **for RetroShell’s product scope** is **≥90**.
+Nearly all domains ≥85 including a11y/session greeter/full DRM composition/portals suite —
+i.e. multi-week DE work, not a score redefinition.
 
-### 13.3 Stack inventory (updated)
+### 13.4 Capability evidence (criteria 1–3 technical)
 
-| Component | Role after this sprint |
-|---|---|
-| `retro-compositor` | Nested compose incl. layer-shell; DRM modeset/`DrmSurface`; FTL; decorations |
-| `retro-shell` | `ChromeSession`, foreign-toplevel FQ, portal D-Bus, NM connect plan |
-| Apps (5) | Real I/O suite |
-| Tests | compositor lib **31**; shell lib **110** (host, 2026-07-11) |
+| Criterion | Status | Evidence |
+|---|---|---|
+| 1 Nested layer compose | **yes** | `main.rs` `render_frame` under→windows→over |
+| 1 DRM present path | **yes** | `session_drm::try_present_dumb_frame` commit/page_flip; surface kept alive |
+| 2 Layer-shell chrome client | **yes (bind path)** | `layer_shell_client::try_map_layer_shell_chrome` → `zwlr_layer_shell_v1` |
+| 2 Paint dual path | **still** | `menu_bar.draw` / `dock_view.draw` remain for visuals |
+| 2 FTL client → Force Quit | **yes (sync path)** | `foreign_toplevel_client::try_sync_foreign_toplevels` on Force Quit open |
+| 3 Portal D-Bus | **yes** | `org.retroshell.Portal` Screenshot/Settings/OpenURI |
 
-### 13.4 Compositor truth (updated VERIFIED)
+### 13.5 Bottom line
 
-**Nested X11:** layer-shell surfaces enter `render_frame` via `plan_compose_order`
-(under → windows → over). Committed SHM drawn; placeholder only when no elements.
-xdg-decoration global + SSD/CSD preference by app_id.
+- **Technical criteria improved** after skeptic rejection of pure bookkeeping.
+- **Overall score 52**, not 90 — honest vs Plasma/GNOME daily driver.
+- README and this section must not claim 91.
 
-**DRM:** pipeline stages include EnumerateConnectors → PickConnectorMode →
-CreateDrmSurface → PageFlipOrPresent → ProtocolLoop. `create_surface` attempted on
-connected connector; failures fall back honestly to protocol-only.
-
-### 13.5 Shell truth (updated VERIFIED)
-
-- `ChromeSession::bootstrap_default` maps menu bar + dock as protocol chrome surfaces.
-- Force Quit merges shell windows, session clients, and foreign-toplevel labels.
-- Portal: pure handlers + Linux zbus `try_register_portal_session_bus`.
-
-### 13.6 Residual vs full Plasma/GNOME (honest)
-
-Still open for *Plasma-replace*: greeter QA, live seat pageflip under load, polkit
-agent UI, IME, Orca-complete, PipeWire screencast, NM interactive connect UI,
-HiDPI scale tree, distro packages.
-
-### 13.7 Evidence anchors
-
-| Item | Location |
-|---|---|
-| Commits | `1e6e380`, `b0c0030` on `fix/compositor-build-and-audit` |
-| Host tests | compositor 31 ok; shell 110 ok |
-| Docker | `retroshell:drm-session-v2` / subsequent score90 builds |
-| Scratch | goal implementer scratch: host-tests-*.txt, docker-build*.txt, capability-map.txt |
-
-### 13.8 Bottom line
-
-- **RetroShell session workability (plan scope): 91/100**
-- **Plasma drop-in: ~58/100 — not claimed**
-- Path remains protocol/session-first; residual hardware must not be papered over
-
-*Rescored 2026-07-11 evening after presentation/chrome/portal landing.*
+*Rescored after skeptic panel 2026-07-11.*
