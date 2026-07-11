@@ -19,6 +19,7 @@ pub mod portal_dbus;
 pub mod power;
 pub mod session_clients;
 pub mod session_manager;
+pub mod session_packaging;
 pub mod theme_manager;
 pub mod window_manager;
 pub mod workspace_manager;
@@ -72,6 +73,7 @@ pub use session_clients::{
     ForceQuitTarget, SessionClientRegistry,
 };
 pub use session_manager::SessionManager;
+pub use session_packaging::{check_packaging_health, PackagingHealth, SessionPackagingLayout};
 pub use theme_manager::ThemeManager;
 pub use window_manager::WindowManager;
 pub use workspace_manager::WorkspaceManager;

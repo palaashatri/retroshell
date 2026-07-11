@@ -897,6 +897,39 @@ fn settings_conf_path() -> Option<PathBuf> {
     None
 }
 
+
+// ---------------------------------------------------------------------------
+// Text-input / IME policy (pure) — Phase D8 scaffold
+// ---------------------------------------------------------------------------
+
+/// Compositor preference for text-input-v3 / input-method availability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TextInputCapability {
+    /// No IME; clients use raw key events only.
+    None,
+    /// text-input-v3 global advertised; no input-method seat yet.
+    TextInputV3,
+    /// Full input-method-v2 + text-input-v3 (not yet implemented end-to-end).
+    InputMethodAndTextInput,
+}
+
+/// Pure policy: which text-input features the session claims.
+pub fn text_input_capability_from_env(value: Option<&str>) -> TextInputCapability {
+    match value.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("im" | "input-method" | "full") => TextInputCapability::InputMethodAndTextInput,
+        Some("text-input" | "v3" | "1" | "true" | "on") => TextInputCapability::TextInputV3,
+        _ => TextInputCapability::None,
+    }
+}
+
+pub fn text_input_capability_summary(cap: TextInputCapability) -> &'static str {
+    match cap {
+        TextInputCapability::None => "text_input=none",
+        TextInputCapability::TextInputV3 => "text_input=text-input-v3",
+        TextInputCapability::InputMethodAndTextInput => "text_input=im+text-input-v3",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1252,5 +1285,19 @@ mod tests {
         assert_eq!(specs[1].name, "menu-bar");
         assert_eq!(specs[2].name, "notifications");
         assert!(specs[2].layer.z_priority() > specs[0].layer.z_priority());
+    }
+
+    #[test]
+    fn text_input_capability_env_parses() {
+        assert_eq!(text_input_capability_from_env(None), TextInputCapability::None);
+        assert_eq!(
+            text_input_capability_from_env(Some("v3")),
+            TextInputCapability::TextInputV3
+        );
+        assert_eq!(
+            text_input_capability_from_env(Some("full")),
+            TextInputCapability::InputMethodAndTextInput
+        );
+        assert!(text_input_capability_summary(TextInputCapability::TextInputV3).contains("v3"));
     }
 }
