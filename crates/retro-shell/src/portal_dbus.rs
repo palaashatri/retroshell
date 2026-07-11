@@ -48,9 +48,10 @@ pub fn try_register_portal_session_bus() -> bool {
 mod linux {
     use super::*;
     use crate::portal::{
-        handle_open_uri, handle_portal_screenshot_request, portal_screenshot_uri_for,
-        portal_screenshots_dir, read_all_portal_settings, read_portal_setting,
-        take_portal_style_screenshot_with, PortalScreenshotRequest,
+        handle_file_chooser_open, handle_file_chooser_save, handle_open_uri,
+        handle_portal_screenshot_request, portal_screenshot_uri_for, portal_screenshots_dir,
+        read_all_portal_settings, read_portal_setting, take_portal_style_screenshot_with,
+        PortalFileChooserRequest, PortalScreenshotRequest, PORTAL_FILECHOOSER_INTERFACE,
     };
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -144,6 +145,76 @@ mod linux {
         }
     }
 
+    struct PortalFileChooserIface;
+
+    #[interface(name = "org.freedesktop.impl.portal.FileChooser")]
+    impl PortalFileChooserIface {
+        /// OpenFile — pure path selection under options["current_folder"].
+        /// options["uris"] string array of basenames selects files (agent/test).
+        fn open_file(
+            &self,
+            _handle: zbus::zvariant::ObjectPath<'_>,
+            _app_id: &str,
+            _parent_window: &str,
+            title: &str,
+            options: HashMap<String, OwnedValue>,
+        ) -> (u32, HashMap<String, OwnedValue>) {
+            let multiple = option_bool(&options, "multiple").unwrap_or(false);
+            let directory = option_bool(&options, "directory").unwrap_or(false);
+            let current_folder = option_string(&options, "current_folder");
+            let req = PortalFileChooserRequest {
+                title: title.into(),
+                multiple,
+                directory,
+                current_folder,
+                ..Default::default()
+            };
+            let names = option_string_array(&options, "selected");
+            let names_ref: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+            match handle_file_chooser_open(&req, &names_ref) {
+                Ok(r) if r.uris.is_empty() => (1u32, HashMap::new()), // cancelled
+                Ok(r) => {
+                    let mut results = HashMap::new();
+                    if let Ok(v) = OwnedValue::try_from(Value::from(r.uris)) {
+                        results.insert("uris".into(), v);
+                    }
+                    (0u32, results)
+                }
+                Err(_) => (2u32, HashMap::new()),
+            }
+        }
+
+        fn save_file(
+            &self,
+            _handle: zbus::zvariant::ObjectPath<'_>,
+            _app_id: &str,
+            _parent_window: &str,
+            title: &str,
+            options: HashMap<String, OwnedValue>,
+        ) -> (u32, HashMap<String, OwnedValue>) {
+            let current_folder = option_string(&options, "current_folder");
+            let current_name = option_string(&options, "current_name");
+            let confirm = option_bool(&options, "confirm").unwrap_or(true);
+            let req = PortalFileChooserRequest {
+                title: title.into(),
+                current_folder,
+                current_name,
+                ..Default::default()
+            };
+            match handle_file_chooser_save(&req, confirm) {
+                Ok(r) if r.uris.is_empty() => (1u32, HashMap::new()),
+                Ok(r) => {
+                    let mut results = HashMap::new();
+                    if let Ok(v) = OwnedValue::try_from(Value::from(r.uris)) {
+                        results.insert("uris".into(), v);
+                    }
+                    (0u32, results)
+                }
+                Err(_) => (2u32, HashMap::new()),
+            }
+        }
+    }
+
     struct PortalOpenUriIface;
 
     #[interface(name = "org.freedesktop.impl.portal.OpenURI")]
@@ -180,6 +251,18 @@ mod linux {
         None
     }
 
+    fn option_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+        let value = options.get(key)?;
+        String::try_from(value).ok()
+    }
+
+    fn option_string_array(options: &HashMap<String, OwnedValue>, key: &str) -> Vec<String> {
+        let Some(value) = options.get(key) else {
+            return Vec::new();
+        };
+        Vec::<String>::try_from(value).unwrap_or_default()
+    }
+
     pub(super) fn register() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(guard) = REGISTRATION.lock() {
             if guard.is_some() {
@@ -192,6 +275,7 @@ mod linux {
             .serve_at(PORTAL_PATH, PortalScreenshotIface)?
             .serve_at(PORTAL_PATH, PortalSettingsIface)?
             .serve_at(PORTAL_PATH, PortalOpenUriIface)?
+            .serve_at(PORTAL_PATH, PortalFileChooserIface)?
             .build()?;
 
         if let Ok(mut guard) = REGISTRATION.lock() {

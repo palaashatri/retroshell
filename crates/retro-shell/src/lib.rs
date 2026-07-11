@@ -58,10 +58,12 @@ pub use fdo_notifications::{
 };
 pub use notification_center::{NotificationCenter, NotificationPriority};
 pub use portal::{
-    handle_open_uri, handle_portal_screenshot_request, portal_screenshot_filename,
-    portal_screenshot_uri_for, portal_screenshots_dir, read_all_portal_settings,
-    read_portal_setting, take_portal_style_screenshot, take_portal_style_screenshot_with,
-    PortalScreenshotRequest, PortalScreenshotResult, PortalSettingsNamespace, PORTAL_BUS_NAME,
+    handle_file_chooser_open, handle_file_chooser_save, handle_open_uri,
+    handle_portal_screenshot_request, portal_screenshot_filename, portal_screenshot_uri_for,
+    portal_screenshots_dir, read_all_portal_settings, read_portal_setting,
+    take_portal_style_screenshot, take_portal_style_screenshot_with, validate_file_chooser_request,
+    PortalFileChooserRequest, PortalFileChooserResult, PortalScreenshotRequest,
+    PortalScreenshotResult, PortalSettingsNamespace, PORTAL_BUS_NAME, PORTAL_FILECHOOSER_INTERFACE,
     PORTAL_OPENURI_INTERFACE, PORTAL_PATH, PORTAL_SCREENSHOT_INTERFACE, PORTAL_SETTINGS_INTERFACE,
 };
 pub use polkit_agent::{
@@ -255,6 +257,8 @@ struct ShellDesktop {
     layer_shell_bound: bool,
     /// True after a successful `ext_foreign_toplevel_list_v1` sync.
     foreign_toplevel_synced: bool,
+    /// Keyboard-only chrome focus region (Tab cycle).
+    chrome_focus: ChromeFocusTarget,
 }
 
 struct ShellWindow {
@@ -384,6 +388,7 @@ impl ShellDesktop {
             foreign_toplevels: ForeignToplevelRegistry::new(),
             layer_shell_bound: false,
             foreign_toplevel_synced: false,
+            chrome_focus: ChromeFocusTarget::MenuBar,
         };
         // Map layer-shell chrome + sync foreign-toplevel list when a compositor is live.
         RetroShell::attach_wayland_session_protocols(&mut shell);
@@ -2180,6 +2185,16 @@ impl Widget for ShellDesktop {
         }
 
         if let Event::KeyDown { key, modifiers } = event {
+            // Plain Tab: cycle keyboard chrome focus (menu → desktop → windows → dock).
+            if !modifiers.meta
+                && !modifiers.control
+                && !modifiers.alt
+                && *key == retro_kit::event::KeyCode::Tab
+            {
+                self.chrome_focus = next_chrome_focus(self.chrome_focus);
+                tracing::debug!(focus = ?self.chrome_focus, "chrome keyboard focus advanced");
+                return EventResult::Handled;
+            }
             // Cmd+Tab: cycle focus through non-minimized windows on the active workspace
             if modifiers.meta && *key == retro_kit::event::KeyCode::Tab {
                 let active_workspace = self.active_workspace();

@@ -37,6 +37,8 @@ pub const PORTAL_SCREENSHOT_INTERFACE: &str = "org.freedesktop.impl.portal.Scree
 pub const PORTAL_SETTINGS_INTERFACE: &str = "org.freedesktop.impl.portal.Settings";
 /// FreeDesktop portal OpenURI implementation interface.
 pub const PORTAL_OPENURI_INTERFACE: &str = "org.freedesktop.impl.portal.OpenURI";
+/// FreeDesktop portal FileChooser implementation interface.
+pub const PORTAL_FILECHOOSER_INTERFACE: &str = "org.freedesktop.impl.portal.FileChooser";
 
 // ---------------------------------------------------------------------------
 // Screenshot
@@ -177,6 +179,108 @@ pub fn read_all_portal_settings(namespace: &str) -> HashMap<String, String> {
         _ => {}
     }
     map
+}
+
+// ---------------------------------------------------------------------------
+// FileChooser
+// ---------------------------------------------------------------------------
+
+/// FileChooser portal request (OpenFile / SaveFile simplified).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PortalFileChooserRequest {
+    pub title: String,
+    pub accept_label: String,
+    pub multiple: bool,
+    pub directory: bool,
+    /// Suggested filters as glob patterns (e.g. `*.png`).
+    pub filters: Vec<String>,
+    /// Current folder hint (absolute path string).
+    pub current_folder: Option<String>,
+    /// Suggested save name for SaveFile.
+    pub current_name: Option<String>,
+}
+
+/// Pure FileChooser result (uris selected).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortalFileChooserResult {
+    pub uris: Vec<String>,
+    pub choices: HashMap<String, String>,
+}
+
+/// Validate a FileChooser request (pure).
+pub fn validate_file_chooser_request(req: &PortalFileChooserRequest) -> Result<(), String> {
+    if req.title.trim().is_empty() {
+        return Err("title empty".into());
+    }
+    if let Some(folder) = &req.current_folder {
+        if folder.contains('\0') {
+            return Err("current_folder contains null".into());
+        }
+    }
+    Ok(())
+}
+
+/// Pure OpenFile handler: returns `file://` URIs under `current_folder` for
+/// synthetic selection used by tests and non-interactive agents.
+///
+/// When `selected_names` is empty, returns Ok with empty uris (user cancelled).
+pub fn handle_file_chooser_open(
+    req: &PortalFileChooserRequest,
+    selected_names: &[&str],
+) -> Result<PortalFileChooserResult, String> {
+    validate_file_chooser_request(req)?;
+    if selected_names.is_empty() {
+        return Ok(PortalFileChooserResult {
+            uris: Vec::new(),
+            choices: HashMap::new(),
+        });
+    }
+    if !req.multiple && selected_names.len() > 1 {
+        return Err("multiple selection not allowed".into());
+    }
+    let base = req
+        .current_folder
+        .clone()
+        .unwrap_or_else(|| "/tmp".into());
+    let uris: Vec<String> = selected_names
+        .iter()
+        .map(|name| {
+            let path = Path::new(&base).join(name);
+            portal_screenshot_uri_for(&path)
+        })
+        .collect();
+    Ok(PortalFileChooserResult {
+        uris,
+        choices: HashMap::new(),
+    })
+}
+
+/// Pure SaveFile handler: builds a single destination URI.
+pub fn handle_file_chooser_save(
+    req: &PortalFileChooserRequest,
+    confirm: bool,
+) -> Result<PortalFileChooserResult, String> {
+    validate_file_chooser_request(req)?;
+    if !confirm {
+        return Ok(PortalFileChooserResult {
+            uris: Vec::new(),
+            choices: HashMap::new(),
+        });
+    }
+    let name = req
+        .current_name
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "Untitled".into());
+    let base = req
+        .current_folder
+        .clone()
+        .unwrap_or_else(|| "/tmp".into());
+    let path = Path::new(&base).join(name);
+    Ok(PortalFileChooserResult {
+        uris: vec![portal_screenshot_uri_for(&path)],
+        choices: HashMap::new(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -347,5 +451,45 @@ mod tests {
             PORTAL_OPENURI_INTERFACE,
             "org.freedesktop.impl.portal.OpenURI"
         );
+        assert_eq!(
+            PORTAL_FILECHOOSER_INTERFACE,
+            "org.freedesktop.impl.portal.FileChooser"
+        );
+    }
+
+    #[test]
+    fn handle_file_chooser_open_single() {
+        let req = PortalFileChooserRequest {
+            title: "Open".into(),
+            multiple: false,
+            current_folder: Some("/home/u".into()),
+            ..Default::default()
+        };
+        let r = handle_file_chooser_open(&req, &["a.txt"]).unwrap();
+        assert_eq!(r.uris.len(), 1);
+        assert!(r.uris[0].contains("a.txt"));
+        assert!(handle_file_chooser_open(&req, &["a", "b"]).is_err());
+    }
+
+    #[test]
+    fn handle_file_chooser_save_confirm() {
+        let req = PortalFileChooserRequest {
+            title: "Save".into(),
+            current_folder: Some("/tmp".into()),
+            current_name: Some("out.md".into()),
+            ..Default::default()
+        };
+        let cancelled = handle_file_chooser_save(&req, false).unwrap();
+        assert!(cancelled.uris.is_empty());
+        let saved = handle_file_chooser_save(&req, true).unwrap();
+        assert_eq!(saved.uris.len(), 1);
+        assert!(saved.uris[0].ends_with("out.md") || saved.uris[0].contains("out.md"));
+    }
+
+    #[test]
+    fn validate_file_chooser_rejects_empty_title() {
+        let req = PortalFileChooserRequest::default();
+        assert!(validate_file_chooser_request(&req).is_err());
     }
 }
+

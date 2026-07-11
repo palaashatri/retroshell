@@ -456,7 +456,7 @@ stay honest, and follow the critical path above.
 
 Real leaps landed (layer-shell **client** bind, foreign-toplevel-list **client** sync,
 DRM dumb-buffer **commit/page_flip**, nested layer compose, portal D-Bus).  
-**Overall daily-driver score under original methodology: ~60 / 100 — not ≥90.**  
+**Overall daily-driver score under original methodology: ~61 / 100 — not ≥90.**  
 Claiming 90 would be score theater; Plasma-replace remains far off.
 
 ### 13.2 Scorecard (same methodology as first ~32 baseline)
@@ -469,13 +469,13 @@ Claiming 90 would be score theater; Plasma-replace remains far off.
 | Own compositor as session WM | 35 | **64** | Layer compose + continuous DRM present + text-input-v3 global; not full KWin |
 | Multi-client window management | 40 | **58** | FTL client + decorations + process spawn |
 | Shell chrome architecture | 30 | **68** | Layer-shell client + **skip kit paint when bound** + keyboard chrome focus order |
-| FreeDesktop (portals, polkit, MIME) | 22 | **65** | Portal + polkit + NM plan + text-input-v3 advertise; no screencast |
-| A11y / i18n | 18 | **38** | AT-SPI roles/actions/chrome tree + focus policy; still Orca-incomplete |
+| FreeDesktop (portals, polkit, MIME) | 22 | **70** | Portal Screenshot/Settings/OpenURI/**FileChooser** + polkit + NM + text-input-v3; no screencast |
+| A11y / i18n | 18 | **42** | AT-SPI tree + Tab chrome focus cycle; still Orca-incomplete |
 | Multi-monitor / HDR-VRR daily | 25 | **42** | Connector modeset plan; multi-output env; no KScreen UI |
 | Polish / packaging / CI | 30 | **55** | Host tests + Docker + packaging verify script |
-| **Overall (equal-weight mean)** | **~32** | **~60** | Mean of 10 domains ≈ 60.2 → **60**. **Below 90.** |
+| **Overall (equal-weight mean)** | **~32** | **~61** | Mean of 10 domains ≈ 61.1 → **61**. **Below 90.** |
 
-**Arithmetic:** (80+74+58+64+58+68+65+38+42+55)/10 = **60.2 → 60**.
+**Arithmetic:** (80+74+58+64+58+68+70+42+42+55)/10 = **61.1 → 61**.
 
 ### 13.3 What would be required for honest ≥90 under this methodology
 
@@ -496,7 +496,7 @@ i.e. multi-week DE work, not a score redefinition.
 ### 13.5 Bottom line
 
 - **Technical criteria improved** after skeptic rejection of pure bookkeeping.
-- **Overall score ~60**, not 90 — honest vs Plasma/GNOME daily driver.
+- **Overall score ~61**, not 90 — honest vs Plasma/GNOME daily driver.
 - README and this section must not claim 91.
 
 *Rescored after skeptic panel 2026-07-11.*
