@@ -1,14 +1,18 @@
 pub mod application_registry;
 pub mod audio;
 pub mod capture;
+pub mod chrome_protocol;
 pub mod desktop_manager;
 pub mod dock;
 pub mod fdo_notifications;
+pub mod foreign_toplevel;
 pub mod launch_services;
 pub mod menu_server;
+pub mod network_connect;
 pub mod network_manager;
 pub mod notification_center;
 pub mod portal;
+pub mod portal_dbus;
 pub mod power;
 pub mod session_clients;
 pub mod session_manager;
@@ -19,10 +23,18 @@ pub mod workspace_manager;
 pub use application_registry::ApplicationRegistry;
 pub use audio::{get_volume, set_volume};
 pub use capture::{start_recording, stop_recording, take_screenshot};
+pub use chrome_protocol::{ChromeRole, ChromeSession, ProtocolChromeSurface};
 pub use desktop_manager::DesktopManager;
 pub use dock::Dock;
+pub use foreign_toplevel::{
+    apply_toplevel_force_quit, parse_toplevel_force_quit, ForeignToplevelEntry,
+    ForeignToplevelRegistry, ToplevelForceQuit,
+};
 pub use launch_services::LaunchServices;
 pub use menu_server::MenuServer;
+pub use network_connect::{
+    nm_connect_plan, nm_connect_plan_validated, validate_nm_connect_request, NmConnectRequest,
+};
 pub use network_manager::{get_network_status, NetworkStatus};
 pub use fdo_notifications::{
     try_register_session_bus as try_register_fdo_notifications, NotificationDaemon,
@@ -31,9 +43,13 @@ pub use fdo_notifications::{
 };
 pub use notification_center::{NotificationCenter, NotificationPriority};
 pub use portal::{
-    portal_screenshot_filename, take_portal_style_screenshot, take_portal_style_screenshot_with,
-    PortalScreenshotRequest, PortalScreenshotResult,
+    handle_open_uri, handle_portal_screenshot_request, portal_screenshot_filename,
+    portal_screenshot_uri_for, portal_screenshots_dir, read_all_portal_settings,
+    read_portal_setting, take_portal_style_screenshot, take_portal_style_screenshot_with,
+    PortalScreenshotRequest, PortalScreenshotResult, PortalSettingsNamespace, PORTAL_BUS_NAME,
+    PORTAL_OPENURI_INTERFACE, PORTAL_PATH, PORTAL_SCREENSHOT_INTERFACE, PORTAL_SETTINGS_INTERFACE,
 };
+pub use portal_dbus::try_register_portal_session_bus;
 pub use power::{battery_info, BatteryInfo};
 pub use session_clients::{
     binary_name_for_bundle, parse_force_quit_entry, resolve_app_binary, spawn_app_client,
@@ -127,6 +143,8 @@ impl RetroShell {
         // Best-effort FreeDesktop Notifications on the session bus (Linux).
         // Failure is non-fatal: pure NotificationCenter still works in-process.
         let _ = fdo_notifications::try_register_session_bus(shell.notification_center.clone());
+        // Best-effort portal Screenshot/Settings/OpenURI on the session bus (Linux).
+        let _ = portal_dbus::try_register_portal_session_bus();
         Ok(shell)
     }
 
@@ -184,6 +202,10 @@ struct ShellDesktop {
     expected_lock_password: Option<String>,
     /// Independent first-party app processes (compositor/labwc clients).
     session_clients: SessionClientRegistry,
+    /// Protocol-backed session chrome (layer-shell menu bar / dock), not paint-rects.
+    chrome: ChromeSession,
+    /// Foreign-toplevel registry for task list / Force Quit.
+    foreign_toplevels: ForeignToplevelRegistry,
 }
 
 struct ShellWindow {
@@ -308,6 +330,9 @@ impl ShellDesktop {
             lock_error_message: None,
             expected_lock_password,
             session_clients: SessionClientRegistry::new(),
+            // Protocol chrome: menu bar (24) + dock (64) matching content_bounds insets.
+            chrome: ChromeSession::bootstrap_default(1280, 800, 24, 64),
+            foreign_toplevels: ForeignToplevelRegistry::new(),
         };
         shell.open_finder_window();
         shell
@@ -352,12 +377,26 @@ impl ShellDesktop {
     }
 
     fn content_bounds(&self) -> Rect {
-        let dock_height = 64.0;
+        // Prefer protocol chrome exclusive zones (menu bar top / dock bottom).
+        let menu_height = self
+            .chrome
+            .surfaces()
+            .iter()
+            .find(|s| s.role == ChromeRole::MenuBar && s.mapped)
+            .map(|s| s.height as f32)
+            .unwrap_or(24.0);
+        let dock_height = self
+            .chrome
+            .surfaces()
+            .iter()
+            .find(|s| s.role == ChromeRole::Dock && s.mapped)
+            .map(|s| s.height as f32)
+            .unwrap_or(64.0);
         Rect::new(
             self.rect().x,
-            self.rect().y + 24.0,
+            self.rect().y + menu_height,
             self.rect().width,
-            (self.rect().height - 24.0 - dock_height).max(0.0),
+            (self.rect().height - menu_height - dock_height).max(0.0),
         )
     }
 
@@ -722,9 +761,17 @@ impl ShellDesktop {
         match session_clients::spawn_app_client(bundle_id) {
             Ok(client) => {
                 let pid = client.pid;
+                let binary_name = client.binary_name.clone();
                 tracing::info!(
                     "Launched multi-client app {bundle_id} as pid {pid} (compositor-managed surface)"
                 );
+                // Foreign-toplevel mirror for Force Quit / task list (with pid).
+                self.foreign_toplevels.add(ForeignToplevelEntry {
+                    handle_id: format!("session-client-{pid}"),
+                    title: binary_name,
+                    app_id: bundle_id.to_string(),
+                    pid: Some(pid),
+                });
                 self.session_clients.register(client);
                 self.last_error = None;
                 self.activate_app_menu(bundle_id);
@@ -751,9 +798,18 @@ impl ShellDesktop {
         }
     }
 
-    /// Apply a Force Quit list selection (window title or external client pid).
-    /// Returns true if a shell window closed or a client was force-quit.
+    /// Apply a Force Quit list selection (window title, external client, or foreign toplevel).
+    /// Returns true if a shell window closed or a client/toplevel was force-quit.
     fn apply_force_quit_entry(&mut self, entry: &str) -> bool {
+        if let Some(target) = parse_toplevel_force_quit(entry) {
+            let ok = apply_toplevel_force_quit(&mut self.foreign_toplevels, &target);
+            if let Some(pid) = target.pid {
+                // Keep session client registry in sync when quitting by pid.
+                let client_ok = self.session_clients.force_quit_pid(pid);
+                return ok || client_ok;
+            }
+            return ok;
+        }
         match parse_force_quit_entry(entry) {
             Some(ForceQuitTarget::WindowTitle(title)) => {
                 let target_id = self
@@ -768,7 +824,15 @@ impl ShellDesktop {
                     false
                 }
             }
-            Some(ForceQuitTarget::ClientPid(pid)) => self.session_clients.force_quit_pid(pid),
+            Some(ForceQuitTarget::ClientPid(pid)) => {
+                // Drop matching foreign-toplevel entry if present (match by pid).
+                let _ = self.foreign_toplevels.remove_match(&ToplevelForceQuit {
+                    title: String::new(),
+                    app_id: None,
+                    pid: Some(pid),
+                });
+                self.session_clients.force_quit_pid(pid)
+            }
             None => false,
         }
     }
@@ -1429,6 +1493,7 @@ impl ShellDesktop {
                 client.binary_name, client.pid
             ));
         }
+        items.extend(self.foreign_toplevels.force_quit_labels());
 
         let mut list_view = ListView::new();
         list_view.items = items;

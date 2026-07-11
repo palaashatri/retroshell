@@ -243,6 +243,167 @@ pub fn sort_chrome_layers(specs: &mut [LayerChromeSpec]) {
     });
 }
 
+/// Indices for composing surfaces: background/bottom first, then windows, then top/overlay.
+///
+/// Used by nested `render_frame` so layer-shell chrome is not skipped when buffers commit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComposeOrder {
+    /// Indices into the caller's layer surface list, low-to-high paint order.
+    pub layer_indices_bottom_first: Vec<usize>,
+    /// Whether windows should paint after bottom layers and before top/overlay.
+    pub windows_after_bottom: bool,
+}
+
+/// Pure planner: given layer z priorities (higher = above), return paint order indices.
+///
+/// Layers with `z <= 1` (Background/Bottom) paint under windows; `z >= 2` (Top/Overlay)
+/// paint above windows.
+pub fn plan_compose_order(layer_z: &[u8]) -> ComposeOrder {
+    let mut under: Vec<(u8, usize)> = Vec::new();
+    let mut over: Vec<(u8, usize)> = Vec::new();
+    for (i, &z) in layer_z.iter().enumerate() {
+        if z <= 1 {
+            under.push((z, i));
+        } else {
+            over.push((z, i));
+        }
+    }
+    under.sort_by_key(|(z, i)| (*z, *i));
+    over.sort_by_key(|(z, i)| (*z, *i));
+    let mut layer_indices_bottom_first: Vec<usize> =
+        under.into_iter().map(|(_, i)| i).collect();
+    layer_indices_bottom_first.extend(over.into_iter().map(|(_, i)| i));
+    ComposeOrder {
+        layer_indices_bottom_first,
+        windows_after_bottom: true,
+    }
+}
+
+/// Map a layer name string to z priority (for tests / policy without smithay types).
+pub fn layer_name_z_priority(name: &str) -> Option<u8> {
+    ChromeLayer::from_str_loose(name).map(|l| l.z_priority())
+}
+
+// ---------------------------------------------------------------------------
+// DRM presentation plan (pure) — scanout path stages for SessionDrm
+// ---------------------------------------------------------------------------
+
+/// Stages of a real DRM presentation pipeline (beyond open-device only).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum DrmPresentationStage {
+    OpenSeat,
+    OpenPrimaryNode,
+    CreateGbmEgl,
+    EnumerateConnectors,
+    PickConnectorMode,
+    CreateDrmSurface,
+    PageFlipOrPresent,
+    ProtocolLoop,
+}
+
+impl DrmPresentationStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenSeat => "open_seat",
+            Self::OpenPrimaryNode => "open_primary_node",
+            Self::CreateGbmEgl => "create_gbm_egl",
+            Self::EnumerateConnectors => "enumerate_connectors",
+            Self::PickConnectorMode => "pick_connector_mode",
+            Self::CreateDrmSurface => "create_drm_surface",
+            Self::PageFlipOrPresent => "pageflip_or_present",
+            Self::ProtocolLoop => "protocol_loop",
+        }
+    }
+}
+
+/// Ordered presentation pipeline for SessionDrm bootstrap.
+pub fn drm_presentation_pipeline() -> &'static [DrmPresentationStage] {
+    use DrmPresentationStage::*;
+    &[
+        OpenSeat,
+        OpenPrimaryNode,
+        CreateGbmEgl,
+        EnumerateConnectors,
+        PickConnectorMode,
+        CreateDrmSurface,
+        PageFlipOrPresent,
+        ProtocolLoop,
+    ]
+}
+
+/// Result of attempting connector-based modeset (pure bookkeeping for tests/logs).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DrmModesetPlan {
+    pub connector_name: String,
+    pub mode_w: i32,
+    pub mode_h: i32,
+    pub refresh_mhz: i32,
+    pub crtc_index: usize,
+}
+
+/// Pick a modeset plan from discovered connector summaries.
+///
+/// Prefers the first connected connector with a preferred mode; falls back to env-sized
+/// virtual mode when none are connected (nested/test).
+pub fn plan_drm_modeset(
+    connectors: &[(String, bool, Option<(i32, i32, i32)>)],
+    fallback_w: i32,
+    fallback_h: i32,
+    fallback_refresh_mhz: i32,
+) -> DrmModesetPlan {
+    for (i, (name, connected, mode)) in connectors.iter().enumerate() {
+        if *connected {
+            if let Some((w, h, refresh)) = mode {
+                return DrmModesetPlan {
+                    connector_name: name.clone(),
+                    mode_w: *w,
+                    mode_h: *h,
+                    refresh_mhz: *refresh,
+                    crtc_index: i,
+                };
+            }
+        }
+    }
+    DrmModesetPlan {
+        connector_name: "virtual-fallback".into(),
+        mode_w: fallback_w,
+        mode_h: fallback_h,
+        refresh_mhz: fallback_refresh_mhz,
+        crtc_index: 0,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Server-side decoration policy (xdg-decoration)
+// ---------------------------------------------------------------------------
+
+/// Preferred window decoration mode for first-party vs external clients.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DecorationPreference {
+    /// Compositor draws decorations (CSD alternative).
+    ServerSide,
+    /// Client draws its own decorations.
+    ClientSide,
+}
+
+/// Decide decoration preference from app_id hints (pure).
+pub fn decoration_preference_for_app_id(app_id: &str) -> DecorationPreference {
+    let id = app_id.to_ascii_lowercase();
+    // First-party suite draws own chrome via kit; external apps get SSD when possible.
+    if id.starts_with("retroshell.")
+        || id == "finder"
+        || id == "textedit"
+        || id == "terminal"
+        || id == "settings"
+        || id == "appstore"
+        || id == "retro-shell"
+    {
+        DecorationPreference::ClientSide
+    } else {
+        DecorationPreference::ServerSide
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OutputConfig {
     pub width: i32,
@@ -1011,6 +1172,70 @@ mod tests {
         assert_eq!(
             preferred_primary_drm_node(&nodes).map(|n| n.is_primary),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn plan_compose_order_puts_overlay_after_under() {
+        let z = vec![
+            ChromeLayer::Overlay.z_priority(),
+            ChromeLayer::Background.z_priority(),
+            ChromeLayer::Top.z_priority(),
+            ChromeLayer::Bottom.z_priority(),
+        ];
+        let order = plan_compose_order(&z);
+        // Under: Background(1), Bottom(3) then Over indices included in full list
+        assert!(order.windows_after_bottom);
+        // First under layers should be background then bottom (indices 1 then 3)
+        assert_eq!(order.layer_indices_bottom_first[0], 1);
+        assert_eq!(order.layer_indices_bottom_first[1], 3);
+        // Then top then overlay
+        assert_eq!(order.layer_indices_bottom_first[2], 2);
+        assert_eq!(order.layer_indices_bottom_first[3], 0);
+    }
+
+    #[test]
+    fn drm_presentation_pipeline_includes_scanout_stages() {
+        let p = drm_presentation_pipeline();
+        assert!(p.contains(&DrmPresentationStage::EnumerateConnectors));
+        assert!(p.contains(&DrmPresentationStage::CreateDrmSurface));
+        assert!(p.contains(&DrmPresentationStage::PageFlipOrPresent));
+        assert_eq!(p.first(), Some(&DrmPresentationStage::OpenSeat));
+        assert_eq!(p.last(), Some(&DrmPresentationStage::ProtocolLoop));
+    }
+
+    #[test]
+    fn plan_drm_modeset_prefers_connected() {
+        let connectors = vec![
+            ("HDMI-A-1".into(), false, Some((1920, 1080, 60_000))),
+            ("eDP-1".into(), true, Some((2560, 1600, 60_000))),
+        ];
+        let plan = plan_drm_modeset(&connectors, 1024, 768, 60_000);
+        assert_eq!(plan.connector_name, "eDP-1");
+        assert_eq!(plan.mode_w, 2560);
+        assert_eq!(plan.mode_h, 1600);
+    }
+
+    #[test]
+    fn plan_drm_modeset_fallback_when_none() {
+        let plan = plan_drm_modeset(&[], 800, 600, 60_000);
+        assert_eq!(plan.connector_name, "virtual-fallback");
+        assert_eq!(plan.mode_w, 800);
+    }
+
+    #[test]
+    fn decoration_preference_first_party_csd_external_ssd() {
+        assert_eq!(
+            decoration_preference_for_app_id("retroshell.finder"),
+            DecorationPreference::ClientSide
+        );
+        assert_eq!(
+            decoration_preference_for_app_id("firefox"),
+            DecorationPreference::ServerSide
+        );
+        assert_eq!(
+            decoration_preference_for_app_id("org.gnome.Nautilus"),
+            DecorationPreference::ServerSide
         );
     }
 

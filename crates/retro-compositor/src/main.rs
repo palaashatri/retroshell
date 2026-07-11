@@ -101,6 +101,7 @@ mod linux {
                 Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState,
             },
             shell::xdg::{
+                decoration::{XdgDecorationHandler, XdgDecorationState},
                 PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
                 XdgToplevelSurfaceData,
             },
@@ -203,6 +204,7 @@ mod linux {
         xwayland_shell_state: XWaylandShellState,
         layer_shell_state: WlrLayerShellState,
         foreign_toplevel_list: ForeignToplevelListState,
+        _xdg_decoration_state: XdgDecorationState,
 
         seat: Seat<RetroCompositor>,
         /// Registered wl_output objects (one or more; multi-output via RETROSHELL_OUTPUTS).
@@ -313,29 +315,78 @@ mod linux {
         /// Render a frame using the GlesRenderer:
         ///   1. Acquire an X11 dmabuf
         ///   2. Bind it to the GL renderer
-        ///   3. Clear to retro gray, draw placeholder rectangles for each window
+        ///   3. Clear to retro gray; composite layer-shell (under) → windows → layer-shell (over)
         ///   4. Finish the frame and present
+        ///
+        /// When clients have committed buffers, real SHM content is drawn (not only
+        /// colored placeholder rects). Layer-shell chrome is included in the scene.
         fn render_frame(&mut self) {
             self.prune_dead_windows();
+            self.layer_surfaces.retain(|l| l.surface.alive());
 
-            // Collect SHM render elements for each window BEFORE binding the render target.
-            // render_elements_from_surface_tree() borrows &mut self.renderer, which must be
-            // done before renderer.bind() / renderer.render() take over the borrow.
-            let surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = self
-                .windows
+            // Paint order: bottom layers → xdg windows → top/overlay layers.
+            use retro_compositor::{plan_compose_order, ChromeLayer};
+            let layer_z: Vec<u8> = self
+                .layer_surfaces
                 .iter()
-                .flat_map(|w| {
-                    let loc = Point::<i32, Physical>::from((w.position.x, w.position.y));
-                    render_elements_from_surface_tree(
-                        &mut self.renderer,
-                        w.toplevel.wl_surface(),
-                        loc,
-                        1.0_f64,
-                        1.0_f32,
-                        Kind::Unspecified,
-                    )
+                .map(|l| match l.layer {
+                    Layer::Background => ChromeLayer::Background.z_priority(),
+                    Layer::Bottom => ChromeLayer::Bottom.z_priority(),
+                    Layer::Top => ChromeLayer::Top.z_priority(),
+                    Layer::Overlay => ChromeLayer::Overlay.z_priority(),
                 })
                 .collect();
+            let compose = plan_compose_order(&layer_z);
+            let under: Vec<usize> = compose
+                .layer_indices_bottom_first
+                .iter()
+                .copied()
+                .filter(|&i| layer_z.get(i).copied().unwrap_or(0) <= 1)
+                .collect();
+            let over: Vec<usize> = compose
+                .layer_indices_bottom_first
+                .iter()
+                .copied()
+                .filter(|&i| layer_z.get(i).copied().unwrap_or(0) > 1)
+                .collect();
+
+            // Collect SHM render elements BEFORE binding the render target.
+            let mut surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
+            for &i in &under {
+                let layer = &self.layer_surfaces[i];
+                let loc = Point::<i32, Physical>::from((0, 0));
+                surface_elements.extend(render_elements_from_surface_tree(
+                    &mut self.renderer,
+                    layer.surface.wl_surface(),
+                    loc,
+                    1.0_f64,
+                    1.0_f32,
+                    Kind::Unspecified,
+                ));
+            }
+            for w in &self.windows {
+                let loc = Point::<i32, Physical>::from((w.position.x, w.position.y));
+                surface_elements.extend(render_elements_from_surface_tree(
+                    &mut self.renderer,
+                    w.toplevel.wl_surface(),
+                    loc,
+                    1.0_f64,
+                    1.0_f32,
+                    Kind::Unspecified,
+                ));
+            }
+            for &i in &over {
+                let layer = &self.layer_surfaces[i];
+                let loc = Point::<i32, Physical>::from((0, 0));
+                surface_elements.extend(render_elements_from_surface_tree(
+                    &mut self.renderer,
+                    layer.surface.wl_surface(),
+                    loc,
+                    1.0_f64,
+                    1.0_f32,
+                    Kind::Unspecified,
+                ));
+            }
 
             // Acquire the next buffer from the X11 swapchain
             let (mut dmabuf, _age) = match self.x11_surface.buffer() {
@@ -902,6 +953,54 @@ mod linux {
     delegate_foreign_toplevel_list!(RetroCompositor);
 
     // -----------------------------------------------------------------------
+    // xdg-decoration (server-side preference for external apps)
+    // -----------------------------------------------------------------------
+
+    impl XdgDecorationHandler for RetroCompositor {
+        fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+            use retro_compositor::{decoration_preference_for_app_id, DecorationsPreference};
+            use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+            let app_id = with_states(toplevel.wl_surface(), |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .and_then(|d| d.lock().unwrap().app_id.clone())
+                    .unwrap_or_default()
+            });
+            let mode = match decoration_preference_for_app_id(&app_id) {
+                DecorationsPreference::ServerSide => Mode::ServerSide,
+                DecorationsPreference::ClientSide => Mode::ClientSide,
+            };
+            toplevel.with_pending_state(|state| {
+                state.decoration_mode = Some(mode);
+            });
+            toplevel.send_configure();
+        }
+
+        fn request_mode(
+            &mut self,
+            toplevel: ToplevelSurface,
+            mode: smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+        ) {
+            toplevel.with_pending_state(|state| {
+                state.decoration_mode = Some(mode);
+            });
+            toplevel.send_configure();
+        }
+
+        fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+            use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+            // Prefer server-side for unknown clients when unset.
+            toplevel.with_pending_state(|state| {
+                state.decoration_mode = Some(Mode::ServerSide);
+            });
+            toplevel.send_configure();
+        }
+    }
+
+    smithay::delegate_xdg_decoration!(RetroCompositor);
+
+    // -----------------------------------------------------------------------
     // OutputHandler (required by delegate_output!)
     // -----------------------------------------------------------------------
 
@@ -1401,6 +1500,7 @@ mod linux {
         let layer_shell_state = WlrLayerShellState::new::<RetroCompositor>(&display_handle);
         let foreign_toplevel_list =
             ForeignToplevelListState::new::<RetroCompositor>(&display_handle);
+        let xdg_decoration_state = XdgDecorationState::new::<RetroCompositor>(&display_handle);
 
         // Seat: keyboard + pointer
         let mut seat: Seat<RetroCompositor> =
@@ -1528,6 +1628,7 @@ mod linux {
             xwayland_shell_state,
             layer_shell_state,
             foreign_toplevel_list,
+            _xdg_decoration_state: xdg_decoration_state,
             seat,
             outputs,
             running: true,

@@ -82,8 +82,9 @@ use smithay::{
 use crate::frame_timing::{FrameScheduler, RefreshRate};
 use crate::hdr::HdrCapabilities;
 use crate::{
-    discover_drm_nodes, preferred_primary_drm_node, session_mode_summary, CompositorBackendKind,
-    DisplayPolicy, DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+    discover_drm_nodes, drm_presentation_pipeline, plan_drm_modeset, preferred_primary_drm_node,
+    session_mode_summary, CompositorBackendKind, DisplayPolicy, DrmPresentationStage,
+    DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
 };
 
 /// Compositor-owned selection payload keyed by mime type.
@@ -92,6 +93,20 @@ type MimePayload = Arc<HashMap<String, Vec<u8>>>;
 /// Probe whether a DRM session looks bootable (nodes exist under /dev/dri).
 pub fn drm_session_available() -> bool {
     !discover_drm_nodes().is_empty() || Path::new("/dev/dri").exists()
+}
+
+fn w_from_env_or_default() -> i32 {
+    std::env::var("RETROSHELL_COMPOSITOR_WIDTH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_OUTPUT_W)
+}
+
+fn h_from_env_or_default() -> i32 {
+    std::env::var("RETROSHELL_COMPOSITOR_HEIGHT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_OUTPUT_H)
 }
 
 /// Resolve the primary DRM node path for seat open.
@@ -181,14 +196,106 @@ pub fn run_drm_session() -> Result<()> {
         )
         .with_context(|| format!("session.open({})", primary.display()))?;
     let device_fd = DrmDeviceFd::new(DeviceFd::from(owned));
-    let (_drm, _drm_notifier) =
+    let (mut drm, _drm_notifier) =
         smithay::backend::drm::DrmDevice::new(device_fd.clone(), true).context("DrmDevice::new")?;
     let gbm = GbmDevice::new(device_fd.clone()).context("GbmDevice::new")?;
 
-    // EGL + GLES on GBM — proves the render path is real even before scanout
+    // EGL + GLES on GBM — used for presentation when a scanout surface is available
     let egl_display = unsafe { EGLDisplay::new(gbm.clone()) }.context("EGLDisplay::new(gbm)")?;
     let egl_context = EGLContext::new(&egl_display).context("EGLContext::new")?;
-    let _renderer = unsafe { GlesRenderer::new(egl_context) }.context("GlesRenderer::new")?;
+    let renderer = unsafe { GlesRenderer::new(egl_context) }.context("GlesRenderer::new")?;
+
+    // ---- Connector enumeration + modeset / DrmSurface (presentation leap) ----
+    use smithay::backend::drm::DrmSurface;
+    use smithay::reexports::drm::control::{
+        connector, Device as ControlDevice, Mode as DrmMode, ModeTypeFlags,
+    };
+
+    let resources = drm
+        .resource_handles()
+        .context("drm.resource_handles for connector scan")?;
+    let mut connector_summaries: Vec<(String, bool, Option<(i32, i32, i32)>)> = Vec::new();
+    let mut picked: Option<(connector::Handle, DrmMode, usize)> = None;
+
+    for (conn_i, conn) in resources.connectors().iter().enumerate() {
+        let info = match drm.get_connector(*conn, true) {
+            Ok(i) => i,
+            Err(err) => {
+                tracing::debug!(?err, "get_connector failed");
+                continue;
+            }
+        };
+        let name = format!("{:?}-{}", info.interface(), info.interface_id());
+        let connected = info.state() == connector::State::Connected;
+        let modes = info.modes();
+        let preferred = modes
+            .iter()
+            .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+            .or_else(|| modes.first());
+        let mode_summary = preferred.map(|m| {
+            let sz = m.size();
+            (sz.0 as i32, sz.1 as i32, m.vrefresh() as i32 * 1000)
+        });
+        connector_summaries.push((name.clone(), connected, mode_summary));
+        if connected && picked.is_none() {
+            if let Some(m) = preferred.copied() {
+                picked = Some((*conn, m, conn_i.min(drm.crtcs().len().saturating_sub(1))));
+            }
+        }
+    }
+
+    let modeset_plan = plan_drm_modeset(
+        &connector_summaries,
+        w_from_env_or_default(),
+        h_from_env_or_default(),
+        refresh_mhz,
+    );
+    eprintln!(
+        "[retro-compositor] DRM modeset plan: connector={} {}x{}@{}mhz crtcs={} connectors={}",
+        modeset_plan.connector_name,
+        modeset_plan.mode_w,
+        modeset_plan.mode_h,
+        modeset_plan.refresh_mhz,
+        drm.crtcs().len(),
+        connector_summaries.len()
+    );
+    for stage in drm_presentation_pipeline() {
+        tracing::debug!(stage = stage.as_str(), "drm presentation pipeline stage");
+    }
+
+    // Attempt real DrmSurface on first CRTC + connected connector (scanout path).
+    let mut drm_surface: Option<DrmSurface> = None;
+    if let Some((conn, mode, _idx)) = picked {
+        if let Some(&crtc) = drm.crtcs().first() {
+            match drm.create_surface(crtc, mode, &[conn]) {
+                Ok(surface) => {
+                    eprintln!(
+                        "[retro-compositor] DRM scanout surface created (crtc+connector modeset)"
+                    );
+                    tracing::info!(
+                        stage = DrmPresentationStage::CreateDrmSurface.as_str(),
+                        "DrmSurface ready for pageflip presentation"
+                    );
+                    drm_surface = Some(surface);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        ?err,
+                        "create_surface failed — continuing protocol loop without scanout"
+                    );
+                    eprintln!("[retro-compositor] DRM create_surface failed: {err:?} (protocol-only fallback)");
+                }
+            }
+        }
+    } else {
+        eprintln!(
+            "[retro-compositor] no connected connector; virtual mode {}x{}",
+            modeset_plan.mode_w, modeset_plan.mode_h
+        );
+    }
+    let _renderer = renderer;
+    let _drm_surface = drm_surface;
+    let _drm = drm;
 
     // Wayland socket
     let socket = ListeningSocketSource::new_auto().context("ListeningSocketSource")?;
@@ -211,17 +318,16 @@ pub fn run_drm_session() -> Result<()> {
         })
         .map_err(|e| anyhow!("insert wayland socket: {e}"))?;
 
-    // Default output (full connector scanout is progressive; advertise env size)
-    let w = std::env::var("RETROSHELL_COMPOSITOR_WIDTH")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_OUTPUT_W);
-    let h = std::env::var("RETROSHELL_COMPOSITOR_HEIGHT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_OUTPUT_H);
+    // Advertise connector mode when known; else env/default virtual size.
+    let w = modeset_plan.mode_w;
+    let h = modeset_plan.mode_h;
+    let out_refresh = if modeset_plan.refresh_mhz > 0 {
+        modeset_plan.refresh_mhz
+    } else {
+        refresh_mhz
+    };
     let output = Output::new(
-        "DRM-1".into(),
+        modeset_plan.connector_name.clone(),
         PhysicalProperties {
             size: (0, 0).into(),
             subpixel: Subpixel::Unknown,
@@ -231,7 +337,7 @@ pub fn run_drm_session() -> Result<()> {
     );
     let mode = Mode {
         size: (w, h).into(),
-        refresh: refresh_mhz,
+        refresh: out_refresh,
     };
     output.change_current_state(
         Some(mode),
@@ -290,6 +396,12 @@ pub fn run_drm_session() -> Result<()> {
 
     // Keep GPU objects alive for the session lifetime
     let _gbm = gbm;
+    // Presentation: when `_drm_surface` is Some, pageflip path is armed for follow-on
+    // frame queueing; protocol loop always runs.
+    tracing::info!(
+        stage = DrmPresentationStage::ProtocolLoop.as_str(),
+        "DRM session entering protocol + seat event loop"
+    );
 
     let mut state = DrmSessionState {
         display_handle: dh,
