@@ -103,6 +103,13 @@ if rg -q "install_ready" crates/retro-shell/src/session_packaging.rs \
 else
   die "install_ready honesty comment missing"
 fi
+if rg -q "session_entry_smoke_report" crates/retro-shell/src/session_packaging.rs \
+  && rg -q "live_greeter_verified" crates/retro-shell/src/session_packaging.rs \
+  && rg -q "live_greeter_verified: false" crates/retro-shell/src/session_packaging.rs; then
+  pass "session_entry_smoke_report always reports live_greeter_verified: false"
+else
+  die "session_entry_smoke_report / live_greeter_verified honesty missing"
+fi
 
 echo "==> compositor workspace filter is referenced from main (live path)"
 if rg -q "workspace_state|is_visible|windows_visible_for_paint" crates/retro-compositor/src/main.rs; then

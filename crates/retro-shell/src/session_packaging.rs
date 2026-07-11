@@ -1,7 +1,12 @@
 //! Session packaging health checks (greeter files, start script) — pure paths.
+//!
+//! Greeter/session evidence is packaging-only unless a host run proves live DM.
+//! `session_entry_smoke_report` always sets `live_greeter_verified: false`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use serde::Serialize;
 
 /// Expected packaging artifacts for a greeter-capable install.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,7 +42,7 @@ impl SessionPackagingLayout {
 }
 
 /// Result of checking packaging presence.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct PackagingHealth {
     pub wayland_session_ok: bool,
     pub xsession_ok: bool,
@@ -131,6 +136,48 @@ impl GreeterSessionReadiness {
             n += 5;
         }
         n
+    }
+}
+
+/// Structured session-entry smoke report (packaging evidence only).
+///
+/// Never claims a live greeter/DM login was exercised:
+/// `live_greeter_verified` is **always** `false`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SessionEntrySmokeReport {
+    /// Files present under the packaging layout.
+    pub packaging: PackagingHealth,
+    /// True when packaging + desktop validation + exec bit look install-ready.
+    /// Does **not** imply live display-manager verification.
+    pub install_ready: bool,
+    /// Start script has the executable bit (Unix) or exists as a file (non-Unix).
+    pub start_script_executable: bool,
+    /// Both session desktops declare non-empty `DesktopNames`.
+    pub desktop_names_ok: bool,
+    /// Always `false`. Honest: this report never verifies a live greeter/DM.
+    pub live_greeter_verified: bool,
+}
+
+impl SessionEntrySmokeReport {
+    /// Compact JSON one-liner for verify scripts / CI logs.
+    pub fn to_json_line(&self) -> Result<String, String> {
+        serde_json::to_string(self).map_err(|e| e.to_string())
+    }
+}
+
+/// Build a pure session-entry smoke report from `layout`.
+///
+/// Aggregates packaging health, greeter `install_ready`, start-script
+/// executable bit, and DesktopNames presence. Always sets
+/// `live_greeter_verified: false` — no live DM claim.
+pub fn session_entry_smoke_report(layout: &SessionPackagingLayout) -> SessionEntrySmokeReport {
+    let readiness = check_greeter_session_readiness(layout);
+    SessionEntrySmokeReport {
+        packaging: readiness.packaging.clone(),
+        install_ready: readiness.install_ready(),
+        start_script_executable: readiness.start_script_executable_bit,
+        desktop_names_ok: readiness.desktop_names_ok,
+        live_greeter_verified: false,
     }
 }
 
@@ -493,5 +540,41 @@ Type=Application
             "repo packaging should be greeter-install-ready: {ready:?}"
         );
         assert!(ready.score_points() >= 90, "score={}", ready.score_points());
+    }
+
+    #[test]
+    fn session_entry_smoke_report_repo_honest() {
+        let root = repo_root();
+        let layout = SessionPackagingLayout::from_repo_packaging(&root);
+        let report = session_entry_smoke_report(&layout);
+
+        assert!(
+            report.packaging.all_ok(),
+            "repo packaging health incomplete: {:?}",
+            report.packaging
+        );
+        assert!(
+            report.install_ready,
+            "repo packaging should be install_ready: {report:?}"
+        );
+        assert!(
+            report.start_script_executable,
+            "start-retroshell must be executable in repo"
+        );
+        assert!(
+            report.desktop_names_ok,
+            "DesktopNames must be present on both session desktops"
+        );
+        // Honest: packaging smoke never verifies a live greeter/DM.
+        assert!(
+            !report.live_greeter_verified,
+            "live_greeter_verified must always be false"
+        );
+
+        let line = report.to_json_line().expect("json one-liner");
+        assert!(line.contains("\"live_greeter_verified\":false"), "{line}");
+        assert!(line.contains("\"install_ready\":true"), "{line}");
+        // Optional CI one-liner (cargo test -- --nocapture shows this once).
+        eprintln!("session_entry_smoke_report {line}");
     }
 }

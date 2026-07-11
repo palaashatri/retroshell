@@ -52,5 +52,13 @@ grep -q "wayland-sessions/retroshell.desktop" "$DRY_LOG"
 grep -q "bin/start-retroshell" "$DRY_LOG"
 rm -f "$DRY_LOG"
 
+echo "==> session_entry_smoke_report source is honest (no live greeter claim)"
+# Structural evidence only — never assert live DM. The Rust report hard-codes
+# live_greeter_verified: false; this script only checks packaging + that honesty.
+grep -q "session_entry_smoke_report" "$ROOT/crates/retro-shell/src/session_packaging.rs"
+grep -q "live_greeter_verified: false" "$ROOT/crates/retro-shell/src/session_packaging.rs"
+grep -q "live_greeter_verified" "$ROOT/crates/retro-shell/src/session_packaging.rs"
+
 echo
 echo "greeter session packaging smoke PASSED (no live DM required)"
+echo "NOTE: live_greeter_verified remains false — packaging evidence only"
