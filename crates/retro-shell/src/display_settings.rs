@@ -1,11 +1,21 @@
 //! Display settings (HDR, VRR, refresh rate, color space, multi-monitor arrange).
+//!
+//! # Settings UI contract
+//!
+//! The Settings app Display pane persists `arrange_mode` and `scale_percent` as
+//! flat `key=value` lines in `settings.conf`. On every save of those fields the
+//! UI **must** call [`DisplayConfig::apply_arrangement_env`] (which runs
+//! [`plan_arrangement`] + [`crate::display_arrange::apply_display_plan_env`])
+//! so nested compositor children immediately see `RETROSHELL_OUTPUTS_LAYOUT`.
+//! Shell startup re-applies the same path via `apply_display_config_from_settings`.
 
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
 use crate::display_arrange::{
-    plan_display_apply, ArrangeMode, DisplayApplyPlan, DisplayArrangement, DisplayOutput,
+    apply_display_plan_env, plan_display_apply, ArrangeMode, DisplayApplyPlan, DisplayArrangement,
+    DisplayOutput,
 };
 
 /// Display configuration.
@@ -123,6 +133,102 @@ impl DisplayConfig {
             outputs: outs,
         })
     }
+
+    /// Build from Settings-app Display fields (flat conf / UI state).
+    pub fn from_settings_fields(
+        hdr_enabled: bool,
+        vrr_enabled: bool,
+        refresh_rate: impl Into<String>,
+        color_space: impl Into<String>,
+        arrange_mode: impl Into<String>,
+        scale_percent: u32,
+    ) -> Self {
+        Self {
+            hdr_enabled,
+            vrr_enabled,
+            refresh_rate: refresh_rate.into(),
+            color_space: color_space.into(),
+            arrange_mode: arrange_mode.into(),
+            scale_percent: scale_percent.clamp(50, 400),
+        }
+    }
+
+    /// Merge flat `key=value` settings.conf lines into arrange/scale (and HDR-class) fields.
+    ///
+    /// Pure: no I/O. Unknown keys are ignored. Used by shell startup and Settings save.
+    pub fn merge_flat_settings_conf(&mut self, conf: &str) {
+        for line in conf.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            let key = key.trim();
+            let value = value.trim();
+            match key {
+                "arrange_mode" => {
+                    if ArrangeMode::parse(value).is_some() {
+                        self.arrange_mode = value.to_string();
+                    }
+                }
+                "scale_percent" => {
+                    if let Ok(n) = value.parse::<u32>() {
+                        if (50..=400).contains(&n) {
+                            self.scale_percent = n;
+                        }
+                    }
+                }
+                "hdr_requested" | "hdr_enabled" => {
+                    self.hdr_enabled = parse_conf_bool(value, self.hdr_enabled);
+                }
+                "vrr_adaptive" | "vrr_enabled" => {
+                    self.vrr_enabled = parse_conf_bool(value, self.vrr_enabled);
+                }
+                "refresh_rate"
+                    if matches!(value, "60hz" | "120hz" | "144hz" | "165hz" | "adaptive") =>
+                {
+                    self.refresh_rate = value.to_string();
+                }
+                "color_space" if matches!(value, "srgb" | "rec2020" | "scrgb") => {
+                    self.color_space = value.to_string();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Flat settings.conf pairs for Display fields (Settings app write path).
+    pub fn flat_conf_pairs(&self) -> Vec<(String, String)> {
+        vec![
+            ("hdr_requested".into(), self.hdr_enabled.to_string()),
+            ("vrr_adaptive".into(), self.vrr_enabled.to_string()),
+            ("refresh_rate".into(), self.refresh_rate.clone()),
+            ("color_space".into(), self.color_space.clone()),
+            ("arrange_mode".into(), self.arrange_mode.clone()),
+            ("scale_percent".into(), self.scale_percent.to_string()),
+        ]
+    }
+
+    /// Settings save hook: plan arrangement then live-apply `EmitLayoutEnv` to process env.
+    ///
+    /// Call after writing `arrange_mode` / `scale_percent` to settings.conf.
+    pub fn apply_arrangement_env(
+        &self,
+        outputs: &[DisplayOutput],
+    ) -> Result<Vec<(String, String)>, String> {
+        let plan = self.plan_arrangement(outputs)?;
+        Ok(apply_display_plan_env(&plan))
+    }
+}
+
+fn parse_conf_bool(value: &str, fallback: bool) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => true,
+        "false" | "0" | "no" | "off" => false,
+        _ => fallback,
+    }
 }
 
 #[cfg(test)]
@@ -176,5 +282,55 @@ mod tests {
         assert_eq!(config.color_space, deserialized.color_space);
         assert_eq!(config.arrange_mode, deserialized.arrange_mode);
         assert_eq!(config.scale_percent, deserialized.scale_percent);
+    }
+
+    #[test]
+    fn settings_conf_round_trips_arrange_mode_and_scale() {
+        // Settings app writes flat key=value; shell/Settings merge back into DisplayConfig.
+        let original = DisplayConfig::from_settings_fields(
+            true,
+            false,
+            "120hz",
+            "srgb",
+            "mirror",
+            200,
+        );
+        assert!(original.validate());
+
+        let conf: String = original
+            .flat_conf_pairs()
+            .into_iter()
+            .map(|(k, v)| format!("{k}={v}\n"))
+            .collect();
+        assert!(conf.contains("arrange_mode=mirror"));
+        assert!(conf.contains("scale_percent=200"));
+
+        let mut loaded = DisplayConfig::default();
+        loaded.merge_flat_settings_conf(&conf);
+        assert_eq!(loaded.arrange_mode, "mirror");
+        assert_eq!(loaded.scale_percent, 200);
+        assert!(loaded.hdr_enabled);
+        assert!(!loaded.vrr_enabled);
+        assert_eq!(loaded.refresh_rate, "120hz");
+        assert_eq!(loaded.color_space, "srgb");
+
+        // Apply path used by Settings UI on save.
+        let applied = loaded.apply_arrangement_env(&[]).unwrap();
+        assert!(
+            applied
+                .iter()
+                .any(|(k, v)| k == "RETROSHELL_OUTPUTS_LAYOUT" && v.contains(":s200")),
+            "expected layout env with scale 200, got {applied:?}"
+        );
+        std::env::remove_var("RETROSHELL_OUTPUTS_LAYOUT");
+    }
+
+    #[test]
+    fn merge_flat_rejects_invalid_arrange_mode() {
+        let mut config = DisplayConfig::default();
+        config.arrange_mode = "extend_right".into();
+        config.merge_flat_settings_conf("arrange_mode=not_a_mode\nscale_percent=12\n");
+        assert_eq!(config.arrange_mode, "extend_right");
+        assert_eq!(config.scale_percent, 100);
     }
 }

@@ -3047,6 +3047,7 @@ dependencies = [
  "log",
  "retro-kit",
  "retro-sdk",
+ "retro-shell",
  "serde",
  "tokio",
  "tracing",

@@ -2303,29 +2303,15 @@ fn read_settings_conf_text() -> String {
 fn apply_display_config_from_settings() {
     let path = settings_conf_path();
     // DisplayConfig::load expects a TOML map with a `[display]` table; also
-    // accept flat arrange_mode= in settings.conf via env override path.
+    // accept flat arrange_mode= in settings.conf (Settings app write path).
     let mut config = DisplayConfig::load(&path);
-    // Flat settings.conf keys (theme manager style) for arrange_mode / scale.
-    let conf = read_settings_conf_text();
-    for line in conf.lines() {
-        let line = line.trim();
-        if let Some(v) = line.strip_prefix("arrange_mode=") {
-            config.arrange_mode = v.trim().to_string();
-        }
-        if let Some(v) = line.strip_prefix("scale_percent=") {
-            if let Ok(n) = v.trim().parse::<u32>() {
-                config.scale_percent = n;
-            }
-        }
-    }
-    match config.plan_arrangement(&[]) {
-        Ok(plan) => {
-            let applied = apply_display_plan_env(&plan);
+    config.merge_flat_settings_conf(&read_settings_conf_text());
+    match config.apply_arrangement_env(&[]) {
+        Ok(applied) => {
             if !applied.is_empty() {
                 tracing::info!(
                     mode = %config.arrange_mode,
-                    steps = plan.steps.len(),
-                    logical = %(format!("{}x{}", plan.logical_width, plan.logical_height)),
+                    scale = config.scale_percent,
                     env = ?applied,
                     "display arrange plan applied (EmitLayoutEnv)"
                 );

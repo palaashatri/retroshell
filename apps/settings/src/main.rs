@@ -8,6 +8,7 @@ use retro_kit::{
     Widget, WidgetState,
 };
 use retro_sdk::{build_menu, Application};
+use retro_shell::DisplayConfig;
 use std::fs;
 use std::path::PathBuf;
 
@@ -84,6 +85,13 @@ enum Choice {
     RefreshAdaptive,
     ColorSrgb,
     ColorRec2020,
+    ArrangeExtendRight,
+    ArrangeExtendDown,
+    ArrangeMirror,
+    ArrangePrimaryOnly,
+    Scale100,
+    Scale150,
+    Scale200,
     SoundOff,
     SoundOn,
     NetworkOffline,
@@ -206,6 +214,13 @@ impl Category {
                 (Choice::RefreshAdaptive, "Refresh Adaptive"),
                 (Choice::ColorSrgb, "Color sRGB"),
                 (Choice::ColorRec2020, "Color Rec2020"),
+                (Choice::ArrangeExtendRight, "Arrange Extend Right"),
+                (Choice::ArrangeExtendDown, "Arrange Extend Down"),
+                (Choice::ArrangeMirror, "Arrange Mirror"),
+                (Choice::ArrangePrimaryOnly, "Arrange Primary Only"),
+                (Choice::Scale100, "Scale 100%"),
+                (Choice::Scale150, "Scale 150%"),
+                (Choice::Scale200, "Scale 200%"),
             ],
             Category::Sound => &[
                 (Choice::SoundOff, "Sound Off"),
@@ -283,6 +298,8 @@ struct SettingsState {
     vrr_adaptive: bool,
     refresh_rate: String,
     color_space: String,
+    arrange_mode: String,
+    scale_percent: u32,
     sound_effects: bool,
     volume_percent: u8,
     network_profile: String,
@@ -305,6 +322,8 @@ impl Default for SettingsState {
             vrr_adaptive: false,
             refresh_rate: "60hz".to_string(),
             color_space: "srgb".to_string(),
+            arrange_mode: "extend_right".to_string(),
+            scale_percent: 100,
             sound_effects: true,
             volume_percent: 75,
             network_profile: "dhcp".to_string(),
@@ -319,6 +338,18 @@ impl Default for SettingsState {
 }
 
 impl SettingsState {
+    /// Build shell [`DisplayConfig`] from Display pane fields for plan + env apply.
+    fn display_config(&self) -> DisplayConfig {
+        DisplayConfig::from_settings_fields(
+            self.hdr_requested,
+            self.vrr_adaptive,
+            self.refresh_rate.as_str(),
+            self.color_space.as_str(),
+            self.arrange_mode.as_str(),
+            self.scale_percent,
+        )
+    }
+
     fn choice_enabled(&self, choice: Choice) -> bool {
         match choice {
             Choice::AppearanceLight => self.appearance == AppearanceMode::Light,
@@ -345,6 +376,13 @@ impl SettingsState {
             Choice::RefreshAdaptive => self.refresh_rate == "adaptive",
             Choice::ColorSrgb => self.color_space == "srgb",
             Choice::ColorRec2020 => self.color_space == "rec2020",
+            Choice::ArrangeExtendRight => self.arrange_mode == "extend_right",
+            Choice::ArrangeExtendDown => self.arrange_mode == "extend_down",
+            Choice::ArrangeMirror => self.arrange_mode == "mirror",
+            Choice::ArrangePrimaryOnly => self.arrange_mode == "primary_only",
+            Choice::Scale100 => self.scale_percent == 100,
+            Choice::Scale150 => self.scale_percent == 150,
+            Choice::Scale200 => self.scale_percent == 200,
             Choice::SoundOff => !self.sound_effects,
             Choice::SoundOn => self.sound_effects,
             Choice::NetworkOffline => self.network_profile == "offline",
@@ -388,6 +426,13 @@ impl SettingsState {
             Choice::RefreshAdaptive => self.refresh_rate = "adaptive".to_string(),
             Choice::ColorSrgb => self.color_space = "srgb".to_string(),
             Choice::ColorRec2020 => self.color_space = "rec2020".to_string(),
+            Choice::ArrangeExtendRight => self.arrange_mode = "extend_right".to_string(),
+            Choice::ArrangeExtendDown => self.arrange_mode = "extend_down".to_string(),
+            Choice::ArrangeMirror => self.arrange_mode = "mirror".to_string(),
+            Choice::ArrangePrimaryOnly => self.arrange_mode = "primary_only".to_string(),
+            Choice::Scale100 => self.scale_percent = 100,
+            Choice::Scale150 => self.scale_percent = 150,
+            Choice::Scale200 => self.scale_percent = 200,
             Choice::SoundOff => self.sound_effects = false,
             Choice::SoundOn => self.sound_effects = true,
             Choice::NetworkOffline => self.network_profile = "offline".to_string(),
@@ -432,7 +477,7 @@ impl SettingsState {
                 self.dock_position.to_ascii_uppercase()
             ),
             Category::Display => format!(
-                "DISPLAY - HDR {} / VRR {} / {} / {}",
+                "DISPLAY - HDR {} / VRR {} / {} / {} / ARRANGE {} / SCALE {}%",
                 if self.hdr_requested {
                     "REQUESTED"
                 } else {
@@ -440,7 +485,9 @@ impl SettingsState {
                 },
                 if self.vrr_adaptive { "ADAPTIVE" } else { "OFF" },
                 self.refresh_rate.to_ascii_uppercase(),
-                self.color_space.to_ascii_uppercase()
+                self.color_space.to_ascii_uppercase(),
+                self.arrange_mode.to_ascii_uppercase(),
+                self.scale_percent
             ),
             Category::Sound => format!(
                 "SOUND - EFFECTS {} / VOLUME {}%",
@@ -554,6 +601,29 @@ impl SettingsStore {
                 "color_space" if matches!(value, "srgb" | "rec2020" | "scrgb") => {
                     state.color_space = value.to_string();
                 }
+                "arrange_mode"
+                    if matches!(
+                        value,
+                        "extend_right" | "extend_down" | "mirror" | "primary_only"
+                            | "extend" | "stack" | "clone" | "primary"
+                    ) =>
+                {
+                    // Normalize aliases to canonical snake_case used by DisplayConfig.
+                    state.arrange_mode = match value {
+                        "extend" | "extend_right" => "extend_right".to_string(),
+                        "stack" | "extend_down" => "extend_down".to_string(),
+                        "clone" | "mirror" => "mirror".to_string(),
+                        "primary" | "primary_only" => "primary_only".to_string(),
+                        other => other.to_string(),
+                    };
+                }
+                "scale_percent" => {
+                    if let Ok(n) = value.parse::<u32>() {
+                        if (50..=400).contains(&n) {
+                            state.scale_percent = n;
+                        }
+                    }
+                }
                 "sound_effects" => state.sound_effects = parse_bool(value, state.sound_effects),
                 "volume_percent" => {
                     state.volume_percent = parse_percent(value, state.volume_percent)
@@ -605,6 +675,11 @@ impl SettingsStore {
         map.insert("vrr_adaptive".into(), state.vrr_adaptive.to_string());
         map.insert("refresh_rate".into(), state.refresh_rate.clone());
         map.insert("color_space".into(), state.color_space.clone());
+        map.insert("arrange_mode".into(), state.arrange_mode.clone());
+        map.insert(
+            "scale_percent".into(),
+            state.scale_percent.to_string(),
+        );
         map.insert("sound_effects".into(), state.sound_effects.to_string());
         map.insert("volume_percent".into(), state.volume_percent.to_string());
         map.insert("network_profile".into(), state.network_profile.clone());
@@ -813,7 +888,35 @@ impl SettingsView {
         self.settings.apply_choice(choice);
         match self.store.save(&self.settings) {
             Ok(()) => {
-                self.last_error = None;
+                // Display pane: plan arrangement + apply RETROSHELL_OUTPUTS_LAYOUT env.
+                if matches!(
+                    choice,
+                    Choice::HdrOff
+                        | Choice::HdrOn
+                        | Choice::VrrOff
+                        | Choice::VrrAdaptive
+                        | Choice::Refresh60
+                        | Choice::Refresh120
+                        | Choice::RefreshAdaptive
+                        | Choice::ColorSrgb
+                        | Choice::ColorRec2020
+                        | Choice::ArrangeExtendRight
+                        | Choice::ArrangeExtendDown
+                        | Choice::ArrangeMirror
+                        | Choice::ArrangePrimaryOnly
+                        | Choice::Scale100
+                        | Choice::Scale150
+                        | Choice::Scale200
+                ) {
+                    match self.settings.display_config().apply_arrangement_env(&[]) {
+                        Ok(_) => self.last_error = None,
+                        Err(err) => {
+                            self.last_error = Some(format!("DISPLAY APPLY {err}"));
+                        }
+                    }
+                } else {
+                    self.last_error = None;
+                }
                 self.refresh_labels();
                 self.relayout_if_visible();
                 true
@@ -1163,7 +1266,7 @@ mod tests {
     #[test]
     fn settings_store_persists_all_supported_values() {
         let path = temp_settings_path();
-        let store = SettingsStore::new(path);
+        let store = SettingsStore::new(path.clone());
         let state = SettingsState {
             appearance: AppearanceMode::Dark,
             theme: "dracula".to_string(),
@@ -1173,6 +1276,8 @@ mod tests {
             vrr_adaptive: true,
             refresh_rate: "120hz".to_string(),
             color_space: "rec2020".to_string(),
+            arrange_mode: "mirror".to_string(),
+            scale_percent: 200,
             sound_effects: false,
             volume_percent: 35,
             network_profile: "offline".to_string(),
@@ -1186,6 +1291,36 @@ mod tests {
 
         store.save(&state).unwrap();
         assert_eq!(store.load(), state);
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("arrange_mode=mirror"));
+        assert!(content.contains("scale_percent=200"));
+    }
+
+    #[test]
+    fn settings_display_arrange_applies_env_on_save() {
+        let path = temp_settings_path();
+        let store = SettingsStore::new(path.clone());
+        let mut view = SettingsView::load(store);
+        view.select_category(Category::Display);
+        view.set_rect(Rect::new(0.0, 0.0, 640.0, 520.0));
+        view.layout(LayoutConstraint::tight(Size::new(640.0, 520.0)));
+
+        // Arrange Mirror is index 11 in Display choices (0-based after HDR/VRR/refresh/color).
+        let mirror = view
+            .option_buttons
+            .iter()
+            .find(|b| b.label.contains("Arrange Mirror"))
+            .expect("Arrange Mirror button");
+        assert_handled(view.handle_event(&click_button(mirror)));
+
+        let loaded = SettingsStore::new(path).load();
+        assert_eq!(loaded.arrange_mode, "mirror");
+        assert!(view.status.text.contains("ARRANGE MIRROR"));
+
+        let layout = std::env::var("RETROSHELL_OUTPUTS_LAYOUT")
+            .expect("apply_arrangement_env should set RETROSHELL_OUTPUTS_LAYOUT");
+        assert!(layout.contains("eDP-1"), "layout={layout}");
+        std::env::remove_var("RETROSHELL_OUTPUTS_LAYOUT");
     }
 
     #[test]
