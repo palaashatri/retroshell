@@ -29,24 +29,24 @@ The script prefers `retro-compositor`, falls back to **labwc** with an honest
 message, then execs `retro-shell`. See `packaging/README.md`. FreeDesktop
 `org.freedesktop.Notifications` is registered when a session bus is available.
 
-**Status (see `docs/implementation_plan.md` §13 — honest vs Plasma/GNOME):**
+**Status (see `docs/implementation_plan.md` §13 + `docs/DEEP_AUDIT_90_CLAIM.md`):**
 
 | Metric | Score |
 |---|---:|
-| **Overall daily-driver (original methodology)** | **~90/100** (mean 89.6) |
-| Prior “91 criteria-weighted” claim | **withdrawn** (score theater) |
+| **Overall daily-driver (original methodology)** | **~77/100** (mean 77.2; 90 claim withdrawn) |
+| Prior “91 criteria-weighted” and “~90 hard-DE” claims | **withdrawn** (score theater) |
 
-**Landed (real code):** nested layer compose; DRM dumb-buffer commit/page_flip;
-`zwlr_layer_shell` **client** for bar/dock; `ext-foreign-toplevel-list` **client**
-→ Force Quit; portal D-Bus (Screenshot/Settings/OpenURI + Secret/Print/Inhibit pure);
-session lock/logout/power; idle auto-lock; 8 workspaces + window rules; display arrange;
-i18n/RTL; AT-SPI Text+Component on bus; greeter packaging verify.
+**Landed (real code):** nested layer compose; DRM present path; layer-shell / FTL
+**clients**; portal D-Bus subset; session power **plans** + menu wiring; idle policy;
+pure window rules / display arrange / i18n catalog; AT-SPI Text+Component export;
+greeter **packaging** verify.
 
-**Residual:** live greeter on hardware **NOT RUN**; live PipeWire screencast streams;
-Orca live-caret sync; full GL multi-client under nested Docker often **labwc** (DRI3).
+**Honest residual (why not 90):** many new modules are **pure + unit-tested** but not
+fully live (workspace filter unused in compositor `main`, `tr()` unused in UI,
+Secret/Print/Inhibit not on portal bus, display arrange not applied to outputs,
+client **placeholder rect** fallback, live greeter **NOT RUN**, screencast stubs).
 
-Would you replace Plasma for a week with zero workarounds? **Not fully** (residuals above).
-Daily-driver score under the original equal-weight methodology: **~90**.
+Would you replace Plasma for a week? **No.** Corrected score **~77**, not 90.
 
 ---
 

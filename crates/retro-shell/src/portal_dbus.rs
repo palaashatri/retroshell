@@ -2,8 +2,9 @@
 //!
 //! Host tests never open D-Bus. On Linux, [`try_register_portal_session_bus`]
 //! best-effort claims [`crate::portal::PORTAL_BUS_NAME`] and serves Screenshot,
-//! Settings, OpenURI, FileChooser, and ScreenCast interfaces that call pure
-//! handlers in [`crate::portal`].
+//! Settings, OpenURI, FileChooser, ScreenCast, plus simplified Secret / Print /
+//! Inhibit interfaces that call pure handlers in [`crate::portal`] /
+//! [`crate::portal_extra`].
 //!
 //! ScreenCast streams exposed on the bus are protocol-level stubs (`node_id`
 //! placeholders) — PipeWire is not started or connected.
@@ -30,6 +31,9 @@ pub fn try_register_portal_session_bus() -> bool {
                     settings = PORTAL_SETTINGS_INTERFACE,
                     openuri = PORTAL_OPENURI_INTERFACE,
                     screencast = PORTAL_SCREENCAST_INTERFACE,
+                    secret = "org.freedesktop.impl.portal.Secret",
+                    print = "org.freedesktop.impl.portal.Print",
+                    inhibit = "org.freedesktop.impl.portal.Inhibit",
                     "RetroShell portal handlers registered on session bus"
                 );
                 true
@@ -419,6 +423,118 @@ mod linux {
         }
     }
 
+    // ---- Secret / Print / Inhibit (portal_extra pure handlers on the bus) ----
+
+    struct PortalSecretIface;
+    struct PortalPrintIface;
+    struct PortalInhibitIface;
+
+    #[interface(name = "org.freedesktop.impl.portal.Secret")]
+    impl PortalSecretIface {
+        /// Retrieve — pure keyring lookup plan; does not open a real keyring.
+        fn retrieve_secret(
+            &self,
+            _handle: zbus::zvariant::ObjectPath<'_>,
+            app_id: &str,
+            _options: HashMap<String, OwnedValue>,
+        ) -> (u32, HashMap<String, OwnedValue>) {
+            use crate::portal_extra::{handle_secret_retrieve, PortalSecretRequest, PortalSecretResult};
+            let req = PortalSecretRequest {
+                app_id: app_id.to_string(),
+                token: Vec::new(),
+            };
+            match handle_secret_retrieve(&req) {
+                PortalSecretResult::Lookup { label } => {
+                    let mut results = HashMap::new();
+                    if let Ok(v) = OwnedValue::try_from(Value::from(label)) {
+                        results.insert("label".into(), v);
+                    }
+                    (0u32, results)
+                }
+                PortalSecretResult::Rejected { reason } => {
+                    tracing::debug!(%reason, "portal Secret rejected");
+                    (2u32, HashMap::new())
+                }
+            }
+        }
+    }
+
+    #[interface(name = "org.freedesktop.impl.portal.Print")]
+    impl PortalPrintIface {
+        /// PreparePrint-style plan → `lp` argv (does not spawn by default).
+        fn prepare_print(
+            &self,
+            _handle: zbus::zvariant::ObjectPath<'_>,
+            _app_id: &str,
+            _parent_window: &str,
+            title: &str,
+            _settings: HashMap<String, OwnedValue>,
+            _page_setup: HashMap<String, OwnedValue>,
+            options: HashMap<String, OwnedValue>,
+        ) -> (u32, HashMap<String, OwnedValue>) {
+            use crate::portal_extra::{handle_print_request, PortalPrintRequest, PortalPrintResult};
+            let document_uri = option_string_loose(&options, "document_uri")
+                .or_else(|| option_string_loose(&options, "uri"))
+                .unwrap_or_default();
+            let req = PortalPrintRequest {
+                title: title.to_string(),
+                document_uri,
+                modal: option_bool(&options, "modal").unwrap_or(false),
+            };
+            match handle_print_request(&req) {
+                PortalPrintResult::Queued { job_id, argv } => {
+                    let mut results = HashMap::new();
+                    if let Ok(v) = OwnedValue::try_from(Value::from(job_id)) {
+                        results.insert("job_id".into(), v);
+                    }
+                    if let Ok(v) = OwnedValue::try_from(Value::from(argv.join(" "))) {
+                        results.insert("argv".into(), v);
+                    }
+                    (0u32, results)
+                }
+                PortalPrintResult::Rejected { reason } => {
+                    tracing::debug!(%reason, "portal Print rejected");
+                    (2u32, HashMap::new())
+                }
+            }
+        }
+    }
+
+    #[interface(name = "org.freedesktop.impl.portal.Inhibit")]
+    impl PortalInhibitIface {
+        /// Inhibit — pure cookie; shell idle policy may consult callers later.
+        fn inhibit(
+            &self,
+            _handle: zbus::zvariant::ObjectPath<'_>,
+            app_id: &str,
+            window: &str,
+            flags: u32,
+            reason: &str,
+            _options: HashMap<String, OwnedValue>,
+        ) -> (u32, HashMap<String, OwnedValue>) {
+            use crate::portal_extra::{handle_inhibit, PortalInhibitRequest};
+            let req = PortalInhibitRequest {
+                app_id: app_id.to_string(),
+                window: window.to_string(),
+                flags,
+                reason: reason.to_string(),
+            };
+            match handle_inhibit(&req) {
+                Ok(cookie) => {
+                    let mut results = HashMap::new();
+                    if let Ok(v) = OwnedValue::try_from(Value::from(cookie.cookie)) {
+                        results.insert("cookie".into(), v);
+                    }
+                    (0u32, results)
+                }
+                Err(reason) => {
+                    tracing::debug!(%reason, "portal Inhibit rejected");
+                    (2u32, HashMap::new())
+                }
+            }
+        }
+    }
+
     fn option_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
         let value = options.get(key)?;
         if let Ok(v) = u32::try_from(value) {
@@ -474,6 +590,9 @@ mod linux {
             .serve_at(PORTAL_PATH, PortalOpenUriIface)?
             .serve_at(PORTAL_PATH, PortalFileChooserIface)?
             .serve_at(PORTAL_PATH, PortalScreencastIface)?
+            .serve_at(PORTAL_PATH, PortalSecretIface)?
+            .serve_at(PORTAL_PATH, PortalPrintIface)?
+            .serve_at(PORTAL_PATH, PortalInhibitIface)?
             .build()?;
 
         if let Ok(mut guard) = REGISTRATION.lock() {

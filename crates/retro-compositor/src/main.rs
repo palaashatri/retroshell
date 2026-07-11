@@ -36,7 +36,7 @@ mod linux {
         selection_bytes_for_mime_with_text_fallback, session_mode_note, session_mode_summary,
         text_input_capability_from_env, text_input_capability_summary, topmost_window_at,
         total_output_size, CompositorBackendKind, DisplayPolicy, OutputScale, TextInputCapability,
-        WindowGeometry, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+        WindowGeometry, WorkspaceId, WorkspaceState, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
     };
     use retro_compositor::frame_timing::{FrameScheduler, RefreshRate};
     use retro_compositor::hdr::HdrCapabilities;
@@ -166,6 +166,8 @@ mod linux {
         toplevel: ToplevelSurface,
         /// Foreign-toplevel-list handle for task list / Force Quit / overview.
         foreign: ForeignToplevelHandle,
+        /// Stable id for workspace visibility (`foreign.identifier()` at map).
+        window_id: String,
         /// Top-left position in logical compositor space
         position: Point<i32, Logical>,
         /// Last committed size (logical pixels)
@@ -224,6 +226,8 @@ mod linux {
 
         // Mapped windows (in painting order, bottom → top)
         windows: Vec<MappedWindow>,
+        /// Virtual workspaces: only active-workspace windows are painted.
+        workspace_state: WorkspaceState,
         // Layer-shell chrome (menu bar, dock, notifications, …)
         layer_surfaces: Vec<MappedLayer>,
         // Counter for cascading new window placement
@@ -275,10 +279,18 @@ mod linux {
             Serial::from(self.serial)
         }
 
-        /// Find the topmost window that contains `pt`, returning its index.
+        /// Find the topmost **visible** window that contains `pt`, returning its index.
         fn window_at(&self, pt: Point<f64, Logical>) -> Option<usize> {
-            let windows: Vec<_> = self.windows.iter().map(MappedWindow::geometry).collect();
-            topmost_window_at(&windows, pt.x, pt.y)
+            // Walk top→bottom; skip windows on inactive workspaces.
+            for (idx, w) in self.windows.iter().enumerate().rev() {
+                if !self.workspace_state.is_visible(&w.window_id) {
+                    continue;
+                }
+                if w.geometry().contains_f64(pt.x, pt.y) {
+                    return Some(idx);
+                }
+            }
+            None
         }
 
         /// Bring window at `idx` to the top and focus keyboard+pointer on it.
@@ -318,7 +330,49 @@ mod linux {
 
         /// Remove dead windows (client disconnected / surface destroyed).
         fn prune_dead_windows(&mut self) {
+            let before: Vec<String> = self.windows.iter().map(|w| w.window_id.clone()).collect();
             self.windows.retain(|w| w.toplevel.alive());
+            let alive: HashSet<&str> = self.windows.iter().map(|w| w.window_id.as_str()).collect();
+            for id in before {
+                if !alive.contains(id.as_str()) {
+                    self.workspace_state.remove_window(&id);
+                }
+            }
+        }
+
+        /// Windows that should paint on the active workspace (chrome always paints).
+        fn windows_visible_for_paint(&self) -> Vec<&MappedWindow> {
+            self.windows
+                .iter()
+                .filter(|w| self.workspace_state.is_visible(&w.window_id))
+                .collect()
+        }
+
+        fn cycle_workspace_next(&mut self) {
+            self.workspace_state.cycle_next();
+            eprintln!(
+                "[retro-compositor] {}",
+                self.workspace_state.summary_line()
+            );
+        }
+
+        fn cycle_workspace_prev(&mut self) {
+            self.workspace_state.cycle_prev();
+            eprintln!(
+                "[retro-compositor] {}",
+                self.workspace_state.summary_line()
+            );
+        }
+
+        fn activate_workspace_index(&mut self, index: u8) {
+            if let Some(ws) = WorkspaceId::new(index) {
+                if self.workspace_state.activate(ws) {
+                    eprintln!(
+                        "[retro-compositor] {}",
+                        self.workspace_state.summary_line()
+                    );
+                }
+            }
         }
 
         /// Render a frame using the GlesRenderer:
@@ -373,7 +427,9 @@ mod linux {
                     Kind::Unspecified,
                 ));
             }
-            for w in &self.windows {
+            // Workspace filter: hide surfaces not on the active virtual desktop.
+            let visible_windows = self.windows_visible_for_paint();
+            for w in &visible_windows {
                 let loc = Point::<i32, Physical>::from((w.position.x, w.position.y));
                 surface_elements.extend(render_elements_from_surface_tree(
                     &mut self.renderer,
@@ -454,8 +510,12 @@ mod linux {
                     eprintln!("[render] draw_render_elements failed: {e}");
                 }
             } else {
-                // Fallback: draw solid colored placeholder rectangles for each mapped window
-                let windows: Vec<_> = self.windows.iter().enumerate().map(|(i, w)| {
+                // Fallback: colored placeholders only for **visible** workspace windows.
+                let windows: Vec<_> = self
+                    .windows_visible_for_paint()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, w)| {
                     let color_idx = i % WIN_COLORS.len();
                     let (r, g, b) = WIN_COLORS[color_idx];
                     let rect = Rectangle::from_loc_and_size(
@@ -820,9 +880,18 @@ mod linux {
                 position.x, position.y
             );
 
+            let window_id = foreign.identifier();
+            let ws = self.workspace_state.active;
+            let _ = self.workspace_state.assign_window(window_id.clone(), ws);
+            eprintln!(
+                "[retro-compositor] assign window_id={window_id} {}",
+                self.workspace_state.summary_line()
+            );
+
             self.windows.push(MappedWindow {
                 toplevel: surface,
                 foreign,
+                window_id,
                 position,
                 size: Size::from((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)),
             });
@@ -839,6 +908,7 @@ mod linux {
                 .position(|w| w.toplevel.wl_surface() == surface.wl_surface())
             {
                 let win = self.windows.remove(idx);
+                self.workspace_state.remove_window(&win.window_id);
                 win.foreign.send_closed();
             }
             // Move focus to the topmost remaining window, if any
@@ -1229,6 +1299,9 @@ mod linux {
     where
         E: KeyboardKeyEvent<X11Input>,
     {
+        use smithay::backend::input::KeyState;
+        use smithay::input::keyboard::Keysym;
+
         let serial = state.next_serial();
         let time = ev.time_msec();
         let keycode = ev.key_code();
@@ -1241,7 +1314,37 @@ mod linux {
                 key_state,
                 serial,
                 time,
-                |_data, _mods, _keysym| FilterResult::Forward,
+                |data, mods, keysym| {
+                    // Super+Right / Super+Left: cycle virtual workspaces (live filter).
+                    if key_state == KeyState::Pressed && mods.logo {
+                        let sym = keysym.modified_sym();
+                        if sym == Keysym::Right || sym == Keysym::Page_Down {
+                            data.cycle_workspace_next();
+                            return FilterResult::Intercept(());
+                        }
+                        if sym == Keysym::Left || sym == Keysym::Page_Up {
+                            data.cycle_workspace_prev();
+                            return FilterResult::Intercept(());
+                        }
+                        // Super+1..8 → activate workspace 0..7
+                        let digit = match sym {
+                            Keysym::_1 => Some(0u8),
+                            Keysym::_2 => Some(1),
+                            Keysym::_3 => Some(2),
+                            Keysym::_4 => Some(3),
+                            Keysym::_5 => Some(4),
+                            Keysym::_6 => Some(5),
+                            Keysym::_7 => Some(6),
+                            Keysym::_8 => Some(7),
+                            _ => None,
+                        };
+                        if let Some(i) = digit {
+                            data.activate_workspace_index(i);
+                            return FilterResult::Intercept(());
+                        }
+                    }
+                    FilterResult::Forward
+                },
             );
         }
     }
@@ -1738,6 +1841,7 @@ mod linux {
             outputs,
             running: true,
             windows: Vec::new(),
+            workspace_state: WorkspaceState::new(),
             layer_surfaces: Vec::new(),
             next_window_offset: 0,
             pointer_pos: Point::from((0.0_f64, 0.0_f64)),

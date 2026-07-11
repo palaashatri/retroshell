@@ -84,7 +84,7 @@ use crate::hdr::HdrCapabilities;
 use crate::{
     discover_drm_nodes, drm_presentation_pipeline, plan_drm_modeset, preferred_primary_drm_node,
     session_mode_summary, CompositorBackendKind, DisplayPolicy, DrmPresentationStage,
-    DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+    WorkspaceState, DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
 };
 
 /// Compositor-owned selection payload keyed by mime type.
@@ -525,6 +525,7 @@ pub fn run_drm_session() -> Result<()> {
         foreign_toplevel_list,
         outputs: vec![output],
         windows: Vec::new(),
+        workspace_state: WorkspaceState::new(),
         layer_surfaces: Vec::new(),
         active: Arc::new(AtomicBool::new(true)),
         udev_events: Vec::new(),
@@ -592,6 +593,7 @@ impl ClientData for ClientState {
 struct MappedWindow {
     toplevel: ToplevelSurface,
     foreign: ForeignToplevelHandle,
+    window_id: String,
     position: Point<i32, Logical>,
     size: Size<i32, Logical>,
 }
@@ -625,6 +627,7 @@ struct DrmSessionState {
     #[allow(dead_code)]
     outputs: Vec<Output>,
     windows: Vec<MappedWindow>,
+    workspace_state: WorkspaceState,
     layer_surfaces: Vec<MappedLayer>,
     active: Arc<AtomicBool>,
     udev_events: Vec<String>,
@@ -888,9 +891,17 @@ impl XdgShellHandler for DrmSessionState {
             position.x, position.y
         );
 
+        let window_id = foreign.identifier();
+        let ws = self.workspace_state.active;
+        let _ = self.workspace_state.assign_window(window_id.clone(), ws);
+        eprintln!(
+            "[retro-compositor/drm] {} window_id={window_id}",
+            self.workspace_state.summary_line()
+        );
         self.windows.push(MappedWindow {
             toplevel: surface.clone(),
             foreign,
+            window_id,
             position,
             size: Size::from((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)),
         });
@@ -904,6 +915,7 @@ impl XdgShellHandler for DrmSessionState {
             .position(|w| w.toplevel.wl_surface() == surface.wl_surface())
         {
             let win = self.windows.remove(idx);
+            self.workspace_state.remove_window(&win.window_id);
             win.foreign.send_closed();
         }
         let next = self

@@ -2012,11 +2012,16 @@ pub fn verify_lock_password(entered: &str, expected: &str) -> bool {
     !entered.is_empty() && entered == expected
 }
 
+fn shell_locale_prefs() -> LocalePrefs {
+    LocalePrefs::parse_from_env_lang(std::env::var("LANG").ok().as_deref())
+}
+
 fn build_lock_screen_window() -> Window {
+    let locale = shell_locale_prefs();
     let mut layout = Layout::vertical(24.0);
     layout.add(Box::new(Label::new("RetroShell")));
-    layout.add(Box::new(Label::new("Password:")));
-    let mut window = Window::new("Lock Screen");
+    layout.add(Box::new(Label::new(tr("lock.prompt", &locale.locale))));
+    let mut window = Window::new(tr("menu.lock_screen", &locale.locale));
     window.set_content(Box::new(LayoutView::new(layout)));
     window
 }
@@ -2802,22 +2807,28 @@ impl Widget for ShellDesktop {
             }
         }
 
-        // Update lock screen widget with current password field state
+        // Update lock screen widget with current password field state (i18n strings).
         if self.locked {
+            let locale = shell_locale_prefs();
             let mut layout = Layout::vertical(12.0);
             layout.add(Box::new(Label::new("RetroShell")));
             layout.add(Box::new(Label::new("")));
-            layout.add(Box::new(Label::new("Password:")));
+            layout.add(Box::new(Label::new(tr("lock.prompt", &locale.locale))));
 
             // Add a copy of the password field for display
             let mut field = TextField::new()
-                .with_placeholder("Enter password");
+                .with_placeholder(tr("lock.prompt", &locale.locale));
             field.is_password = true;
             field.set_text(self.lock_password_field.text());
             layout.add(Box::new(field));
 
             if let Some(ref error) = self.lock_error_message {
-                layout.add(Box::new(Label::new(error.clone())));
+                let msg = if error.contains("Incorrect") {
+                    tr("lock.error", &locale.locale)
+                } else {
+                    error.clone()
+                };
+                layout.add(Box::new(Label::new(msg)));
             }
 
             self.lock_screen_widget.set_content(Box::new(LayoutView::new(layout)));
