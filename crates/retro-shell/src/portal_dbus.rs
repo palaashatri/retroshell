@@ -173,13 +173,7 @@ mod linux {
             let names_ref: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
             match handle_file_chooser_open(&req, &names_ref) {
                 Ok(r) if r.uris.is_empty() => (1u32, HashMap::new()), // cancelled
-                Ok(r) => {
-                    let mut results = HashMap::new();
-                    if let Ok(v) = OwnedValue::try_from(Value::from(r.uris)) {
-                        results.insert("uris".into(), v);
-                    }
-                    (0u32, results)
-                }
+                Ok(r) => (0u32, uris_result_map(&r.uris)),
                 Err(_) => (2u32, HashMap::new()),
             }
         }
@@ -203,16 +197,25 @@ mod linux {
             };
             match handle_file_chooser_save(&req, confirm) {
                 Ok(r) if r.uris.is_empty() => (1u32, HashMap::new()),
-                Ok(r) => {
-                    let mut results = HashMap::new();
-                    if let Ok(v) = OwnedValue::try_from(Value::from(r.uris)) {
-                        results.insert("uris".into(), v);
-                    }
-                    (0u32, results)
-                }
+                Ok(r) => (0u32, uris_result_map(&r.uris)),
                 Err(_) => (2u32, HashMap::new()),
             }
         }
+    }
+
+    fn uris_result_map(uris: &[String]) -> HashMap<String, OwnedValue> {
+        let mut results = HashMap::new();
+        // Store as newline-joined string for zbus compatibility (array encoding varies).
+        let joined = uris.join("\n");
+        if let Ok(v) = OwnedValue::try_from(Value::from(joined)) {
+            results.insert("uris".into(), v);
+        }
+        if let Some(first) = uris.first() {
+            if let Ok(v) = OwnedValue::try_from(Value::from(first.as_str())) {
+                results.insert("uri".into(), v);
+            }
+        }
+        results
     }
 
     struct PortalOpenUriIface;
@@ -253,14 +256,20 @@ mod linux {
 
     fn option_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
         let value = options.get(key)?;
-        String::try_from(value).ok()
+        String::try_from(value.clone()).ok()
     }
 
     fn option_string_array(options: &HashMap<String, OwnedValue>, key: &str) -> Vec<String> {
         let Some(value) = options.get(key) else {
             return Vec::new();
         };
-        Vec::<String>::try_from(value).unwrap_or_default()
+        if let Ok(arr) = <Vec<String>>::try_from(value.clone()) {
+            return arr;
+        }
+        if let Ok(s) = String::try_from(value.clone()) {
+            return vec![s];
+        }
+        Vec::new()
     }
 
     pub(super) fn register() -> Result<(), Box<dyn std::error::Error>> {
