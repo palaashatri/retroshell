@@ -56,7 +56,10 @@ pub use atspi_bus::{
     emit_chrome_focus, in_process_event_count, serialize_chrome_focus_for_dbus,
     try_emit_accessible_event, EmitAccessibleResult,
 };
-pub use audio::{get_volume, set_volume};
+pub use audio::{
+    get_volume, set_volume, volume_pactl_get_plan, volume_pactl_set_plan, volume_status_label,
+    volume_wpctl_get_plan, volume_wpctl_set_plan, AudioBackend, AudioError,
+};
 pub use capture::{start_recording, stop_recording, take_screenshot};
 pub use chrome_protocol::{
     chrome_focus_order, next_chrome_focus, should_paint_kit_chrome, ChromeFocusTarget, ChromeRole,
@@ -80,14 +83,17 @@ pub use layer_shell_client::{
     LayerShellBindResult, LayerShellChromeRequest,
 };
 pub use launch_services::LaunchServices;
-pub use menu_server::MenuServer;
+pub use menu_server::{
+    battery_status_label, network_status_label, MenuServer, StatusItem, STATUS_REFRESH_INTERVAL_SECS,
+};
 pub use mime_open::{
     first_party_binary_for_app_id, mime_from_path, open_plan, open_plan_for_file_uri,
     parse_desktop_exec, path_from_file_uri, seed_retroshell_defaults, spawn_argv, DesktopAppEntry,
     MimeOpenRegistry, OpenPlan,
 };
 pub use network_connect::{
-    nm_connect_plan, nm_connect_plan_validated, validate_nm_connect_request, NmConnectRequest,
+    connect_wifi, describe_nm_connect_plan, execute_nm_connect_plan, nm_connect_plan,
+    nm_connect_plan_validated, validate_nm_connect_request, NmConnectRequest,
 };
 pub use network_manager::{get_network_status, NetworkStatus};
 pub use fdo_notifications::{
@@ -399,6 +405,12 @@ struct ShellDesktop {
     mime_open_spawn: bool,
     /// Last MIME open plan produced by folder double-click / open path (tests + status).
     last_mime_open: Option<OpenPlan>,
+    /// Last menu-bar status refresh (battery / volume / network).
+    last_status_refresh: std::time::Instant,
+    /// Last network connect attempt outcome (tests + status UI).
+    last_network_connect: Option<std::result::Result<String, String>>,
+    /// When false, network connect validates/plans only (unit tests; no nmcli spawn).
+    network_connect_spawn: bool,
 }
 
 struct ShellWindow {
@@ -540,6 +552,9 @@ impl ShellDesktop {
             },
             mime_open_spawn: true,
             last_mime_open: None,
+            last_status_refresh: std::time::Instant::now(),
+            last_network_connect: None,
+            network_connect_spawn: true,
         };
         // Map layer-shell chrome + sync foreign-toplevel list when a compositor is live.
         RetroShell::attach_wayland_session_protocols(&mut shell);
@@ -1453,6 +1468,7 @@ impl ShellDesktop {
             "shell.power_off" | "shell.shutdown" | "shell.poweroff" => {
                 self.handle_session_action(session_actions::SessionAction::PowerOff)
             }
+            "shell.network_connect" => self.handle_network_connect_menu(),
             "shell.save" => self.open_shell_status_window(
                 "Save",
                 ["The active shell window has no document to save.".to_string()],
@@ -1596,6 +1612,113 @@ impl ShellDesktop {
             ],
         );
         true
+    }
+
+    /// Pure API / UI path: validate → nmcli plan → best-effort spawn (like systemctl).
+    ///
+    /// When `network_connect_spawn` is false, only validation + plan are recorded
+    /// (unit tests). Missing `nmcli` returns `Err` without panicking.
+    pub fn request_network_connect(&mut self, req: NmConnectRequest) {
+        match nm_connect_plan_validated(&req) {
+            Ok(plan) => {
+                let summary = describe_nm_connect_plan(&plan);
+                if !self.network_connect_spawn {
+                    self.last_network_connect = Some(Ok(summary.clone()));
+                    tracing::info!(%summary, "network connect plan (spawn disabled)");
+                    return;
+                }
+                match execute_nm_connect_plan(&plan) {
+                    Ok(()) => {
+                        tracing::info!(%summary, "network connect spawned");
+                        self.last_network_connect = Some(Ok(summary.clone()));
+                        self.record_notification(
+                            "com.retro.shell",
+                            "Network",
+                            &format!("Connecting: {}", req.ssid),
+                            NotificationPriority::Normal,
+                        );
+                        self.menu_server.write().refresh_status_items();
+                        self.last_status_refresh = std::time::Instant::now();
+                    }
+                    Err(err) => {
+                        tracing::warn!(%err, "network connect spawn failed");
+                        self.last_network_connect = Some(Err(err.clone()));
+                        self.record_notification(
+                            "com.retro.shell",
+                            "Network Connect Failed",
+                            &err,
+                            NotificationPriority::High,
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                self.last_network_connect = Some(Err(err.clone()));
+                self.record_notification(
+                    "com.retro.shell",
+                    "Network Connect Invalid",
+                    &err,
+                    NotificationPriority::High,
+                );
+            }
+        }
+    }
+
+    /// Menu action: connect using `RETROSHELL_WIFI_SSID` (+ optional password env).
+    fn handle_network_connect_menu(&mut self) {
+        let ssid = std::env::var("RETROSHELL_WIFI_SSID").unwrap_or_default();
+        if ssid.trim().is_empty() {
+            self.open_shell_status_window(
+                "Network Connect",
+                [
+                    "Set RETROSHELL_WIFI_SSID to connect from the menu.".to_string(),
+                    "Optional: RETROSHELL_WIFI_PASSWORD.".to_string(),
+                    "API: ShellDesktop::request_network_connect(NmConnectRequest).".to_string(),
+                ],
+            );
+            return;
+        }
+        let mut req = NmConnectRequest::new(ssid.trim());
+        if let Ok(pw) = std::env::var("RETROSHELL_WIFI_PASSWORD") {
+            if !pw.is_empty() {
+                req = req.with_password(pw);
+            }
+        }
+        self.request_network_connect(req);
+        if let Some(Ok(summary)) = &self.last_network_connect {
+            self.open_shell_status_window(
+                "Network Connect",
+                [
+                    format!("SSID: {}", std::env::var("RETROSHELL_WIFI_SSID").unwrap_or_default()),
+                    summary.clone(),
+                    "Best-effort nmcli spawn (association is asynchronous).".to_string(),
+                ],
+            );
+        } else if let Some(Err(err)) = &self.last_network_connect {
+            self.open_shell_status_window(
+                "Network Connect",
+                [
+                    err.clone(),
+                    "Install NetworkManager (nmcli) on the session host.".to_string(),
+                ],
+            );
+        }
+    }
+
+    /// Apply system volume via pactl/wpctl and refresh menu-bar status (best-effort).
+    pub fn request_set_volume(&mut self, percent: u8) {
+        match set_volume(percent) {
+            Ok(()) => {
+                self.menu_server.write().refresh_status_items();
+                self.last_status_refresh = std::time::Instant::now();
+            }
+            Err(err) => {
+                tracing::debug!(%err, "set_volume failed (status will show placeholder)");
+                // Still refresh so volume label reflects unavailability.
+                self.menu_server.write().refresh_status_items();
+                self.last_status_refresh = std::time::Instant::now();
+            }
+        }
     }
 
     /// Execute a session power/logout action via pure plan + shell side effects.
@@ -3153,6 +3276,14 @@ impl Widget for ShellDesktop {
             }
         }
 
+        // Battery / volume / network menu status: refresh on idle update (throttled).
+        if self.last_status_refresh.elapsed()
+            >= std::time::Duration::from_secs(STATUS_REFRESH_INTERVAL_SECS)
+        {
+            self.menu_server.write().refresh_status_items();
+            self.last_status_refresh = std::time::Instant::now();
+        }
+
         // Update lock screen widget with current password field state (i18n strings).
         if self.locked {
             let locale = shell_locale_prefs();
@@ -3334,8 +3465,9 @@ mod tests {
             session_manager,
         );
         desktop.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
-        // Unit tests: plan MIME open without spawning real GUI processes.
+        // Unit tests: plan MIME open / nmcli without spawning real processes.
         desktop.mime_open_spawn = false;
+        desktop.network_connect_spawn = false;
         (desktop, window_manager)
     }
 
@@ -4366,5 +4498,80 @@ mod tests {
         assert!(merged.is_inhibited());
         assert_eq!(idle_phase(&cfg, 10, false, &merged), IdlePhase::Active);
         clear_inhibit_store_for_tests();
+    }
+
+    #[test]
+    fn network_connect_api_records_validated_plan_without_spawn() {
+        let (mut desktop, _) = test_desktop();
+        assert!(!desktop.network_connect_spawn);
+
+        desktop.request_network_connect(NmConnectRequest::new("CafeNet"));
+        let outcome = desktop
+            .last_network_connect
+            .clone()
+            .expect("connect outcome recorded");
+        let summary = outcome.expect("valid plan");
+        assert!(summary.contains("nmcli"));
+        assert!(summary.contains("CafeNet"));
+
+        desktop.request_network_connect(NmConnectRequest::new(""));
+        let err = desktop
+            .last_network_connect
+            .clone()
+            .expect("error recorded")
+            .unwrap_err();
+        assert!(err.contains("non-empty"));
+    }
+
+    #[test]
+    fn network_connect_menu_action_wired() {
+        let server = MenuServer::new();
+        assert!(server
+            .menus
+            .iter()
+            .flat_map(|m| m.items.iter())
+            .any(|item| item.action_id == "shell.network_connect"));
+
+        let (mut desktop, _) = test_desktop();
+        // No RETROSHELL_WIFI_SSID → status window, no panic.
+        desktop.handle_menu_action("shell.network_connect");
+        assert!(desktop
+            .windows
+            .iter()
+            .any(|w| w.window.title() == "Network Connect"));
+    }
+
+    #[test]
+    fn status_refresh_on_update_and_volume_api() {
+        let (mut desktop, _) = test_desktop();
+        // Force elapsed so update() re-queries status items.
+        desktop.last_status_refresh =
+            std::time::Instant::now() - std::time::Duration::from_secs(STATUS_REFRESH_INTERVAL_SECS + 1);
+        desktop.update();
+        let items = desktop.menu_server.read().status_items.clone();
+        let ids: Vec<&str> = items.iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&"battery"));
+        assert!(ids.contains(&"volume"));
+        assert!(ids.contains(&"network"));
+
+        // Best-effort volume path (may fail without pactl; must not panic).
+        desktop.request_set_volume(40);
+        let items = desktop.menu_server.read().status_items.clone();
+        assert!(items.iter().any(|s| s.id == "volume"));
+    }
+
+    #[test]
+    fn pure_status_and_volume_plans_exported() {
+        assert_eq!(battery_status_label(Some(50)), "🔋 50%");
+        assert_eq!(network_status_label(false, None, "Unavailable"), "📶 —");
+        assert_eq!(volume_status_label(Some(10)), "🔊 10%");
+        assert_eq!(
+            volume_pactl_set_plan(25),
+            vec!["pactl", "set-sink-volume", "@DEFAULT_SINK@", "25%"]
+        );
+        let plan = nm_connect_plan_validated(&NmConnectRequest::new("X").with_password("y")).unwrap();
+        assert_eq!(plan[0], "nmcli");
+        assert!(describe_nm_connect_plan(&plan).contains("<redacted>"));
+        assert!(execute_nm_connect_plan(&[]).is_err());
     }
 }

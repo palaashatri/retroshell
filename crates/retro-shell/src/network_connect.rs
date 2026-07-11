@@ -1,7 +1,10 @@
-//! Pure NetworkManager Wi-Fi connect planning (nmcli-style argv).
+//! NetworkManager Wi-Fi connect planning + best-effort nmcli spawn.
 //!
-//! No process execution here — host unit tests exercise validation and plan
-//! construction only. Linux session code may run the plan later.
+//! Pure helpers validate requests and build nmcli-style argv. Execution is
+//! best-effort: missing `nmcli` returns [`Err`] and never panics (macOS CI /
+//! hosts without NetworkManager).
+
+use std::process::Command;
 
 /// Request to connect to a Wi-Fi network via NetworkManager.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +82,56 @@ pub fn nm_connect_plan(req: &NmConnectRequest) -> Vec<String> {
 pub fn nm_connect_plan_validated(req: &NmConnectRequest) -> Result<Vec<String>, String> {
     validate_nm_connect_request(req)?;
     Ok(nm_connect_plan(req))
+}
+
+/// Human-readable one-line description of an nmcli argv plan (logs / UI).
+pub fn describe_nm_connect_plan(plan: &[String]) -> String {
+    if plan.is_empty() {
+        return "exec: (empty plan)".to_string();
+    }
+    // Redact password argument value when present: … password <secret>
+    let mut parts: Vec<&str> = Vec::with_capacity(plan.len());
+    let mut redact_next = false;
+    for arg in plan {
+        if redact_next {
+            parts.push("<redacted>");
+            redact_next = false;
+            continue;
+        }
+        if arg == "password" {
+            redact_next = true;
+        }
+        parts.push(arg.as_str());
+    }
+    format!("exec: {}", parts.join(" "))
+}
+
+/// Best-effort spawn of a validated nmcli argv plan (like session `systemctl` spawn).
+///
+/// - Empty plan → `Err`
+/// - Missing binary / spawn failure → `Err` (never panics)
+/// - Child started successfully → `Ok(())` (does not wait for association)
+pub fn execute_nm_connect_plan(plan: &[String]) -> Result<(), String> {
+    if plan.is_empty() {
+        return Err("nm connect plan is empty".to_string());
+    }
+    let program = &plan[0];
+    let args = &plan[1..];
+    match Command::new(program).args(args).spawn() {
+        Ok(_child) => Ok(()),
+        Err(err) => Err(format!(
+            "could not spawn {}: {err}",
+            describe_nm_connect_plan(plan)
+        )),
+    }
+}
+
+/// Validate → plan → best-effort nmcli spawn.
+///
+/// Pure validation errors and spawn failures both return `Err(String)`.
+pub fn connect_wifi(req: &NmConnectRequest) -> Result<(), String> {
+    let plan = nm_connect_plan_validated(req)?;
+    execute_nm_connect_plan(&plan)
 }
 
 #[cfg(test)]
@@ -175,5 +228,49 @@ mod tests {
         let plan = nm_connect_plan_validated(&req).unwrap();
         assert_eq!(plan[0], "nmcli");
         assert!(plan.contains(&"password".to_string()));
+    }
+
+    #[test]
+    fn describe_redacts_password() {
+        let plan = nm_connect_plan(&NmConnectRequest::new("Home").with_password("s3cret"));
+        let d = describe_nm_connect_plan(&plan);
+        assert!(d.contains("nmcli"));
+        assert!(d.contains("Home"));
+        assert!(d.contains("<redacted>"));
+        assert!(!d.contains("s3cret"));
+    }
+
+    #[test]
+    fn execute_empty_plan_is_err() {
+        let err = execute_nm_connect_plan(&[]).unwrap_err();
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn execute_missing_binary_is_err_not_panic() {
+        // Use a plan whose program cannot exist on any host.
+        let plan = vec![
+            "/nonexistent/retroshell-nmcli-missing-binary-xyz".to_string(),
+            "dev".into(),
+            "wifi".into(),
+            "connect".into(),
+            "Test".into(),
+        ];
+        let err = execute_nm_connect_plan(&plan).unwrap_err();
+        assert!(err.contains("could not spawn") || err.contains("No such file"));
+    }
+
+    #[test]
+    fn connect_wifi_rejects_bad_ssid_before_spawn() {
+        let err = connect_wifi(&NmConnectRequest::new("")).unwrap_err();
+        assert!(err.contains("non-empty"));
+    }
+
+    #[test]
+    fn connect_wifi_missing_nmcli_is_err_not_panic() {
+        // When nmcli is absent (typical macOS CI), spawn fails cleanly.
+        // When nmcli is present, spawn may succeed or fail later — either is Ok/Err, not panic.
+        let req = NmConnectRequest::new("RetroShellTestSsid");
+        let _ = connect_wifi(&req);
     }
 }

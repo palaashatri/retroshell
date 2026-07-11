@@ -15,6 +15,7 @@ pub struct MenuServer {
     pub app_menus: HashMap<String, Vec<Menu>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusItem {
     pub id: String,
     pub label: String,
@@ -77,34 +78,40 @@ impl MenuServer {
         }
     }
 
-    /// Refresh menu-bar status items for battery and network (best-effort).
+    /// Refresh menu-bar status items for battery, volume, and network (best-effort).
+    ///
+    /// Safe on hosts without UPower / Pulse / NetworkManager — labels fall back
+    /// to placeholders. Call from shell idle `update` (throttled) and after
+    /// volume / network connect actions.
     pub fn refresh_status_items(&mut self) {
+        use crate::audio::{get_volume, volume_status_label};
         use crate::network_manager::get_network_status;
         use crate::power::battery_info;
 
         self.status_items.clear();
 
         let battery = battery_info();
-        let battery_label = match battery.percentage {
-            Some(pct) => format!("🔋 {pct}%"),
-            None => "🔋 —".to_string(),
-        };
         self.status_items.push(StatusItem {
             id: "battery".to_string(),
-            label: battery_label,
+            label: battery_status_label(battery.percentage),
             icon: Some("battery".to_string()),
             priority: 10,
         });
 
+        let volume_pct = get_volume().ok();
+        self.status_items.push(StatusItem {
+            id: "volume".to_string(),
+            label: volume_status_label(volume_pct),
+            icon: Some("volume".to_string()),
+            priority: 15,
+        });
+
         let net = get_network_status();
-        let net_label = if net.available {
-            match &net.primary_connection_name {
-                Some(name) if !name.is_empty() => format!("📶 {name}"),
-                _ => format!("📶 {}", net.state.as_str()),
-            }
-        } else {
-            "📶 —".to_string()
-        };
+        let net_label = network_status_label(
+            net.available,
+            net.primary_connection_name.as_deref(),
+            net.state.as_str(),
+        );
         self.status_items.push(StatusItem {
             id: "network".to_string(),
             label: net_label,
@@ -130,6 +137,9 @@ impl MenuServer {
         system_menu
             .add_action("Software Catalog...")
             .with_action("shell.software_catalog");
+        system_menu
+            .add_action("Connect Network…")
+            .with_action("shell.network_connect");
         system_menu.add_separator();
         system_menu
             .add_action("Recent Items")
@@ -758,6 +768,28 @@ fn append_workspace_items(window_menu: &mut Menu) {
     }
 }
 
+/// Pure battery menu-bar status label.
+pub fn battery_status_label(percentage: Option<u8>) -> String {
+    match percentage {
+        Some(pct) => format!("🔋 {pct}%"),
+        None => "🔋 —".to_string(),
+    }
+}
+
+/// Pure network menu-bar status label.
+pub fn network_status_label(available: bool, primary_name: Option<&str>, state: &str) -> String {
+    if !available {
+        return "📶 —".to_string();
+    }
+    match primary_name {
+        Some(name) if !name.is_empty() => format!("📶 {name}"),
+        _ => format!("📶 {state}"),
+    }
+}
+
+/// How often the shell should re-query battery / volume / network for the menu bar.
+pub const STATUS_REFRESH_INTERVAL_SECS: u64 = 5;
+
 fn find_shortcut_action(items: &[MenuItem], key: KeyCode, modifiers: Modifiers) -> Option<String> {
     for item in items {
         if !item.enabled {
@@ -832,5 +864,32 @@ mod tests {
             .iter()
             .any(|item| item.action_id == "workspace.switch.0"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn status_labels_are_pure() {
+        assert_eq!(battery_status_label(Some(87)), "🔋 87%");
+        assert_eq!(battery_status_label(None), "🔋 —");
+        assert_eq!(
+            network_status_label(true, Some("HomeWiFi"), "Full"),
+            "📶 HomeWiFi"
+        );
+        assert_eq!(network_status_label(true, None, "Limited"), "📶 Limited");
+        assert_eq!(network_status_label(false, None, "Unavailable"), "📶 —");
+        assert_eq!(STATUS_REFRESH_INTERVAL_SECS, 5);
+    }
+
+    #[test]
+    fn refresh_status_items_populates_battery_volume_network() {
+        let mut server = MenuServer::new();
+        server.refresh_status_items();
+        let ids: Vec<&str> = server.status_items.iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&"battery"));
+        assert!(ids.contains(&"volume"));
+        assert!(ids.contains(&"network"));
+        // Labels are non-empty placeholders even without host tools.
+        for item in &server.status_items {
+            assert!(!item.label.is_empty());
+        }
     }
 }

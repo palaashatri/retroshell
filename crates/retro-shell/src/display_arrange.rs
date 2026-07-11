@@ -422,16 +422,16 @@ mod tests {
         arr.outputs[0].is_primary = true;
         let plan = plan_display_apply(&arr).unwrap();
         let applied = apply_display_plan_env(&plan);
-        assert!(
-            applied
-                .iter()
-                .any(|(k, _)| k == "RETROSHELL_OUTPUTS_LAYOUT"),
-            "expected RETROSHELL_OUTPUTS_LAYOUT in {applied:?}"
-        );
-        let val = std::env::var("RETROSHELL_OUTPUTS_LAYOUT").expect("env set");
-        assert!(val.contains("eDP-1"), "layout value={val}");
-        assert!(val.contains("HDMI-1"), "layout value={val}");
-        // Cleanup so other tests are not polluted.
+        let layout = applied
+            .iter()
+            .find(|(k, _)| k == "RETROSHELL_OUTPUTS_LAYOUT")
+            .map(|(_, v)| v.as_str())
+            .expect("expected RETROSHELL_OUTPUTS_LAYOUT in applied pairs");
+        // Assert on the returned pairs (stable under parallel tests that also
+        // touch process env). Process env is set best-effort for live apply.
+        assert!(layout.contains("eDP-1"), "layout value={layout}");
+        assert!(layout.contains("HDMI-1"), "layout value={layout}");
+        // Cleanup so other tests are not polluted (best-effort).
         std::env::remove_var("RETROSHELL_OUTPUTS_LAYOUT");
     }
 }

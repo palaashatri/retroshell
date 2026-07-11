@@ -64,17 +64,72 @@ pub fn get_volume() -> Result<u8, AudioError> {
     }
 }
 
+/// Pure argv for `pactl set-sink-volume` (unit-tested; not executed).
+pub fn volume_pactl_set_plan(percent: u8) -> Vec<String> {
+    let percent = percent.min(100);
+    vec![
+        "pactl".into(),
+        "set-sink-volume".into(),
+        "@DEFAULT_SINK@".into(),
+        format!("{percent}%"),
+    ]
+}
+
+/// Pure argv for `wpctl set-volume` (unit-tested; not executed).
+pub fn volume_wpctl_set_plan(percent: u8) -> Vec<String> {
+    let percent = percent.min(100);
+    let linear = f64::from(percent) / 100.0;
+    vec![
+        "wpctl".into(),
+        "set-volume".into(),
+        "@DEFAULT_AUDIO_SINK@".into(),
+        format!("{linear:.2}"),
+    ]
+}
+
+/// Pure argv for `pactl get-sink-volume` (unit-tested; not executed).
+pub fn volume_pactl_get_plan() -> Vec<String> {
+    vec![
+        "pactl".into(),
+        "get-sink-volume".into(),
+        "@DEFAULT_SINK@".into(),
+    ]
+}
+
+/// Pure argv for `wpctl get-volume` (unit-tested; not executed).
+pub fn volume_wpctl_get_plan() -> Vec<String> {
+    vec![
+        "wpctl".into(),
+        "get-volume".into(),
+        "@DEFAULT_AUDIO_SINK@".into(),
+    ]
+}
+
+/// Compact menu-bar / status label for volume (pure).
+///
+/// `None` → unavailable placeholder; `Some(p)` → `"🔊 p%"`.
+pub fn volume_status_label(percent: Option<u8>) -> String {
+    match percent {
+        Some(p) => format!("🔊 {}%", p.min(100)),
+        None => "🔊 —".to_string(),
+    }
+}
+
 /// Set default sink volume to `percent` (clamped to 0–100).
+///
+/// Uses the same argv as [`volume_pactl_set_plan`] / [`volume_wpctl_set_plan`].
 pub fn set_volume(percent: u8) -> Result<(), AudioError> {
     let percent = percent.min(100);
     match detect_backend() {
         Some(AudioBackend::Pactl) => {
-            let arg = format!("{percent}%");
-            run_status("pactl", &["set-sink-volume", "@DEFAULT_SINK@", &arg])
+            let plan = volume_pactl_set_plan(percent);
+            let args: Vec<&str> = plan[1..].iter().map(String::as_str).collect();
+            run_status(&plan[0], &args)
         }
         Some(AudioBackend::Wpctl) => {
-            let arg = format!("{:.2}", f64::from(percent) / 100.0);
-            run_status("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", &arg])
+            let plan = volume_wpctl_set_plan(percent);
+            let args: Vec<&str> = plan[1..].iter().map(String::as_str).collect();
+            run_status(&plan[0], &args)
         }
         None => Err(AudioError::ToolNotFound),
     }
@@ -198,5 +253,42 @@ mod tests {
             assert!(matches!(get_volume(), Err(AudioError::ToolNotFound)));
             assert!(matches!(set_volume(50), Err(AudioError::ToolNotFound)));
         }
+    }
+
+    #[test]
+    fn volume_set_plans_match_shipped_backends() {
+        let pactl = volume_pactl_set_plan(42);
+        assert_eq!(
+            pactl,
+            vec!["pactl", "set-sink-volume", "@DEFAULT_SINK@", "42%"]
+        );
+        assert_eq!(volume_pactl_set_plan(200).last().map(String::as_str), Some("100%"));
+
+        let wpctl = volume_wpctl_set_plan(50);
+        assert_eq!(
+            wpctl,
+            vec!["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "0.50"]
+        );
+        assert_eq!(volume_wpctl_set_plan(0).last().map(String::as_str), Some("0.00"));
+    }
+
+    #[test]
+    fn volume_get_plans_are_stable() {
+        assert_eq!(
+            volume_pactl_get_plan(),
+            vec!["pactl", "get-sink-volume", "@DEFAULT_SINK@"]
+        );
+        assert_eq!(
+            volume_wpctl_get_plan(),
+            vec!["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"]
+        );
+    }
+
+    #[test]
+    fn volume_status_label_pure() {
+        assert_eq!(volume_status_label(Some(75)), "🔊 75%");
+        assert_eq!(volume_status_label(Some(0)), "🔊 0%");
+        assert_eq!(volume_status_label(Some(150)), "🔊 100%");
+        assert_eq!(volume_status_label(None), "🔊 —");
     }
 }
