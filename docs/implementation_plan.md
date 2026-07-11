@@ -456,7 +456,7 @@ stay honest, and follow the critical path above.
 
 Real leaps landed (layer-shell **client** bind, foreign-toplevel-list **client** sync,
 DRM dumb-buffer **commit/page_flip**, nested layer compose, portal D-Bus).  
-**Overall daily-driver score under original methodology: ~52 / 100 — not ≥90.**  
+**Overall daily-driver score under original methodology: ~53 / 100 — not ≥90.**  
 Claiming 90 would be score theater; Plasma-replace remains far off.
 
 ### 13.2 Scorecard (same methodology as first ~32 baseline)
@@ -465,7 +465,7 @@ Claiming 90 would be score theater; Plasma-replace remains far off.
 |---|---:|---:|---|
 | First-party productivity apps | 72 | **78** | Same real I/O suite; Force Quit richer |
 | Toolkit / look & feel | 68 | **70** | Unchanged core; still no HiDPI tree |
-| Session login / packaging | 28 | **42** | Packaging + portal/FDO bus; greeter **NOT RUN** |
+| Session login / packaging | 28 | **48** | Packaging tree health-checked in-repo; portal/FDO/polkit bus; greeter cold-boot **NOT RUN** |
 | Own compositor as session WM | 35 | **58** | Nested layer compose + DRM present path (dumb commit/page_flip); not full KWin |
 | Multi-client window management | 40 | **55** | FTL client sync + decorations + process spawn; dual model remains |
 | Shell chrome architecture | 30 | **52** | **zwlr_layer_shell client** maps bar/dock when display live; kit paint still draws UI |
@@ -473,9 +473,9 @@ Claiming 90 would be score theater; Plasma-replace remains far off.
 | A11y / i18n | 18 | **20** | Minimal AT-SPI; non-goal polish |
 | Multi-monitor / HDR-VRR daily | 25 | **40** | Connector modeset plan; no KScreen UI; HDR policy-only nested |
 | Polish / packaging / CI | 30 | **48** | Host tests + Docker release image; no hardware CI seat |
-| **Overall (equal-weight mean)** | **~32** | **~52** | Mean of 10 domains ≈ 52.3 → **52**. **Below 90.** |
+| **Overall (equal-weight mean)** | **~32** | **~53** | Mean of 10 domains ≈ 52.9 → **53**. **Below 90.** |
 
-**Arithmetic:** (78+70+42+58+55+52+60+20+40+48)/10 = **52.3 → 52**.
+**Arithmetic:** (78+70+48+58+55+52+60+20+40+48)/10 = **52.9 → 53**.
 
 ### 13.3 What would be required for honest ≥90 under this methodology
 
