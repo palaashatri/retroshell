@@ -1162,6 +1162,65 @@ pub fn clip_scanout_element_to_output(
     Some((x0, y0, x1 - x0, y1 - y0))
 }
 
+/// Damage rectangle for partial present (pure).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DamageRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+impl DamageRect {
+    pub fn from_xywh(x: i32, y: i32, w: i32, h: i32) -> Option<Self> {
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        Some(Self { x, y, w, h })
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        let x0 = self.x.min(other.x);
+        let y0 = self.y.min(other.y);
+        let x1 = (self.x + self.w).max(other.x + other.w);
+        let y1 = (self.y + self.h).max(other.y + other.h);
+        Self {
+            x: x0,
+            y: y0,
+            w: x1 - x0,
+            h: y1 - y0,
+        }
+    }
+
+    pub fn area(self) -> i64 {
+        i64::from(self.w) * i64::from(self.h)
+    }
+}
+
+/// Pure: accumulate damage from dirty scanout elements into a single rect.
+pub fn accumulate_damage(elements: &[ScanoutElement], dirty_ids: &[&str]) -> Option<DamageRect> {
+    let mut acc: Option<DamageRect> = None;
+    for el in elements {
+        if !dirty_ids.iter().any(|id| *id == el.id) {
+            continue;
+        }
+        let Some(r) = DamageRect::from_xywh(el.x, el.y, el.w, el.h) else {
+            continue;
+        };
+        acc = Some(match acc {
+            None => r,
+            Some(a) => a.union(r),
+        });
+    }
+    acc
+}
+
+/// Whether a full redraw is cheaper than partial (heuristic).
+pub fn prefer_full_redraw(damage: DamageRect, output_w: i32, output_h: i32) -> bool {
+    let out = i64::from(output_w.max(1)) * i64::from(output_h.max(1));
+    damage.area() * 2 >= out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1720,6 +1779,36 @@ mod tests {
             TextInputCapability::InputMethodAndTextInput
         );
         assert!(text_input_capability_summary(TextInputCapability::TextInputV3).contains("v3"));
+    }
+
+    #[test]
+    fn accumulate_damage_and_full_redraw_heuristic() {
+        let els = vec![
+            ScanoutElement {
+                id: "a".into(),
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 100,
+                z: 0,
+            },
+            ScanoutElement {
+                id: "b".into(),
+                x: 200,
+                y: 200,
+                w: 50,
+                h: 50,
+                z: 1,
+            },
+        ];
+        let d = accumulate_damage(&els, &["a", "b"]).unwrap();
+        assert_eq!(d, DamageRect::from_xywh(0, 0, 250, 250).unwrap());
+        assert!(prefer_full_redraw(d, 300, 300));
+        assert!(!prefer_full_redraw(
+            DamageRect::from_xywh(0, 0, 10, 10).unwrap(),
+            1000,
+            1000
+        ));
     }
 
     #[test]

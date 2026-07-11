@@ -1,3 +1,4 @@
+pub mod a11y_prefs;
 pub mod application_registry;
 pub mod atspi_bus;
 pub mod audio;
@@ -12,6 +13,7 @@ pub mod layer_shell_client;
 pub mod keyboard_nav;
 pub mod launch_services;
 pub mod menu_server;
+pub mod mime_open;
 pub mod network_connect;
 pub mod network_manager;
 pub mod notification_center;
@@ -22,10 +24,15 @@ pub mod power;
 pub mod session_clients;
 pub mod session_manager;
 pub mod session_packaging;
+pub mod shell_scale;
 pub mod theme_manager;
 pub mod window_manager;
 pub mod workspace_manager;
 
+pub use a11y_prefs::{
+    apply_a11y_prefs_to_theme_name, effective_animation_ms, A11yPrefs, ContrastPreference,
+    MotionPreference,
+};
 pub use application_registry::ApplicationRegistry;
 pub use atspi_bus::{
     atspi_dbus_connection_available, chrome_focus_atspi_path, drain_in_process_events,
@@ -57,6 +64,10 @@ pub use layer_shell_client::{
 };
 pub use launch_services::LaunchServices;
 pub use menu_server::MenuServer;
+pub use mime_open::{
+    mime_from_path, open_plan, parse_desktop_exec, seed_retroshell_defaults, DesktopAppEntry,
+    MimeOpenRegistry, OpenPlan,
+};
 pub use network_connect::{
     nm_connect_plan, nm_connect_plan_validated, validate_nm_connect_request, NmConnectRequest,
 };
@@ -95,6 +106,10 @@ pub use session_manager::SessionManager;
 pub use session_packaging::{
     check_packaging_health, parse_desktop_keys, validate_session_desktop, PackagingHealth,
     SessionPackagingLayout,
+};
+pub use shell_scale::{
+    detect_shell_scale_from_env, parse_shell_scale, scale_layout_dim, scaled_chrome_insets,
+    ShellScale,
 };
 pub use theme_manager::ThemeManager;
 pub use window_manager::WindowManager;
@@ -179,7 +194,12 @@ impl RetroShell {
     pub fn startup() -> Result<Self> {
         let shell = Self::new();
         shell.launch_services.write().scan_applications();
-        shell.theme_manager.write().load_default();
+        {
+            let mut tm = shell.theme_manager.write();
+            tm.load_default();
+            // Load named theme + a11y prefs (high_contrast / reduced_motion) from settings.conf.
+            tm.load_theme_from_settings();
+        }
         // Best-effort FreeDesktop Notifications on the session bus (Linux).
         // Failure is non-fatal: pure NotificationCenter still works in-process.
         let _ = fdo_notifications::try_register_session_bus(shell.notification_center.clone());
@@ -460,20 +480,26 @@ impl ShellDesktop {
 
     fn content_bounds(&self) -> Rect {
         // Prefer protocol chrome exclusive zones (menu bar top / dock bottom).
+        // HiDPI: scale insets when RETROSHELL_OUTPUT_SCALE / SHELL_SCALE > 1.
+        let scale = detect_shell_scale_from_env();
         let menu_height = self
             .chrome
             .surfaces()
             .iter()
             .find(|s| s.role == ChromeRole::MenuBar && s.mapped)
-            .map(|s| s.height as f32)
+            .map(|s| s.height as f64)
             .unwrap_or(24.0);
         let dock_height = self
             .chrome
             .surfaces()
             .iter()
             .find(|s| s.role == ChromeRole::Dock && s.mapped)
-            .map(|s| s.height as f32)
+            .map(|s| s.height as f64)
             .unwrap_or(64.0);
+        let (menu_height, dock_height) =
+            scaled_chrome_insets(scale, menu_height, dock_height);
+        let menu_height = menu_height as f32;
+        let dock_height = dock_height as f32;
         Rect::new(
             self.rect().x,
             self.rect().y + menu_height,

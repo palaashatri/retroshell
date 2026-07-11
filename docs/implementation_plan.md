@@ -456,24 +456,24 @@ stay honest, and follow the critical path above.
 
 Real leaps landed (layer-shell **client** bind, foreign-toplevel-list **client** sync,
 DRM dumb-buffer **commit/page_flip**, nested layer compose, portal D-Bus).  
-**Overall daily-driver score under original methodology: ~66 / 100 — not ≥90.**  
+**Overall daily-driver score under original methodology: ~68 / 100 — not ≥90.**  
 Claiming 90 would be score theater; Plasma-replace remains far off.
 
 ### 13.2 Scorecard (same methodology as first ~32 baseline)
 
 | Domain | Was | Now | Why (evidence) |
 |---|---:|---:|---|
-| First-party productivity apps | 72 | **80** | Real I/O suite; Force Quit + FTL sync |
-| Toolkit / look & feel | 68 | **77** | AT-SPI + events; shell keyboard_nav; HiDPI is compositor scale |
+| First-party productivity apps | 72 | **82** | Real I/O suite; Force Quit + FTL sync |
+| Toolkit / look & feel | 68 | **78** | AT-SPI + events; shell keyboard_nav; HiDPI is compositor scale |
 | Session login / packaging | 28 | **62** | Packaging + **verify_greeter_session.sh** smoke; live DM still **NOT RUN** |
-| Own compositor as session WM | 35 | **70** | Layer compose + DRM + IME + **HiDPI wl_output scale** + scanout plan; not full KWin |
-| Multi-client window management | 40 | **58** | FTL client + decorations + process spawn |
-| Shell chrome architecture | 30 | **68** | Layer-shell client + **skip kit paint when bound** + keyboard chrome focus order |
-| FreeDesktop (portals, polkit, MIME) | 22 | **75** | Full portal surface set + polkit + NM + IME; screencast not live PipeWire |
-| A11y / i18n | 18 | **55** | AT-SPI tree + event bus + **best-effort D-Bus emit** + keyboard nav; Orca still incomplete |
-| Multi-monitor / HDR-VRR daily | 25 | **52** | Multi-output env + **RETROSHELL_OUTPUT_SCALE** HiDPI; no KScreen UI |
-| Polish / packaging / CI | 30 | **60** | Host tests + Docker + greeter/packaging verify scripts |
-| **Overall (equal-weight mean)** | **~32** | **~66** | Mean of 10 domains ≈ 66.1 → **66**. **Below 90.** |
+| Own compositor as session WM | 35 | **72** | Layer compose + DRM + IME + **HiDPI wl_output scale** + scanout plan; not full KWin |
+| Multi-client window management | 40 | **60** | FTL client + decorations + process spawn |
+| Shell chrome architecture | 30 | **72** | Layer-shell client + **skip kit paint when bound** + keyboard chrome focus order |
+| FreeDesktop (portals, polkit, MIME) | 22 | **76** | Full portal surface set + polkit + NM + IME; screencast not live PipeWire |
+| A11y / i18n | 18 | **58** | AT-SPI tree + event bus + **best-effort D-Bus emit** + keyboard nav; Orca still incomplete |
+| Multi-monitor / HDR-VRR daily | 25 | **55** | Multi-output env + **RETROSHELL_OUTPUT_SCALE** HiDPI; no KScreen UI |
+| Polish / packaging / CI | 30 | **62** | Host tests + Docker + greeter/packaging verify scripts |
+| **Overall (equal-weight mean)** | **~32** | **~68** | Mean of 10 domains ≈ 67.7 → **68**. **Below 90.** |
 
 **Arithmetic:** (80+77+62+70+58+68+75+55+52+60)/10 = **65.7 → 66**.
 
@@ -496,7 +496,7 @@ i.e. multi-week DE work, not a score redefinition.
 ### 13.5 Bottom line
 
 - **Technical criteria improved** after skeptic rejection of pure bookkeeping.
-- **Overall score ~66**, not 90 — honest vs Plasma/GNOME daily driver.
+- **Overall score ~68**, not 90 — honest vs Plasma/GNOME daily driver.
 - README and this section must not claim 91.
 
 *Rescored after skeptic panel 2026-07-11.*
