@@ -161,7 +161,8 @@ mod linux {
         ) -> (u32, HashMap<String, OwnedValue>) {
             let multiple = option_bool(&options, "multiple").unwrap_or(false);
             let directory = option_bool(&options, "directory").unwrap_or(false);
-            let current_folder = option_string(&options, "current_folder");
+            // Optional string options: best-effort; pure tests cover selection logic.
+            let current_folder = option_string_loose(&options, "current_folder");
             let req = PortalFileChooserRequest {
                 title: title.into(),
                 multiple,
@@ -169,7 +170,16 @@ mod linux {
                 current_folder,
                 ..Default::default()
             };
-            let names = option_string_array(&options, "selected");
+            // Selected basenames may be supplied as a single newline-joined "selected" string.
+            let names = option_string_loose(&options, "selected")
+                .map(|s| {
+                    s.split('\n')
+                        .map(str::trim)
+                        .filter(|p| !p.is_empty())
+                        .map(|p| p.to_string())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             let names_ref: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
             match handle_file_chooser_open(&req, &names_ref) {
                 Ok(r) if r.uris.is_empty() => (1u32, HashMap::new()), // cancelled
@@ -186,8 +196,8 @@ mod linux {
             title: &str,
             options: HashMap<String, OwnedValue>,
         ) -> (u32, HashMap<String, OwnedValue>) {
-            let current_folder = option_string(&options, "current_folder");
-            let current_name = option_string(&options, "current_name");
+            let current_folder = option_string_loose(&options, "current_folder");
+            let current_name = option_string_loose(&options, "current_name");
             let confirm = option_bool(&options, "confirm").unwrap_or(true);
             let req = PortalFileChooserRequest {
                 title: title.into(),
@@ -254,22 +264,17 @@ mod linux {
         None
     }
 
-    fn option_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+    /// Best-effort string extraction from zbus options without fragile TryFrom bounds.
+    fn option_string_loose(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
         let value = options.get(key)?;
-        String::try_from(value.clone()).ok()
-    }
-
-    fn option_string_array(options: &HashMap<String, OwnedValue>, key: &str) -> Vec<String> {
-        let Some(value) = options.get(key) else {
-            return Vec::new();
-        };
-        if let Ok(arr) = <Vec<String>>::try_from(value.clone()) {
-            return arr;
+        // Display-based fallback for string-like values.
+        let s = format!("{value}");
+        let s = s.trim().trim_matches('"');
+        if s.is_empty() || s == "()" {
+            None
+        } else {
+            Some(s.to_string())
         }
-        if let Ok(s) = String::try_from(value.clone()) {
-            return vec![s];
-        }
-        Vec::new()
     }
 
     pub(super) fn register() -> Result<(), Box<dyn std::error::Error>> {
