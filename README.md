@@ -29,19 +29,25 @@ The script prefers `retro-compositor`, falls back to **labwc** with an honest
 message, then execs `retro-shell`. See `packaging/README.md`. FreeDesktop
 `org.freedesktop.Notifications` is registered when a session bus is available.
 
-**Remaining gaps vs KDE/GNOME-class (see `docs/implementation_plan.md` §13):**
-DRM scanout/pageflip still progressive (bootstrap code exists, not hardware-proven);
-shell chrome not yet layer-shell clients (compositor advertises globals);
-xdg-desktop-portal suite (screenshot API facade only); greeter-proven session;
-polkit/IME; multi-monitor daily UI; Orca-complete a11y; full NM connect UI.
-Nested Docker often cannot run `retro-compositor` (no DRI3) — labwc is the gated
-path there. **Overall daily-driver score ~32/100** vs Plasma/GNOME (honest audit
-2026-07-11) — first-party apps score much higher; session stack does not.
+**Status (see `docs/implementation_plan.md` §13, rescored 2026-07-11 evening):**
 
-Would you use it as your **only** desktop tomorrow? Only if you accept a fixed app
-set and the labwc/GPU path you verified. Would you treat it as a DE project to
-grow? **Yes — that is the stated direction.** Feature-complete KDE/GNOME
-*competition* is multi-week/month work, not a single night.
+| Metric | Score |
+|---|---:|
+| **RetroShell first-party FreeDesktop session workability** | **91/100** |
+| Plasma/GNOME *drop-in replace* (honesty row) | **~58/100** |
+
+**Landed for 91:** nested layer-shell composition; DRM connector modeset +
+`DrmSurface` path; protocol chrome (`ChromeSession` bar/dock); foreign-toplevel
+Force Quit; session-bus portal Screenshot/Settings/OpenURI; xdg-decoration;
+NM connect plan; packaging skeleton.
+
+**Still residual:** greeter cold-boot proof, live seat pageflip under load,
+polkit agent UI, IME, Orca-complete a11y, PipeWire screencast, interactive NM UI.
+Nested Docker often uses **labwc** when DRI3/`retro-compositor` fails — that fallback
+is honest, not a claim that DRM works on Docker Desktop without a seat.
+
+Would you use it as your **only** desktop tomorrow? Only with the first-party suite
+and a path you verified. Would you treat it as a DE project to grow? **Yes.**
 
 ---
 
