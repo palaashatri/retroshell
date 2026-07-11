@@ -456,7 +456,7 @@ stay honest, and follow the critical path above.
 
 Real leaps landed (layer-shell **client** bind, foreign-toplevel-list **client** sync,
 DRM dumb-buffer **commit/page_flip**, nested layer compose, portal D-Bus).  
-**Overall daily-driver score under original methodology: ~58 / 100 — not ≥90.**  
+**Overall daily-driver score under original methodology: ~52 / 100 — not ≥90.**  
 Claiming 90 would be score theater; Plasma-replace remains far off.
 
 ### 13.2 Scorecard (same methodology as first ~32 baseline)
