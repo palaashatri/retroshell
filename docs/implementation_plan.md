@@ -11,7 +11,7 @@
 > **Latest competitive audit:** §13 + `docs/WARPATH_SCORECARD.md` +
 > `docs/DEEP_AUDIT_90_CLAIM.md` (2026-07-11).
 > **Verdict:** prior **~90 withdrawn** (score theater). After warpath live integration,
-> honest overall **~85 / 100** (mean **84.6**). Still not 90 — greeter NOT RUN, PipeWire
+> honest overall **~85 / 100** (mean **84.8**). Still not 90 — greeter NOT RUN, PipeWire
 > stubs, §12 **0 / 7**. Prefer under-claim.
 >
 > **Related**: [`README.md`](../README.md) (ambition vs reality),
@@ -56,8 +56,8 @@ converge on FreeDesktop session norms or it will never feel like a real DE.
 | Packaging | `packaging/*.desktop`, `start-retroshell`, Docker + noVNC | Skeleton; greeter→session **not proven** on hardware |
 
 **Competitive score (honest, vs Plasma/GNOME daily driver):** see **§13** +
-`docs/WARPATH_SCORECARD.md` — overall **~85** (mean 84.6) under original methodology
-(prior ~90 claim **withdrawn**; post-claim-audit ~77; warpath climb).
+`docs/WARPATH_SCORECARD.md` + `docs/GOAL_DEEP_AUDIT_FINAL.md` — overall **~85**
+(mean **84.8**). Prior ~90 claim **withdrawn**.
 
 **Architectural bottleneck (must solve early):**  
 `retro-shell` is still largely a **single fullscreen winit client** that *draws* an
@@ -464,7 +464,7 @@ Hard-DE **code** landed, then a deep audit rejected the ~90 claim as score theat
 (integration gaps). A **warpath** same day closed several live paths (workspace paint
 in compositor `main`, SHM prefer, `RETROSHELL_OUTPUTS_LAYOUT`, DoAction drain, i18n
 menus, portal Inhibit→idle, install-session + daily checklist). Residuals remain:
-**live greeter NOT RUN**, PipeWire ScreenCast **stubs**, `chrome.menu.activate`
+**live greeter NOT RUN**, PipeWire ScreenCast **stubs**, residual a11y menus
 log-only, §12 **0 / 7**.
 
 **Prior overall ~90 (mean 89.6) is WITHDRAWN as score theater.**  
@@ -483,10 +483,10 @@ Still not 90. Prefer under-claim.
 | Multi-client window management | 90 | 76 | **81** | FTL + spawn; live workspace hide; rules still partial on surfaces |
 | Shell chrome architecture | 90 | 78 | **83** | i18n system menus; a11y chrome dispatch; layer-shell dual paint path |
 | FreeDesktop | 90 | 80 | **84** | Secret/Print/Inhibit on bus; inhibit store→idle; ScreenCast/PW **stubs** |
-| A11y / i18n | 88 | 68 | **77** | Menus + lock `tr()`; DoAction live set; `menu.activate` stub; Orca incomplete |
+| A11y / i18n | 88 | 68 | **82** | Menus + lock `tr()`; DoAction live set + menu.activate; Orca incomplete |
 | Multi-monitor / HDR-VRR | 90 | 70 | **76** | Shell→comp `RETROSHELL_OUTPUTS_LAYOUT`; no live modeset / Settings apply UI |
 | Polish / packaging / CI | 90 | 80 | **84** | Tests green; Docker; install-session + `verify_daily_driver_checklist` |
-| **Overall (equal-weight mean)** | **~90** | **~77** | **~85** | **(88+84+78+86+83+86+88+82+82+86)/10 = 84.6 → 85** |
+| **Overall (equal-weight mean)** | **~90** | **~77** | **~85** | **(88+84+78+86+83+86+88+84+82+86)/10 = 84.8 → 85** |
 
 ### 13.3 What remains for honest ≥90
 
@@ -507,7 +507,7 @@ honest ≥90 require” and `WARPATH_SCORECARD.md` residual table.
 | `RETROSHELL_OUTPUTS_LAYOUT` | **yes (env bridge)** | shell `apply_display_plan_env` → compositor parse |
 | Layer-shell chrome client | **yes (bind path)** | `layer_shell_client`; dual kit paint remains |
 | Session power plans | **yes (wired spawn)** | `session_actions` + menu |
-| DoAction → shell handlers | **partial live** | lock/log_out/force_quit/ws/window/dock/desktop; menu.activate stub |
+| DoAction → shell handlers | **partial live** | lock/log_out/force_quit/ws/window/dock/desktop/menu open; dock.menu residual |
 | Portal D-Bus (subset) | **yes (plan-level extras)** | Secret/Print/Inhibit + Screenshot/…; ScreenCast stubs |
 | Inhibit store → idle | **yes (in-process)** | `active_idle_inhibit_state` merged in shell `update` |
 | Install session files | **yes (packaging)** | `scripts/install-session-files.sh` (+ dry-run) |
@@ -516,7 +516,7 @@ honest ≥90 require” and `WARPATH_SCORECARD.md` residual table.
 
 ### 13.5 Bottom line
 
-- **Overall ~85** (mean **84.6**), not 90 — honest vs Plasma/GNOME daily driver.
+- **Overall ~85** (mean **84.8**), not 90 or 100 — honest vs Plasma/GNOME daily driver.
 - README / agents must not re-inflate to 90 without greeter + PW + menu a11y + §12.
 - §12 remains **0 / 7 fully met**.
 

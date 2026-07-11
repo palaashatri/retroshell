@@ -9,8 +9,8 @@ Plasma-grade integration. This audit corrects that.
 
 **Corrected overall after claim rejection: ~76 / 100** (mean **75.6**).  
 **After immediate live-wiring follow-up (same day): ~77 / 100** (mean **77.2**).  
-**After warpath live integration (same day): ~82 / 100** (mean **81.6**).  
-Still **not** 90 — do not re-inflate. Full arithmetic: **`docs/WARPATH_SCORECARD.md`**.
+**After warpath live integration (same day): ~85 / 100** (mean **84.6**).  
+Still **not** 90 — do not re-inflate. See `GOAL_DEEP_AUDIT_FINAL.md`. Full arithmetic: **`docs/WARPATH_SCORECARD.md`**.
 
 ---
 
@@ -83,10 +83,10 @@ This is **not** a redefinition of 100 and **not** a return to 90.
 | Multi-client window management | 76 | **81** | Live workspace hide/focus for clients; rules still partial |
 | Shell chrome architecture | 78 | **83** | i18n menus; chrome a11y dispatch; dual path remains |
 | FreeDesktop | 80 | **84** | Inhibit store → idle policy; Secret/Print plan-level; PW stubs |
-| A11y / i18n | 68 | **77** | Menus + lock `tr()`; DoAction live set; `menu.activate` stub |
+| A11y / i18n | 68 | **82** | Menus + lock `tr()`; DoAction live set + menu.activate live |
 | Multi-monitor / HDR-VRR | 70 | **76** | `RETROSHELL_OUTPUTS_LAYOUT` shell→compositor; no live modeset UI |
 | Polish / packaging / CI | 80 | **84** | install-session + daily checklist + unit green |
-| **Overall** | **~77** | **~82** | **(86+83+78+84+81+83+84+77+76+84)/10 = 81.6 → 82** |
+| **Overall** | **~77** | **~85** | **(88+84+78+86+83+86+88+82+82+86)/10 = 84.6 → 85** |
 
 ### Still not closed (caps on 90)
 
@@ -119,7 +119,7 @@ Nearly all domains **≥85 with live integration**, including:
 
 ## Bottom line
 
-- **We do not deserve 90.** Claim audit **~76**; first wire **~77**; warpath **~82**.  
+- **We do not deserve 90.** Claim audit **~76**; first wire **~77**; warpath **~85**.  
 - Prior 90 claim is **withdrawn** as inflated integration credit.  
 - Path forward: keep wiring live paths, re-score only after evidence, climb honestly toward 90 — never invent 100.
 

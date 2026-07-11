@@ -79,19 +79,19 @@ Checklist re-run this rescore:
 | 5 | Multi-client window management | 76 | **83** | +7 | Live workspace + MIME-spawned clients |
 | 6 | Shell chrome architecture | 78 | **86** | +8 | i18n; a11y menu open; status refresh (bat/net/vol) |
 | 7 | FreeDesktop | 80 | **88** | +8 | OpenURI file://; nmcli connect plan; Inhibit→idle; **PW stubs** |
-| 8 | A11y / i18n | 68 | **82** | +14 | DoAction live set + menu.activate; Orca still incomplete |
+| 8 | A11y / i18n | 68 | **84** | +16 | DoAction + menu/dock/desktop menus live; Orca still incomplete |
 | 9 | Multi-monitor / HDR-VRR | 70 | **82** | +12 | Settings arrange UI + conf + env; compositor parse layout |
-| 10 | Polish / packaging / CI | 80 | **86** | +6 | Checklist + 288 shell tests + settings tests |
-| | **Sum** | 772 | **846** | +74 | |
-| | **Mean** | 77.2 | **84.6** | +7.4 | |
+| 10 | Polish / packaging / CI | 80 | **86** | +6 | Checklist + session_entry_smoke_report; 292 shell tests |
+| | **Sum** | 772 | **848** | +76 | |
+| | **Mean** | 77.2 | **84.8** | +7.6 | |
 | | **Overall** | **~77** | **~85** | | |
 
 ### Arithmetic (explicit)
 
 ```text
-88 + 84 + 78 + 86 + 83 + 86 + 88 + 82 + 82 + 86
-  = 846
-846 / 10 = 84.6
+88 + 84 + 78 + 86 + 83 + 86 + 88 + 84 + 82 + 86
+  = 848
+848 / 10 = 84.8
 round → 85   ⇒  overall ~85 / 100
 ```
 
@@ -122,7 +122,7 @@ round → 85   ⇒  overall ~85 / 100
 
 ## Bottom line
 
-**Warpath overall: ~82 / 100 (mean 81.6).**  
+**Warpath overall: ~85 / 100 (mean 84.6).**  
 Climb was real (+4–5 pts from ~77) via **live wiring**, not policy theater.  
 Would you replace Plasma for a week? **Still no.**
 

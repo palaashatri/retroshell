@@ -34,7 +34,7 @@ message, then execs `retro-shell`. See `packaging/README.md`. FreeDesktop
 
 | Metric | Score |
 |---|---:|
-| **Overall daily-driver (original methodology)** | **~85/100** (mean 84.6; warpath ongoing) |
+| **Overall daily-driver (original methodology)** | **~85/100** (mean 84.8; 90/100 not claimed) |
 | Prior “91 criteria-weighted” and “~90 hard-DE” claims | **withdrawn** (score theater) |
 | Post-claim-audit (pre-warpath) | ~77 (mean 77.2) |
 
@@ -51,7 +51,7 @@ daily-driver checklist (packaging).
 bridge not live modeset; window rules partial on real surfaces; §12 **0/7**;
 placeholder rects still possible without committed buffers.
 
-Would you replace Plasma for a week? **No.** Honest score **~82**, not 90.
+Would you replace Plasma for a week? **No.** Honest score **~85**, not 90.
 
 ---
 
