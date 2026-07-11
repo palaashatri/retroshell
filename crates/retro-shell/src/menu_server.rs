@@ -233,6 +233,9 @@ impl MenuServer {
                 },
             );
         file_menu
+            .add_action("Portal Screenshot")
+            .with_action("shell.portal_screenshot");
+        file_menu
             .add_action("Start Screen Recording")
             .with_action("shell.start_recording");
         file_menu

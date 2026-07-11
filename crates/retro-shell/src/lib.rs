@@ -8,6 +8,7 @@ pub mod launch_services;
 pub mod menu_server;
 pub mod network_manager;
 pub mod notification_center;
+pub mod portal;
 pub mod power;
 pub mod session_clients;
 pub mod session_manager;
@@ -29,6 +30,10 @@ pub use fdo_notifications::{
     FDO_NOTIFICATIONS_BUS_NAME, FDO_NOTIFICATIONS_INTERFACE, FDO_NOTIFICATIONS_PATH,
 };
 pub use notification_center::{NotificationCenter, NotificationPriority};
+pub use portal::{
+    portal_screenshot_filename, take_portal_style_screenshot, take_portal_style_screenshot_with,
+    PortalScreenshotRequest, PortalScreenshotResult,
+};
 pub use power::{battery_info, BatteryInfo};
 pub use session_clients::{
     binary_name_for_bundle, parse_force_quit_entry, resolve_app_binary, spawn_app_client,
@@ -926,24 +931,33 @@ impl ShellDesktop {
                 "Print",
                 ["Printing is not connected to a system print service yet.".to_string()],
             ),
-            "shell.screenshot" => match capture::take_screenshot() {
-                Ok(path) => {
-                    self.record_notification(
-                        "com.retro.shell",
-                        "Screenshot Saved",
-                        &format!("Saved to {}", path.display()),
-                        NotificationPriority::Normal,
-                    );
+            "shell.screenshot" | "shell.portal_screenshot" => {
+                // shell.portal_screenshot is the FreeDesktop portal-facing path;
+                // until xdg-desktop-portal is wired it uses the same local capture.
+                let result = if action == "shell.portal_screenshot" {
+                    portal::take_portal_style_screenshot()
+                } else {
+                    capture::take_screenshot()
+                };
+                match result {
+                    Ok(path) => {
+                        self.record_notification(
+                            "com.retro.shell",
+                            "Screenshot Saved",
+                            &format!("Saved to {}", path.display()),
+                            NotificationPriority::Normal,
+                        );
+                    }
+                    Err(err) => {
+                        self.record_notification(
+                            "com.retro.shell",
+                            "Screenshot Failed",
+                            &err.to_string(),
+                            NotificationPriority::High,
+                        );
+                    }
                 }
-                Err(err) => {
-                    self.record_notification(
-                        "com.retro.shell",
-                        "Screenshot Failed",
-                        &err.to_string(),
-                        NotificationPriority::High,
-                    );
-                }
-            },
+            }
             "shell.start_recording" => match capture::start_recording() {
                 Ok(path) => {
                     self.record_notification(

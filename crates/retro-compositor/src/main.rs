@@ -59,7 +59,8 @@ mod linux {
             },
             x11::{WindowBuilder, X11Backend, X11Event, X11Input, X11Surface},
         },
-        delegate_compositor, delegate_output, delegate_seat, delegate_shm, delegate_xdg_shell,
+        delegate_compositor, delegate_foreign_toplevel_list, delegate_layer_shell, delegate_output,
+        delegate_seat, delegate_shm, delegate_xdg_shell,
         input::{
             keyboard::{FilterResult, XkbConfig},
             pointer::{ButtonEvent, CursorImageStatus, MotionEvent},
@@ -79,7 +80,12 @@ mod linux {
         },
         wayland::{
             buffer::BufferHandler,
-            compositor::{CompositorClientState, CompositorHandler, CompositorState},
+            compositor::{
+                with_states, CompositorClientState, CompositorHandler, CompositorState,
+            },
+            foreign_toplevel_list::{
+                ForeignToplevelHandle, ForeignToplevelListHandler, ForeignToplevelListState,
+            },
             output::{OutputHandler, OutputManagerState},
             selection::{
                 data_device::{
@@ -91,8 +97,12 @@ mod linux {
                 },
                 SelectionHandler, SelectionSource, SelectionTarget,
             },
+            shell::wlr_layer::{
+                Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState,
+            },
             shell::xdg::{
                 PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+                XdgToplevelSurfaceData,
             },
             shm::{ShmHandler, ShmState},
             socket::ListeningSocketSource,
@@ -150,10 +160,20 @@ mod linux {
     #[derive(Clone)]
     struct MappedWindow {
         toplevel: ToplevelSurface,
+        /// Foreign-toplevel-list handle for task list / Force Quit / overview.
+        foreign: ForeignToplevelHandle,
         /// Top-left position in logical compositor space
         position: Point<i32, Logical>,
         /// Last committed size (logical pixels)
         size: Size<i32, Logical>,
+    }
+
+    struct MappedLayer {
+        surface: LayerSurface,
+        #[allow(dead_code)]
+        layer: Layer,
+        #[allow(dead_code)]
+        namespace: String,
     }
 
     impl MappedWindow {
@@ -181,6 +201,8 @@ mod linux {
         primary_selection_state: PrimarySelectionState,
         _output_manager_state: OutputManagerState,
         xwayland_shell_state: XWaylandShellState,
+        layer_shell_state: WlrLayerShellState,
+        foreign_toplevel_list: ForeignToplevelListState,
 
         seat: Seat<RetroCompositor>,
         /// Registered wl_output objects (one or more; multi-output via RETROSHELL_OUTPUTS).
@@ -191,6 +213,8 @@ mod linux {
 
         // Mapped windows (in painting order, bottom → top)
         windows: Vec<MappedWindow>,
+        // Layer-shell chrome (menu bar, dock, notifications, …)
+        layer_surfaces: Vec<MappedLayer>,
         // Counter for cascading new window placement
         next_window_offset: i32,
         // Current pointer position (logical)
@@ -712,13 +736,33 @@ mod linux {
             self.next_window_offset = next_cascade_offset(offset);
             let position = Point::from(cascade_position(offset));
 
+            let (title, app_id) = with_states(surface.wl_surface(), |states| {
+                let data = states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .map(|d| d.lock().unwrap());
+                let title = data
+                    .as_ref()
+                    .and_then(|d| d.title.clone())
+                    .unwrap_or_else(|| "Untitled".into());
+                let app_id = data
+                    .as_ref()
+                    .and_then(|d| d.app_id.clone())
+                    .unwrap_or_else(|| "retroshell.app".into());
+                (title, app_id)
+            });
+            let foreign = self
+                .foreign_toplevel_list
+                .new_toplevel::<RetroCompositor>(&title, &app_id);
+
             eprintln!(
-                "[retro-compositor] surface mapped at ({},{})",
+                "[retro-compositor] surface mapped at ({},{}) title={title}",
                 position.x, position.y
             );
 
             self.windows.push(MappedWindow {
                 toplevel: surface,
+                foreign,
                 position,
                 size: Size::from((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)),
             });
@@ -729,7 +773,14 @@ mod linux {
         }
 
         fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-            self.windows.retain(|w| w.toplevel.wl_surface() != surface.wl_surface());
+            if let Some(idx) = self
+                .windows
+                .iter()
+                .position(|w| w.toplevel.wl_surface() == surface.wl_surface())
+            {
+                let win = self.windows.remove(idx);
+                win.foreign.send_closed();
+            }
             // Move focus to the topmost remaining window, if any
             if let Some(top) = self.windows.last() {
                 let surf = top.toplevel.wl_surface().clone();
@@ -748,6 +799,42 @@ mod linux {
             }
         }
 
+        fn title_changed(&mut self, surface: ToplevelSurface) {
+            let title = with_states(surface.wl_surface(), |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .and_then(|d| d.lock().unwrap().title.clone())
+                    .unwrap_or_default()
+            });
+            if let Some(w) = self
+                .windows
+                .iter()
+                .find(|w| w.toplevel.wl_surface() == surface.wl_surface())
+            {
+                w.foreign.send_title(&title);
+                w.foreign.send_done();
+            }
+        }
+
+        fn app_id_changed(&mut self, surface: ToplevelSurface) {
+            let app_id = with_states(surface.wl_surface(), |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .and_then(|d| d.lock().unwrap().app_id.clone())
+                    .unwrap_or_default()
+            });
+            if let Some(w) = self
+                .windows
+                .iter()
+                .find(|w| w.toplevel.wl_surface() == surface.wl_surface())
+            {
+                w.foreign.send_app_id(&app_id);
+                w.foreign.send_done();
+            }
+        }
+
         fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
 
         fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: WlSerial) {}
@@ -762,6 +849,57 @@ mod linux {
     }
 
     delegate_xdg_shell!(RetroCompositor);
+
+    // -----------------------------------------------------------------------
+    // Layer shell (menu bar / dock / notifications chrome)
+    // -----------------------------------------------------------------------
+
+    impl WlrLayerShellHandler for RetroCompositor {
+        fn shell_state(&mut self) -> &mut WlrLayerShellState {
+            &mut self.layer_shell_state
+        }
+
+        fn new_layer_surface(
+            &mut self,
+            surface: LayerSurface,
+            _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+            layer: Layer,
+            namespace: String,
+        ) {
+            eprintln!(
+                "[retro-compositor] layer-shell surface namespace={namespace} layer={layer:?}"
+            );
+            let size = self.output_size;
+            surface.with_pending_state(|state| {
+                state.size = Some(Size::from((size.w, size.h)));
+            });
+            surface.send_configure();
+            self.layer_surfaces.push(MappedLayer {
+                surface,
+                layer,
+                namespace,
+            });
+        }
+
+        fn layer_destroyed(&mut self, surface: LayerSurface) {
+            self.layer_surfaces
+                .retain(|l| l.surface.wl_surface() != surface.wl_surface());
+        }
+    }
+
+    delegate_layer_shell!(RetroCompositor);
+
+    // -----------------------------------------------------------------------
+    // Foreign toplevel list (task list / overview / Force Quit)
+    // -----------------------------------------------------------------------
+
+    impl ForeignToplevelListHandler for RetroCompositor {
+        fn foreign_toplevel_list_state(&mut self) -> &mut ForeignToplevelListState {
+            &mut self.foreign_toplevel_list
+        }
+    }
+
+    delegate_foreign_toplevel_list!(RetroCompositor);
 
     // -----------------------------------------------------------------------
     // OutputHandler (required by delegate_output!)
@@ -1199,12 +1337,27 @@ mod linux {
             );
         }
         if matches!(backend_kind, CompositorBackendKind::SessionDrm) {
-            tracing::warn!(
-                "SessionDrm selected by policy; this build still uses nested X11 backend code path until DRM backend lands — running NestedX11 with honest log"
-            );
-            eprintln!(
-                "[retro-compositor] NOTE: SessionDrm preferred but runtime is NestedX11 until DRM backend ships"
-            );
+            if retro_compositor::session_drm::drm_session_available() {
+                match retro_compositor::session_drm::run_drm_session() {
+                    Ok(()) => return Ok(()),
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "SessionDrm path failed; falling back to NestedX11"
+                        );
+                        eprintln!(
+                            "[retro-compositor] SessionDrm failed ({err:#}); falling back to NestedX11"
+                        );
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    "SessionDrm selected by policy but no /dev/dri nodes; falling back to NestedX11"
+                );
+                eprintln!(
+                    "[retro-compositor] SessionDrm preferred but /dev/dri unavailable — NestedX11 fallback"
+                );
+            }
         }
 
         // ---- Display policy (HDR / VRR / refresh / color) ----
@@ -1245,6 +1398,9 @@ mod linux {
         let output_manager_state =
             OutputManagerState::new_with_xdg_output::<RetroCompositor>(&display_handle);
         let xwayland_shell_state = XWaylandShellState::new::<RetroCompositor>(&display_handle);
+        let layer_shell_state = WlrLayerShellState::new::<RetroCompositor>(&display_handle);
+        let foreign_toplevel_list =
+            ForeignToplevelListState::new::<RetroCompositor>(&display_handle);
 
         // Seat: keyboard + pointer
         let mut seat: Seat<RetroCompositor> =
@@ -1370,10 +1526,13 @@ mod linux {
             primary_selection_state,
             _output_manager_state: output_manager_state,
             xwayland_shell_state,
+            layer_shell_state,
+            foreign_toplevel_list,
             seat,
             outputs,
             running: true,
             windows: Vec::new(),
+            layer_surfaces: Vec::new(),
             next_window_offset: 0,
             pointer_pos: Point::from((0.0_f64, 0.0_f64)),
             output_size,

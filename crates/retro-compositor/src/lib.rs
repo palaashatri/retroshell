@@ -3,6 +3,10 @@
 pub mod frame_timing;
 pub mod hdr;
 
+/// DRM/KMS + libseat session path (Linux only). Nested X11 lives in the binary.
+#[cfg(target_os = "linux")]
+pub mod session_drm;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -91,6 +95,153 @@ pub const INITIAL_WINDOW_X: i32 = 64;
 pub const INITIAL_WINDOW_Y: i32 = 64;
 pub const CASCADE_STEP: i32 = 32;
 pub const CASCADE_WRAP: i32 = 256;
+
+/// A discovered DRM render/primary node path (session DRM path).
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct DrmNodePath {
+    pub path: PathBuf,
+    /// True if filename looks like `cardN` (modesetting primary).
+    pub is_primary: bool,
+}
+
+/// Discover DRM device nodes under `/dev/dri`.
+///
+/// Pure filesystem scan — works without opening DRM (host-safe unit tests can
+/// pass synthetic directory listings via [`discover_drm_nodes_from_names`]).
+pub fn discover_drm_nodes() -> Vec<DrmNodePath> {
+    let dir = Path::new("/dev/dri");
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for entry in rd.flatten() {
+        if let Some(name) = entry.file_name().to_str() {
+            names.push(name.to_string());
+        }
+    }
+    discover_drm_nodes_from_names(dir, &names)
+}
+
+/// Pure form of DRM node discovery from a directory path + file names.
+pub fn discover_drm_nodes_from_names(dir: &Path, names: &[String]) -> Vec<DrmNodePath> {
+    let mut out = Vec::new();
+    for name in names {
+        if name.starts_with("card") || name.starts_with("renderD") {
+            out.push(DrmNodePath {
+                path: dir.join(name),
+                is_primary: name.starts_with("card"),
+            });
+        }
+    }
+    // Prefer primary cards first for session bootstrap.
+    out.sort_by_key(|n| (!n.is_primary, n.path.clone()));
+    out
+}
+
+/// Pick the preferred DRM primary node for session bootstrap.
+pub fn preferred_primary_drm_node(nodes: &[DrmNodePath]) -> Option<&DrmNodePath> {
+    nodes.iter().find(|n| n.is_primary).or_else(|| nodes.first())
+}
+
+/// Layer-shell role labels used by shell chrome (bar/dock/notifications).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum ChromeLayer {
+    Background,
+    Bottom,
+    Top,
+    Overlay,
+}
+
+impl ChromeLayer {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Background => "background",
+            Self::Bottom => "bottom",
+            Self::Top => "top",
+            Self::Overlay => "overlay",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "background" => Some(Self::Background),
+            "bottom" => Some(Self::Bottom),
+            "top" => Some(Self::Top),
+            "overlay" => Some(Self::Overlay),
+            _ => None,
+        }
+    }
+
+    /// z-order key for sorting chrome layers (higher draws above).
+    pub fn z_priority(self) -> u8 {
+        match self {
+            Self::Background => 0,
+            Self::Bottom => 1,
+            Self::Top => 2,
+            Self::Overlay => 3,
+        }
+    }
+}
+
+/// Policy for a layer-shell chrome surface (menu bar, dock, etc.).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LayerChromeSpec {
+    pub name: String,
+    pub layer: ChromeLayer,
+    pub exclusive_zone: i32,
+    pub anchor_top: bool,
+    pub anchor_bottom: bool,
+    pub anchor_left: bool,
+    pub anchor_right: bool,
+}
+
+impl LayerChromeSpec {
+    pub fn menu_bar(height: i32) -> Self {
+        Self {
+            name: "menu-bar".into(),
+            layer: ChromeLayer::Top,
+            exclusive_zone: height,
+            anchor_top: true,
+            anchor_bottom: false,
+            anchor_left: true,
+            anchor_right: true,
+        }
+    }
+
+    pub fn dock(height: i32) -> Self {
+        Self {
+            name: "dock".into(),
+            layer: ChromeLayer::Top,
+            exclusive_zone: height,
+            anchor_top: false,
+            anchor_bottom: true,
+            anchor_left: true,
+            anchor_right: true,
+        }
+    }
+
+    pub fn notification_overlay() -> Self {
+        Self {
+            name: "notifications".into(),
+            layer: ChromeLayer::Overlay,
+            exclusive_zone: 0,
+            anchor_top: true,
+            anchor_bottom: false,
+            anchor_left: false,
+            anchor_right: true,
+        }
+    }
+}
+
+/// Sort chrome specs by layer priority then name (stable layout order).
+pub fn sort_chrome_layers(specs: &mut [LayerChromeSpec]) {
+    specs.sort_by(|a, b| {
+        a.layer
+            .z_priority()
+            .cmp(&b.layer.z_priority())
+            .then_with(|| a.name.cmp(&b.name))
+    });
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OutputConfig {
@@ -842,5 +993,39 @@ mod tests {
         let labwc = session_mode_summary(CompositorBackendKind::LabwcFallback);
         assert!(labwc.contains("labwc"));
         assert!(labwc.contains("fallback") || labwc.contains("not retro-compositor"));
+    }
+
+    #[test]
+    fn discover_drm_nodes_from_names_orders_primary_first() {
+        let names = vec![
+            "renderD128".into(),
+            "card1".into(),
+            "card0".into(),
+            "controlD64".into(),
+        ];
+        let nodes = discover_drm_nodes_from_names(Path::new("/dev/dri"), &names);
+        assert_eq!(nodes.len(), 3); // controlD ignored
+        assert!(nodes[0].is_primary);
+        assert!(nodes[0].path.ends_with("card0") || nodes[0].path.ends_with("card1"));
+        assert!(nodes.iter().any(|n| n.path.ends_with("renderD128")));
+        assert_eq!(
+            preferred_primary_drm_node(&nodes).map(|n| n.is_primary),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn chrome_layer_specs_sort_and_parse() {
+        assert_eq!(ChromeLayer::from_str_loose("TOP"), Some(ChromeLayer::Top));
+        let mut specs = vec![
+            LayerChromeSpec::notification_overlay(),
+            LayerChromeSpec::dock(48),
+            LayerChromeSpec::menu_bar(28),
+        ];
+        sort_chrome_layers(&mut specs);
+        assert_eq!(specs[0].name, "dock");
+        assert_eq!(specs[1].name, "menu-bar");
+        assert_eq!(specs[2].name, "notifications");
+        assert!(specs[2].layer.z_priority() > specs[0].layer.z_priority());
     }
 }

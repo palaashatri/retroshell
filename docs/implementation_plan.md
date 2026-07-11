@@ -8,6 +8,10 @@
 > **Positioning**: Ambition is real. Full parity is multi-year. This document is the
 > sequence of work that *actually gets there*, not marketing.
 >
+> **Latest competitive audit:** §13 (2026-07-11 evening). **Verdict:** strong first-party
+> suite + advancing compositor/session scaffolding; **not** KDE/GNOME daily-driver
+> competition tonight. See scores and blockers there.
+>
 > **Related**: [`README.md`](../README.md) (ambition vs reality),
 > [`ARCHITECTURE.md`](ARCHITECTURE.md), [`audit_2026-07-09.md`](audit_2026-07-09.md),
 > [`FULL_AUDIT_2026-07-11.md`](FULL_AUDIT_2026-07-11.md).
@@ -36,17 +40,19 @@ converge on FreeDesktop session norms or it will never feel like a real DE.
 
 ---
 
-## 2. Where we are today (baseline, 2026-07)
+## 2. Where we are today (baseline, 2026-07-11)
 
 | Layer | Status | Gap vs DE-class |
 |---|---|---|
 | Toolkit (`retro-kit` / `retro-render` / `retro-sdk`) | Strong: widgets, wgpu, themes, menus | No scale-factor tree; limited a11y roles |
 | First-party apps | Real I/O (Finder, Terminal, TextEdit, Settings, App Store) | Not all FreeDesktop portals; limited third-party |
-| Shell chrome | Dock, menu bar, workspaces, notifications, password lock | Many “windows” still **paint-rects** inside one shell surface |
-| Multi-client apps | `SessionClientRegistry` + spawn as processes under labwc/compositor | Shell does not yet *own* foreign surfaces; chrome dual-model |
-| Compositor (`retro-compositor`) | Smithay nested-X11; selection send; multi-output env; XWayland path; HDR/VRR **policy** | Not DRM/KMS session; DRI3 fails under nested Docker; incomplete decoration/focus UX |
-| System integration | NM status, volume CLI, UPower/`sys`, capture, AT-SPI export | No full connect UI, mixer, portals, greeter |
-| Packaging | Docker + noVNC lab path | No distro session packages, no DM integration |
+| Shell chrome | Dock, menu bar, workspaces, notifications, password lock | Many “windows” still **paint-rects** inside one shell surface; **not** layer-shell clients |
+| Multi-client apps | `SessionClientRegistry` + spawn as processes under labwc/compositor | Shell does not *own* foreign surfaces; Force Quit uses PID registry + titles |
+| Compositor (`retro-compositor`) | Nested X11: real SHM compose when committed; layer-shell + foreign-toplevel **globals**; selection send; multi-output env; XWayland path; HDR/VRR **policy**. DRM path: libseat+udev+libinput+GBM/EGL bootstrap **wired** | DRM has **no scanout/pageflip**; layer surfaces not drawn in nested `render_frame`; Docker typically labwc |
+| System integration | NM status, volume CLI, UPower/`sys`, capture, FDO notifications, AT-SPI export | No full connect UI, mixer, xdg-desktop-portal bus, polkit, greeter |
+| Packaging | `packaging/*.desktop`, `start-retroshell`, Docker + noVNC | Skeleton installable; greeter→session **not proven** on hardware |
+
+**Competitive score (honest, 0–100 workability vs Plasma/GNOME daily driver):** see **§13**.
 
 **Architectural bottleneck (must solve early):**  
 `retro-shell` is still largely a **single fullscreen winit client** that *draws* an
@@ -344,57 +350,78 @@ git history on `fix/compositor-build-and-audit`.
 
 ## 11. Phase checklist (track progress)
 
+**Legend:** **In tree** = code/packaging artifact exists · **Verified** = proven on the
+target path with command/output evidence (hardware for session claims; dual-client
+under `retro-compositor` where required). A bare historic `[x]` without Verified does
+**not** mean Phase exit criteria are met.
+
 ### Phase A — Session foundation
-- [ ] A1 DRM/KMS compositor backend (runtime still NestedX11; **policy helper `select_backend_kind` + logging landed**)
-- [x] A2 Honest nested/software fallback (`start-retroshell`, docker-entrypoint, backend summary)
-- [x] A3 Session launcher / user unit (`scripts/start-retroshell`, `packaging/retroshell.service`)
-- [x] A4 Display manager session entry (`packaging/retroshell.desktop`, `retroshell-wayland.desktop`)
-- [ ] A5 seatd/logind integration
+| ID | Work | In tree | Verified | Notes |
+|---|---|---|---|---|
+| A1 | DRM/KMS backend | **yes** | **no** | `session_drm::run_drm_session` libseat+udev+libinput+GBM/EGL+protocol loop; **no pageflip/scanout**; untested on real seat |
+| A2 | Nested/labwc honest fallback | **yes** | **yes** (Docker labwc path prior audits) | `start-retroshell`, entrypoint, `session_mode_summary` |
+| A3 | Session launcher / user unit | **yes** | partial | `scripts/start-retroshell`, `packaging/retroshell.service` skeleton |
+| A4 | DM session `.desktop` | **yes** | **no** | Files installable; greeter→session not QA'd |
+| A5 | seatd/logind (libseat) | **yes** | **no** | Open/pause/activate in DRM path; multi-user/logout unproven |
+
+**Phase A exit (cold boot → greeter → session without Docker):** **not met.**
 
 ### Phase B — Multi-client windowing
-- [x] B1 Multi-client map/focus policy + process spawn under labwc/compositor (**ClientWindowStack**, dual-client Docker smoke)
-- [ ] B2 Shell no longer fakes external app windows (partial: external apps are real processes; shell chrome still paints internal windows)
-- [ ] B3 Layer-shell bar/dock
-- [ ] B4 Desktop surface
-- [ ] B5 Foreign toplevel list
-- [x] B6 XWayland path present (daily-driver polish still open)
-- [ ] B7 Popups/grabs correct
+| ID | Work | In tree | Verified | Notes |
+|---|---|---|---|---|
+| B1 | Multi-client map/focus + process spawn | **yes** | partial | `ClientWindowStack` + dual-client smoke under **labwc**; not proven under `retro-compositor` on hardware |
+| B2 | Shell not fake-WM for external apps | partial | **no** | External apps are processes; shell still paints internal windows |
+| B3 | Layer-shell bar/dock | **server yes / shell no** | **no** | Globals+handlers on nested+DRM; shell chrome still in-canvas |
+| B4 | Desktop surface | **no** | **no** | |
+| B5 | Foreign toplevel list | **yes** | partial | Handles on map/title/app_id/close; Force Quit still PID/title registry |
+| B6 | XWayland path | **yes** (nested) | partial | Nested spawn+WM; DRM path has no XWayland; rootless polish open |
+| B7 | Popups/grabs | **no** | **no** | |
+
+**Phase B exit (Finder+Terminal+third-party under own compositor on hardware):** **not met.**
 
 ### Phase C — Shell chrome quality
-- [ ] C1 External global menu story
-- [x] C2 Workspaces in shell (compositor-backed still open)
-- [ ] C3 App switcher / overview
-- [x] C4 FDO notification daemon (**org.freedesktop.Notifications** state + optional zbus register)
-- [x] C5 Password lock (app-level; compositor-level secure lock still open)
-- [ ] C6 HiDPI scale tree
-- [x] C7 Theme system + Settings persistence
-- [x] C8 Settings depth MVP (volume apply, NM status, display prefs)
+| ID | Work | In tree | Verified | Notes |
+|---|---|---|---|---|
+| C1 | External global menu | partial | **no** | First-party menus; not arbitrary apps |
+| C2 | Workspaces | shell yes | partial | Shell filter; not compositor workspaces |
+| C3 | App switcher / overview | **no** | **no** | |
+| C4 | FDO notifications | **yes** | partial | zbus when bus present |
+| C5 | Lock | app yes | partial | Password gate; not compositor/PAM lock |
+| C6 | HiDPI scale tree | **no** | **no** | |
+| C7 | Themes + Settings conf | **yes** | **yes** (unit) | 8 themes, conf merge |
+| C8 | Settings depth MVP | **yes** | partial | Volume apply, NM status, display prefs |
 
 ### Phase D — FreeDesktop
-- [ ] D1 xdg-desktop-portal
-- [x] D2 PipeWire/Pulse volume path (`pactl`/`wpctl`)
-- [x] D3 NetworkManager status (connect UI still open)
-- [x] D4 Power status UPower/`sys`
-- [ ] D5 Polkit agent
-- [ ] D6 Full .desktop/MIME
-- [x] D7 Clipboard via kit + compositor selection send
-- [ ] D8 Input method support
+| ID | Work | In tree | Verified | Notes |
+|---|---|---|---|---|
+| D1 | xdg-desktop-portal | partial | **no** | `portal.rs` screenshot API facade only — **not** portal bus |
+| D2 | Volume (Pulse/PipeWire CLI) | **yes** | partial | pactl/wpctl |
+| D3 | NetworkManager | status yes | partial | No connect UI |
+| D4 | Power status | **yes** | partial | UPower/`sys` |
+| D5 | Polkit agent | **no** | **no** | |
+| D6 | Full .desktop/MIME | **no** | **no** | |
+| D7 | Clipboard / selection | **yes** | partial | kit + compositor send |
+| D8 | IME | **no** | **no** | |
 
 ### Phase E — A11y / i18n
-- [x] E1 AT-SPI Accessible tree export (Orca-complete still open)
-- [ ] E2 Keyboard-only
-- [ ] E3 Contrast/motion prefs real
-- [ ] E4 i18n
-- [ ] E5 RTL basics
+| ID | Work | In tree | Verified | Notes |
+|---|---|---|---|---|
+| E1 | AT-SPI export | minimal | partial | Not Orca-complete |
+| E2 | Keyboard-only | **no** | **no** | |
+| E3 | Contrast/motion prefs | partial | **no** | |
+| E4 | i18n | **no** | **no** | |
+| E5 | RTL | **no** | **no** | |
 
 ### Phase F — Polish / packaging
-- [ ] F1 Performance budget on reference hardware
-- [ ] F2 Startup budget
-- [ ] F3 Crash recovery
-- [x] F4 Session packaging skeleton (`packaging/*`, `start-retroshell`)
-- [ ] F5 Flatpak guidance
-- [x] F6 Host tests + Docker smoke path
-- [x] F7 No secrets in image ENV; honest DRI3/labwc docs
+| ID | Work | In tree | Verified | Notes |
+|---|---|---|---|---|
+| F1 | Perf budget on hardware | **no** | **no** | |
+| F2 | Startup budget | **no** | **no** | |
+| F3 | Crash recovery | **no** | **no** | |
+| F4 | Session packaging skeleton | **yes** | partial | |
+| F5 | Flatpak guidance | **no** | **no** | |
+| F6 | Host tests + Docker smoke | **yes** | partial | Host pure tests green; **Docker image `retroshell:drm-session-v2` built 2026-07-11** (workspace release compile with DRM features + session_drm — build exit 0, image `d0b02f605593`); runtime DE smoke under labwc not re-run this pass |
+| F7 | Honest DRI3/labwc docs | **yes** | partial | README residual gaps need refresh after DRM code land |
 
 ---
 
@@ -411,4 +438,147 @@ RetroShell is **KDE/GNOME-class in workability** when **all** are true:
 6. Orca can drive core UI; keyboard-only is possible.
 7. Docs match reality; CI proves the above on hardware, not only nested Docker.
 
-Until then: ship incrementally, stay honest, and follow the critical path above.
+**§12 status as of 2026-07-11: 0 / 7 fully met.** Until then: ship incrementally,
+stay honest, and follow the critical path above.
+
+---
+
+## 13. Competitive audit vs KDE Plasma / GNOME (2026-07-11)
+
+> **Method:** code inventory (main agent + explore pass), unit-test list counts,
+> prior Docker labwc evidence. **No** live greeter or Pi DRM session re-run in this
+> audit. Legend: **VERIFIED** (code read) · **INFERRED** · **NOT RUN**.
+
+### 13.1 One-sentence verdict
+
+RetroShell is a **credible advancing DE project** with a real first-party app suite
+and Smithay compositor scaffolding — **not** a feature-complete or daily-driver
+competitor to Plasma or GNOME **tonight**, this week, or as a single-sprint finish.
+
+### 13.2 Scorecard (workability 0–100, vs daily-driver Plasma/GNOME)
+
+Scores are **opinionated but evidence-bound**. 100 = “I would replace Plasma for a
+week on a laptop without constant workarounds.”
+
+| Domain | Score | Why |
+|---|---:|---|
+| First-party productivity apps | **72** | Real Finder/TextEdit/Terminal/Settings/App Store I/O (VERIFIED apps/) |
+| Toolkit / look & feel | **68** | Strong widgets/themes/menus; no HiDPI tree; a11y shallow |
+| Session login / packaging | **28** | `.desktop` + start script exist; greeter/PAM lifecycle NOT RUN |
+| Own compositor as session WM | **35** | Nested: real SHM compose; DRM: bootstrap only; Docker often labwc |
+| Multi-client window management | **40** | Process spawn real; dual model (shell paint + compositor); no decorations |
+| Shell chrome architecture | **30** | Bar/dock painted in one winit surface, not layer-shell clients |
+| FreeDesktop (portals, polkit, MIME) | **22** | Volume/NM/power status + FDO notify + portal screenshot **facade** |
+| A11y / i18n | **18** | Minimal AT-SPI; no i18n/RTL/keyboard-only DE |
+| Multi-monitor / HDR-VRR daily | **25** | Env multi-output + HDR **policy**; no KScreen UI; HDR detect honest-false nested |
+| Polish / packaging / CI hardware | **30** | Docker lab path; no distro package CI on GPU seat |
+| **Overall daily-driver competitiveness** | **~32** | Weighted toward session+compositor+portals, where Plasma/GNOME live |
+
+**Interpretation:** ~⅓ of “would I trust this as my only DE.” Apps and toolkit are
+far ahead of session architecture. That is the right place to have started; it is
+**not** enough to claim competition with KDE/GNOME.
+
+### 13.3 Stack inventory (LOC approximate, VERIFIED 2026-07-11)
+
+| Component | ~LOC | Role |
+|---|---:|---|
+| `retro-shell` | ~8.2k | Single-surface desktop client |
+| `retro-kit` | ~5.2k | Widgets, a11y tree, clipboard |
+| `retro-compositor` | ~4.0k | Nested X11 + `session_drm` |
+| `retro-sdk` | ~3.1k | App framework |
+| `retro-render` | ~1.1k | wgpu |
+| `retro-bus` | ~0.3k | IPC |
+| Apps (5) | ~7.2k | Real I/O suite |
+| Host unit tests (listed) | compositor lib 26; shell lib 80; kit 16 + more in apps | Not DE integration suite |
+
+### 13.4 Compositor truth (VERIFIED)
+
+**Nested X11 (`main.rs`):**
+- Protocols live: xdg_shell, seat, shm, data_device, primary selection, multi-output
+  advertise, layer-shell **global**, foreign-toplevel **list**, XWayland spawn path.
+- `render_frame`: real `render_elements_from_surface_tree` when buffers committed;
+  else colored placeholder rects.
+- **Does not** composite `layer_surfaces` or X11 surfaces into the scene yet.
+
+**DRM (`session_drm.rs`):**
+- Called from `run()` when policy selects `SessionDrm` and `/dev/dri` exists.
+- Opens libseat, DRM node, GBM, EGL/GLES (renderer stored as `_renderer` — proves
+  GL, **not** used for scanout).
+- Protocol server loop + udev + libinput stubs; **no** pageflip, **no** connector
+  modeset, **no** client buffer → KMS path.
+- XWayland intentionally not on DRM path yet.
+
+### 13.5 Shell truth (VERIFIED)
+
+- Architecture: one fullscreen winit/wgpu desktop (`ShellDesktop`).
+- Dock / menu / workspaces / lock / Force Quit: **UI real**, many windows are
+  **paint-rects**, not separate Wayland toplevels.
+- Multi-client: `SessionClientRegistry` spawns real processes; compositor/labwc owns
+  their surfaces.
+- Portals: `portal.rs` local capture + types — **not** `xdg-desktop-portal`.
+- FDO Notifications: optional session-bus registration (real when bus works).
+
+### 13.6 What KDE/GNOME have that we do not (blockers for “competition”)
+
+Ordered by how hard they block daily use of **third-party** apps and a real session:
+
+1. **Finished DRM/KMS presentation** (modeset, planes, pageflip, damage) — A1 exit
+2. **Shell as layer-shell session client** (bar/dock/notifications not paint fakes) — B2/B3
+3. **xdg-desktop-portal** (FileChooser, Screenshot bus, Screencast, OpenURI) — D1
+4. **Polkit agent + privilege UX** — D5
+5. **IME / text-input** — D8
+6. **Greeter-proven session + logind lifecycle** — A3–A5 exit
+7. **Server/client decorations, popups, grabs** — B7
+8. **NM connect UI, PipeWire screencast, multi-monitor UI** — C/D
+9. **Orca-complete a11y + keyboard-only** — E
+10. **Distro packaging + hardware CI** — F
+
+### 13.7 “Feature complete and competitive by tonight”
+
+**Honest answer: impossible.** Plasma and GNOME are decades of session stack
+(KWin/Mutter, portals, polkit, PipeWire, greeters, a11y). RetroShell cannot become
+a worthy *replacement* DE in one evening without lying about scope.
+
+What **can** honestly be said about “tonight” work (if coding continues full power):
+
+| Achievable tonight (stretch) | Not achievable tonight |
+|---|---|
+| Compile-green DRM path + nested layer/FTL | Hardware greeter login proof |
+| More protocol wiring / portal D-Bus skeleton | Full portal suite + screencast |
+| Fix Docker workspace build after DRM features | KWin/Mutter feature parity |
+| Honest docs + commit/push | Overall score → 70+ |
+
+**If the goal is “competitive,” the plan stays A1 scanout → B2/B3 shell migration →
+D1 portals, on real hardware — multi-week minimum for *usable* DE class, multi-month
+for Plasma-adjacent daily driver.**
+
+### 13.8 Overclaim watchlist (docs elsewhere)
+
+| Doc | Issue |
+|---|---|
+| `READY_FOR_UBUNTU_VERIFICATION.md` | Overclaims `wp_color_representation` negotiation; not in Rust |
+| `docs/HDR_VRR_IMPLEMENTATION.md` | Success ✅s ahead of hardware/protocol |
+| `docs/ARCHITECTURE.md` | Still partially “labwc-only / compositor future” |
+| README residual gaps | Under-credits DRM/layer code; overstates “missing backend” vs “unverified” |
+| FULL_AUDIT “90–95%” | Sprint feature-pass %, **not** §12 DE workability |
+
+### 13.9 Next 48h critical path (if maximizing competitiveness)
+
+1. Make Docker `cargo build --release --workspace` green with DRM features (evidence).
+2. Nested path: composite layer-shell + drop placeholder-only presentation when SHM present.
+3. DRM: connector discovery + one working scanout path (even single output).
+4. Start shell menu-bar as `wlr-layer-shell` client (B3 real, not global-only).
+5. D-Bus portal Screenshot backend stub that third parties can call (D1 start).
+6. Hardware/Pi: one log line of `session_mode=session_drm` without NestedX11 fallback.
+7. Re-score §13.2 only after evidence; never after aspiration.
+
+### 13.10 Bottom line for the owner
+
+- **Use as DE research / retro first-party suite:** yes (labwc or nested path).
+- **Use as only desktop tomorrow:** only with fixed app set + verified path — not
+  browser/portal/third-party parity.
+- **Worthy competition to KDE/GNOME:** **not yet** (~32/100 daily-driver score).
+- **Path is real:** code is moving at the right layers (compositor protocols, session
+  packaging, FreeDesktop hooks). Speed without honesty will waste the lead.
+
+*Audit written 2026-07-11. Update scores when Verified checkboxes flip with command output.*

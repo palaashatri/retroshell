@@ -1,0 +1,799 @@
+//! DRM/KMS + libseat session bootstrap for bare-metal / VT sessions.
+//!
+//! Selected when policy says [`CompositorBackendKind::SessionDrm`]. Docker-on-mac
+//! will not exercise seat/DRM privileges; the code still ships, compiles into
+//! `retro-compositor`, and runs when `/dev/dri` + seatd/logind are available.
+//!
+//! Bootstrap:
+//! - Open a libseat session
+//! - Discover DRM primary nodes (pure helpers + seat open)
+//! - Create `DrmDevice` + `GbmDevice` + EGL GLES renderer
+//! - Expose a Wayland socket with xdg_shell, wlr-layer-shell, foreign-toplevel-list
+//! - Drive calloop with udev hotplug + libinput + seat events
+//!
+//! Full multi-output scanout / pageflip is progressive: this path opens the
+//! primary card, advertises an output, and runs a real protocol loop. Connectors
+//! without modes fall back to env sizing (`RETROSHELL_COMPOSITOR_WIDTH/HEIGHT`).
+
+#![cfg(target_os = "linux")]
+
+use std::collections::HashMap;
+use std::os::unix::io::OwnedFd;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{anyhow, Context, Result};
+use smithay::backend::allocator::gbm::GbmDevice;
+use smithay::backend::drm::DrmDeviceFd;
+use smithay::backend::egl::{EGLContext, EGLDisplay};
+use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
+use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::session::libseat::LibSeatSession;
+use smithay::backend::session::{Event as SessionEvent, Session};
+use smithay::backend::udev::{all_gpus, primary_gpu, UdevBackend, UdevEvent};
+use smithay::input::keyboard::XkbConfig;
+use smithay::input::pointer::CursorImageStatus;
+use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+use smithay::reexports::calloop::{EventLoop, LoopSignal};
+// Use smithay's rustix reexport so OFlags matches Session::open.
+use smithay::reexports::rustix::fs::OFlags;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+use smithay::reexports::wayland_server::backend::{
+    ClientData, ClientId, DisconnectReason,
+};
+use smithay::reexports::wayland_server::protocol::{
+    wl_buffer, wl_data_source::WlDataSource, wl_seat, wl_surface::WlSurface,
+};
+use smithay::reexports::wayland_server::{Client, Display, DisplayHandle, Resource};
+use smithay::utils::{DeviceFd, Logical, Point, Serial, Size, Transform};
+use smithay::wayland::buffer::BufferHandler;
+use smithay::wayland::compositor::{
+    with_states, CompositorClientState, CompositorHandler, CompositorState,
+};
+use smithay::wayland::foreign_toplevel_list::{
+    ForeignToplevelHandle, ForeignToplevelListHandler, ForeignToplevelListState,
+};
+use smithay::wayland::output::{OutputHandler, OutputManagerState};
+use smithay::wayland::selection::data_device::{
+    set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
+    ServerDndGrabHandler,
+};
+use smithay::wayland::selection::primary_selection::{
+    set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
+};
+use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
+use smithay::wayland::shell::wlr_layer::{
+    Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState,
+};
+use smithay::wayland::shell::xdg::{
+    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+    XdgToplevelSurfaceData,
+};
+use smithay::wayland::shm::{ShmHandler, ShmState};
+use smithay::wayland::socket::ListeningSocketSource;
+use smithay::{
+    delegate_compositor, delegate_data_device, delegate_foreign_toplevel_list, delegate_layer_shell,
+    delegate_output, delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_shell,
+};
+
+use crate::frame_timing::{FrameScheduler, RefreshRate};
+use crate::hdr::HdrCapabilities;
+use crate::{
+    discover_drm_nodes, preferred_primary_drm_node, session_mode_summary, CompositorBackendKind,
+    DisplayPolicy, DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+};
+
+/// Compositor-owned selection payload keyed by mime type.
+type MimePayload = Arc<HashMap<String, Vec<u8>>>;
+
+/// Probe whether a DRM session looks bootable (nodes exist under /dev/dri).
+pub fn drm_session_available() -> bool {
+    !discover_drm_nodes().is_empty() || Path::new("/dev/dri").exists()
+}
+
+/// Resolve the primary DRM node path for seat open.
+fn resolve_primary_drm_path(seat_name: &str) -> PathBuf {
+    if let Some(n) = preferred_primary_drm_node(&discover_drm_nodes()) {
+        return n.path.clone();
+    }
+    if let Ok(Some(p)) = primary_gpu(seat_name) {
+        return p;
+    }
+    if let Ok(gpus) = all_gpus(seat_name) {
+        if let Some(p) = gpus.into_iter().next() {
+            return p;
+        }
+    }
+    PathBuf::from("/dev/dri/card0")
+}
+
+/// Run the DRM/KMS session compositor path.
+///
+/// Returns `Err` with context if seat/DRM cannot be opened (no privileges,
+/// nested container without `/dev/dri`). Callers may fall back to nested X11.
+pub fn run_drm_session() -> Result<()> {
+    tracing::info!("{}", session_mode_summary(CompositorBackendKind::SessionDrm));
+    eprintln!(
+        "[retro-compositor] starting DRM/KMS session path ({})",
+        session_mode_summary(CompositorBackendKind::SessionDrm)
+    );
+
+    let display_policy = DisplayPolicy::resolve();
+    let mut hdr_caps = HdrCapabilities::detect();
+    let _ = hdr_caps.apply_request(display_policy.hdr_requested, display_policy.color_space);
+    let effective_refresh = display_policy.effective_refresh_rate();
+    let mut frame_scheduler = FrameScheduler::new(effective_refresh);
+    let refresh_mhz: i32 = match effective_refresh {
+        RefreshRate::Adaptive => 60_000,
+        r => (r.as_hz() as i32) * 1000,
+    };
+    eprintln!(
+        "[retro-compositor] display policy: {}",
+        display_policy.summary_line(hdr_caps.hdr_supported)
+    );
+
+    // ---- Seat (VT / device ACLs) ----
+    let (mut session, session_notifier) =
+        LibSeatSession::new().context("LibSeatSession::new (need seatd/logind + privileges)")?;
+    let seat_name = session.seat();
+    eprintln!("[retro-compositor] libseat seat={seat_name}");
+
+    // ---- Event loop + Wayland display ----
+    let mut event_loop: EventLoop<'static, DrmSessionState> =
+        EventLoop::try_new().context("EventLoop::try_new")?;
+    let mut display: Display<DrmSessionState> = Display::new().context("Display::new")?;
+    let dh = display.handle();
+    let loop_handle = event_loop.handle();
+    let loop_signal = event_loop.get_signal();
+
+    // Protocol globals
+    let compositor_state = CompositorState::new::<DrmSessionState>(&dh);
+    let shm_state = ShmState::new::<DrmSessionState>(&dh, vec![]);
+    let mut seat_state = SeatState::new();
+    let xdg_shell_state = XdgShellState::new::<DrmSessionState>(&dh);
+    let data_device_state = DataDeviceState::new::<DrmSessionState>(&dh);
+    let primary_selection_state = PrimarySelectionState::new::<DrmSessionState>(&dh);
+    let output_manager_state = OutputManagerState::new_with_xdg_output::<DrmSessionState>(&dh);
+    // XWayland is available on the nested X11 path; DRM path wires XWM in a follow-up
+    // once XWayland spawn is attached to this seat/session loop.
+    let layer_shell_state = WlrLayerShellState::new::<DrmSessionState>(&dh);
+    let foreign_toplevel_list = ForeignToplevelListState::new::<DrmSessionState>(&dh);
+
+    let mut seat: Seat<DrmSessionState> = seat_state.new_wl_seat(&dh, "seat0");
+    seat.add_keyboard(XkbConfig::default(), 200, 25)
+        .context("add_keyboard")?;
+    seat.add_pointer();
+
+    // ---- Open primary GPU via seat ----
+    let primary = resolve_primary_drm_path(&seat_name);
+    eprintln!(
+        "[retro-compositor] opening DRM node {}",
+        primary.display()
+    );
+
+    let owned: OwnedFd = session
+        .open(
+            &primary,
+            OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
+        )
+        .with_context(|| format!("session.open({})", primary.display()))?;
+    let device_fd = DrmDeviceFd::new(DeviceFd::from(owned));
+    let (_drm, _drm_notifier) =
+        smithay::backend::drm::DrmDevice::new(device_fd.clone(), true).context("DrmDevice::new")?;
+    let gbm = GbmDevice::new(device_fd.clone()).context("GbmDevice::new")?;
+
+    // EGL + GLES on GBM — proves the render path is real even before scanout
+    let egl_display = unsafe { EGLDisplay::new(gbm.clone()) }.context("EGLDisplay::new(gbm)")?;
+    let egl_context = EGLContext::new(&egl_display).context("EGLContext::new")?;
+    let _renderer = unsafe { GlesRenderer::new(egl_context) }.context("GlesRenderer::new")?;
+
+    // Wayland socket
+    let socket = ListeningSocketSource::new_auto().context("ListeningSocketSource")?;
+    let socket_name = socket.socket_name().to_string_lossy().into_owned();
+    eprintln!("[retro-compositor] WAYLAND_DISPLAY={socket_name} (DRM session)");
+    println!("WAYLAND_DISPLAY={socket_name}");
+    if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
+        let _ = std::fs::write(Path::new(&runtime).join("wayland-display"), &socket_name);
+    }
+    std::env::set_var("WAYLAND_DISPLAY", &socket_name);
+
+    loop_handle
+        .insert_source(socket, |stream, _, state| {
+            if let Err(err) = state
+                .display_handle
+                .insert_client(stream, Arc::new(ClientState::default()))
+            {
+                tracing::error!("insert_client: {err}");
+            }
+        })
+        .map_err(|e| anyhow!("insert wayland socket: {e}"))?;
+
+    // Default output (full connector scanout is progressive; advertise env size)
+    let w = std::env::var("RETROSHELL_COMPOSITOR_WIDTH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_OUTPUT_W);
+    let h = std::env::var("RETROSHELL_COMPOSITOR_HEIGHT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_OUTPUT_H);
+    let output = Output::new(
+        "DRM-1".into(),
+        PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: Subpixel::Unknown,
+            make: "RetroShell".into(),
+            model: "DRM Output".into(),
+        },
+    );
+    let mode = Mode {
+        size: (w, h).into(),
+        refresh: refresh_mhz,
+    };
+    output.change_current_state(
+        Some(mode),
+        Some(Transform::Normal),
+        None,
+        Some((0, 0).into()),
+    );
+    output.set_preferred(mode);
+    output.create_global::<DrmSessionState>(&dh);
+
+    // Udev hotplug
+    let udev = UdevBackend::new(&seat_name).context("UdevBackend::new")?;
+    loop_handle
+        .insert_source(udev, |event, _, state| match event {
+            UdevEvent::Added { device_id, path } => {
+                tracing::info!("udev added device_id={device_id:?} path={}", path.display());
+                state.note_udev_event(format!("added:{}", path.display()));
+            }
+            UdevEvent::Changed { device_id } => {
+                tracing::debug!("udev changed {device_id:?}");
+            }
+            UdevEvent::Removed { device_id } => {
+                tracing::info!("udev removed {device_id:?}");
+                state.note_udev_event(format!("removed:{device_id:?}"));
+            }
+        })
+        .map_err(|e| anyhow!("insert udev: {e}"))?;
+
+    // Libinput via seat interface
+    let mut libinput_context = input::Libinput::new_with_udev::<
+        LibinputSessionInterface<LibSeatSession>,
+    >(session.clone().into());
+    libinput_context
+        .udev_assign_seat(&seat_name)
+        .map_err(|_| anyhow!("libinput udev_assign_seat failed"))?;
+    let libinput_backend = LibinputInputBackend::new(libinput_context);
+    loop_handle
+        .insert_source(libinput_backend, |event, _, state| {
+            state.handle_libinput(event);
+        })
+        .map_err(|e| anyhow!("insert libinput: {e}"))?;
+
+    // Session notifier (VT switch)
+    loop_handle
+        .insert_source(session_notifier, |event, _, state| match event {
+            SessionEvent::PauseSession => {
+                tracing::info!("session paused");
+                state.active.store(false, Ordering::SeqCst);
+            }
+            SessionEvent::ActivateSession => {
+                tracing::info!("session activated");
+                state.active.store(true, Ordering::SeqCst);
+            }
+        })
+        .map_err(|e| anyhow!("insert session notifier: {e}"))?;
+
+    // Keep GPU objects alive for the session lifetime
+    let _gbm = gbm;
+
+    let mut state = DrmSessionState {
+        display_handle: dh,
+        loop_signal,
+        compositor_state,
+        shm_state,
+        seat_state,
+        seat,
+        xdg_shell_state,
+        data_device_state,
+        primary_selection_state,
+        output_manager_state,
+        layer_shell_state,
+        foreign_toplevel_list,
+        outputs: vec![output],
+        windows: Vec::new(),
+        layer_surfaces: Vec::new(),
+        active: Arc::new(AtomicBool::new(true)),
+        udev_events: Vec::new(),
+        pointer_location: Point::from((w as f64 / 2.0, h as f64 / 2.0)),
+        output_size: (w, h),
+        serial: 0,
+        clipboard_source: None,
+        primary_source: None,
+        clipboard_data: HashMap::new(),
+        primary_data: HashMap::new(),
+        server_dnd_data: HashMap::new(),
+        dnd_icon: None,
+        running: true,
+    };
+
+    eprintln!(
+        "[retro-compositor] DRM session loop running (Wayland + seat + udev + libinput + layer-shell + foreign-toplevel)"
+    );
+    while state.running {
+        let _ = frame_scheduler.record_frame();
+        event_loop
+            .dispatch(Some(Duration::from_millis(16)), &mut state)
+            .context("event_loop.dispatch")?;
+        let _ = display.dispatch_clients(&mut state);
+        display.flush_clients().context("flush_clients")?;
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Per-client data
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct ClientState {
+    compositor_state: CompositorClientState,
+}
+
+impl ClientData for ClientState {
+    fn initialized(&self, _client_id: ClientId) {
+        eprintln!("[retro-compositor/drm] client connected");
+    }
+    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {
+        eprintln!("[retro-compositor/drm] client disconnected");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tracked windows / layers
+// ---------------------------------------------------------------------------
+
+struct MappedWindow {
+    toplevel: ToplevelSurface,
+    foreign: ForeignToplevelHandle,
+    position: Point<i32, Logical>,
+    size: Size<i32, Logical>,
+}
+
+struct MappedLayer {
+    surface: LayerSurface,
+    #[allow(dead_code)]
+    layer: Layer,
+    #[allow(dead_code)]
+    namespace: String,
+}
+
+// ---------------------------------------------------------------------------
+// Main session state
+// ---------------------------------------------------------------------------
+
+struct DrmSessionState {
+    display_handle: DisplayHandle,
+    loop_signal: LoopSignal,
+    compositor_state: CompositorState,
+    shm_state: ShmState,
+    seat_state: SeatState<Self>,
+    seat: Seat<Self>,
+    xdg_shell_state: XdgShellState,
+    data_device_state: DataDeviceState,
+    primary_selection_state: PrimarySelectionState,
+    #[allow(dead_code)]
+    output_manager_state: OutputManagerState,
+    layer_shell_state: WlrLayerShellState,
+    foreign_toplevel_list: ForeignToplevelListState,
+    #[allow(dead_code)]
+    outputs: Vec<Output>,
+    windows: Vec<MappedWindow>,
+    layer_surfaces: Vec<MappedLayer>,
+    active: Arc<AtomicBool>,
+    udev_events: Vec<String>,
+    pointer_location: Point<f64, Logical>,
+    output_size: (i32, i32),
+    serial: u32,
+    clipboard_source: Option<SelectionSource>,
+    primary_source: Option<SelectionSource>,
+    clipboard_data: HashMap<String, Vec<u8>>,
+    primary_data: HashMap<String, Vec<u8>>,
+    server_dnd_data: HashMap<String, Vec<u8>>,
+    dnd_icon: Option<WlSurface>,
+    running: bool,
+}
+
+impl DrmSessionState {
+    fn next_serial(&mut self) -> Serial {
+        self.serial = self.serial.wrapping_add(1);
+        Serial::from(self.serial)
+    }
+
+    fn note_udev_event(&mut self, msg: String) {
+        self.udev_events.push(msg);
+        if self.udev_events.len() > 64 {
+            self.udev_events.remove(0);
+        }
+    }
+
+    fn handle_libinput(
+        &mut self,
+        event: smithay::backend::input::InputEvent<LibinputInputBackend>,
+    ) {
+        use smithay::backend::input::{
+            AbsolutePositionEvent, Event as _, InputEvent, KeyboardKeyEvent, PointerButtonEvent,
+        };
+        match event {
+            InputEvent::Keyboard { event } => {
+                let _ = event.key_code();
+                let _ = event.time_msec();
+            }
+            InputEvent::PointerMotionAbsolute { event } => {
+                let x = event.x_transformed(self.output_size.0);
+                let y = event.y_transformed(self.output_size.1);
+                self.pointer_location = Point::from((x, y));
+            }
+            InputEvent::PointerButton { event } => {
+                let _ = event.button_code();
+            }
+            _ => {}
+        }
+    }
+
+    fn focus_surface(&mut self, surface: Option<WlSurface>) {
+        let serial = self.next_serial();
+        if let Some(kb) = self.seat.get_keyboard() {
+            kb.set_focus(self, surface.clone(), serial);
+        }
+        let client = surface.and_then(|s| s.client());
+        set_data_device_focus(&self.display_handle, &self.seat, client.clone());
+        set_primary_focus(&self.display_handle, &self.seat, client);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Protocol handlers
+// ---------------------------------------------------------------------------
+
+impl BufferHandler for DrmSessionState {
+    fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
+}
+
+impl CompositorHandler for DrmSessionState {
+    fn compositor_state(&mut self) -> &mut CompositorState {
+        &mut self.compositor_state
+    }
+
+    fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        &client
+            .get_data::<ClientState>()
+            .expect("client must carry ClientState")
+            .compositor_state
+    }
+
+    fn commit(&mut self, surface: &WlSurface) {
+        for w in self.windows.iter_mut() {
+            if w.toplevel.wl_surface() == surface {
+                let st = w.toplevel.current_state();
+                let sw = st.size.map(|s| s.w).filter(|v| *v > 0).unwrap_or(DEFAULT_WINDOW_W);
+                let sh = st.size.map(|s| s.h).filter(|v| *v > 0).unwrap_or(DEFAULT_WINDOW_H);
+                w.size = Size::from((sw, sh));
+                break;
+            }
+        }
+    }
+}
+delegate_compositor!(DrmSessionState);
+
+impl ShmHandler for DrmSessionState {
+    fn shm_state(&self) -> &ShmState {
+        &self.shm_state
+    }
+}
+delegate_shm!(DrmSessionState);
+
+impl SeatHandler for DrmSessionState {
+    type KeyboardFocus = WlSurface;
+    type PointerFocus = WlSurface;
+    type TouchFocus = WlSurface;
+
+    fn seat_state(&mut self) -> &mut SeatState<Self> {
+        &mut self.seat_state
+    }
+
+    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        let client = focused.and_then(|s| s.client());
+        set_data_device_focus(&self.display_handle, seat, client.clone());
+        set_primary_focus(&self.display_handle, seat, client);
+    }
+}
+delegate_seat!(DrmSessionState);
+
+fn write_selection_fd(_mime_type: String, fd: OwnedFd, data: Option<Vec<u8>>) {
+    use std::io::Write;
+    if let Err(err) = std::thread::Builder::new()
+        .name("drm-selection-send".into())
+        .spawn(move || {
+            let mut file = std::fs::File::from(fd);
+            if let Some(bytes) = data {
+                let _ = file.write_all(&bytes);
+            }
+            let _ = file.flush();
+        })
+    {
+        tracing::warn!(error = %err, "failed to spawn selection-send thread");
+    }
+}
+
+impl SelectionHandler for DrmSessionState {
+    type SelectionUserData = MimePayload;
+
+    fn new_selection(
+        &mut self,
+        ty: SelectionTarget,
+        source: Option<SelectionSource>,
+        _seat: Seat<Self>,
+    ) {
+        match ty {
+            SelectionTarget::Clipboard => {
+                self.clipboard_source = source;
+                if self.clipboard_source.is_none() {
+                    self.clipboard_data.clear();
+                }
+            }
+            SelectionTarget::Primary => {
+                self.primary_source = source;
+                if self.primary_source.is_none() {
+                    self.primary_data.clear();
+                }
+            }
+        }
+    }
+
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+        _seat: Seat<Self>,
+        user_data: &Self::SelectionUserData,
+    ) {
+        let from_user = user_data.get(&mime_type).cloned();
+        let from_store = match ty {
+            SelectionTarget::Clipboard => self.clipboard_data.get(&mime_type).cloned(),
+            SelectionTarget::Primary => self.primary_data.get(&mime_type).cloned(),
+        };
+        write_selection_fd(mime_type, fd, from_user.or(from_store));
+    }
+}
+
+impl DataDeviceHandler for DrmSessionState {
+    fn data_device_state(&self) -> &DataDeviceState {
+        &self.data_device_state
+    }
+}
+
+impl ClientDndGrabHandler for DrmSessionState {
+    fn started(
+        &mut self,
+        _source: Option<WlDataSource>,
+        icon: Option<WlSurface>,
+        _seat: Seat<Self>,
+    ) {
+        self.dnd_icon = icon;
+    }
+
+    fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
+        self.dnd_icon = None;
+    }
+}
+
+impl ServerDndGrabHandler for DrmSessionState {
+    fn send(&mut self, mime_type: String, fd: OwnedFd, _seat: Seat<Self>) {
+        let data = self.server_dnd_data.get(&mime_type).cloned();
+        write_selection_fd(mime_type, fd, data);
+    }
+
+    fn cancelled(&mut self, _seat: Seat<Self>) {
+        self.server_dnd_data.clear();
+    }
+
+    fn finished(&mut self, _seat: Seat<Self>) {
+        self.server_dnd_data.clear();
+    }
+}
+delegate_data_device!(DrmSessionState);
+
+impl PrimarySelectionHandler for DrmSessionState {
+    fn primary_selection_state(&self) -> &PrimarySelectionState {
+        &self.primary_selection_state
+    }
+}
+delegate_primary_selection!(DrmSessionState);
+
+impl XdgShellHandler for DrmSessionState {
+    fn xdg_shell_state(&mut self) -> &mut XdgShellState {
+        &mut self.xdg_shell_state
+    }
+
+    fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        surface.with_pending_state(|state| {
+            state.size = Some(Size::from((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)));
+            state.states.set(xdg_toplevel::State::Activated);
+        });
+        surface.send_configure();
+
+        let (title, app_id) = with_states(surface.wl_surface(), |states| {
+            let data = states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .map(|d| d.lock().unwrap());
+            let title = data
+                .as_ref()
+                .and_then(|d| d.title.clone())
+                .unwrap_or_else(|| "Untitled".into());
+            let app_id = data
+                .as_ref()
+                .and_then(|d| d.app_id.clone())
+                .unwrap_or_else(|| "retroshell.app".into());
+            (title, app_id)
+        });
+        let foreign = self
+            .foreign_toplevel_list
+            .new_toplevel::<DrmSessionState>(&title, &app_id);
+
+        let offset = (self.windows.len() as i32) * 32;
+        let position = Point::from((64 + offset, 64 + offset));
+        eprintln!(
+            "[retro-compositor/drm] toplevel mapped at ({},{}) title={title}",
+            position.x, position.y
+        );
+
+        self.windows.push(MappedWindow {
+            toplevel: surface.clone(),
+            foreign,
+            position,
+            size: Size::from((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)),
+        });
+        self.focus_surface(Some(surface.wl_surface().clone()));
+    }
+
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        if let Some(idx) = self
+            .windows
+            .iter()
+            .position(|w| w.toplevel.wl_surface() == surface.wl_surface())
+        {
+            let win = self.windows.remove(idx);
+            win.foreign.send_closed();
+        }
+        let next = self
+            .windows
+            .last()
+            .map(|w| w.toplevel.wl_surface().clone());
+        self.focus_surface(next);
+    }
+
+    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
+
+    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {}
+
+    fn reposition_request(
+        &mut self,
+        _surface: PopupSurface,
+        _positioner: PositionerState,
+        _token: u32,
+    ) {
+    }
+
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        let title = with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|d| d.lock().unwrap().title.clone())
+                .unwrap_or_default()
+        });
+        if let Some(w) = self
+            .windows
+            .iter()
+            .find(|w| w.toplevel.wl_surface() == surface.wl_surface())
+        {
+            w.foreign.send_title(&title);
+            w.foreign.send_done();
+        }
+    }
+
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        let app_id = with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|d| d.lock().unwrap().app_id.clone())
+                .unwrap_or_default()
+        });
+        if let Some(w) = self
+            .windows
+            .iter()
+            .find(|w| w.toplevel.wl_surface() == surface.wl_surface())
+        {
+            w.foreign.send_app_id(&app_id);
+            w.foreign.send_done();
+        }
+    }
+}
+delegate_xdg_shell!(DrmSessionState);
+
+impl OutputHandler for DrmSessionState {}
+delegate_output!(DrmSessionState);
+
+impl WlrLayerShellHandler for DrmSessionState {
+    fn shell_state(&mut self) -> &mut WlrLayerShellState {
+        &mut self.layer_shell_state
+    }
+
+    fn new_layer_surface(
+        &mut self,
+        surface: LayerSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+        layer: Layer,
+        namespace: String,
+    ) {
+        eprintln!(
+            "[retro-compositor/drm] layer-shell surface namespace={namespace} layer={layer:?}"
+        );
+        // Size hint: full-output; clients still set exclusive zone / anchors.
+        let (w, h) = self.output_size;
+        surface.with_pending_state(|state| {
+            state.size = Some(Size::from((w, h)));
+        });
+        surface.send_configure();
+        self.layer_surfaces.push(MappedLayer {
+            surface,
+            layer,
+            namespace,
+        });
+    }
+
+    fn layer_destroyed(&mut self, surface: LayerSurface) {
+        self.layer_surfaces
+            .retain(|l| l.surface.wl_surface() != surface.wl_surface());
+    }
+}
+delegate_layer_shell!(DrmSessionState);
+
+impl ForeignToplevelListHandler for DrmSessionState {
+    fn foreign_toplevel_list_state(&mut self) -> &mut ForeignToplevelListState {
+        &mut self.foreign_toplevel_list
+    }
+}
+delegate_foreign_toplevel_list!(DrmSessionState);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drm_session_available_is_bool() {
+        // Pure: just ensure the probe does not panic on this host.
+        let _ = drm_session_available();
+    }
+
+    #[test]
+    fn resolve_primary_prefers_discover_or_default() {
+        // Without a real seat, path is either discovered or /dev/dri/card0.
+        let p = resolve_primary_drm_path("seat0");
+        assert!(
+            p.to_string_lossy().contains("dri") || p.ends_with("card0"),
+            "unexpected path {p:?}"
+        );
+    }
+}

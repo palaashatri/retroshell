@@ -29,14 +29,19 @@ The script prefers `retro-compositor`, falls back to **labwc** with an honest
 message, then execs `retro-shell`. See `packaging/README.md`. FreeDesktop
 `org.freedesktop.Notifications` is registered when a session bus is available.
 
-**Remaining gaps vs KDE/GNOME-class:** DRM session compositor (not NestedX11 only),
-seatd/logind, xdg-desktop-portal suite, layer-shell chrome, multi-monitor daily
-driver polish, Orca-complete a11y, full NM connect UI. Nested Docker often cannot
-run `retro-compositor` (no DRI3) — labwc is the gated path there.
+**Remaining gaps vs KDE/GNOME-class (see `docs/implementation_plan.md` §13):**
+DRM scanout/pageflip still progressive (bootstrap code exists, not hardware-proven);
+shell chrome not yet layer-shell clients (compositor advertises globals);
+xdg-desktop-portal suite (screenshot API facade only); greeter-proven session;
+polkit/IME; multi-monitor daily UI; Orca-complete a11y; full NM connect UI.
+Nested Docker often cannot run `retro-compositor` (no DRI3) — labwc is the gated
+path there. **Overall daily-driver score ~32/100** vs Plasma/GNOME (honest audit
+2026-07-11) — first-party apps score much higher; session stack does not.
 
 Would you use it as your **only** desktop tomorrow? Only if you accept a fixed app
 set and the labwc/GPU path you verified. Would you treat it as a DE project to
-grow? **Yes — that is the stated direction.**
+grow? **Yes — that is the stated direction.** Feature-complete KDE/GNOME
+*competition* is multi-week/month work, not a single night.
 
 ---
 
