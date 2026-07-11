@@ -1587,6 +1587,34 @@ impl DamageRect {
     }
 }
 
+/// Pure: damage region from a rectangular area (window bounds, chrome strip, …).
+///
+/// Returns `None` when `w` or `h` is non-positive.
+pub fn damage_region(x: i32, y: i32, w: i32, h: i32) -> Option<DamageRect> {
+    DamageRect::from_xywh(x, y, w, h)
+}
+
+/// Pure: damage covering both old and new geometries after a window move/resize.
+pub fn damage_region_for_geometry_change(
+    old: WindowGeometry,
+    new: WindowGeometry,
+) -> Option<DamageRect> {
+    let a = damage_region(old.x, old.y, old.width, old.height);
+    let b = damage_region(new.x, new.y, new.width, new.height);
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.union(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Pure: fold a damage rect into an optional accumulator.
+pub fn accumulate_damage_rect(acc: Option<DamageRect>, region: DamageRect) -> DamageRect {
+    match acc {
+        None => region,
+        Some(a) => a.union(region),
+    }
+}
+
 /// Pure: accumulate damage from dirty scanout elements into a single rect.
 pub fn accumulate_damage(elements: &[ScanoutElement], dirty_ids: &[&str]) -> Option<DamageRect> {
     let mut acc: Option<DamageRect> = None;
@@ -1594,21 +1622,84 @@ pub fn accumulate_damage(elements: &[ScanoutElement], dirty_ids: &[&str]) -> Opt
         if !dirty_ids.iter().any(|id| *id == el.id) {
             continue;
         }
-        let Some(r) = DamageRect::from_xywh(el.x, el.y, el.w, el.h) else {
+        let Some(r) = damage_region(el.x, el.y, el.w, el.h) else {
             continue;
         };
-        acc = Some(match acc {
-            None => r,
-            Some(a) => a.union(r),
-        });
+        acc = Some(accumulate_damage_rect(acc, r));
     }
     acc
+}
+
+/// Pure: when a window moves, mark its (old+new) extents dirty via scanout ids.
+///
+/// Builds temporary scanout elements for `old`/`new` under `window_id` and
+/// returns [`accumulate_damage`] over both — used by the live compositor when
+/// geometry changes so partial present has a real dirty rect.
+pub fn accumulate_damage_for_window_move(
+    window_id: &str,
+    old: WindowGeometry,
+    new: WindowGeometry,
+) -> Option<DamageRect> {
+    let old_id = format!("{window_id}:old");
+    let new_id = format!("{window_id}:new");
+    let elements = [
+        ScanoutElement {
+            id: old_id.clone(),
+            x: old.x,
+            y: old.y,
+            w: old.width,
+            h: old.height,
+            z: 0,
+        },
+        ScanoutElement {
+            id: new_id.clone(),
+            x: new.x,
+            y: new.y,
+            w: new.width,
+            h: new.height,
+            z: 0,
+        },
+    ];
+    accumulate_damage(&elements, &[old_id.as_str(), new_id.as_str()])
 }
 
 /// Whether a full redraw is cheaper than partial (heuristic).
 pub fn prefer_full_redraw(damage: DamageRect, output_w: i32, output_h: i32) -> bool {
     let out = i64::from(output_w.max(1)) * i64::from(output_h.max(1));
     damage.area() * 2 >= out
+}
+
+/// Session counters for solid-placeholder present honesty.
+///
+/// Prefer real SHM/surface trees; when a frame falls back to placeholders,
+/// [`PlaceholderPresentStats::note_frame_with_placeholders`] increments the
+/// counter and returns `true` **once per session** so the compositor can log.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PlaceholderPresentStats {
+    /// Frames that painted at least one solid placeholder rect.
+    pub frames_with_placeholders: u64,
+    /// Whether the one-shot session log has already been requested.
+    pub logged_once: bool,
+}
+
+impl PlaceholderPresentStats {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a frame that used placeholders.
+    ///
+    /// Returns `true` exactly once (first placeholder frame) so the caller can
+    /// emit a single session log line including the running counter.
+    pub fn note_frame_with_placeholders(&mut self) -> bool {
+        self.frames_with_placeholders = self.frames_with_placeholders.saturating_add(1);
+        if !self.logged_once {
+            self.logged_once = true;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2706,6 +2797,34 @@ mod tests {
             1000,
             1000
         ));
+    }
+
+    #[test]
+    fn damage_region_and_window_move_accumulate() {
+        assert_eq!(
+            damage_region(10, 20, 100, 50),
+            DamageRect::from_xywh(10, 20, 100, 50)
+        );
+        assert!(damage_region(0, 0, 0, 10).is_none());
+        let old = WindowGeometry::new(0, 0, 100, 100);
+        let new = WindowGeometry::new(50, 50, 100, 100);
+        let moved = damage_region_for_geometry_change(old, new).unwrap();
+        assert_eq!(moved, DamageRect::from_xywh(0, 0, 150, 150).unwrap());
+        let via_scanout = accumulate_damage_for_window_move("win", old, new).unwrap();
+        assert_eq!(via_scanout, moved);
+        let acc = accumulate_damage_rect(None, damage_region(0, 0, 10, 10).unwrap());
+        let acc = accumulate_damage_rect(Some(acc), damage_region(20, 20, 10, 10).unwrap());
+        assert_eq!(acc, DamageRect::from_xywh(0, 0, 30, 30).unwrap());
+    }
+
+    #[test]
+    fn placeholder_present_stats_logs_once() {
+        let mut stats = PlaceholderPresentStats::new();
+        assert!(stats.note_frame_with_placeholders());
+        assert_eq!(stats.frames_with_placeholders, 1);
+        assert!(!stats.note_frame_with_placeholders());
+        assert_eq!(stats.frames_with_placeholders, 2);
+        assert!(stats.logged_once);
     }
 
     // -----------------------------------------------------------------------

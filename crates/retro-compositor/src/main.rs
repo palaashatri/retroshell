@@ -31,13 +31,15 @@ mod linux {
     use std::time::Duration;
 
     use retro_compositor::{
-        apply_scale_to_output_config, assign_new_window_to_active, cascade_position,
-        detect_dri3_from_env, detect_output_scale_from_env, focus_window_after_workspace_switch,
-        move_to_top, next_cascade_offset, output_scale_summary, resolve_laid_out_outputs_from_env,
-        select_backend_kind, selection_bytes_for_mime_with_text_fallback, session_mode_note,
-        session_mode_summary, text_input_capability_from_env, text_input_capability_summary,
-        topmost_window_at, total_output_size, window_paint_source, CompositorBackendKind,
-        DisplayPolicy, LaidOutOutput, OutputScale, TextInputCapability, WindowGeometry,
+        accumulate_damage_for_window_move, accumulate_damage_rect, apply_scale_to_output_config,
+        assign_new_window_to_active, cascade_position, detect_dri3_from_env,
+        detect_output_scale_from_env, focus_window_after_workspace_switch, move_to_top,
+        next_cascade_offset, output_scale_summary, prefer_full_redraw,
+        resolve_laid_out_outputs_from_env, select_backend_kind,
+        selection_bytes_for_mime_with_text_fallback, session_mode_note, session_mode_summary,
+        text_input_capability_from_env, text_input_capability_summary, topmost_window_at,
+        total_output_size, window_paint_source, CompositorBackendKind, DamageRect, DisplayPolicy,
+        LaidOutOutput, OutputScale, PlaceholderPresentStats, TextInputCapability, WindowGeometry,
         WindowPaintSource, WorkspaceId, WorkspaceState, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
     };
     use retro_compositor::frame_timing::{FrameScheduler, RefreshRate};
@@ -267,6 +269,14 @@ mod linux {
         hdr_caps: HdrCapabilities,
         frame_scheduler: FrameScheduler,
 
+        // ---- Damage / present honesty ----
+        /// Union of dirty regions from window moves/resizes (partial present plan).
+        pending_damage: Option<DamageRect>,
+        /// Set on workspace switch so the next frame redraws the full output.
+        need_full_redraw: bool,
+        /// Counts frames that fell back to solid placeholders; logs once per session.
+        placeholder_stats: PlaceholderPresentStats,
+
         // ---- XWayland (P1.3) ----
         xwm: Option<X11Wm>,
         xdisplay: Option<u32>,
@@ -372,8 +382,42 @@ mod linux {
             set_primary_focus(&self.display_handle, &self.seat, None);
         }
 
+        fn request_full_redraw(&mut self) {
+            self.need_full_redraw = true;
+            self.pending_damage = None;
+        }
+
+        /// Record dirty rects when a window moves/resizes (`accumulate_damage` over old+new).
+        fn note_window_geometry_change(
+            &mut self,
+            window_id: &str,
+            old: WindowGeometry,
+            new: WindowGeometry,
+        ) {
+            if old == new {
+                return;
+            }
+            if let Some(d) = accumulate_damage_for_window_move(window_id, old, new) {
+                self.pending_damage = Some(accumulate_damage_rect(self.pending_damage, d));
+            }
+        }
+
+        /// Move a mapped window and accumulate damage over old+new extents.
+        #[allow(dead_code)] // used when interactive move/shell rules land
+        fn set_window_position(&mut self, idx: usize, x: i32, y: i32) {
+            if idx >= self.windows.len() {
+                return;
+            }
+            let old = self.windows[idx].geometry();
+            self.windows[idx].position = Point::from((x, y));
+            let new = self.windows[idx].geometry();
+            let id = self.windows[idx].window_id.clone();
+            self.note_window_geometry_change(&id, old, new);
+        }
+
         fn cycle_workspace_next(&mut self) {
             self.workspace_state.cycle_next();
+            self.request_full_redraw();
             eprintln!(
                 "[retro-compositor] {}",
                 self.workspace_state.summary_line()
@@ -383,6 +427,7 @@ mod linux {
 
         fn cycle_workspace_prev(&mut self) {
             self.workspace_state.cycle_prev();
+            self.request_full_redraw();
             eprintln!(
                 "[retro-compositor] {}",
                 self.workspace_state.summary_line()
@@ -393,6 +438,7 @@ mod linux {
         fn activate_workspace_index(&mut self, index: u8) {
             if let Some(ws) = WorkspaceId::new(index) {
                 if self.workspace_state.activate(ws) {
+                    self.request_full_redraw();
                     eprintln!(
                         "[retro-compositor] {}",
                         self.workspace_state.summary_line()
@@ -414,9 +460,26 @@ mod linux {
         ///   surface tree yields zero elements (no committed buffer yet). They never
         ///   replace real content when a buffer has been committed.
         /// - Inactive-workspace windows are not painted (workspace filter).
+        /// - Workspace switch requests a full redraw; window moves accumulate damage.
         fn render_frame(&mut self) {
             self.prune_dead_windows();
             self.layer_surfaces.retain(|l| l.surface.alive());
+
+            // Present plan: workspace switch forces full redraw; otherwise use pending
+            // damage heuristic (still full clear today — partial clip is follow-on).
+            let full_redraw = self.need_full_redraw
+                || self.pending_damage.map_or(true, |d| {
+                    prefer_full_redraw(d, self.output_size.w, self.output_size.h)
+                });
+            self.need_full_redraw = false;
+            let _damage_for_present = if full_redraw {
+                None
+            } else {
+                self.pending_damage.take()
+            };
+            if full_redraw {
+                self.pending_damage = None;
+            }
 
             // Paint order: bottom layers → xdg windows → top/overlay layers.
             use retro_compositor::{plan_compose_order, ChromeLayer};
@@ -562,6 +625,16 @@ mod linux {
                 }
             }
             // Placeholders only for visible windows with no committed buffer.
+            if !placeholders.is_empty() {
+                if self.placeholder_stats.note_frame_with_placeholders() {
+                    eprintln!(
+                        "[retro-compositor] present honesty: frame used solid placeholders \
+                         (no committed SHM buffer for {} window(s)); session counter starts at {}",
+                        placeholders.len(),
+                        self.placeholder_stats.frames_with_placeholders
+                    );
+                }
+            }
             for (rect, color) in &placeholders {
                 if let Err(e) = frame.clear(*color, &[*rect]) {
                     eprintln!("[render] window placeholder clear failed: {e}");
@@ -610,9 +683,11 @@ mod linux {
             on_commit_buffer_handler::<Self>(surface);
             // Update size of the matching window after the client commits.
             // ToplevelSurface::current_state gives us the server-side acknowledged size;
-            // use that or fall back to DEFAULT_WIN.
+            // use that or fall back to DEFAULT_WIN. Size changes accumulate damage.
+            let mut geometry_change: Option<(String, WindowGeometry, WindowGeometry)> = None;
             for w in self.windows.iter_mut() {
                 if w.toplevel.wl_surface() == surface {
+                    let old = w.geometry();
                     let st = w.toplevel.current_state();
                     let (sw, sh) = (
                         if st.size.map_or(0, |s| s.w) > 0 {
@@ -627,8 +702,15 @@ mod linux {
                         },
                     );
                     w.size = Size::from((sw, sh));
+                    let new = w.geometry();
+                    if old != new {
+                        geometry_change = Some((w.window_id.clone(), old, new));
+                    }
                     break;
                 }
+            }
+            if let Some((id, old, new)) = geometry_change {
+                self.note_window_geometry_change(&id, old, new);
             }
         }
     }
@@ -1901,6 +1983,9 @@ mod linux {
             display_policy,
             hdr_caps,
             frame_scheduler,
+            pending_damage: None,
+            need_full_redraw: true, // first frame is always full
+            placeholder_stats: PlaceholderPresentStats::new(),
             xwm: None,
             xdisplay: None,
             x11_surfaces: Vec::new(),

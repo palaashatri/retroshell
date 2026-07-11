@@ -88,6 +88,9 @@ use crate::{
     DrmPresentationStage, WorkspaceId, WorkspaceState, DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W,
     DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
 };
+// Workspace cycle helpers (`cycle_workspace_*` / `activate_workspace_index`) request a
+// full redraw and re-focus the topmost visible window. Super+key bindings can call them
+// when seat keyboard filtering is wired (mirrors nested X11 main path).
 
 /// Compositor-owned selection payload keyed by mime type.
 type MimePayload = Arc<HashMap<String, Vec<u8>>>;
@@ -541,6 +544,7 @@ pub fn run_drm_session() -> Result<()> {
         server_dnd_data: HashMap::new(),
         dnd_icon: None,
         running: true,
+        need_full_redraw: true,
     };
 
     eprintln!(
@@ -553,8 +557,13 @@ pub fn run_drm_session() -> Result<()> {
         state.prune_dead_windows();
         // Continuous present: re-issue dumb pageflip ~1 Hz when scanout armed
         // so the path stays live (full damage-tracked GL scanout of client SHM is
-        // follow-on; when added, only `window_ids_for_present()` should composite).
-        if scanout_armed && frame_i % 60 == 0 {
+        // follow-on; when added, only `window_ids_for_present()` should composite,
+        // and `need_full_redraw` / workspace filter must gate that pass).
+        let force_present = state.need_full_redraw;
+        if force_present {
+            state.need_full_redraw = false;
+        }
+        if scanout_armed && (force_present || frame_i % 60 == 0) {
             if let Some(surface) = drm_surface_keepalive.as_ref() {
                 if let Err(err) = try_present_dumb_frame(surface, present_w, present_h) {
                     tracing::debug!(error = %err, "periodic DRM present failed");
@@ -646,6 +655,8 @@ struct DrmSessionState {
     server_dnd_data: HashMap<String, Vec<u8>>,
     dnd_icon: Option<WlSurface>,
     running: bool,
+    /// Set on workspace switch so the next present/composite pass redraws fully.
+    need_full_redraw: bool,
 }
 
 impl DrmSessionState {
@@ -699,6 +710,47 @@ impl DrmSessionState {
         self.focus_surface(None);
     }
 
+    fn request_full_redraw(&mut self) {
+        self.need_full_redraw = true;
+    }
+
+    /// Super+workspace (or other key) entry points — full redraw + focus rebind.
+    #[allow(dead_code)] // seat Super+key filter will call these when wired
+    fn cycle_workspace_next(&mut self) {
+        self.workspace_state.cycle_next();
+        self.request_full_redraw();
+        eprintln!(
+            "[retro-compositor/drm] {}",
+            self.workspace_state.summary_line()
+        );
+        self.apply_focus_after_workspace_switch();
+    }
+
+    #[allow(dead_code)]
+    fn cycle_workspace_prev(&mut self) {
+        self.workspace_state.cycle_prev();
+        self.request_full_redraw();
+        eprintln!(
+            "[retro-compositor/drm] {}",
+            self.workspace_state.summary_line()
+        );
+        self.apply_focus_after_workspace_switch();
+    }
+
+    #[allow(dead_code)]
+    fn activate_workspace_index(&mut self, index: u8) {
+        if let Some(ws) = WorkspaceId::new(index) {
+            if self.workspace_state.activate(ws) {
+                self.request_full_redraw();
+                eprintln!(
+                    "[retro-compositor/drm] {}",
+                    self.workspace_state.summary_line()
+                );
+                self.apply_focus_after_workspace_switch();
+            }
+        }
+    }
+
     fn handle_libinput(
         &mut self,
         event: smithay::backend::input::InputEvent<LibinputInputBackend>,
@@ -708,6 +760,9 @@ impl DrmSessionState {
         };
         match event {
             InputEvent::Keyboard { event } => {
+                // Key filter for Super+workspace is not yet bound on DRM seat input;
+                // when added, call cycle_workspace_* / activate_workspace_index so
+                // focus + full redraw stay honest (same as nested X11 main).
                 let _ = event.key_code();
                 let _ = event.time_msec();
             }
