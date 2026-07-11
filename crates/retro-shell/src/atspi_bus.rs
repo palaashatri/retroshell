@@ -163,8 +163,15 @@ mod tests {
         assert_eq!(s.detail1, 1);
     }
 
+    /// Serialize tests that share the process-global in-process bus.
+    fn bus_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn try_emit_always_queues_in_process() {
+        let _guard = bus_test_lock();
         // Drain any leftover state from other tests in this binary.
         let _ = drain_in_process_events();
 
@@ -185,6 +192,7 @@ mod tests {
 
     #[test]
     fn emit_chrome_focus_queues_focus_and_state() {
+        let _guard = bus_test_lock();
         let _ = drain_in_process_events();
         let r = emit_chrome_focus(ChromeFocusTarget::DesktopIcons);
         assert!(r.in_process);
