@@ -4,7 +4,17 @@ use retro_shell::*;
 #[test]
 fn test_shell_startup() {
     let shell = RetroShell::startup().unwrap();
-    assert_eq!(shell.workspace_manager.read().total, 4);
+    assert_eq!(shell.workspace_manager.read().total, 8);
+    assert!(server_has_desktop_8());
+}
+
+fn server_has_desktop_8() -> bool {
+    let server = MenuServer::new();
+    server
+        .menus
+        .iter()
+        .flat_map(|m| m.items.iter())
+        .any(|item| item.action_id == "workspace.switch.7")
 }
 
 #[test]

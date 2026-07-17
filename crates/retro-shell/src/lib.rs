@@ -1,24 +1,195 @@
+pub mod a11y_actions;
+pub mod a11y_prefs;
 pub mod application_registry;
+pub mod atspi_bus;
+pub mod audio;
+pub mod capture;
+pub mod chrome_protocol;
 pub mod desktop_manager;
+pub mod display_arrange;
+pub mod display_settings;
 pub mod dock;
+pub mod fdo_notifications;
+pub mod foreign_toplevel;
+pub mod foreign_toplevel_client;
+pub mod i18n;
+pub mod idle_policy;
+pub mod layer_shell_client;
+pub mod keyboard_nav;
 pub mod launch_services;
 pub mod menu_server;
+pub mod mime_open;
+pub mod network_connect;
+pub mod network_manager;
 pub mod notification_center;
+pub mod polkit_agent;
+pub mod portal;
+pub mod portal_dbus;
+pub mod portal_extra;
+pub mod power;
+pub mod screencast_pw;
+pub mod session_actions;
+pub mod session_clients;
 pub mod session_manager;
+pub mod session_packaging;
+pub mod session_recovery;
+pub mod shell_scale;
+pub mod startup_budget;
 pub mod theme_manager;
 pub mod window_manager;
+pub mod window_rules;
 pub mod workspace_manager;
 
+pub use a11y_actions::{
+    a11y_invoke_is_live, actions_for_chrome, chrome_target_for_atspi_path, classify_a11y_invoke,
+    invoke_id_for_object_name, plan_invoke, primary_invoke_for_chrome, resolve_pending_invoke,
+    session_action_for_invoke, session_root_actions, summarize_actions, A11yDispatchTarget,
+    AccessibleAction, ActionInterfaceSummary, InvokePlan,
+};
+pub use a11y_prefs::{
+    apply_a11y_prefs_to_theme_name, effective_animation_ms, A11yPrefs, ContrastPreference,
+    MotionPreference,
+};
 pub use application_registry::ApplicationRegistry;
+pub use atspi_bus::{
+    atspi_dbus_connection_available, chrome_focus_atspi_path, drain_in_process_events,
+    emit_chrome_focus, in_process_event_count, serialize_chrome_focus_for_dbus,
+    try_emit_accessible_event, EmitAccessibleResult,
+};
+pub use audio::{
+    get_volume, set_volume, volume_pactl_get_plan, volume_pactl_set_plan, volume_status_label,
+    volume_wpctl_get_plan, volume_wpctl_set_plan, AudioBackend, AudioError,
+};
+pub use capture::{start_recording, stop_recording, take_screenshot};
+pub use chrome_protocol::{
+    chrome_focus_order, next_chrome_focus, should_paint_kit_chrome, ChromeFocusTarget, ChromeRole,
+    ChromeSession, ProtocolChromeSurface,
+};
 pub use desktop_manager::DesktopManager;
 pub use dock::Dock;
+pub use foreign_toplevel::{
+    apply_toplevel_force_quit, parse_toplevel_force_quit, ForeignToplevelEntry,
+    ForeignToplevelRegistry, ToplevelForceQuit,
+};
+pub use foreign_toplevel_client::{
+    apply_foreign_toplevel_list_event, apply_foreign_toplevel_list_events,
+    try_sync_foreign_toplevels, ForeignToplevelListEvent,
+};
+pub use keyboard_nav::{
+    apply_chrome_nav, is_dismissable_window_title, keyboard_nav_intent, KeyboardNavIntent,
+};
+pub use layer_shell_client::{
+    chrome_to_layer_shell_requests, layer_shell_bind_summary, try_map_layer_shell_chrome,
+    LayerShellBindResult, LayerShellChromeRequest,
+};
 pub use launch_services::LaunchServices;
-pub use menu_server::MenuServer;
+pub use menu_server::{
+    battery_status_label, network_status_label, MenuServer, StatusItem, STATUS_REFRESH_INTERVAL_SECS,
+};
+pub use mime_open::{
+    first_party_binary_for_app_id, mime_from_path, open_plan, open_plan_for_file_uri,
+    parse_desktop_exec, path_from_file_uri, seed_retroshell_defaults, spawn_argv, DesktopAppEntry,
+    MimeOpenRegistry, OpenPlan,
+};
+pub use network_connect::{
+    connect_wifi, describe_nm_connect_plan, execute_nm_connect_plan, nm_connect_plan,
+    nm_connect_plan_validated, validate_nm_connect_request, NmConnectRequest,
+};
+pub use network_manager::{get_network_status, NetworkStatus};
+pub use fdo_notifications::{
+    try_register_session_bus as try_register_fdo_notifications, NotificationDaemon,
+    NotificationPayload, NotificationServerState, NotifySendStyle, ServerInformation, Urgency,
+    FDO_NOTIFICATIONS_BUS_NAME, FDO_NOTIFICATIONS_INTERFACE, FDO_NOTIFICATIONS_PATH,
+};
 pub use notification_center::{NotificationCenter, NotificationPriority};
+pub use portal::{
+    apply_screencast_readiness, create_screencast_session,
+    create_screencast_session_with_backend_note, handle_file_chooser_open, handle_file_chooser_save,
+    handle_open_uri, handle_portal_screenshot_request, plan_open_uri, portal_screenshot_filename,
+    portal_screenshot_uri_for, portal_screenshots_dir, read_all_portal_settings,
+    read_portal_setting, screencast_backend_note, screencast_backend_note_from_socket,
+    select_screencast_sources, start_screencast, start_screencast_with_readiness,
+    take_portal_style_screenshot, take_portal_style_screenshot_with,
+    validate_file_chooser_request, OpenUriAction, PortalFileChooserRequest,
+    PortalFileChooserResult, PortalScreencastRequest, PortalScreencastSession,
+    PortalScreenshotRequest, PortalScreenshotResult, PortalSettingsNamespace,
+    ScreencastStartOutcome, ScreencastStream,
+    PORTAL_BUS_NAME, PORTAL_FILECHOOSER_INTERFACE, PORTAL_OPENURI_INTERFACE, PORTAL_PATH,
+    PORTAL_SCREENCAST_INTERFACE, PORTAL_SCREENSHOT_INTERFACE, PORTAL_SETTINGS_INTERFACE,
+    SCREENCAST_DEFAULT_HEIGHT, SCREENCAST_DEFAULT_WIDTH, SCREENCAST_NOTE_PIPEWIRE_SOCKET,
+    SCREENCAST_NOTE_PORTAL_STUB, SCREENCAST_PLACEHOLDER_NODE_ID, SCREENCAST_SOURCE_TYPE_MONITOR,
+    SCREENCAST_SOURCE_TYPE_WINDOW,
+};
+pub use polkit_agent::{
+    handle_polkit_auth, try_register_polkit_agent, validate_polkit_request, PolkitAgentState,
+    PolkitAuthDecision, PolkitAuthRequest, POLKIT_AGENT_BUS_NAME, POLKIT_AGENT_INTERFACE,
+    POLKIT_AGENT_PATH,
+};
+pub use portal_dbus::try_register_portal_session_bus;
+pub use portal_extra::{
+    active_idle_inhibit_state, active_inhibits, clear_inhibit_store_for_tests, handle_inhibit,
+    handle_inhibit_and_register, handle_print_request, handle_secret_retrieve, inhibit_blocks_idle,
+    inhibit_to_idle_reason, portal_blocks_idle, register_inhibit_cookie, release_inhibit_cookie,
+    InhibitFlag, PortalInhibitCookie, PortalInhibitRequest, PortalPrintRequest, PortalPrintResult,
+    PortalSecretRequest, PortalSecretResult,
+};
+pub use power::{battery_info, BatteryInfo};
+pub use display_arrange::{
+    apply_display_plan_env, arrange_mode_from_env_value, arrangement_bounds, normalize_arrangement,
+    place_outputs, plan_display_apply, ArrangeMode, DisplayApplyPlan, DisplayApplyStep,
+    DisplayArrangement, DisplayOutput, PlacedOutput,
+};
+pub use display_settings::DisplayConfig;
+pub use i18n::{
+    format_message, is_rtl_language, text_direction_for_locale, tr, LocaleId, LocalePrefs,
+    MessageCatalog, TextDirection,
+};
+pub use idle_policy::{
+    idle_phase, recommended_action, secs_until_next_phase, IdleConfig, IdleInhibitState,
+    IdlePhase, IdleRecommendedAction, InhibitReason,
+};
+pub use screencast_pw::{
+    can_claim_live_streams, default_pipewire_socket, plan_list_pipewire_nodes,
+    probe_screencast_readiness, probe_screencast_readiness_host, source_ids_for_portal,
+    sources_from_outputs, sources_from_windows, PwListNodesPlan, ScreencastBackend,
+    ScreencastReadiness, ScreencastSource, ScreencastSourceType,
+};
+pub use session_actions::{
+    confirm_prompt, confirm_prompt_i18n_key, describe_plan, plan_requires_privileges,
+    plan_session_action, plan_session_action_with, requires_confirmation, shell_delta_for_plan,
+    PowerBackend, SessionAction, SessionActionPlan, ShellSessionDelta, LOGIND_BUS,
+    LOGIND_MANAGER_IFACE, LOGIND_PATH,
+};
+pub use window_rules::{
+    default_session_rules, evaluate_rules, field_matches, parse_rules_simple, rule_matches,
+    MatchField, MatchKind, WindowInfo, WindowMatch, WindowRule, WindowRuleActions,
+};
+pub use session_clients::{
+    binary_name_for_bundle, parse_force_quit_entry, resolve_app_binary, spawn_app_client,
+    spawn_open_plan, ForceQuitTarget, SessionClientRegistry,
+};
 pub use session_manager::SessionManager;
+pub use session_packaging::{
+    check_greeter_session_readiness, check_packaging_health, parse_desktop_keys,
+    session_entry_smoke_report, validate_session_desktop, GreeterSessionReadiness, PackagingHealth,
+    SessionEntrySmokeReport, SessionPackagingLayout,
+};
+pub use session_recovery::{
+    recovery_plan, should_attempt_recovery, CheckpointClient, RecoveryStep, SessionCheckpoint,
+};
+pub use shell_scale::{
+    detect_shell_scale_from_env, parse_shell_scale, scale_layout_dim, scaled_chrome_insets,
+    ShellScale,
+};
+pub use startup_budget::{
+    default_desktop_budget, overall_ok, record_phase, total_elapsed_ms, PhaseResult, StartupBudget,
+    StartupPhase,
+};
 pub use theme_manager::ThemeManager;
 pub use window_manager::WindowManager;
-pub use workspace_manager::WorkspaceManager;
+pub use workspace_manager::{
+    WorkspaceManager, COMPOSITOR_WORKSPACE_COUNT, SHELL_DESKTOP_COUNT,
+};
 
 use parking_lot::RwLock;
 use retro_kit::event::MouseButton;
@@ -30,6 +201,7 @@ use retro_kit::label::Label;
 use retro_kit::layout::LayoutView;
 use retro_kit::menu::{Menu, MenuItemKind};
 use retro_kit::menu_bar::MenuBar;
+use retro_kit::text_field::TextField;
 use retro_kit::theme::ThemeContext;
 use retro_kit::window::Window;
 use retro_kit::{
@@ -37,7 +209,6 @@ use retro_kit::{
 };
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -99,8 +270,65 @@ impl RetroShell {
     pub fn startup() -> Result<Self> {
         let shell = Self::new();
         shell.launch_services.write().scan_applications();
-        shell.theme_manager.write().load_default();
+        {
+            let mut tm = shell.theme_manager.write();
+            tm.load_default();
+            // Load named theme + a11y prefs (high_contrast / reduced_motion) from settings.conf.
+            tm.load_theme_from_settings();
+        }
+        // Locale from LANG + optional settings.conf; drive system menu chrome strings.
+        {
+            let conf_text = read_settings_conf_text();
+            let prefs = if conf_text.is_empty() {
+                LocalePrefs::parse_from_env_lang(std::env::var("LANG").ok().as_deref())
+            } else {
+                let mut p = LocalePrefs::parse_from_conf(&conf_text);
+                // Env LANG still wins when conf has no locale key.
+                if p.locale.language == "en"
+                    && p.locale.region.as_deref() == Some("US")
+                    && !conf_text.lines().any(|l| {
+                        let t = l.trim();
+                        t.starts_with("locale=")
+                            || t.starts_with("lang=")
+                            || t.starts_with("language=")
+                    })
+                {
+                    p = LocalePrefs::parse_from_env_lang(std::env::var("LANG").ok().as_deref());
+                }
+                p
+            };
+            shell.menu_server.write().apply_locale_labels(&prefs);
+            tracing::info!(locale = %prefs.locale.tag(), "shell menu locale applied");
+        }
+        // Multi-monitor arrange: plan + live EmitLayoutEnv (RETROSHELL_OUTPUTS_LAYOUT).
+        apply_display_config_from_settings();
+        // Best-effort FreeDesktop Notifications on the session bus (Linux).
+        // Failure is non-fatal: pure NotificationCenter still works in-process.
+        let _ = fdo_notifications::try_register_session_bus(shell.notification_center.clone());
+        // Best-effort portal Screenshot/Settings/OpenURI on the session bus (Linux).
+        let _ = portal_dbus::try_register_portal_session_bus();
+        // Best-effort polkit authentication agent (Linux).
+        let _ = polkit_agent::try_register_polkit_agent();
         Ok(shell)
+    }
+
+    /// Bind protocol session chrome (layer-shell) and sync foreign-toplevel list.
+    ///
+    /// Call after `WAYLAND_DISPLAY` is set (compositor/labwc running). Non-fatal.
+    pub(crate) fn attach_wayland_session_protocols(desktop: &mut ShellDesktop) {
+        if let Some(summary) = layer_shell_client::try_map_layer_shell_chrome(&desktop.chrome) {
+            tracing::info!(
+                surfaces = ?summary.mapped_namespaces,
+                "shell mapped layer-shell chrome"
+            );
+            desktop.layer_shell_bound = true;
+        }
+        if let Some(n) =
+            foreign_toplevel_client::try_sync_foreign_toplevels(&mut desktop.foreign_toplevels)
+        {
+            tracing::info!(toplevels = n, "shell synced foreign-toplevel-list");
+            desktop.foreign_toplevel_synced = true;
+        }
     }
 
     pub fn run(&self) -> Result<()> {
@@ -149,6 +377,42 @@ struct ShellDesktop {
     locked: bool,
     /// Lock screen overlay widget, shown when `locked` is true.
     lock_screen_widget: Window,
+    /// Password field for the lock screen.
+    lock_password_field: TextField,
+    /// Error message to display on lock screen (e.g., "Incorrect password").
+    lock_error_message: Option<String>,
+    /// The expected lock password (from env or config).
+    expected_lock_password: Option<String>,
+    /// Independent first-party app processes (compositor/labwc clients).
+    session_clients: SessionClientRegistry,
+    /// Protocol-backed session chrome (layer-shell menu bar / dock roles).
+    chrome: ChromeSession,
+    /// Foreign-toplevel registry for task list / Force Quit (compositor-synced when possible).
+    foreign_toplevels: ForeignToplevelRegistry,
+    /// True after a successful `zwlr_layer_shell_v1` chrome bind.
+    layer_shell_bound: bool,
+    /// True after a successful `ext_foreign_toplevel_list_v1` sync.
+    foreign_toplevel_synced: bool,
+    /// Keyboard-only chrome focus region (Tab cycle).
+    chrome_focus: ChromeFocusTarget,
+    /// Monotonic instant of last user input (for idle auto-lock).
+    last_input_at: std::time::Instant,
+    /// Idle lock/suspend policy (from defaults / settings.conf).
+    idle_config: IdleConfig,
+    /// Portal / media idle inhibit tokens.
+    idle_inhibit: IdleInhibitState,
+    /// MIME open registry (seeded with RetroShell defaults).
+    mime_registry: MimeOpenRegistry,
+    /// When false, file open records [`Self::last_mime_open`] only (unit tests).
+    mime_open_spawn: bool,
+    /// Last MIME open plan produced by folder double-click / open path (tests + status).
+    last_mime_open: Option<OpenPlan>,
+    /// Last menu-bar status refresh (battery / volume / network).
+    last_status_refresh: std::time::Instant,
+    /// Last network connect attempt outcome (tests + status UI).
+    last_network_connect: Option<std::result::Result<String, String>>,
+    /// When false, network connect validates/plans only (unit tests; no nmcli spawn).
+    network_connect_spawn: bool,
 }
 
 struct ShellWindow {
@@ -246,6 +510,10 @@ impl ShellDesktop {
 
         let menus = menu_server.read().menus.clone();
         let lock_screen_widget = build_lock_screen_window();
+        let expected_lock_password = get_lock_password();
+        let mut lock_password_field = TextField::new()
+            .with_placeholder("Enter password");
+        lock_password_field.is_password = true;
         let mut shell = Self {
             state: WidgetState::new(),
             menu_bar: MenuBar::new(menus),
@@ -265,9 +533,205 @@ impl ShellDesktop {
             last_error: None,
             locked: false,
             lock_screen_widget,
+            lock_password_field,
+            lock_error_message: None,
+            expected_lock_password,
+            session_clients: SessionClientRegistry::new(),
+            // Protocol chrome: menu bar (24) + dock (64) matching content_bounds insets.
+            chrome: ChromeSession::bootstrap_default(1280, 800, 24, 64),
+            foreign_toplevels: ForeignToplevelRegistry::new(),
+            layer_shell_bound: false,
+            foreign_toplevel_synced: false,
+            chrome_focus: ChromeFocusTarget::MenuBar,
+            last_input_at: std::time::Instant::now(),
+            // settings.conf flat keys (idle_lock_secs, …) when present; else defaults.
+            idle_config: IdleConfig::parse_from_conf(&read_settings_conf_text()),
+            idle_inhibit: IdleInhibitState::new(),
+            mime_registry: {
+                let mut reg = MimeOpenRegistry::new();
+                seed_retroshell_defaults(&mut reg);
+                reg
+            },
+            mime_open_spawn: true,
+            last_mime_open: None,
+            last_status_refresh: std::time::Instant::now(),
+            last_network_connect: None,
+            network_connect_spawn: true,
         };
+        // Map layer-shell chrome + sync foreign-toplevel list when a compositor is live.
+        RetroShell::attach_wayland_session_protocols(&mut shell);
         shell.open_finder_window();
         shell
+    }
+
+    /// Refresh foreign-toplevel list from the compositor before showing Force Quit.
+    fn refresh_foreign_toplevels_from_compositor(&mut self) {
+        if let Some(n) =
+            foreign_toplevel_client::try_sync_foreign_toplevels(&mut self.foreign_toplevels)
+        {
+            self.foreign_toplevel_synced = true;
+            tracing::debug!(toplevels = n, "Force Quit: foreign-toplevel-list refreshed");
+            self.apply_foreign_rule_workspaces_to_shell_windows();
+        }
+    }
+
+    /// When foreign-toplevel window rules assign a workspace, move matching
+    /// [`ShellWindow`]s to that workspace index (clamped to 0..7).
+    fn apply_foreign_rule_workspaces_to_shell_windows(&mut self) {
+        let assignments: Vec<(String, String, usize)> = self
+            .foreign_toplevels
+            .entries()
+            .filter_map(|e| {
+                e.workspace.map(|ws| {
+                    (
+                        e.title.clone(),
+                        e.app_id.clone(),
+                        (ws as usize).min(SHELL_DESKTOP_COUNT.saturating_sub(1)),
+                    )
+                })
+            })
+            .collect();
+        if assignments.is_empty() {
+            return;
+        }
+        let mut moved = 0usize;
+        for (title, app_id, ws) in assignments {
+            for shell_window in &mut self.windows {
+                let title_match = shell_window.window.title() == title;
+                // Session-client foreign entries use binary name as title and
+                // bundle_id as app_id; also match title substring for internal windows.
+                let app_title_match = !app_id.is_empty()
+                    && shell_window
+                        .window
+                        .title()
+                        .to_ascii_lowercase()
+                        .contains(&app_id.to_ascii_lowercase());
+                if title_match || app_title_match {
+                    if shell_window.workspace != ws {
+                        shell_window.workspace = ws;
+                        self.window_manager
+                            .write()
+                            .assign_workspace(shell_window.id, ws);
+                        moved += 1;
+                    }
+                }
+            }
+        }
+        if moved > 0 {
+            tracing::debug!(moved, "window rules: moved ShellWindows to rule workspaces");
+        }
+    }
+
+    /// Drain kit AT-SPI pending DoAction queue into real shell handlers.
+    fn drain_a11y_pending_actions(&mut self) {
+        let pending = retro_kit::drain_pending_actions();
+        for action in pending {
+            let plan = resolve_pending_invoke(
+                &action.path,
+                &action.object_name,
+                action.action_index,
+                &action.action_name,
+            );
+            if !plan.valid {
+                tracing::debug!(
+                    path = %action.path,
+                    name = %action.object_name,
+                    "a11y DoAction: no shell invoke mapping"
+                );
+                continue;
+            }
+            tracing::info!(
+                invoke_id = %plan.invoke_id,
+                path = %action.path,
+                "a11y DoAction → shell handler"
+            );
+            self.dispatch_a11y_invoke(&plan.invoke_id);
+        }
+    }
+
+    /// Handle chrome.* and shell.* invoke ids from a11y / keyboard Activate.
+    ///
+    /// Routing is pure-classified via [`classify_a11y_invoke`]; side effects run here.
+    fn dispatch_a11y_invoke(&mut self, invoke_id: &str) {
+        match classify_a11y_invoke(invoke_id) {
+            A11yDispatchTarget::ChromeMenuActivate => {
+                // Open the system/Retro menu (index 0). Prefer title "Retro" when present.
+                if let Some(idx) = self
+                    .menu_bar
+                    .menus
+                    .iter()
+                    .position(|m| m.title == "Retro")
+                {
+                    let _ = self.menu_bar.open_menu_at(idx);
+                } else {
+                    let _ = self.menu_bar.open_first_menu();
+                }
+            }
+            A11yDispatchTarget::ChromeDockActivate => {
+                if let Some(bundle) = self.bundle_ids.first().cloned() {
+                    self.launch_external_app(&bundle);
+                }
+            }
+            A11yDispatchTarget::ChromeDesktopOpen => {
+                if let Some(item) = self.desktop.items.iter().position(|i| i.selected) {
+                    self.launch_item(item);
+                } else if !self.desktop.items.is_empty() {
+                    self.launch_item(0);
+                }
+            }
+            A11yDispatchTarget::ChromeWindowActivateNext => {
+                // Focus next non-minimized window on the active workspace (Cmd+Tab parity).
+                self.focus_next_window();
+            }
+            A11yDispatchTarget::ChromeWindowClose => self.close_active_window(),
+            A11yDispatchTarget::ChromeWindowMinimize => {
+                if let Some(id) = self.active_window_id() {
+                    self.toggle_window_minimized(id);
+                }
+            }
+            A11yDispatchTarget::ChromeDockMenu => {
+                self.open_dock_context_menu_window();
+            }
+            A11yDispatchTarget::ChromeDesktopMenu => {
+                self.open_desktop_context_menu_window();
+            }
+            A11yDispatchTarget::MenuAction(action) => {
+                // shell.lock / shell.log_out / shell.notification_center /
+                // shell.force_quit / workspace.next / workspace.previous / …
+                self.handle_menu_action(action);
+            }
+            A11yDispatchTarget::MenuActionOwned(action) => {
+                self.handle_menu_action(&action);
+            }
+            A11yDispatchTarget::Unknown => {
+                // Fall through: keep prior behaviour for any unmapped but menu-like ids.
+                self.handle_menu_action(invoke_id);
+            }
+        }
+    }
+
+    /// Cycle focus to the next non-minimized window on the active workspace.
+    fn focus_next_window(&mut self) {
+        let active_workspace = self.active_workspace();
+        let workspace_window_ids: Vec<Uuid> = self
+            .windows
+            .iter()
+            .filter(|w| w.workspace == active_workspace && w.mode != ShellWindowMode::Minimized)
+            .map(|w| w.id)
+            .collect();
+        if workspace_window_ids.is_empty() {
+            return;
+        }
+        let next_id = if let Some(current_id) = self.active_window_id() {
+            let pos = workspace_window_ids
+                .iter()
+                .position(|&id| id == current_id)
+                .unwrap_or(0);
+            workspace_window_ids[(pos + 1) % workspace_window_ids.len()]
+        } else {
+            workspace_window_ids[0]
+        };
+        self.focus_window(next_id);
     }
 
     fn launch_item(&mut self, index: usize) {
@@ -309,12 +773,32 @@ impl ShellDesktop {
     }
 
     fn content_bounds(&self) -> Rect {
-        let dock_height = 64.0;
+        // Prefer protocol chrome exclusive zones (menu bar top / dock bottom).
+        // HiDPI: scale insets when RETROSHELL_OUTPUT_SCALE / SHELL_SCALE > 1.
+        let scale = detect_shell_scale_from_env();
+        let menu_height = self
+            .chrome
+            .surfaces()
+            .iter()
+            .find(|s| s.role == ChromeRole::MenuBar && s.mapped)
+            .map(|s| s.height as f64)
+            .unwrap_or(24.0);
+        let dock_height = self
+            .chrome
+            .surfaces()
+            .iter()
+            .find(|s| s.role == ChromeRole::Dock && s.mapped)
+            .map(|s| s.height as f64)
+            .unwrap_or(64.0);
+        let (menu_height, dock_height) =
+            scaled_chrome_insets(scale, menu_height, dock_height);
+        let menu_height = menu_height as f32;
+        let dock_height = dock_height as f32;
         Rect::new(
             self.rect().x,
-            self.rect().y + 24.0,
+            self.rect().y + menu_height,
             self.rect().width,
-            (self.rect().height - 24.0 - dock_height).max(0.0),
+            (self.rect().height - menu_height - dock_height).max(0.0),
         )
     }
 
@@ -640,12 +1124,9 @@ impl ShellDesktop {
 
         let mut grid = WorkspaceGridView::new();
         grid.active_index = active;
-        grid.items = vec![
-            "Desktop 1".to_string(),
-            "Desktop 2".to_string(),
-            "Desktop 3".to_string(),
-            "Desktop 4".to_string(),
-        ];
+        grid.items = (1..=SHELL_DESKTOP_COUNT)
+            .map(|n| format!("Desktop {n}"))
+            .collect();
         layout.add(Box::new(grid));
 
         let desc = format!("Active: {} ({} windows)", name, visible_count);
@@ -674,14 +1155,33 @@ impl ShellDesktop {
     }
 
     fn launch_external_app(&mut self, bundle_id: &str) {
-        match launch_app_binary(bundle_id) {
-            Ok(()) => {
+        // Reap exited clients first so the registry reflects the live multi-client set.
+        let _ = self.session_clients.reap();
+        match session_clients::spawn_app_client(bundle_id) {
+            Ok(client) => {
+                let pid = client.pid;
+                let binary_name = client.binary_name.clone();
+                tracing::info!(
+                    "Launched multi-client app {bundle_id} as pid {pid} (compositor-managed surface)"
+                );
+                // Foreign-toplevel mirror for Force Quit / task list (with pid).
+                self.foreign_toplevels.add(ForeignToplevelEntry::new(
+                    format!("session-client-{pid}"),
+                    binary_name,
+                    bundle_id,
+                    Some(pid),
+                ));
+                self.apply_foreign_rule_workspaces_to_shell_windows();
+                self.session_clients.register(client);
                 self.last_error = None;
                 self.activate_app_menu(bundle_id);
                 self.record_notification(
                     bundle_id,
                     "Application Launched",
-                    "RetroShell started the application process.",
+                    &format!(
+                        "Started process pid={pid} ({} client(s) active).",
+                        self.session_clients.len()
+                    ),
                     NotificationPriority::Normal,
                 );
             }
@@ -695,6 +1195,45 @@ impl ShellDesktop {
                     NotificationPriority::Normal,
                 );
             }
+        }
+    }
+
+    /// Apply a Force Quit list selection (window title, external client, or foreign toplevel).
+    /// Returns true if a shell window closed or a client/toplevel was force-quit.
+    fn apply_force_quit_entry(&mut self, entry: &str) -> bool {
+        if let Some(target) = parse_toplevel_force_quit(entry) {
+            let ok = apply_toplevel_force_quit(&mut self.foreign_toplevels, &target);
+            if let Some(pid) = target.pid {
+                // Keep session client registry in sync when quitting by pid.
+                let client_ok = self.session_clients.force_quit_pid(pid);
+                return ok || client_ok;
+            }
+            return ok;
+        }
+        match parse_force_quit_entry(entry) {
+            Some(ForceQuitTarget::WindowTitle(title)) => {
+                let target_id = self
+                    .windows
+                    .iter()
+                    .find(|w| w.window.title() == title)
+                    .map(|w| w.id);
+                if let Some(tid) = target_id {
+                    self.close_window(tid);
+                    true
+                } else {
+                    false
+                }
+            }
+            Some(ForceQuitTarget::ClientPid(pid)) => {
+                // Drop matching foreign-toplevel entry if present (match by pid).
+                let _ = self.foreign_toplevels.remove_match(&ToplevelForceQuit {
+                    title: String::new(),
+                    app_id: None,
+                    pid: Some(pid),
+                });
+                self.session_clients.force_quit_pid(pid)
+            }
+            None => false,
         }
     }
 
@@ -748,6 +1287,103 @@ impl ShellDesktop {
             title: item.label.clone(),
             path,
         })
+    }
+
+    /// File (non-directory) icon under a folder window at `point`, if any.
+    fn folder_file_target_at(&self, window_index: usize, point: Point) -> Option<PathBuf> {
+        let shell_window = self.windows.get(window_index)?;
+        let folder_path = shell_window.folder_path.as_ref()?;
+        let icon_view = shell_window
+            .window
+            .content
+            .as_ref()
+            .and_then(|content| content.as_any().downcast_ref::<IconView>())?;
+        let item = icon_view
+            .items
+            .iter()
+            .find(|item| item.rect.contains(point))?;
+        // Folders are handled by folder_open_target_at.
+        if item.icon.as_deref() == Some("folder") {
+            return None;
+        }
+        let path = folder_path.join(&item.label);
+        if path.is_dir() {
+            return None;
+        }
+        if !path.exists() {
+            return None;
+        }
+        Some(path)
+    }
+
+    /// Open a filesystem path via MIME registry (`open_plan` + optional live spawn).
+    ///
+    /// Folders should use [`Self::open_folder_window`] instead. When
+    /// `mime_open_spawn` is false (unit tests), only records the plan.
+    fn open_path_with_mime(&mut self, path: PathBuf) {
+        match open_plan(&self.mime_registry, &path) {
+            Ok(plan) => {
+                tracing::info!(
+                    app_id = %plan.app_id,
+                    argv = ?spawn_argv(&plan),
+                    path = %path.display(),
+                    "MIME open plan"
+                );
+                self.last_mime_open = Some(plan.clone());
+                if !self.mime_open_spawn {
+                    return;
+                }
+                let _ = self.session_clients.reap();
+                match session_clients::spawn_open_plan(&plan) {
+                    Ok(client) => {
+                        let pid = client.pid;
+                        let binary_name = client.binary_name.clone();
+                        let bundle_id = client.bundle_id.clone();
+                        self.foreign_toplevels.add(ForeignToplevelEntry::new(
+                            format!("session-client-{pid}"),
+                            binary_name,
+                            &bundle_id,
+                            Some(pid),
+                        ));
+                        self.apply_foreign_rule_workspaces_to_shell_windows();
+                        self.session_clients.register(client);
+                        self.last_error = None;
+                        self.activate_app_menu(&bundle_id);
+                        self.record_notification(
+                            &bundle_id,
+                            "Opened",
+                            &format!("{} (pid={pid})", path.display()),
+                            NotificationPriority::Normal,
+                        );
+                    }
+                    Err(msg) => {
+                        tracing::error!(
+                            path = %path.display(),
+                            error = %msg,
+                            "MIME open spawn failed"
+                        );
+                        self.last_error = Some(msg.clone());
+                        self.record_notification(
+                            "com.retro.shell",
+                            "Open Failed",
+                            &msg,
+                            NotificationPriority::Normal,
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(path = %path.display(), error = %err, "MIME open: no handler");
+                self.last_mime_open = None;
+                self.last_error = Some(err.clone());
+                self.record_notification(
+                    "com.retro.shell",
+                    "No Application",
+                    &format!("{}: {err}", path.display()),
+                    NotificationPriority::Normal,
+                );
+            }
+        }
     }
 
     fn layout_window(&mut self, id: Uuid) {
@@ -824,18 +1460,20 @@ impl ShellDesktop {
                 ],
             ),
             "shell.force_quit" => self.open_force_quit_window(),
-            "shell.lock" => {
-                self.session_manager.write().lock_screen();
-                self.locked = true;
+            "shell.lock" => self.handle_session_action(session_actions::SessionAction::Lock),
+            "shell.log_out" | "shell.logout" => {
+                self.handle_session_action(session_actions::SessionAction::Logout)
             }
-            "shell.log_out" => self.open_shell_status_window(
-                "Log Out",
-                [
-                    "RetroShell session logout is not active in this prototype.".to_string(),
-                    "Close the VM/container or quit RetroShell to end this lab session."
-                        .to_string(),
-                ],
-            ),
+            "shell.suspend" | "shell.sleep" => {
+                self.handle_session_action(session_actions::SessionAction::Suspend)
+            }
+            "shell.reboot" | "shell.restart" => {
+                self.handle_session_action(session_actions::SessionAction::Reboot)
+            }
+            "shell.power_off" | "shell.shutdown" | "shell.poweroff" => {
+                self.handle_session_action(session_actions::SessionAction::PowerOff)
+            }
+            "shell.network_connect" => self.handle_network_connect_menu(),
             "shell.save" => self.open_shell_status_window(
                 "Save",
                 ["The active shell window has no document to save.".to_string()],
@@ -844,6 +1482,69 @@ impl ShellDesktop {
                 "Print",
                 ["Printing is not connected to a system print service yet.".to_string()],
             ),
+            "shell.screenshot" | "shell.portal_screenshot" => {
+                // shell.portal_screenshot is the FreeDesktop portal-facing path;
+                // until xdg-desktop-portal is wired it uses the same local capture.
+                let result = if action == "shell.portal_screenshot" {
+                    portal::take_portal_style_screenshot()
+                } else {
+                    capture::take_screenshot()
+                };
+                match result {
+                    Ok(path) => {
+                        self.record_notification(
+                            "com.retro.shell",
+                            "Screenshot Saved",
+                            &format!("Saved to {}", path.display()),
+                            NotificationPriority::Normal,
+                        );
+                    }
+                    Err(err) => {
+                        self.record_notification(
+                            "com.retro.shell",
+                            "Screenshot Failed",
+                            &err.to_string(),
+                            NotificationPriority::High,
+                        );
+                    }
+                }
+            }
+            "shell.start_recording" => match capture::start_recording() {
+                Ok(path) => {
+                    self.record_notification(
+                        "com.retro.shell",
+                        "Screen Recording",
+                        &format!("Recording to {}", path.display()),
+                        NotificationPriority::Normal,
+                    );
+                }
+                Err(err) => {
+                    self.record_notification(
+                        "com.retro.shell",
+                        "Recording Failed",
+                        &err.to_string(),
+                        NotificationPriority::High,
+                    );
+                }
+            },
+            "shell.stop_recording" => match capture::stop_recording() {
+                Ok(path) => {
+                    self.record_notification(
+                        "com.retro.shell",
+                        "Recording Saved",
+                        &format!("Saved to {}", path.display()),
+                        NotificationPriority::Normal,
+                    );
+                }
+                Err(err) => {
+                    self.record_notification(
+                        "com.retro.shell",
+                        "Stop Recording Failed",
+                        &err.to_string(),
+                        NotificationPriority::High,
+                    );
+                }
+            },
             "shell.undo" | "shell.redo" | "shell.cut" | "shell.copy" | "shell.paste"
             | "shell.select_all" => self.open_shell_status_window(
                 "Edit",
@@ -916,6 +1617,231 @@ impl ShellDesktop {
             ],
         );
         true
+    }
+
+    /// Pure API / UI path: validate → nmcli plan → best-effort spawn (like systemctl).
+    ///
+    /// When `network_connect_spawn` is false, only validation + plan are recorded
+    /// (unit tests). Missing `nmcli` returns `Err` without panicking.
+    pub fn request_network_connect(&mut self, req: NmConnectRequest) {
+        match nm_connect_plan_validated(&req) {
+            Ok(plan) => {
+                let summary = describe_nm_connect_plan(&plan);
+                if !self.network_connect_spawn {
+                    self.last_network_connect = Some(Ok(summary.clone()));
+                    tracing::info!(%summary, "network connect plan (spawn disabled)");
+                    return;
+                }
+                match execute_nm_connect_plan(&plan) {
+                    Ok(()) => {
+                        tracing::info!(%summary, "network connect spawned");
+                        self.last_network_connect = Some(Ok(summary.clone()));
+                        self.record_notification(
+                            "com.retro.shell",
+                            "Network",
+                            &format!("Connecting: {}", req.ssid),
+                            NotificationPriority::Normal,
+                        );
+                        self.menu_server.write().refresh_status_items();
+                        self.last_status_refresh = std::time::Instant::now();
+                    }
+                    Err(err) => {
+                        tracing::warn!(%err, "network connect spawn failed");
+                        self.last_network_connect = Some(Err(err.clone()));
+                        self.record_notification(
+                            "com.retro.shell",
+                            "Network Connect Failed",
+                            &err,
+                            NotificationPriority::High,
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                self.last_network_connect = Some(Err(err.clone()));
+                self.record_notification(
+                    "com.retro.shell",
+                    "Network Connect Invalid",
+                    &err,
+                    NotificationPriority::High,
+                );
+            }
+        }
+    }
+
+    /// Menu action: connect using `RETROSHELL_WIFI_SSID` (+ optional password env).
+    fn handle_network_connect_menu(&mut self) {
+        let ssid = std::env::var("RETROSHELL_WIFI_SSID").unwrap_or_default();
+        if ssid.trim().is_empty() {
+            self.open_shell_status_window(
+                "Network Connect",
+                [
+                    "Set RETROSHELL_WIFI_SSID to connect from the menu.".to_string(),
+                    "Optional: RETROSHELL_WIFI_PASSWORD.".to_string(),
+                    "API: ShellDesktop::request_network_connect(NmConnectRequest).".to_string(),
+                ],
+            );
+            return;
+        }
+        let mut req = NmConnectRequest::new(ssid.trim());
+        if let Ok(pw) = std::env::var("RETROSHELL_WIFI_PASSWORD") {
+            if !pw.is_empty() {
+                req = req.with_password(pw);
+            }
+        }
+        self.request_network_connect(req);
+        if let Some(Ok(summary)) = &self.last_network_connect {
+            self.open_shell_status_window(
+                "Network Connect",
+                [
+                    format!("SSID: {}", std::env::var("RETROSHELL_WIFI_SSID").unwrap_or_default()),
+                    summary.clone(),
+                    "Best-effort nmcli spawn (association is asynchronous).".to_string(),
+                ],
+            );
+        } else if let Some(Err(err)) = &self.last_network_connect {
+            self.open_shell_status_window(
+                "Network Connect",
+                [
+                    err.clone(),
+                    "Install NetworkManager (nmcli) on the session host.".to_string(),
+                ],
+            );
+        }
+    }
+
+    /// Apply system volume via pactl/wpctl and refresh menu-bar status (best-effort).
+    pub fn request_set_volume(&mut self, percent: u8) {
+        match set_volume(percent) {
+            Ok(()) => {
+                self.menu_server.write().refresh_status_items();
+                self.last_status_refresh = std::time::Instant::now();
+            }
+            Err(err) => {
+                tracing::debug!(%err, "set_volume failed (status will show placeholder)");
+                // Still refresh so volume label reflects unavailability.
+                self.menu_server.write().refresh_status_items();
+                self.last_status_refresh = std::time::Instant::now();
+            }
+        }
+    }
+
+    /// Execute a session power/logout action via pure plan + shell side effects.
+    fn handle_session_action(&mut self, action: session_actions::SessionAction) {
+        use session_actions::{
+            confirm_prompt, describe_plan, plan_session_action, plan_requires_privileges,
+            shell_delta_for_plan, SessionActionPlan,
+        };
+
+        let plan = plan_session_action(action);
+
+        // Destructive actions: show confirm UI first (status window). User can
+        // re-trigger from Power menu after reading; shell.quit remains immediate.
+        if let Some(prompt) = confirm_prompt(action) {
+            if !matches!(
+                action,
+                session_actions::SessionAction::Logout
+                    | session_actions::SessionAction::Reboot
+                    | session_actions::SessionAction::PowerOff
+            ) {
+                // unreachable for current confirm_prompt set
+            } else {
+                // For logout we still proceed (session exit is the product intent).
+                // Reboot/PowerOff stay gated: show plan + require explicit systemctl spawn
+                // only after confirm status — we present the plan and run system commands
+                // when privileges path is available; otherwise notify.
+                if matches!(
+                    action,
+                    session_actions::SessionAction::Reboot
+                        | session_actions::SessionAction::PowerOff
+                ) {
+                    self.open_shell_status_window(
+                        match action {
+                            session_actions::SessionAction::Reboot => "Restart",
+                            _ => "Shut Down",
+                        },
+                        [
+                            prompt.to_string(),
+                            format!("Plan: {}", describe_plan(&plan)),
+                            if plan_requires_privileges(&plan) {
+                                "This will invoke system power management (systemctl/logind)."
+                                    .to_string()
+                            } else {
+                                String::new()
+                            },
+                            "Executing now…".to_string(),
+                        ],
+                    );
+                }
+            }
+        }
+
+        let delta = shell_delta_for_plan(&plan);
+        if delta.lock {
+            if self.expected_lock_password.is_some() {
+                self.session_manager.write().lock_screen();
+                self.locked = true;
+                self.lock_password_field.set_text("");
+                self.lock_error_message = None;
+            } else {
+                self.notification_center.write().post(
+                    "com.retro.shell",
+                    "Lock Password Not Set",
+                    "Configure RETROSHELL_LOCK_PASSWORD env var or lock_password in ~/.config/retroshell/settings.conf",
+                    NotificationPriority::High,
+                );
+            }
+            return;
+        }
+
+        match plan {
+            SessionActionPlan::ShellExit { code } => {
+                tracing::info!(code, "session logout: shell exit");
+                self.session_manager.write().logout_without_exit();
+                std::process::exit(code);
+            }
+            SessionActionPlan::SystemCommand { argv } => {
+                tracing::info!(?argv, "session power action");
+                match std::process::Command::new(&argv[0]).args(&argv[1..]).spawn() {
+                    Ok(_) => {
+                        self.record_notification(
+                            "com.retro.shell",
+                            "Session",
+                            &format!("Started: {}", argv.join(" ")),
+                            NotificationPriority::Normal,
+                        );
+                    }
+                    Err(err) => {
+                        self.record_notification(
+                            "com.retro.shell",
+                            "Session Action Failed",
+                            &format!("{} ({err})", describe_plan(&SessionActionPlan::SystemCommand { argv: argv.clone() })),
+                            NotificationPriority::High,
+                        );
+                        self.open_shell_status_window(
+                            "Session Action",
+                            [
+                                describe_plan(&SessionActionPlan::SystemCommand { argv }),
+                                format!("Could not spawn: {err}"),
+                                "Install systemd/logind or run on a real session host.".to_string(),
+                            ],
+                        );
+                    }
+                }
+            }
+            SessionActionPlan::LogindMethod { method, interactive } => {
+                self.open_shell_status_window(
+                    "Session Action",
+                    [
+                        format!("logind method: {method} (interactive={interactive})"),
+                        format!("bus: {}", session_actions::LOGIND_BUS),
+                        "D-Bus logind invoke is planned; use systemctl backend in this build."
+                            .to_string(),
+                    ],
+                );
+            }
+            SessionActionPlan::ShellLock => {}
+        }
     }
 
     fn handle_new_folder(&mut self) {
@@ -1152,17 +2078,8 @@ impl ShellDesktop {
         } else {
             "Memory: Not available".to_string()
         };
-        let battery_line = match session_manager::battery_percentage() {
-            Some(pct) => {
-                let status = if session_manager::is_on_battery() {
-                    "Discharging"
-                } else {
-                    "Charging"
-                };
-                format!("Battery: {}% ({})", pct, status)
-            }
-            None => "Battery: Not available".to_string(),
-        };
+        let battery_line = power::battery_info().summary_line();
+        let network_line = network_manager::get_network_status().summary_line();
 
         let mut layout = Layout::vertical(12.0);
         layout.add(Box::new(Label::new("          RetroShell   ")));
@@ -1175,6 +2092,12 @@ impl ShellDesktop {
         layout.add(Box::new(Label::new(format!("Uptime: {uptime}"))));
         layout.add(Box::new(Label::new(mem_line)));
         layout.add(Box::new(Label::new(battery_line)));
+        layout.add(Box::new(Label::new(network_line)));
+        let _ = self.session_clients.reap();
+        layout.add(Box::new(Label::new(format!(
+            "External clients: {}",
+            self.session_clients.len()
+        ))));
 
         let mut btn_layout = Layout::horizontal(10.0);
         btn_layout.add(Box::new(Button::new("OK")));
@@ -1247,6 +2170,8 @@ impl ShellDesktop {
     }
 
     fn open_force_quit_window(&mut self) {
+        // Pull live compositor-owned toplevels into Force Quit list.
+        self.refresh_foreign_toplevels_from_compositor();
         for window in &self.windows {
             if window.window.title() == "Force Quit" {
                 self.focus_window(window.id);
@@ -1265,18 +2190,32 @@ impl ShellDesktop {
         );
 
         let mut layout = Layout::vertical(10.0);
-        layout.add(Box::new(Label::new("Select an application window to force quit:")));
+        layout.add(Box::new(Label::new(
+            "Shell windows, session clients, and compositor foreign-toplevels:",
+        )));
 
         let mut items = Vec::new();
         for w in &self.windows {
             if w.window.title() != "RetroShell Desktop" && w.window.title() != "Force Quit" {
-                items.push(w.window.title().to_string());
+                items.push(format!("window: {}", w.window.title()));
             }
         }
+        let _ = self.session_clients.reap();
+        for client in self.session_clients.clients() {
+            items.push(format!(
+                "client: {} (pid {})",
+                client.binary_name, client.pid
+            ));
+        }
+        items.extend(self.foreign_toplevels.force_quit_labels());
 
         let mut list_view = ListView::new();
         list_view.items = items;
-        list_view.selected_index = if list_view.items.is_empty() { None } else { Some(0) };
+        list_view.selected_index = if list_view.items.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
         layout.add(Box::new(list_view));
 
         let mut btn_layout = Layout::horizontal(10.0);
@@ -1312,6 +2251,57 @@ impl ShellDesktop {
         lines: impl IntoIterator<Item = String>,
     ) {
         self.open_message_window(title, lines);
+    }
+
+    /// a11y `chrome.dock.menu`: status/context shell window listing dock items.
+    fn open_dock_context_menu_window(&mut self) {
+        const TITLE: &str = "Dock Menu";
+        for window in &self.windows {
+            if window.window.title() == TITLE {
+                self.focus_window(window.id);
+                return;
+            }
+        }
+        let dock = self.dock.read();
+        let mut lines = vec!["Dock items:".to_string()];
+        if dock.items.is_empty() {
+            lines.push("(no dock items)".to_string());
+        } else {
+            for (i, item) in dock.items.iter().enumerate() {
+                let state = format!("{:?}", item.state);
+                lines.push(format!(
+                    "{}. {} [{}] {}",
+                    i + 1,
+                    item.label,
+                    item.app_id,
+                    state
+                ));
+            }
+        }
+        drop(dock);
+        self.open_shell_status_window(TITLE, lines);
+    }
+
+    /// a11y `chrome.desktop.menu`: status/context shell window listing desktop icons.
+    fn open_desktop_context_menu_window(&mut self) {
+        const TITLE: &str = "Desktop Menu";
+        for window in &self.windows {
+            if window.window.title() == TITLE {
+                self.focus_window(window.id);
+                return;
+            }
+        }
+        let mut lines = vec!["Desktop icons:".to_string()];
+        if self.desktop.items.is_empty() {
+            lines.push("(no desktop icons)".to_string());
+        } else {
+            for (i, item) in self.desktop.items.iter().enumerate() {
+                let selected = if item.selected { " [selected]" } else { "" };
+                let icon = item.icon.as_deref().unwrap_or("-");
+                lines.push(format!("{}. {} ({}){}", i + 1, item.label, icon, selected));
+            }
+        }
+        self.open_shell_status_window(TITLE, lines);
     }
 
     fn refresh_active_folder_window(&mut self) {
@@ -1472,11 +2462,86 @@ fn build_folder_window(title: &str, path: &PathBuf) -> Window {
     window
 }
 
+fn settings_conf_path() -> PathBuf {
+    std::env::var_os("RETROSHELL_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".config/retroshell"))
+        })
+        .unwrap_or_else(|| PathBuf::from("/tmp/retroshell"))
+        .join("settings.conf")
+}
+
+fn read_settings_conf_text() -> String {
+    fs::read_to_string(settings_conf_path()).unwrap_or_default()
+}
+
+/// Load DisplayConfig and apply arrangement env (live nested layout bridge).
+fn apply_display_config_from_settings() {
+    let path = settings_conf_path();
+    // DisplayConfig::load expects a TOML map with a `[display]` table; also
+    // accept flat arrange_mode= in settings.conf (Settings app write path).
+    let mut config = DisplayConfig::load(&path);
+    config.merge_flat_settings_conf(&read_settings_conf_text());
+    match config.apply_arrangement_env(&[]) {
+        Ok(applied) => {
+            if !applied.is_empty() {
+                tracing::info!(
+                    mode = %config.arrange_mode,
+                    scale = config.scale_percent,
+                    env = ?applied,
+                    "display arrange plan applied (EmitLayoutEnv)"
+                );
+            }
+        }
+        Err(err) => {
+            tracing::warn!(%err, "display arrangement plan failed");
+        }
+    }
+}
+
+fn get_lock_password() -> Option<String> {
+    // First, check environment variable
+    if let Ok(password) = std::env::var("RETROSHELL_LOCK_PASSWORD") {
+        let password = password.trim();
+        if !password.is_empty() {
+            return Some(password.to_string());
+        }
+    }
+
+    // Then, check config file
+    if let Ok(contents) = fs::read_to_string(settings_conf_path()) {
+        for line in contents.lines() {
+            if let Some(value) = line.strip_prefix("lock_password=") {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Pure password check used by the lock screen (and unit tests).
+/// Empty entered password never unlocks. Unlock only on exact match.
+pub fn verify_lock_password(entered: &str, expected: &str) -> bool {
+    !entered.is_empty() && entered == expected
+}
+
+fn shell_locale_prefs() -> LocalePrefs {
+    LocalePrefs::parse_from_env_lang(std::env::var("LANG").ok().as_deref())
+}
+
 fn build_lock_screen_window() -> Window {
+    let locale = shell_locale_prefs();
     let mut layout = Layout::vertical(24.0);
     layout.add(Box::new(Label::new("RetroShell")));
-    layout.add(Box::new(Label::new("Press any key to unlock")));
-    let mut window = Window::new("Lock Screen");
+    layout.add(Box::new(Label::new(tr("lock.prompt", &locale.locale))));
+    let mut window = Window::new(tr("menu.lock_screen", &locale.locale));
     window.set_content(Box::new(LayoutView::new(layout)));
     window
 }
@@ -1707,55 +2772,6 @@ fn trash_dir() -> PathBuf {
         .join("Trash/files")
 }
 
-fn launch_app_binary(bundle_id: &str) -> std::result::Result<(), String> {
-    let binary = match bundle_id {
-        "com.retro.finder" => "finder",
-        "com.retro.settings" => "settings",
-        "com.retro.textedit" => "textedit",
-        "com.retro.terminal" => "terminal",
-        "com.retro.appstore" => "appstore",
-        _ => {
-            return Err(format!("No binary registered for bundle '{bundle_id}'"));
-        }
-    };
-
-    let candidates = [
-        std::env::current_exe()
-            .ok()
-            .and_then(|path| path.parent().map(|dir| dir.join(binary))),
-        Some(PathBuf::from(format!("target/debug/{binary}"))),
-        Some(PathBuf::from(format!("target/release/{binary}"))),
-        Some(PathBuf::from(binary)),
-    ];
-
-    for candidate in candidates.into_iter().flatten() {
-        if candidate.exists() {
-            let mut command = Command::new(&candidate);
-            command.env("RETROSHELL_GLOBAL_MENU", "1");
-            match command.spawn() {
-                Ok(_) => {
-                    tracing::info!("Launched {}", candidate.display());
-                    return Ok(());
-                }
-                Err(err) => {
-                    tracing::error!(
-                        "Failed to spawn '{}': {err} — trying next candidate",
-                        candidate.display()
-                    );
-                    // continue loop to try next candidate
-                }
-            }
-        }
-    }
-
-    let msg = format!(
-        "Could not find executable for '{bundle_id}' — checked PATH and target/{{debug,release}}/{}",
-        binary
-    );
-    tracing::warn!("{msg}");
-    Err(msg)
-}
-
 impl Widget for ShellDesktop {
     fn widget_state(&self) -> &WidgetState {
         &self.state
@@ -1843,24 +2859,72 @@ impl Widget for ShellDesktop {
         {
             active.window.draw(theme);
         }
-        self.dock_view.draw(theme);
+        // When layer-shell chrome is bound, menu bar / dock are protocol surfaces —
+        // skip kit dual-paint so chrome is not overdrawn in the shell canvas.
+        if should_paint_kit_chrome(self.layer_shell_bound) {
+            self.dock_view.draw(theme);
+        }
         // Draw notification banners on top of windows and dock, below menu bar
         for popup in &self.notification_popup_windows {
             popup.draw(theme);
         }
-        self.menu_bar.draw(theme);
+        if should_paint_kit_chrome(self.layer_shell_bound) {
+            self.menu_bar.draw(theme);
+        }
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
-        // When locked, any key press unlocks the screen
-        if self.locked {
-            if let Event::KeyDown { .. } = event {
-                self.session_manager.write().unlock();
-                self.locked = false;
-                return EventResult::Handled;
+        // Any pointer/key activity resets idle timer (auto-lock policy).
+        match event {
+            Event::KeyDown { .. }
+            | Event::KeyUp { .. }
+            | Event::MouseDown { .. }
+            | Event::MouseUp { .. }
+            | Event::MouseMove { .. }
+            | Event::Scroll { .. } => {
+                self.last_input_at = std::time::Instant::now();
             }
-            // Swallow all other events while locked
-            return EventResult::Handled;
+            _ => {}
+        }
+
+        // When locked, handle password entry
+        if self.locked {
+            match event {
+                Event::KeyDown { key: retro_kit::event::KeyCode::Escape, .. } => {
+                    // Escape key: clear the field and error
+                    self.lock_password_field.set_text("");
+                    self.lock_error_message = None;
+                    return EventResult::Handled;
+                }
+                Event::KeyDown { key: retro_kit::event::KeyCode::Enter, .. } => {
+                    // Enter key: attempt to unlock (never unlock on empty / wrong / non-Enter keys)
+                    let entered_password = self.lock_password_field.text().to_string();
+                    if let Some(ref expected) = self.expected_lock_password {
+                        if verify_lock_password(&entered_password, expected) {
+                            self.session_manager.write().unlock();
+                            self.locked = false;
+                            self.lock_password_field.set_text("");
+                            self.lock_error_message = None;
+                            return EventResult::Handled;
+                        } else {
+                            self.lock_error_message = Some("Incorrect password".to_string());
+                            self.lock_password_field.set_text("");
+                            return EventResult::Handled;
+                        }
+                    }
+                    return EventResult::Handled;
+                }
+                Event::Char { .. } | Event::KeyDown { key: retro_kit::event::KeyCode::Backspace, .. } => {
+                    // Pass character/backspace events to the password field
+                    self.lock_password_field.handle_event(event);
+                    self.lock_error_message = None;
+                    return EventResult::Handled;
+                }
+                _ => {
+                    // Swallow all other events while locked
+                    return EventResult::Handled;
+                }
+            }
         }
 
         let result = self.menu_bar.handle_event(event);
@@ -1869,30 +2933,92 @@ impl Widget for ShellDesktop {
         }
 
         if let Event::KeyDown { key, modifiers } = event {
+            // Unified keyboard-only nav policy (Tab / Shift+Tab / Escape / Enter / lock / workspaces).
+            let key_name = match key {
+                retro_kit::event::KeyCode::Tab => "tab",
+                retro_kit::event::KeyCode::Escape => "escape",
+                retro_kit::event::KeyCode::Enter => "enter",
+                retro_kit::event::KeyCode::Space => "space",
+                retro_kit::event::KeyCode::L => "l",
+                retro_kit::event::KeyCode::Q => "q",
+                retro_kit::event::KeyCode::LeftBracket => "[",
+                retro_kit::event::KeyCode::RightBracket => "]",
+                _ => "",
+            };
+            if !key_name.is_empty() {
+                if let Some(intent) = keyboard_nav_intent(
+                    key_name,
+                    modifiers.shift,
+                    modifiers.meta,
+                    modifiers.control,
+                    modifiers.alt,
+                ) {
+                    match intent {
+                        KeyboardNavIntent::NextChromeRegion
+                        | KeyboardNavIntent::PrevChromeRegion => {
+                            self.chrome_focus = apply_chrome_nav(self.chrome_focus, intent);
+                            // Best-effort AT-SPI Focus: in-process always; D-Bus if registered.
+                            let emit = crate::atspi_bus::emit_chrome_focus(self.chrome_focus);
+                            tracing::debug!(
+                                focus = ?self.chrome_focus,
+                                ?intent,
+                                dbus = emit.dbus_emitted,
+                                "chrome focus"
+                            );
+                            return EventResult::Handled;
+                        }
+                        KeyboardNavIntent::Dismiss => {
+                            // Close topmost dismissable transient window.
+                            if let Some(id) = self
+                                .windows
+                                .iter()
+                                .rev()
+                                .find(|w| is_dismissable_window_title(w.window.title()))
+                                .map(|w| w.id)
+                            {
+                                self.close_window(id);
+                                return EventResult::Handled;
+                            }
+                        }
+                        KeyboardNavIntent::Activate => {
+                            // When chrome has focus, drain primary invoke from a11y_actions.
+                            let plan = primary_invoke_for_chrome(self.chrome_focus);
+                            if plan.valid {
+                                tracing::debug!(
+                                    invoke_id = %plan.invoke_id,
+                                    focus = ?self.chrome_focus,
+                                    "chrome Activate → a11y invoke"
+                                );
+                                self.dispatch_a11y_invoke(&plan.invoke_id);
+                                return EventResult::Handled;
+                            }
+                            // Enter on Force Quit list is handled by window widgets below.
+                        }
+                        KeyboardNavIntent::NextWindow => {
+                            // fall through to Meta+Tab block
+                        }
+                        KeyboardNavIntent::LockScreen => {
+                            self.handle_session_action(session_actions::SessionAction::Lock);
+                            return EventResult::Handled;
+                        }
+                        KeyboardNavIntent::LogOut => {
+                            self.handle_session_action(session_actions::SessionAction::Logout);
+                            return EventResult::Handled;
+                        }
+                        KeyboardNavIntent::NextWorkspace => {
+                            self.switch_to_next_workspace();
+                            return EventResult::Handled;
+                        }
+                        KeyboardNavIntent::PrevWorkspace => {
+                            self.switch_to_previous_workspace();
+                            return EventResult::Handled;
+                        }
+                    }
+                }
+            }
             // Cmd+Tab: cycle focus through non-minimized windows on the active workspace
             if modifiers.meta && *key == retro_kit::event::KeyCode::Tab {
-                let active_workspace = self.active_workspace();
-                let workspace_window_ids: Vec<Uuid> = self
-                    .windows
-                    .iter()
-                    .filter(|w| {
-                        w.workspace == active_workspace && w.mode != ShellWindowMode::Minimized
-                    })
-                    .map(|w| w.id)
-                    .collect();
-                if workspace_window_ids.len() > 1 {
-                    let current = self.active_window_id();
-                    let next_id = if let Some(current_id) = current {
-                        let pos = workspace_window_ids
-                            .iter()
-                            .position(|&id| id == current_id)
-                            .unwrap_or(0);
-                        workspace_window_ids[(pos + 1) % workspace_window_ids.len()]
-                    } else {
-                        workspace_window_ids[0]
-                    };
-                    self.focus_window(next_id);
-                }
+                self.focus_next_window();
                 return EventResult::Handled;
             }
 
@@ -1986,49 +3112,62 @@ impl Widget for ShellDesktop {
                 }
 
                 if self.windows[index].window.title() == "Force Quit" {
-                    if let Some(content) = self.windows[index].window.content.as_deref() {
-                        if let Some(layout_view) = content.as_any().downcast_ref::<LayoutView>() {
-                        if let Layout::Vertical { children, .. } = &layout_view.layout {
-                            if children.len() >= 3 {
-                                let list_view = children[1].as_any().downcast_ref::<ListView>();
-                                if let Some(btn_layout_widget) = children[2].as_any().downcast_ref::<LayoutView>() {
-                                    if let Layout::Horizontal { children: btn_children, .. } = &btn_layout_widget.layout {
-                                        if btn_children.len() >= 2 {
-                                            let cancel_btn = btn_children[0].as_any().downcast_ref::<Button>();
-                                            let force_quit_btn = btn_children[1].as_any().downcast_ref::<Button>();
-                                            
-                                            if let Some(btn) = cancel_btn {
-                                                if btn.rect().contains(*point) {
-                                                    self.close_window(window_id);
-                                                    return EventResult::Handled;
-                                                }
-                                            }
-                                            if let Some(btn) = force_quit_btn {
-                                                if btn.rect().contains(*point) {
-                                                    let mut target_window_id = None;
-                                                    if let Some(list) = list_view {
-                                                        if let Some(sel_idx) = list.selected_index {
-                                                            if let Some(target_title) = list.items.get(sel_idx) {
-                                                                target_window_id = self.windows.iter()
-                                                                    .find(|w| w.window.title() == target_title)
-                                                                    .map(|w| w.id);
-                                                            }
-                                                        }
-                                                    }
-                                                    if let Some(tid) = target_window_id {
-                                                        self.close_window(tid);
-                                                    }
-                                                    self.close_window(window_id);
-                                                    return EventResult::Handled;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    // Collect click outcome without holding a borrow across mut methods.
+                    enum FqClick {
+                        Cancel,
+                        Confirm { entry: Option<String> },
                     }
-                }
+                    let fq_click = (|| {
+                        let content = self.windows[index].window.content.as_deref()?;
+                        let layout_view = content.as_any().downcast_ref::<LayoutView>()?;
+                        let Layout::Vertical { children, .. } = &layout_view.layout else {
+                            return None;
+                        };
+                        if children.len() < 3 {
+                            return None;
+                        }
+                        let list_view = children[1].as_any().downcast_ref::<ListView>();
+                        let btn_layout_widget =
+                            children[2].as_any().downcast_ref::<LayoutView>()?;
+                        let Layout::Horizontal {
+                            children: btn_children,
+                            ..
+                        } = &btn_layout_widget.layout
+                        else {
+                            return None;
+                        };
+                        if btn_children.len() < 2 {
+                            return None;
+                        }
+                        let cancel_btn = btn_children[0].as_any().downcast_ref::<Button>()?;
+                        let force_quit_btn = btn_children[1].as_any().downcast_ref::<Button>()?;
+                        if cancel_btn.rect().contains(*point) {
+                            return Some(FqClick::Cancel);
+                        }
+                        if force_quit_btn.rect().contains(*point) {
+                            let entry = list_view.and_then(|list| {
+                                list.selected_index
+                                    .and_then(|i| list.items.get(i).cloned())
+                            });
+                            return Some(FqClick::Confirm { entry });
+                        }
+                        None
+                    })();
+
+                    match fq_click {
+                        Some(FqClick::Cancel) => {
+                            self.close_window(window_id);
+                            return EventResult::Handled;
+                        }
+                        Some(FqClick::Confirm { entry }) => {
+                            if let Some(entry) = entry {
+                                let _ = self.apply_force_quit_entry(&entry);
+                            }
+                            self.close_window(window_id);
+                            return EventResult::Handled;
+                        }
+                        None => {}
+                    }
                 }
 
                 if self.windows[index].window.title() == "Workspace" {
@@ -2129,6 +3268,12 @@ impl Widget for ShellDesktop {
                         return EventResult::Handled;
                     }
 
+                    // File (not folder): MIME open_plan + spawn when handler exists.
+                    if let Some(path) = self.folder_file_target_at(index, *point) {
+                        self.open_path_with_mime(path);
+                        return EventResult::Handled;
+                    }
+
                     let result = self.windows[index].window.handle_event(event);
                     if matches!(result, EventResult::Handled | EventResult::StopPropagation) {
                         return result;
@@ -2159,6 +3304,67 @@ impl Widget for ShellDesktop {
         // Sync lock state from SessionManager
         if self.session_manager.read().state == session_manager::SessionState::Locked && !self.locked {
             self.locked = true;
+        }
+
+        // AT-SPI DoAction queue → real shell handlers (lock / log out / chrome.*).
+        self.drain_a11y_pending_actions();
+
+        // Idle auto-lock: pure policy → shell lock when password configured.
+        // Merge process-wide portal Inhibit cookies (Idle/Suspend flags) without
+        // permanently mutating shell-local idle_inhibit (so UnInhibit clears).
+        if !self.locked {
+            let idle_secs = self.last_input_at.elapsed().as_secs();
+            let mut inhibit = self.idle_inhibit.clone();
+            for reason in portal_extra::active_idle_inhibit_state().reasons() {
+                inhibit.add(*reason);
+            }
+            let phase = idle_phase(
+                &self.idle_config,
+                idle_secs,
+                self.locked,
+                &inhibit,
+            );
+            if recommended_action(phase, self.locked) == IdleRecommendedAction::Lock {
+                if self.expected_lock_password.is_some() {
+                    tracing::info!(idle_secs, "idle policy: auto-lock");
+                    self.handle_session_action(session_actions::SessionAction::Lock);
+                }
+            }
+        }
+
+        // Battery / volume / network menu status: refresh on idle update (throttled).
+        if self.last_status_refresh.elapsed()
+            >= std::time::Duration::from_secs(STATUS_REFRESH_INTERVAL_SECS)
+        {
+            self.menu_server.write().refresh_status_items();
+            self.last_status_refresh = std::time::Instant::now();
+        }
+
+        // Update lock screen widget with current password field state (i18n strings).
+        if self.locked {
+            let locale = shell_locale_prefs();
+            let mut layout = Layout::vertical(12.0);
+            layout.add(Box::new(Label::new("RetroShell")));
+            layout.add(Box::new(Label::new("")));
+            layout.add(Box::new(Label::new(tr("lock.prompt", &locale.locale))));
+
+            // Add a copy of the password field for display
+            let mut field = TextField::new()
+                .with_placeholder(tr("lock.prompt", &locale.locale));
+            field.is_password = true;
+            field.set_text(self.lock_password_field.text());
+            layout.add(Box::new(field));
+
+            if let Some(ref error) = self.lock_error_message {
+                let msg = if error.contains("Incorrect") {
+                    tr("lock.error", &locale.locale)
+                } else {
+                    error.clone()
+                };
+                layout.add(Box::new(Label::new(msg)));
+            }
+
+            self.lock_screen_widget.set_content(Box::new(LayoutView::new(layout)));
         }
 
         self.menu_bar.menus = self.menu_server.read().menus.clone();
@@ -2284,6 +3490,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static MENU_MANIFEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+    static LOCK_PASSWORD_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_shell_root() -> PathBuf {
         let unique = SystemTime::now()
@@ -2314,6 +3521,9 @@ mod tests {
             session_manager,
         );
         desktop.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+        // Unit tests: plan MIME open / nmcli without spawning real processes.
+        desktop.mime_open_spawn = false;
+        desktop.network_connect_spawn = false;
         (desktop, window_manager)
     }
 
@@ -2653,7 +3863,66 @@ mod tests {
         });
 
         assert!(matches!(result, EventResult::Handled));
+        // MIME open is external process — no new shell-managed window.
         assert_eq!(desktop.windows.len(), initial_count);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shell_folder_window_double_click_file_plans_mime_open_textedit() {
+        let root = temp_shell_root();
+        let note = root.join("note.txt");
+        fs::write(&note, "hello").unwrap();
+        let (mut desktop, _) = test_desktop();
+        assert!(!desktop.mime_open_spawn, "tests must not spawn GUI");
+        let root_id = desktop.open_folder_window("Root", root.clone());
+        let index = desktop.window_index(root_id).unwrap();
+        let point = icon_item_center(&desktop.windows[index], "note.txt");
+        let initial_count = desktop.windows.len();
+
+        let result = desktop.handle_event(&Event::DoubleClick {
+            button: MouseButton::Left,
+            point,
+            modifiers: Modifiers::NONE,
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(desktop.windows.len(), initial_count);
+        let plan = desktop
+            .last_mime_open
+            .as_ref()
+            .expect("MIME open plan recorded");
+        assert_eq!(plan.app_id, "com.retro.textedit");
+        assert_eq!(
+            spawn_argv(plan),
+            vec!["textedit".to_string(), note.to_string_lossy().into_owned()]
+        );
+        // No live spawn in unit tests.
+        assert_eq!(desktop.session_clients.len(), 0);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shell_folder_window_double_click_unknown_file_records_no_handler() {
+        let root = temp_shell_root();
+        fs::write(root.join("blob.bin"), [0u8, 1, 2]).unwrap();
+        let (mut desktop, _) = test_desktop();
+        let root_id = desktop.open_folder_window("Root", root.clone());
+        let index = desktop.window_index(root_id).unwrap();
+        let point = icon_item_center(&desktop.windows[index], "blob.bin");
+
+        let result = desktop.handle_event(&Event::DoubleClick {
+            button: MouseButton::Left,
+            point,
+            modifiers: Modifiers::NONE,
+        });
+
+        assert!(matches!(result, EventResult::Handled));
+        assert!(desktop.last_mime_open.is_none());
+        let err = desktop.last_error.as_deref().unwrap_or("");
+        assert!(err.contains("no handler"), "{err}");
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -2818,12 +4087,58 @@ mod tests {
             .expect("uses layout view");
         if let Layout::Vertical { children, .. } = &layout_view.layout {
             let label = children[0].as_any().downcast_ref::<Label>().expect("label");
-            assert_eq!(label.text, "Select an application window to force quit:");
+            assert_eq!(
+                label.text,
+                "Shell windows, session clients, and compositor foreign-toplevels:"
+            );
             let list = children[1].as_any().downcast_ref::<ListView>().expect("list");
-            assert!(list.items.iter().any(|item| item == "Retro HD"));
+            assert!(list
+                .items
+                .iter()
+                .any(|item| item == "window: Retro HD" || item.contains("Retro HD")));
         } else {
             panic!("not vertical layout");
         }
+    }
+
+    #[test]
+    fn force_quit_apply_closes_listed_shell_window() {
+        let (mut desktop, _) = test_desktop();
+        // test_desktop opens a Finder-style "Retro HD" window among others.
+        let before = desktop.windows.len();
+        assert!(
+            desktop
+                .windows
+                .iter()
+                .any(|w| w.window.title() == "Retro HD"),
+            "precondition: Retro HD window present"
+        );
+
+        // Drive the same path Force Quit button uses (shipped apply helper).
+        assert!(desktop.apply_force_quit_entry("window: Retro HD"));
+        assert!(
+            !desktop
+                .windows
+                .iter()
+                .any(|w| w.window.title() == "Retro HD"),
+            "Retro HD must be closed after force quit"
+        );
+        assert!(desktop.windows.len() < before);
+    }
+
+    #[test]
+    fn force_quit_apply_kills_registered_client_pid() {
+        let (mut desktop, _) = test_desktop();
+        desktop.session_clients.register(session_clients::ExternalClient {
+            bundle_id: "com.retro.finder".into(),
+            binary_name: "finder".into(),
+            pid: 424_242,
+            child: None,
+            launched_at_unix: 1,
+        });
+        assert_eq!(desktop.session_clients.len(), 1);
+        assert!(desktop.apply_force_quit_entry("client: finder (pid 424242)"));
+        assert_eq!(desktop.session_clients.len(), 0);
     }
 
     #[test]
@@ -3067,5 +4382,326 @@ mod tests {
             .find(|menu| menu.title == "View")
             .expect("view menu exists");
         assert_eq!(view.items[3].action_id, "shell.toggle_fullscreen");
+    }
+
+    #[test]
+    fn lock_accepts_correct_password() {
+        // Drive the shipped verify_lock_password used by Enter-to-unlock.
+        assert!(verify_lock_password("test_password", "test_password"));
+        assert!(verify_lock_password("s3cret!", "s3cret!"));
+    }
+
+    #[test]
+    fn lock_rejects_wrong_password() {
+        assert!(!verify_lock_password("wrong", "correct_password"));
+        assert!(!verify_lock_password("", "correct_password"));
+        assert!(!verify_lock_password("correct_password", ""));
+        assert!(!verify_lock_password("Correct_password", "correct_password"));
+    }
+
+    #[test]
+    fn lock_password_env_is_source_for_expected_secret() {
+        let _lock = LOCK_PASSWORD_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("RETROSHELL_LOCK_PASSWORD");
+        std::env::set_var("RETROSHELL_LOCK_PASSWORD", "env_secret");
+        let expected = get_lock_password().expect("env secret");
+        assert!(verify_lock_password("env_secret", &expected));
+        assert!(!verify_lock_password("other", &expected));
+        std::env::remove_var("RETROSHELL_LOCK_PASSWORD");
+    }
+
+    #[test]
+    fn a11y_dispatch_shell_session_actions_are_live() {
+        let (mut desktop, _) = test_desktop();
+
+        desktop.dispatch_a11y_invoke("shell.notification_center");
+        assert!(desktop
+            .windows
+            .iter()
+            .any(|w| w.window.title() == "Notification Center"));
+
+        desktop.dispatch_a11y_invoke("shell.force_quit");
+        assert!(desktop
+            .windows
+            .iter()
+            .any(|w| w.window.title() == "Force Quit"));
+
+        desktop.expected_lock_password = Some("secret".into());
+        desktop.dispatch_a11y_invoke("shell.lock");
+        assert!(desktop.locked);
+    }
+
+    #[test]
+    fn a11y_dispatch_chrome_window_close_and_activate_next() {
+        let (mut desktop, window_manager) = test_desktop();
+        // Start with the default Finder; open a second window so activate can cycle.
+        desktop.handle_menu_action("shell.new_finder_window");
+        assert!(desktop.windows.len() >= 2);
+
+        let first = desktop.windows[0].id;
+        let second = desktop.windows[1].id;
+        desktop.focus_window(first);
+        assert_eq!(desktop.active_window_id(), Some(first));
+
+        desktop.dispatch_a11y_invoke("chrome.window.activate");
+        let after_activate = desktop.active_window_id();
+        assert_eq!(after_activate, Some(second));
+        assert_eq!(window_manager.read().active_window, Some(second));
+
+        let before_close = desktop.windows.len();
+        desktop.dispatch_a11y_invoke("chrome.window.close");
+        assert_eq!(desktop.windows.len(), before_close - 1);
+        assert!(!desktop.windows.iter().any(|w| w.id == second));
+    }
+
+    #[test]
+    fn a11y_dispatch_workspace_next_previous() {
+        let (mut desktop, _) = test_desktop();
+        assert_eq!(desktop.active_workspace(), 0);
+
+        desktop.dispatch_a11y_invoke("workspace.next");
+        assert_eq!(desktop.active_workspace(), 1);
+
+        desktop.dispatch_a11y_invoke("workspace.previous");
+        assert_eq!(desktop.active_workspace(), 0);
+    }
+
+    #[test]
+    fn a11y_dispatch_chrome_menu_activate_opens_system_menu() {
+        let (mut desktop, _) = test_desktop();
+        assert!(desktop.menu_bar.open_menu.is_none());
+        assert!(
+            desktop
+                .menu_bar
+                .menus
+                .iter()
+                .any(|m| m.title == "Retro"),
+            "precondition: system Retro menu present"
+        );
+
+        desktop.dispatch_a11y_invoke("chrome.menu.activate");
+        let retro_idx = desktop
+            .menu_bar
+            .menus
+            .iter()
+            .position(|m| m.title == "Retro")
+            .expect("Retro menu");
+        assert_eq!(desktop.menu_bar.open_menu, Some(retro_idx));
+
+        desktop.menu_bar.close();
+        assert!(desktop.menu_bar.open_menu.is_none());
+
+        desktop.dispatch_a11y_invoke("chrome.menu.system");
+        assert_eq!(desktop.menu_bar.open_menu, Some(retro_idx));
+    }
+
+    #[test]
+    fn a11y_dispatch_chrome_dock_menu_opens_status_window() {
+        let (mut desktop, _) = test_desktop();
+        assert!(!desktop.dock.read().items.is_empty(), "precondition: dock items");
+
+        desktop.dispatch_a11y_invoke("chrome.dock.menu");
+        assert!(
+            desktop
+                .windows
+                .iter()
+                .any(|w| w.window.title() == "Dock Menu"),
+            "chrome.dock.menu should open a Dock Menu status window"
+        );
+
+        // Second invoke focuses existing window rather than spawning another.
+        let count = desktop
+            .windows
+            .iter()
+            .filter(|w| w.window.title() == "Dock Menu")
+            .count();
+        desktop.dispatch_a11y_invoke("chrome.dock.menu");
+        let count_after = desktop
+            .windows
+            .iter()
+            .filter(|w| w.window.title() == "Dock Menu")
+            .count();
+        assert_eq!(count, count_after);
+        assert_eq!(
+            desktop
+                .windows
+                .last()
+                .map(|w| w.window.title()),
+            Some("Dock Menu")
+        );
+    }
+
+    #[test]
+    fn a11y_dispatch_chrome_desktop_menu_opens_status_window() {
+        let (mut desktop, _) = test_desktop();
+        assert!(
+            !desktop.desktop.items.is_empty(),
+            "precondition: desktop icons"
+        );
+
+        desktop.dispatch_a11y_invoke("chrome.desktop.menu");
+        assert!(
+            desktop
+                .windows
+                .iter()
+                .any(|w| w.window.title() == "Desktop Menu"),
+            "chrome.desktop.menu should open a Desktop Menu status window"
+        );
+
+        let count = desktop
+            .windows
+            .iter()
+            .filter(|w| w.window.title() == "Desktop Menu")
+            .count();
+        desktop.dispatch_a11y_invoke("chrome.desktop.menu");
+        let count_after = desktop
+            .windows
+            .iter()
+            .filter(|w| w.window.title() == "Desktop Menu")
+            .count();
+        assert_eq!(count, count_after);
+        assert_eq!(
+            desktop
+                .windows
+                .last()
+                .map(|w| w.window.title()),
+            Some("Desktop Menu")
+        );
+    }
+
+    #[test]
+    fn a11y_chrome_activate_enter_dispatches_primary_invoke() {
+        let (mut desktop, _) = test_desktop();
+        desktop.chrome_focus = ChromeFocusTarget::Windows;
+        desktop.handle_menu_action("shell.new_finder_window");
+        let first = desktop.windows[0].id;
+        desktop.focus_window(first);
+
+        let result = desktop.handle_event(&Event::KeyDown {
+            key: retro_kit::event::KeyCode::Enter,
+            modifiers: Modifiers::NONE,
+        });
+        assert!(matches!(result, EventResult::Handled));
+        // Windows primary invoke is chrome.window.activate → focus next.
+        assert_ne!(desktop.active_window_id(), Some(first));
+    }
+
+    #[test]
+    fn idle_config_parses_from_settings_conf_keys() {
+        let cfg = IdleConfig::parse_from_conf(
+            "# comment\nidle_warn_secs=15\nidle_lock_secs=45\nidle_suspend_secs=90\nlock_on_suspend=false\n",
+        );
+        assert_eq!(cfg.warn_after_secs, 15);
+        assert_eq!(cfg.lock_after_secs, 45);
+        assert_eq!(cfg.suspend_after_secs, 90);
+        assert!(!cfg.lock_on_suspend);
+        // Empty conf keeps defaults (used when settings.conf is absent).
+        assert_eq!(IdleConfig::parse_from_conf(""), IdleConfig::default());
+    }
+
+    #[test]
+    fn portal_idle_inhibit_merges_into_phase() {
+        clear_inhibit_store_for_tests();
+        let cfg = IdleConfig {
+            warn_after_secs: 1,
+            lock_after_secs: 2,
+            suspend_after_secs: 0,
+            lock_on_suspend: true,
+            inhibited: false,
+        };
+        let base = IdleInhibitState::new();
+        assert_eq!(
+            idle_phase(&cfg, 10, false, &base),
+            IdlePhase::ShouldLock
+        );
+
+        let _ = handle_inhibit_and_register(&PortalInhibitRequest {
+            app_id: "player".into(),
+            window: String::new(),
+            flags: InhibitFlag::Idle as u32,
+            reason: "playing".into(),
+        });
+        let mut merged = base.clone();
+        for reason in active_idle_inhibit_state().reasons() {
+            merged.add(*reason);
+        }
+        assert!(merged.is_inhibited());
+        assert_eq!(idle_phase(&cfg, 10, false, &merged), IdlePhase::Active);
+        clear_inhibit_store_for_tests();
+    }
+
+    #[test]
+    fn network_connect_api_records_validated_plan_without_spawn() {
+        let (mut desktop, _) = test_desktop();
+        assert!(!desktop.network_connect_spawn);
+
+        desktop.request_network_connect(NmConnectRequest::new("CafeNet"));
+        let outcome = desktop
+            .last_network_connect
+            .clone()
+            .expect("connect outcome recorded");
+        let summary = outcome.expect("valid plan");
+        assert!(summary.contains("nmcli"));
+        assert!(summary.contains("CafeNet"));
+
+        desktop.request_network_connect(NmConnectRequest::new(""));
+        let err = desktop
+            .last_network_connect
+            .clone()
+            .expect("error recorded")
+            .unwrap_err();
+        assert!(err.contains("non-empty"));
+    }
+
+    #[test]
+    fn network_connect_menu_action_wired() {
+        let server = MenuServer::new();
+        assert!(server
+            .menus
+            .iter()
+            .flat_map(|m| m.items.iter())
+            .any(|item| item.action_id == "shell.network_connect"));
+
+        let (mut desktop, _) = test_desktop();
+        // No RETROSHELL_WIFI_SSID → status window, no panic.
+        desktop.handle_menu_action("shell.network_connect");
+        assert!(desktop
+            .windows
+            .iter()
+            .any(|w| w.window.title() == "Network Connect"));
+    }
+
+    #[test]
+    fn status_refresh_on_update_and_volume_api() {
+        let (mut desktop, _) = test_desktop();
+        // Force elapsed so update() re-queries status items.
+        desktop.last_status_refresh =
+            std::time::Instant::now() - std::time::Duration::from_secs(STATUS_REFRESH_INTERVAL_SECS + 1);
+        desktop.update();
+        let items = desktop.menu_server.read().status_items.clone();
+        let ids: Vec<&str> = items.iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&"battery"));
+        assert!(ids.contains(&"volume"));
+        assert!(ids.contains(&"network"));
+
+        // Best-effort volume path (may fail without pactl; must not panic).
+        desktop.request_set_volume(40);
+        let items = desktop.menu_server.read().status_items.clone();
+        assert!(items.iter().any(|s| s.id == "volume"));
+    }
+
+    #[test]
+    fn pure_status_and_volume_plans_exported() {
+        assert_eq!(battery_status_label(Some(50)), "🔋 50%");
+        assert_eq!(network_status_label(false, None, "Unavailable"), "📶 —");
+        assert_eq!(volume_status_label(Some(10)), "🔊 10%");
+        assert_eq!(
+            volume_pactl_set_plan(25),
+            vec!["pactl", "set-sink-volume", "@DEFAULT_SINK@", "25%"]
+        );
+        let plan = nm_connect_plan_validated(&NmConnectRequest::new("X").with_password("y")).unwrap();
+        assert_eq!(plan[0], "nmcli");
+        assert!(describe_nm_connect_plan(&plan).contains("<redacted>"));
+        assert!(execute_nm_connect_plan(&[]).is_err());
     }
 }

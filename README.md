@@ -2,11 +2,57 @@
 
 A native Rust desktop environment inspired by Classic Mac OS, NeXTSTEP, and BeOS.
 
-RetroShell is not a Linux desktop theme. It is a custom GUI toolkit, application
-framework, and shell client written entirely in Rust. The shell renders its own windows
-using a wgpu graphics pipeline, ships a suite of first-party applications, and runs as
-a Wayland client today. The long-term goal is a real desktop environment driven by a
-custom Smithay compositor.
+## Positioning (ambition vs reality)
+
+**Ambition:** RetroShell aims at a **proper multi-client Linux desktop session**
+(compositor-managed app windows, shell chrome, system integration) — in the same
+*category* as a desktop environment, not a theme.
+
+**Reality today (honest):** it is **not** Plasma/GNOME parity and should not be
+sold as a drop-in replacement. It is an advancing stack:
+
+| Layer | Live today | Structural / in progress |
+|---|---|---|
+| Shell chrome | Dock, menu bar, workspaces, notifications, password lock | — |
+| First-party apps | Real processes with real I/O; **spawned as separate clients** tracked by `SessionClientRegistry` | Apps need a working Wayland (or X11) compositor socket |
+| Compositor | Prefers `retro-compositor`; **labwc fallback** when DRI3 missing (Docker-on-mac) | Full DRM/KMS session, DM greeter |
+| Multi-client stacking | `ClientWindowStack` (map/focus/z-order) in compositor policy + unit tests | Live multi-window under GPU compositor on Pi/native |
+| Shell-internal UI | Folder/About/Force Quit still **painted** into the shell surface | Migrating remaining chrome off single-surface paint |
+
+**What works for desktop work right now:** launch first-party apps as processes,
+password lock (Enter + correct secret only), eight themes, volume/network/battery
+status, screenshot/record, Docker noVNC DE path under labwc.
+
+**Session entry (Phase A MVP):** install `packaging/retroshell.desktop` into
+`/usr/share/wayland-sessions/` and put `scripts/start-retroshell` on `PATH`.
+The script prefers `retro-compositor`, falls back to **labwc** with an honest
+message, then execs `retro-shell`. See `packaging/README.md`. FreeDesktop
+`org.freedesktop.Notifications` is registered when a session bus is available.
+
+**Status (see `docs/implementation_plan.md` §13, `docs/WARPATH_SCORECARD.md`,
+`docs/DEEP_AUDIT_90_CLAIM.md`):**
+
+| Metric | Score |
+|---|---:|
+| **Overall daily-driver (original methodology)** | **~85/100** (mean 84.5, sum 845; 90/100 not claimed) |
+| Prior “91 criteria-weighted” and “~90 hard-DE” claims | **withdrawn** (score theater) |
+| Post-claim-audit (pre-warpath) | ~77 (mean 77.2) |
+
+**Landed (real / live paths):** nested layer compose; DRM present path; workspace
+**paint/focus filter in compositor main**; per-window **SHM prefer** (placeholder only
+if no buffer); layer-shell / FTL clients; portal D-Bus subset including
+Secret/Print/Inhibit; inhibit store → idle; session power plans + menu wiring;
+DoAction queue → lock/log_out/force_quit/workspace/window/dock/desktop; i18n
+**menus + lock**; shell→comp `RETROSHELL_OUTPUTS_LAYOUT`; install-session +
+daily-driver checklist (packaging).
+
+**Honest residual (why not 90):** live greeter **NOT RUN**; PipeWire ScreenCast
+**stubs**; Orca not end-to-end (DoAction **does** open Retro menu / dock / desktop
+context status windows); display arrange is env bridge not live KMS modeset;
+window rules partial on real surfaces; §12 **0/7**; placeholder rects still
+possible without committed buffers.
+
+Would you replace Plasma for a week? **No.** Honest score **~85**, not 90.
 
 ---
 
@@ -35,25 +81,29 @@ custom Smithay compositor.
       with persistent `settings.conf` writes
 - [x] App Store — reads system package indices (APT), shows install state per package,
       search with package-change gate
-- [x] Five color themes: Classic, Dark, Grape, Blueberry, Strawberry
+- [x] Eight color themes: Classic, Dark, Grape, Blueberry, Strawberry, Solarized, Dracula, HighContrast
 - [x] Dark mode with per-token palette switching
 - [x] TrueType font rendering via ab_glyph with system font discovery and bitmap fallback
 - [x] File-based clipboard persistence across process boundaries
 - [x] Drop shadows, pixel art icons, custom window chrome
 - [x] Docker VM with noVNC browser access for visual development
 
-### In progress / planned
+### Systems integration (implemented)
 
-- [ ] retro-compositor — Smithay-based Wayland compositor (skeleton only)
-- [ ] Universal global menu for external apps (requires compositor session ownership)
-- [ ] Wayland wl_data_device protocol drag-and-drop between apps
-- [ ] Notification banners as floating visual overlays
-- [ ] HiDPI / display scale (UI uses logical pixels; no scale-factor tree yet)
-- [ ] HDR / VRR output control (preferences stored; compositor work required)
-- [ ] AT-SPI accessibility protocol integration
-- [ ] Multi-monitor support
-- [ ] Power management (UPower)
-- [ ] Screen recording / screenshot service
+- [x] Multi-client launch: first-party apps spawn as **separate processes** with PID registry (`session_clients`)
+- [x] Compositor policy: `ClientWindowStack` map/focus/z-order; multi-output; selection send; HDR/VRR policy
+- [x] retro-compositor preferred; **labwc fallback** documented when DRI3 unavailable
+- [x] AT-SPI2 Accessible tree export when D-Bus is available
+- [x] NetworkManager status, volume get/set, UPower/`/sys` battery, screenshot/record
+- [x] Password lock (`RETROSHELL_LOCK_PASSWORD` / `lock_password`); eight themes; conf merge
+
+### Still limited / environment-dependent
+
+- [ ] Universal global menu for arbitrary external apps
+- [ ] HiDPI scale-factor tree
+- [ ] Full Orca-grade AT-SPI for every widget
+- [ ] Nested Docker-on-mac DRI3 / live retro-compositor (labwc path remains the gated success there)
+- [ ] Display manager, portals, multi-monitor daily-driver polish
 
 ---
 
@@ -87,8 +137,9 @@ custom Smithay compositor.
   └────┬───────────────────────────────────────────┘
        │
   ┌────▼───────────────────────────────────────────┐
-  │  labwc (Wayland compositor, today)             │
-  │  retro-compositor  (Smithay, future)           │
+  │  labwc (reliable Docker / nested fallback)     │
+  │  retro-compositor (Smithay nested-X11, preferred│
+  │    when DRI3/GL is available)                  │
   └────┬───────────────────────────────────────────┘
        │
   Linux kernel  DRM / KMS
@@ -229,6 +280,9 @@ Set the `theme` key in `~/.config/retroshell/settings.conf` or use Settings > Ap
 | `grape`     | Dark  | Purple-tinted dark theme                      |
 | `blueberry` | Dark  | Deep navy dark theme                          |
 | `strawberry`| Light | Warm red-orange accent on light gray          |
+| `solarized` | Dark  | Solarized dark theme with blue accent         |
+| `dracula`   | Dark  | Dracula dark theme with purple accent         |
+| `highcontrast` | Light | Pure black/white with yellow accent        |
 
 ---
 
@@ -236,9 +290,9 @@ Set the `theme` key in `~/.config/retroshell/settings.conf` or use Settings > Ap
 
 Configuration file: `~/.config/retroshell/settings.conf`
 
-| Key                 | Values                                            | Default   |
-|---------------------|---------------------------------------------------|-----------|
-| `theme`             | `classic` `dark` `grape` `blueberry` `strawberry` | `classic` |
+| Key                 | Values                                                                       | Default   |
+|---------------------|---------------------------------------------------------------------|-----------|
+| `theme`             | `classic` `dark` `grape` `blueberry` `strawberry` `solarized` `dracula` `highcontrast` | `classic` |
 | `appearance`        | `light` `dark`                                    | `light`   |
 | `sound_volume`      | `0`–`100`                                         | `50`      |
 | `mouse_speed`       | `0`–`100`                                         | `50`      |
@@ -321,9 +375,10 @@ xinit /usr/bin/labwc
 | Current          | 5.9   | Drop shadows, pixel art icons, dock, tab switching, VT parser expansion, workspace grid view, polished window chrome |
 | Target           | 10.0  | Full Smithay compositor, HiDPI, universal global menu, AT-SPI, protocol DnD |
 
-The gap between the current score and 10 is primarily architectural: RetroShell is a
-Wayland client, not a compositor. Closing that gap requires implementing
-`retro-compositor` with Smithay, which is tracked as long-term milestone work.
+The gap between the current score and 10 is primarily architectural: while RetroShell
+ships a Smithay-based nested-X11 compositor, `retro-shell` itself remains a single fullscreen
+Wayland client rendering all internal windows into one surface. A true per-app Wayland session
+compositor with multi-window protocol support is tracked as long-term work.
 
 ---
 
@@ -426,3 +481,29 @@ See [LICENSE](LICENSE).
 ![About window](docs/screenshots/current-about-window.png)
 
 ![Force Quit window](docs/screenshots/current-force-quit-window.png)
+
+## Raspberry Pi / native Linux verification
+
+On a Pi or Linux box with GPU/Wayland deps:
+
+```bash
+chmod +x scripts/verify_pi.sh
+./scripts/verify_pi.sh
+```
+
+The script installs build deps (apt), runs `cargo test --workspace`, builds release
+binaries, and probes NetworkManager, audio, UPower, DRI, and AT-SPI. Compositor
+runtime is smoke-tested when `DISPLAY` or `WAYLAND_DISPLAY` is set.
+
+Docker (macOS host visual QA):
+
+```bash
+docker build -t retroshell .
+docker run -d --name rs -p 6080:6080 retroshell
+# open http://localhost:6080/vnc.html
+# Default lock password in image: retroshell (RETROSHELL_LOCK_PASSWORD)
+```
+
+If `retro-compositor` fails with missing DRI3 under nested Xvfb, the entrypoint
+falls back to labwc and still launches the full DE. Check `/tmp/retro-compositor.log`
+inside the container.

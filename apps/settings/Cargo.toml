@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 retro-sdk = { path = "../../crates/retro-sdk" }
 retro-kit = { path = "../../crates/retro-kit" }
+retro-shell = { path = "../../crates/retro-shell" }
 serde = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true }

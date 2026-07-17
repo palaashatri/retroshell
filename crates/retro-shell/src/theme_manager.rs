@@ -1,3 +1,6 @@
+use crate::a11y_prefs::{
+    apply_a11y_prefs_to_theme_name, A11yPrefs,
+};
 use retro_kit::theme::{ThemeContext, ThemePalette, ThemeToken, ThemeValue};
 use retro_kit::Color;
 use std::collections::HashMap;
@@ -17,6 +20,12 @@ pub enum ThemeName {
     Blueberry,
     /// Warm red-orange tinted theme.
     Strawberry,
+    /// Solarized color scheme (dark mode, blue accent).
+    Solarized,
+    /// Dracula color scheme (dark mode, purple accent).
+    Dracula,
+    /// High contrast theme (pure black/white with yellow accent).
+    HighContrast,
 }
 
 impl ThemeName {
@@ -28,12 +37,18 @@ impl ThemeName {
             Self::Grape => [0.55, 0.28, 0.72, 1.0],
             Self::Blueberry => [0.15, 0.25, 0.62, 1.0],
             Self::Strawberry => [0.82, 0.23, 0.28, 1.0],
+            Self::Solarized => [0.15, 0.55, 0.82, 1.0],    // #268bd2
+            Self::Dracula => [0.74, 0.58, 0.98, 1.0],      // #bd93f9
+            Self::HighContrast => [1.0, 1.0, 0.0, 1.0],    // Yellow accent
         }
     }
 
     /// Whether this theme uses dark mode rendering.
     pub fn is_dark(self) -> bool {
-        matches!(self, Self::Dark | Self::Grape | Self::Blueberry)
+        matches!(
+            self,
+            Self::Dark | Self::Grape | Self::Blueberry | Self::Solarized | Self::Dracula
+        )
     }
 
     /// The settings.conf key value for this theme.
@@ -44,6 +59,9 @@ impl ThemeName {
             Self::Grape => "grape",
             Self::Blueberry => "blueberry",
             Self::Strawberry => "strawberry",
+            Self::Solarized => "solarized",
+            Self::Dracula => "dracula",
+            Self::HighContrast => "highcontrast",
         }
     }
 
@@ -55,6 +73,9 @@ impl ThemeName {
             "grape" => Some(Self::Grape),
             "blueberry" => Some(Self::Blueberry),
             "strawberry" => Some(Self::Strawberry),
+            "solarized" => Some(Self::Solarized),
+            "dracula" => Some(Self::Dracula),
+            "highcontrast" => Some(Self::HighContrast),
             _ => None,
         }
     }
@@ -67,6 +88,8 @@ pub struct ThemeManager {
     pub is_hdr: bool,
     pub scale: f32,
     pub theme_name: ThemeName,
+    /// Accessibility prefs loaded from settings.conf (contrast / reduced motion).
+    pub a11y_prefs: A11yPrefs,
 }
 
 impl Default for ThemeManager {
@@ -84,6 +107,7 @@ impl ThemeManager {
             is_hdr: false,
             scale: 1.0,
             theme_name: ThemeName::Classic,
+            a11y_prefs: A11yPrefs::default(),
         }
     }
 
@@ -459,12 +483,19 @@ impl ThemeManager {
         self.theme_name
     }
 
-    /// Load the theme from settings.conf and apply it.
+    /// Load the theme and a11y prefs from settings.conf and apply them.
+    ///
+    /// High-contrast a11y preference overrides the named theme selection via
+    /// [`apply_a11y_prefs_to_theme_name`]. Reduced motion is stored on
+    /// [`Self::a11y_prefs`] for callers of [`crate::a11y_prefs::effective_animation_ms`].
     pub fn load_theme_from_settings(&mut self) {
         let path = settings_conf_path();
         let Ok(content) = std::fs::read_to_string(&path) else {
             return;
         };
+
+        // Theme selection (named theme takes precedence over appearance).
+        let mut found_theme = false;
         for line in content.lines() {
             let Some((key, value)) = line.split_once('=') else {
                 continue;
@@ -472,25 +503,41 @@ impl ThemeManager {
             if key.trim() == "theme" {
                 if let Some(name) = ThemeName::parse(value) {
                     self.theme_name = name;
-                    self.is_dark = name.is_dark();
-                    self.reload_themes();
-                    return;
+                    found_theme = true;
+                    break;
                 }
             }
         }
-        // Fall back to appearance key
-        for line in content.lines() {
-            let Some((key, value)) = line.split_once('=') else {
-                continue;
-            };
-            if key.trim() == "appearance" {
-                let is_dark = value.trim().eq_ignore_ascii_case("dark");
-                self.is_dark = is_dark;
-                self.theme_name = if is_dark { ThemeName::Dark } else { ThemeName::Classic };
-                self.reload_themes();
-                return;
+        if !found_theme {
+            for line in content.lines() {
+                let Some((key, value)) = line.split_once('=') else {
+                    continue;
+                };
+                if key.trim() == "appearance" {
+                    let is_dark = value.trim().eq_ignore_ascii_case("dark");
+                    self.theme_name = if is_dark {
+                        ThemeName::Dark
+                    } else {
+                        ThemeName::Classic
+                    };
+                    break;
+                }
             }
         }
+
+        // A11y prefs: high_contrast may force HighContrast theme; motion is stored.
+        self.a11y_prefs = A11yPrefs::parse_from_conf(&content);
+        self.theme_name = apply_a11y_prefs_to_theme_name(self.a11y_prefs, self.theme_name);
+        self.is_dark = self.theme_name.is_dark();
+        self.reload_themes();
+    }
+
+    /// Apply pure a11y prefs (e.g. from tests or an already-parsed conf).
+    pub fn apply_a11y_prefs(&mut self, prefs: A11yPrefs) {
+        self.a11y_prefs = prefs;
+        self.theme_name = apply_a11y_prefs_to_theme_name(prefs, self.theme_name);
+        self.is_dark = self.theme_name.is_dark();
+        self.reload_themes();
     }
 
     fn save_theme_to_settings(&self) -> std::io::Result<()> {
@@ -528,4 +575,59 @@ fn settings_conf_path() -> PathBuf {
         })
         .unwrap_or_else(|| PathBuf::from("/tmp/retroshell"))
         .join("settings.conf")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_all_themes_round_trip() {
+        let themes = [
+            ThemeName::Classic,
+            ThemeName::Dark,
+            ThemeName::Grape,
+            ThemeName::Blueberry,
+            ThemeName::Strawberry,
+            ThemeName::Solarized,
+            ThemeName::Dracula,
+            ThemeName::HighContrast,
+        ];
+
+        for theme in &themes {
+            let as_str = theme.as_str();
+            let parsed = ThemeName::parse(as_str);
+            assert_eq!(
+                parsed,
+                Some(*theme),
+                "Round-trip failed for theme: {:?}",
+                theme
+            );
+        }
+    }
+
+    #[test]
+    fn test_theme_string_parsing() {
+        assert_eq!(ThemeName::parse("classic"), Some(ThemeName::Classic));
+        assert_eq!(ThemeName::parse("dark"), Some(ThemeName::Dark));
+        assert_eq!(ThemeName::parse("grape"), Some(ThemeName::Grape));
+        assert_eq!(ThemeName::parse("blueberry"), Some(ThemeName::Blueberry));
+        assert_eq!(ThemeName::parse("strawberry"), Some(ThemeName::Strawberry));
+        assert_eq!(ThemeName::parse("solarized"), Some(ThemeName::Solarized));
+        assert_eq!(ThemeName::parse("dracula"), Some(ThemeName::Dracula));
+        assert_eq!(ThemeName::parse("highcontrast"), Some(ThemeName::HighContrast));
+        assert_eq!(ThemeName::parse("invalid"), None);
+    }
+
+    #[test]
+    fn test_dark_mode_variants() {
+        assert!(!ThemeName::Classic.is_dark());
+        assert!(ThemeName::Dark.is_dark());
+        assert!(ThemeName::Grape.is_dark());
+        assert!(ThemeName::Blueberry.is_dark());
+        assert!(!ThemeName::Strawberry.is_dark());
+        assert!(ThemeName::Solarized.is_dark());
+        assert!(ThemeName::Dracula.is_dark());
+        assert!(!ThemeName::HighContrast.is_dark());
+    }
 }

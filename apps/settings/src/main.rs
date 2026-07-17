@@ -8,6 +8,7 @@ use retro_kit::{
     Widget, WidgetState,
 };
 use retro_sdk::{build_menu, Application};
+use retro_shell::DisplayConfig;
 use std::fs;
 use std::path::PathBuf;
 
@@ -68,6 +69,9 @@ enum Choice {
     ThemeGrape,
     ThemeBlueberry,
     ThemeStrawberry,
+    ThemeSolarized,
+    ThemeDracula,
+    ThemeHighContrast,
     DesktopIconsOn,
     DesktopIconsOff,
     DockBottom,
@@ -76,6 +80,18 @@ enum Choice {
     HdrOn,
     VrrOff,
     VrrAdaptive,
+    Refresh60,
+    Refresh120,
+    RefreshAdaptive,
+    ColorSrgb,
+    ColorRec2020,
+    ArrangeExtendRight,
+    ArrangeExtendDown,
+    ArrangeMirror,
+    ArrangePrimaryOnly,
+    Scale100,
+    Scale150,
+    Scale200,
     SoundOff,
     SoundOn,
     NetworkOffline,
@@ -178,6 +194,9 @@ impl Category {
                 (Choice::ThemeGrape, "Grape"),
                 (Choice::ThemeBlueberry, "Blueberry"),
                 (Choice::ThemeStrawberry, "Strawberry"),
+                (Choice::ThemeSolarized, "Solarized"),
+                (Choice::ThemeDracula, "Dracula"),
+                (Choice::ThemeHighContrast, "High Contrast"),
             ],
             Category::DesktopDock => &[
                 (Choice::DesktopIconsOn, "Desktop Icons On"),
@@ -190,6 +209,18 @@ impl Category {
                 (Choice::HdrOn, "HDR Requested"),
                 (Choice::VrrOff, "VRR Off"),
                 (Choice::VrrAdaptive, "VRR Adaptive"),
+                (Choice::Refresh60, "Refresh 60Hz"),
+                (Choice::Refresh120, "Refresh 120Hz"),
+                (Choice::RefreshAdaptive, "Refresh Adaptive"),
+                (Choice::ColorSrgb, "Color sRGB"),
+                (Choice::ColorRec2020, "Color Rec2020"),
+                (Choice::ArrangeExtendRight, "Arrange Extend Right"),
+                (Choice::ArrangeExtendDown, "Arrange Extend Down"),
+                (Choice::ArrangeMirror, "Arrange Mirror"),
+                (Choice::ArrangePrimaryOnly, "Arrange Primary Only"),
+                (Choice::Scale100, "Scale 100%"),
+                (Choice::Scale150, "Scale 150%"),
+                (Choice::Scale200, "Scale 200%"),
             ],
             Category::Sound => &[
                 (Choice::SoundOff, "Sound Off"),
@@ -265,6 +296,10 @@ struct SettingsState {
     dock_position: String,
     hdr_requested: bool,
     vrr_adaptive: bool,
+    refresh_rate: String,
+    color_space: String,
+    arrange_mode: String,
+    scale_percent: u32,
     sound_effects: bool,
     volume_percent: u8,
     network_profile: String,
@@ -285,6 +320,10 @@ impl Default for SettingsState {
             dock_position: "bottom".to_string(),
             hdr_requested: false,
             vrr_adaptive: false,
+            refresh_rate: "60hz".to_string(),
+            color_space: "srgb".to_string(),
+            arrange_mode: "extend_right".to_string(),
+            scale_percent: 100,
             sound_effects: true,
             volume_percent: 75,
             network_profile: "dhcp".to_string(),
@@ -299,6 +338,18 @@ impl Default for SettingsState {
 }
 
 impl SettingsState {
+    /// Build shell [`DisplayConfig`] from Display pane fields for plan + env apply.
+    fn display_config(&self) -> DisplayConfig {
+        DisplayConfig::from_settings_fields(
+            self.hdr_requested,
+            self.vrr_adaptive,
+            self.refresh_rate.as_str(),
+            self.color_space.as_str(),
+            self.arrange_mode.as_str(),
+            self.scale_percent,
+        )
+    }
+
     fn choice_enabled(&self, choice: Choice) -> bool {
         match choice {
             Choice::AppearanceLight => self.appearance == AppearanceMode::Light,
@@ -309,6 +360,9 @@ impl SettingsState {
             Choice::ThemeGrape => self.theme == "grape",
             Choice::ThemeBlueberry => self.theme == "blueberry",
             Choice::ThemeStrawberry => self.theme == "strawberry",
+            Choice::ThemeSolarized => self.theme == "solarized",
+            Choice::ThemeDracula => self.theme == "dracula",
+            Choice::ThemeHighContrast => self.theme == "highcontrast",
             Choice::DesktopIconsOn => self.desktop_icons,
             Choice::DesktopIconsOff => !self.desktop_icons,
             Choice::DockBottom => self.dock_position == "bottom",
@@ -317,6 +371,18 @@ impl SettingsState {
             Choice::HdrOn => self.hdr_requested,
             Choice::VrrOff => !self.vrr_adaptive,
             Choice::VrrAdaptive => self.vrr_adaptive,
+            Choice::Refresh60 => self.refresh_rate == "60hz",
+            Choice::Refresh120 => self.refresh_rate == "120hz",
+            Choice::RefreshAdaptive => self.refresh_rate == "adaptive",
+            Choice::ColorSrgb => self.color_space == "srgb",
+            Choice::ColorRec2020 => self.color_space == "rec2020",
+            Choice::ArrangeExtendRight => self.arrange_mode == "extend_right",
+            Choice::ArrangeExtendDown => self.arrange_mode == "extend_down",
+            Choice::ArrangeMirror => self.arrange_mode == "mirror",
+            Choice::ArrangePrimaryOnly => self.arrange_mode == "primary_only",
+            Choice::Scale100 => self.scale_percent == 100,
+            Choice::Scale150 => self.scale_percent == 150,
+            Choice::Scale200 => self.scale_percent == 200,
             Choice::SoundOff => !self.sound_effects,
             Choice::SoundOn => self.sound_effects,
             Choice::NetworkOffline => self.network_profile == "offline",
@@ -344,6 +410,9 @@ impl SettingsState {
             Choice::ThemeGrape => self.theme = "grape".to_string(),
             Choice::ThemeBlueberry => self.theme = "blueberry".to_string(),
             Choice::ThemeStrawberry => self.theme = "strawberry".to_string(),
+            Choice::ThemeSolarized => self.theme = "solarized".to_string(),
+            Choice::ThemeDracula => self.theme = "dracula".to_string(),
+            Choice::ThemeHighContrast => self.theme = "highcontrast".to_string(),
             Choice::DesktopIconsOn => self.desktop_icons = true,
             Choice::DesktopIconsOff => self.desktop_icons = false,
             Choice::DockBottom => self.dock_position = "bottom".to_string(),
@@ -352,6 +421,18 @@ impl SettingsState {
             Choice::HdrOn => self.hdr_requested = true,
             Choice::VrrOff => self.vrr_adaptive = false,
             Choice::VrrAdaptive => self.vrr_adaptive = true,
+            Choice::Refresh60 => self.refresh_rate = "60hz".to_string(),
+            Choice::Refresh120 => self.refresh_rate = "120hz".to_string(),
+            Choice::RefreshAdaptive => self.refresh_rate = "adaptive".to_string(),
+            Choice::ColorSrgb => self.color_space = "srgb".to_string(),
+            Choice::ColorRec2020 => self.color_space = "rec2020".to_string(),
+            Choice::ArrangeExtendRight => self.arrange_mode = "extend_right".to_string(),
+            Choice::ArrangeExtendDown => self.arrange_mode = "extend_down".to_string(),
+            Choice::ArrangeMirror => self.arrange_mode = "mirror".to_string(),
+            Choice::ArrangePrimaryOnly => self.arrange_mode = "primary_only".to_string(),
+            Choice::Scale100 => self.scale_percent = 100,
+            Choice::Scale150 => self.scale_percent = 150,
+            Choice::Scale200 => self.scale_percent = 200,
             Choice::SoundOff => self.sound_effects = false,
             Choice::SoundOn => self.sound_effects = true,
             Choice::NetworkOffline => self.network_profile = "offline".to_string(),
@@ -396,13 +477,17 @@ impl SettingsState {
                 self.dock_position.to_ascii_uppercase()
             ),
             Category::Display => format!(
-                "DISPLAY - HDR {} / VRR {}",
+                "DISPLAY - HDR {} / VRR {} / {} / {} / ARRANGE {} / SCALE {}%",
                 if self.hdr_requested {
                     "REQUESTED"
                 } else {
                     "OFF"
                 },
-                if self.vrr_adaptive { "ADAPTIVE" } else { "OFF" }
+                if self.vrr_adaptive { "ADAPTIVE" } else { "OFF" },
+                self.refresh_rate.to_ascii_uppercase(),
+                self.color_space.to_ascii_uppercase(),
+                self.arrange_mode.to_ascii_uppercase(),
+                self.scale_percent
             ),
             Category::Sound => format!(
                 "SOUND - EFFECTS {} / VOLUME {}%",
@@ -410,7 +495,14 @@ impl SettingsState {
                 self.volume_percent
             ),
             Category::Network => {
-                format!("NETWORK - {}", self.network_profile.to_ascii_uppercase())
+                let live = live_network_summary()
+                    .map(|s| format!(" / LIVE {s}"))
+                    .unwrap_or_default();
+                format!(
+                    "NETWORK - {}{}",
+                    self.network_profile.to_ascii_uppercase(),
+                    live
+                )
             }
             Category::Keyboard => {
                 format!(
@@ -480,10 +572,18 @@ impl SettingsStore {
                         state.appearance = mode;
                     }
                 }
-                "theme" if matches!(
-                    value,
-                    "classic" | "dark" | "grape" | "blueberry" | "strawberry"
-                ) =>
+                "theme"
+                    if matches!(
+                        value,
+                        "classic"
+                            | "dark"
+                            | "grape"
+                            | "blueberry"
+                            | "strawberry"
+                            | "solarized"
+                            | "dracula"
+                            | "highcontrast"
+                    ) =>
                 {
                     state.theme = value.to_string();
                 }
@@ -493,6 +593,37 @@ impl SettingsStore {
                 }
                 "hdr_requested" => state.hdr_requested = parse_bool(value, state.hdr_requested),
                 "vrr_adaptive" => state.vrr_adaptive = parse_bool(value, state.vrr_adaptive),
+                "refresh_rate"
+                    if matches!(value, "60hz" | "120hz" | "144hz" | "165hz" | "adaptive") =>
+                {
+                    state.refresh_rate = value.to_string();
+                }
+                "color_space" if matches!(value, "srgb" | "rec2020" | "scrgb") => {
+                    state.color_space = value.to_string();
+                }
+                "arrange_mode"
+                    if matches!(
+                        value,
+                        "extend_right" | "extend_down" | "mirror" | "primary_only"
+                            | "extend" | "stack" | "clone" | "primary"
+                    ) =>
+                {
+                    // Normalize aliases to canonical snake_case used by DisplayConfig.
+                    state.arrange_mode = match value {
+                        "extend" | "extend_right" => "extend_right".to_string(),
+                        "stack" | "extend_down" => "extend_down".to_string(),
+                        "clone" | "mirror" => "mirror".to_string(),
+                        "primary" | "primary_only" => "primary_only".to_string(),
+                        other => other.to_string(),
+                    };
+                }
+                "scale_percent" => {
+                    if let Ok(n) = value.parse::<u32>() {
+                        if (50..=400).contains(&n) {
+                            state.scale_percent = n;
+                        }
+                    }
+                }
                 "sound_effects" => state.sound_effects = parse_bool(value, state.sound_effects),
                 "volume_percent" => {
                     state.volume_percent = parse_percent(value, state.volume_percent)
@@ -520,43 +651,50 @@ impl SettingsStore {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(
-            &self.path,
-            format!(
-                concat!(
-                    "appearance={}\n",
-                    "theme={}\n",
-                    "desktop_icons={}\n",
-                    "dock_position={}\n",
-                    "hdr_requested={}\n",
-                    "vrr_adaptive={}\n",
-                    "sound_effects={}\n",
-                    "volume_percent={}\n",
-                    "network_profile={}\n",
-                    "keyboard_repeat={}\n",
-                    "natural_scroll={}\n",
-                    "pointer_speed={}\n",
-                    "assistive_ui={}\n",
-                    "privacy_mode={}\n",
-                    "notifications={}\n"
-                ),
-                state.appearance.as_str(),
-                state.theme,
-                state.desktop_icons,
-                state.dock_position,
-                state.hdr_requested,
-                state.vrr_adaptive,
-                state.sound_effects,
-                state.volume_percent,
-                state.network_profile,
-                state.keyboard_repeat,
-                state.natural_scroll,
-                state.pointer_speed,
-                state.assistive_ui,
-                state.privacy_mode,
-                state.notifications
-            ),
-        )
+
+        // Merge-preserving save: keep unknown keys (e.g. lock_password) and
+        // update/insert known settings keys.
+        let mut map = std::collections::BTreeMap::<String, String>::new();
+        if let Ok(existing) = fs::read_to_string(&self.path) {
+            for line in existing.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, value)) = line.split_once('=') {
+                    map.insert(key.trim().to_string(), value.trim().to_string());
+                }
+            }
+        }
+
+        map.insert("appearance".into(), state.appearance.as_str().to_string());
+        map.insert("theme".into(), state.theme.clone());
+        map.insert("desktop_icons".into(), state.desktop_icons.to_string());
+        map.insert("dock_position".into(), state.dock_position.clone());
+        map.insert("hdr_requested".into(), state.hdr_requested.to_string());
+        map.insert("vrr_adaptive".into(), state.vrr_adaptive.to_string());
+        map.insert("refresh_rate".into(), state.refresh_rate.clone());
+        map.insert("color_space".into(), state.color_space.clone());
+        map.insert("arrange_mode".into(), state.arrange_mode.clone());
+        map.insert(
+            "scale_percent".into(),
+            state.scale_percent.to_string(),
+        );
+        map.insert("sound_effects".into(), state.sound_effects.to_string());
+        map.insert("volume_percent".into(), state.volume_percent.to_string());
+        map.insert("network_profile".into(), state.network_profile.clone());
+        map.insert("keyboard_repeat".into(), state.keyboard_repeat.clone());
+        map.insert("natural_scroll".into(), state.natural_scroll.to_string());
+        map.insert("pointer_speed".into(), state.pointer_speed.to_string());
+        map.insert("assistive_ui".into(), state.assistive_ui.to_string());
+        map.insert("privacy_mode".into(), state.privacy_mode.clone());
+        map.insert("notifications".into(), state.notifications.to_string());
+
+        let mut content = String::new();
+        for (key, value) in map {
+            content.push_str(&format!("{key}={value}\n"));
+        }
+        fs::write(&self.path, content)
     }
 }
 
@@ -566,6 +704,68 @@ fn parse_bool(value: &str, fallback: bool) -> bool {
         "false" | "0" | "no" | "off" => false,
         _ => fallback,
     }
+}
+
+/// Build CLI argv for volume backends (pure; unit-tested).
+fn volume_pactl_args(percent: u8) -> [String; 3] {
+    let percent = percent.min(100);
+    [
+        "set-sink-volume".into(),
+        "@DEFAULT_SINK@".into(),
+        format!("{percent}%"),
+    ]
+}
+
+fn volume_wpctl_args(percent: u8) -> [String; 3] {
+    let percent = percent.min(100);
+    let linear = f32::from(percent) / 100.0;
+    [
+        "set-volume".into(),
+        "@DEFAULT_AUDIO_SINK@".into(),
+        format!("{linear:.2}"),
+    ]
+}
+
+/// Apply volume to PulseAudio (`pactl`) or PipeWire (`wpctl`). Best-effort.
+fn apply_system_volume(percent: u8) -> Result<(), String> {
+    let percent = percent.min(100);
+    let pactl = volume_pactl_args(percent);
+    if std::process::Command::new("pactl")
+        .args(pactl.iter().map(String::as_str))
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let wpctl = volume_wpctl_args(percent);
+    if std::process::Command::new("wpctl")
+        .args(wpctl.iter().map(String::as_str))
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    Err("no pactl/wpctl (volume preference saved only)".into())
+}
+
+/// Live network summary for status line (nmcli if available).
+fn live_network_summary() -> Option<String> {
+    let output = std::process::Command::new("nmcli")
+        .args(["-t", "-f", "STATE,CONNECTIVITY", "g"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().next()?.trim();
+    if line.is_empty() {
+        return None;
+    }
+    // Typical: "connected:full" or "disconnected:none"
+    Some(line.replace(':', " / ").to_ascii_uppercase())
 }
 
 fn parse_percent(value: &str, fallback: u8) -> u8 {
@@ -688,7 +888,35 @@ impl SettingsView {
         self.settings.apply_choice(choice);
         match self.store.save(&self.settings) {
             Ok(()) => {
-                self.last_error = None;
+                // Display pane: plan arrangement + apply RETROSHELL_OUTPUTS_LAYOUT env.
+                if matches!(
+                    choice,
+                    Choice::HdrOff
+                        | Choice::HdrOn
+                        | Choice::VrrOff
+                        | Choice::VrrAdaptive
+                        | Choice::Refresh60
+                        | Choice::Refresh120
+                        | Choice::RefreshAdaptive
+                        | Choice::ColorSrgb
+                        | Choice::ColorRec2020
+                        | Choice::ArrangeExtendRight
+                        | Choice::ArrangeExtendDown
+                        | Choice::ArrangeMirror
+                        | Choice::ArrangePrimaryOnly
+                        | Choice::Scale100
+                        | Choice::Scale150
+                        | Choice::Scale200
+                ) {
+                    match self.settings.display_config().apply_arrangement_env(&[]) {
+                        Ok(_) => self.last_error = None,
+                        Err(err) => {
+                            self.last_error = Some(format!("DISPLAY APPLY {err}"));
+                        }
+                    }
+                } else {
+                    self.last_error = None;
+                }
                 self.refresh_labels();
                 self.relayout_if_visible();
                 true
@@ -705,7 +933,12 @@ impl SettingsView {
     fn save_slider_value(&mut self) -> bool {
         match self.selected_category {
             Category::Sound => {
-                self.settings.volume_percent = self.volume_slider.value.round() as u8
+                self.settings.volume_percent = self.volume_slider.value.round() as u8;
+                // Apply to the running audio stack (Pulse/PipeWire), not only conf.
+                if let Err(err) = apply_system_volume(self.settings.volume_percent) {
+                    self.last_error = Some(format!("VOLUME APPLY {err}"));
+                    // Still persist preference so UI and conf stay in sync.
+                }
             }
             Category::Mouse => {
                 self.settings.pointer_speed = self.pointer_speed_slider.value.round() as u8
@@ -715,7 +948,9 @@ impl SettingsView {
 
         match self.store.save(&self.settings) {
             Ok(()) => {
-                self.last_error = None;
+                if self.last_error.as_deref().is_none_or(|e| !e.starts_with("VOLUME APPLY")) {
+                    self.last_error = None;
+                }
                 self.refresh_labels();
                 self.relayout_if_visible();
                 true
@@ -1031,14 +1266,18 @@ mod tests {
     #[test]
     fn settings_store_persists_all_supported_values() {
         let path = temp_settings_path();
-        let store = SettingsStore::new(path);
+        let store = SettingsStore::new(path.clone());
         let state = SettingsState {
             appearance: AppearanceMode::Dark,
-            theme: "grape".to_string(),
+            theme: "dracula".to_string(),
             desktop_icons: false,
             dock_position: "right".to_string(),
             hdr_requested: true,
             vrr_adaptive: true,
+            refresh_rate: "120hz".to_string(),
+            color_space: "rec2020".to_string(),
+            arrange_mode: "mirror".to_string(),
+            scale_percent: 200,
             sound_effects: false,
             volume_percent: 35,
             network_profile: "offline".to_string(),
@@ -1052,6 +1291,95 @@ mod tests {
 
         store.save(&state).unwrap();
         assert_eq!(store.load(), state);
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("arrange_mode=mirror"));
+        assert!(content.contains("scale_percent=200"));
+    }
+
+    #[test]
+    fn settings_display_arrange_applies_env_on_save() {
+        let path = temp_settings_path();
+        let store = SettingsStore::new(path.clone());
+        let mut view = SettingsView::load(store);
+        view.select_category(Category::Display);
+        view.set_rect(Rect::new(0.0, 0.0, 640.0, 520.0));
+        view.layout(LayoutConstraint::tight(Size::new(640.0, 520.0)));
+
+        // Arrange Mirror is index 11 in Display choices (0-based after HDR/VRR/refresh/color).
+        let mirror = view
+            .option_buttons
+            .iter()
+            .find(|b| b.label.contains("Arrange Mirror"))
+            .expect("Arrange Mirror button");
+        assert_handled(view.handle_event(&click_button(mirror)));
+
+        let loaded = SettingsStore::new(path).load();
+        assert_eq!(loaded.arrange_mode, "mirror");
+        assert!(view.status.text.contains("ARRANGE MIRROR"));
+
+        let layout = std::env::var("RETROSHELL_OUTPUTS_LAYOUT")
+            .expect("apply_arrangement_env should set RETROSHELL_OUTPUTS_LAYOUT");
+        assert!(layout.contains("eDP-1"), "layout={layout}");
+        std::env::remove_var("RETROSHELL_OUTPUTS_LAYOUT");
+    }
+
+    #[test]
+    fn settings_save_preserves_lock_password_and_unknown_keys() {
+        let path = temp_settings_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(
+            &path,
+            "theme=classic\nlock_password=secret123\ncustom_key=keepme\n",
+        )
+        .unwrap();
+
+        let store = SettingsStore::new(path.clone());
+        let mut state = store.load();
+        state.theme = "solarized".to_string();
+        store.save(&state).unwrap();
+
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("lock_password=secret123"));
+        assert!(content.contains("custom_key=keepme"));
+        assert!(content.contains("theme=solarized"));
+    }
+
+    #[test]
+    fn volume_cli_args_match_shipped_backends() {
+        let pactl = volume_pactl_args(42);
+        assert_eq!(pactl[0], "set-sink-volume");
+        assert_eq!(pactl[1], "@DEFAULT_SINK@");
+        assert_eq!(pactl[2], "42%");
+        assert_eq!(volume_pactl_args(200)[2], "100%");
+
+        let wpctl = volume_wpctl_args(50);
+        assert_eq!(wpctl[0], "set-volume");
+        assert_eq!(wpctl[1], "@DEFAULT_AUDIO_SINK@");
+        assert_eq!(wpctl[2], "0.50");
+    }
+
+    #[test]
+    fn settings_loads_all_eight_theme_names() {
+        for theme in [
+            "classic",
+            "dark",
+            "grape",
+            "blueberry",
+            "strawberry",
+            "solarized",
+            "dracula",
+            "highcontrast",
+        ] {
+            let path = temp_settings_path();
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(&path, format!("theme={theme}\n")).unwrap();
+            let loaded = SettingsStore::new(path).load();
+            assert_eq!(loaded.theme, theme);
+        }
     }
 
     #[test]

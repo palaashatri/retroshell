@@ -669,6 +669,61 @@ impl Vertex {
     }
 }
 
+/// Build a [`retro_render::DisplayRenderPolicy`] from env and optional settings.conf.
+fn display_render_policy_from_env() -> retro_render::DisplayRenderPolicy {
+    let mut hdr_enabled = env_flag_true("RETROSHELL_HDR");
+    let mut vrr_adaptive = env_flag_true("RETROSHELL_VRR");
+
+    if let Some(path) = dirs_settings_conf() {
+        if let Ok(content) = fs::read_to_string(path) {
+            for line in content.lines() {
+                let Some((key, value)) = line.split_once('=') else {
+                    continue;
+                };
+                match key.trim() {
+                    "hdr_requested" | "hdr_request" => {
+                        hdr_enabled = parse_conf_bool(value, hdr_enabled);
+                    }
+                    "vrr_adaptive" => {
+                        vrr_adaptive = parse_conf_bool(value, vrr_adaptive);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    retro_render::DisplayRenderPolicy {
+        hdr_enabled,
+        vrr_adaptive,
+    }
+}
+
+fn env_flag_true(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn parse_conf_bool(value: &str, fallback: bool) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => true,
+        "false" | "0" | "no" | "off" => false,
+        _ => fallback,
+    }
+}
+
+fn dirs_settings_conf() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".config/retroshell/settings.conf"))
+        .or_else(|| {
+            std::env::var_os("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .map(|base| base.join("retroshell/settings.conf"))
+        })
+}
+
 struct WgpuPresenter {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -706,18 +761,15 @@ impl WgpuPresenter {
             .map_err(|err| format!("device creation failed: {err}"))?;
 
         let caps = surface.get_capabilities(&adapter);
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|format| format.is_srgb())
-            .unwrap_or(caps.formats[0]);
+        let policy = display_render_policy_from_env();
+        let format = retro_render::select_surface_format(&caps.formats, policy);
+        let present_mode = retro_render::select_present_mode(&caps.present_modes, policy);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             width: size.width.max(1),
             height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,

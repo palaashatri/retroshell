@@ -13,7 +13,9 @@ pub use event_loop::{RetroAppHandler, RetroEventLoop};
 pub use font::{rasterize_char, RetroFont};
 pub use primitives::{DrawCommand, FocusRingStyle};
 pub use render_tree::{RenderNode, RenderTree};
-pub use renderer::Renderer;
+pub use renderer::{
+    select_present_mode, select_surface_format, DisplayRenderPolicy, Renderer,
+};
 pub use shader::Shader;
 pub use surface::Surface;
 pub use texture::Texture;

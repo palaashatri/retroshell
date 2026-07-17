@@ -5,7 +5,7 @@
 ## Crate Dependency Graph
 
 ```
-retro-compositor (future Smithay compositor — Linux only, not yet integrated)
+retro-compositor (Smithay nested-X11 compositor — Linux only)
 
 retro-shell  ──────────────────────────────────────────────────────────┐
   │  depends on:                                                       │
@@ -111,7 +111,9 @@ crate and calls `Application::new()` then `app.run()`.
 
 ### retro-shell
 
-The shell process. Not a compositor; runs as a single Wayland client under labwc.
+The shell process. Runs as a single fullscreen Wayland client, rendering all internal
+windows (menu bar, desktop icons, app windows, dock, notifications) into one wgpu surface.
+Connects to either `retro-compositor` or labwc as the Wayland display server.
 
 Internal subsystems (each in its own module, wrapped in `Arc<RwLock<_>>`):
 
@@ -133,9 +135,11 @@ shell-managed windows, dock, and notification popups into a single render tree.
 
 ### retro-compositor
 
-A future Smithay-based Wayland compositor (Linux only). Currently a skeleton binary
-that initializes Smithay with `backend_x11`, `wayland_frontend`, `renderer_gl`, and
-`desktop` features. It is not launched or integrated by the shell today.
+A Smithay-based nested-X11 compositor (Linux only). Initializes Smithay with `backend_x11`,
+`wayland_frontend`, `renderer_gl`, and `desktop` features. Renders GL frames binding X11
+dmabuf surfaces and compositing surface trees. The `docker-entrypoint.sh` tries to launch it;
+if it crashes within 3 seconds, the shell falls back to labwc. Note: requires DRI3 X11 extension
+(GPU acceleration); fails in nested Docker without hardware acceleration.
 
 ---
 

@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use crate::i18n::{tr, LocalePrefs};
+
 pub struct MenuServer {
     pub menus: Vec<Menu>,
     pub active_app: Option<String>,
@@ -13,6 +15,7 @@ pub struct MenuServer {
     pub app_menus: HashMap<String, Vec<Menu>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusItem {
     pub id: String,
     pub label: String,
@@ -43,10 +46,86 @@ impl MenuServer {
             app_menus: HashMap::new(),
         };
         server.setup_default_menus();
+        server.refresh_status_items();
         server
     }
 
+    /// Re-label session actions that have i18n keys (locale from LANG / prefs).
+    pub fn apply_locale_labels(&mut self, prefs: &LocalePrefs) {
+        let loc = &prefs.locale;
+        let label_for = |action_id: &str| -> Option<String> {
+            match action_id {
+                "shell.lock" => Some(tr("menu.lock_screen", loc)),
+                "shell.log_out" | "shell.logout" => Some(tr("menu.log_out", loc)),
+                "shell.suspend" | "shell.sleep" => Some(tr("menu.suspend", loc)),
+                "shell.reboot" | "shell.restart" => Some(tr("menu.reboot", loc)),
+                "shell.power_off" | "shell.shutdown" | "shell.poweroff" => {
+                    Some(tr("menu.power_off", loc))
+                }
+                "shell.quit" => Some(tr("menu.quit", loc)),
+                "shell.force_quit" => Some(tr("menu.force_quit", loc)),
+                "shell.notification_center" => Some(tr("menu.notification_center", loc)),
+                "shell.about" => Some(tr("menu.about", loc)),
+                _ => None,
+            }
+        };
+        for menu in &mut self.menus {
+            for item in &mut menu.items {
+                if let Some(label) = label_for(&item.action_id) {
+                    item.label = label;
+                }
+            }
+        }
+    }
+
+    /// Refresh menu-bar status items for battery, volume, and network (best-effort).
+    ///
+    /// Safe on hosts without UPower / Pulse / NetworkManager — labels fall back
+    /// to placeholders. Call from shell idle `update` (throttled) and after
+    /// volume / network connect actions.
+    pub fn refresh_status_items(&mut self) {
+        use crate::audio::{get_volume, volume_status_label};
+        use crate::network_manager::get_network_status;
+        use crate::power::battery_info;
+
+        self.status_items.clear();
+
+        let battery = battery_info();
+        self.status_items.push(StatusItem {
+            id: "battery".to_string(),
+            label: battery_status_label(battery.percentage),
+            icon: Some("battery".to_string()),
+            priority: 10,
+        });
+
+        let volume_pct = get_volume().ok();
+        self.status_items.push(StatusItem {
+            id: "volume".to_string(),
+            label: volume_status_label(volume_pct),
+            icon: Some("volume".to_string()),
+            priority: 15,
+        });
+
+        let net = get_network_status();
+        let net_label = network_status_label(
+            net.available,
+            net.primary_connection_name.as_deref(),
+            net.state.as_str(),
+        );
+        self.status_items.push(StatusItem {
+            id: "network".to_string(),
+            label: net_label,
+            icon: Some("network".to_string()),
+            priority: 20,
+        });
+    }
+
     fn setup_default_menus(&mut self) {
+        // Locale from LANG (or defaults); settings.conf locale applied at shell startup
+        // via `apply_locale_to_system_menu` when conf is loaded.
+        let locale = LocalePrefs::parse_from_env_lang(std::env::var("LANG").ok().as_deref());
+        let loc = &locale.locale;
+
         let mut system_menu = Menu::new("Retro");
         system_menu
             .add_action("About RetroShell")
@@ -58,6 +137,9 @@ impl MenuServer {
         system_menu
             .add_action("Software Catalog...")
             .with_action("shell.software_catalog");
+        system_menu
+            .add_action("Connect Network…")
+            .with_action("shell.network_connect");
         system_menu.add_separator();
         system_menu
             .add_action("Recent Items")
@@ -70,7 +152,7 @@ impl MenuServer {
             .with_action("shell.clear_notifications");
         system_menu.add_separator();
         system_menu
-            .add_action("Lock Screen")
+            .add_action(tr("menu.lock_screen", loc))
             .with_action("shell.lock")
             .with_shortcut(
                 KeyCode::L,
@@ -96,24 +178,34 @@ impl MenuServer {
             );
         system_menu.add_separator();
         system_menu
-            .add_action("Quit RetroShell")
-            .with_action("shell.quit")
+            .add_action(tr("menu.suspend", loc))
+            .with_action("shell.suspend");
+        system_menu
+            .add_action(tr("menu.reboot", loc))
+            .with_action("shell.reboot");
+        system_menu
+            .add_action(tr("menu.power_off", loc))
+            .with_action("shell.power_off");
+        system_menu.add_separator();
+        system_menu
+            .add_action(tr("menu.log_out", loc))
+            .with_action("shell.log_out")
             .with_shortcut(
                 KeyCode::Q,
                 Modifiers {
-                    shift: false,
+                    shift: true,
                     control: false,
                     alt: false,
                     meta: true,
                 },
             );
         system_menu
-            .add_action("Log Out...")
-            .with_action("shell.log_out")
+            .add_action(tr("menu.quit", loc))
+            .with_action("shell.quit")
             .with_shortcut(
                 KeyCode::Q,
                 Modifiers {
-                    shift: true,
+                    shift: false,
                     control: false,
                     alt: false,
                     meta: true,
@@ -182,6 +274,28 @@ impl MenuServer {
                     meta: true,
                 },
             );
+        file_menu.add_separator();
+        file_menu
+            .add_action("Take Screenshot")
+            .with_action("shell.screenshot")
+            .with_shortcut(
+                KeyCode::Key3,
+                Modifiers {
+                    shift: true,
+                    control: false,
+                    alt: false,
+                    meta: true,
+                },
+            );
+        file_menu
+            .add_action("Portal Screenshot")
+            .with_action("shell.portal_screenshot");
+        file_menu
+            .add_action("Start Screen Recording")
+            .with_action("shell.start_recording");
+        file_menu
+            .add_action("Stop Screen Recording")
+            .with_action("shell.stop_recording");
 
         let mut edit_menu = Menu::new("Edit");
         edit_menu
@@ -626,12 +740,17 @@ fn append_workspace_items(window_menu: &mut Menu) {
             },
         );
     window_menu.add_separator();
-    for index in 0..4 {
+    // Eight desktops aligned with compositor WORKSPACE_COUNT.
+    for index in 0..8 {
         let key = match index {
             0 => KeyCode::Key1,
             1 => KeyCode::Key2,
             2 => KeyCode::Key3,
-            _ => KeyCode::Key4,
+            3 => KeyCode::Key4,
+            4 => KeyCode::Key5,
+            5 => KeyCode::Key6,
+            6 => KeyCode::Key7,
+            _ => KeyCode::Key8,
         };
         let action = format!("workspace.switch.{}", index);
         window_menu
@@ -648,6 +767,28 @@ fn append_workspace_items(window_menu: &mut Menu) {
             );
     }
 }
+
+/// Pure battery menu-bar status label.
+pub fn battery_status_label(percentage: Option<u8>) -> String {
+    match percentage {
+        Some(pct) => format!("🔋 {pct}%"),
+        None => "🔋 —".to_string(),
+    }
+}
+
+/// Pure network menu-bar status label.
+pub fn network_status_label(available: bool, primary_name: Option<&str>, state: &str) -> String {
+    if !available {
+        return "📶 —".to_string();
+    }
+    match primary_name {
+        Some(name) if !name.is_empty() => format!("📶 {name}"),
+        _ => format!("📶 {state}"),
+    }
+}
+
+/// How often the shell should re-query battery / volume / network for the menu bar.
+pub const STATUS_REFRESH_INTERVAL_SECS: u64 = 5;
 
 fn find_shortcut_action(items: &[MenuItem], key: KeyCode, modifiers: Modifiers) -> Option<String> {
     for item in items {
@@ -723,5 +864,32 @@ mod tests {
             .iter()
             .any(|item| item.action_id == "workspace.switch.0"));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn status_labels_are_pure() {
+        assert_eq!(battery_status_label(Some(87)), "🔋 87%");
+        assert_eq!(battery_status_label(None), "🔋 —");
+        assert_eq!(
+            network_status_label(true, Some("HomeWiFi"), "Full"),
+            "📶 HomeWiFi"
+        );
+        assert_eq!(network_status_label(true, None, "Limited"), "📶 Limited");
+        assert_eq!(network_status_label(false, None, "Unavailable"), "📶 —");
+        assert_eq!(STATUS_REFRESH_INTERVAL_SECS, 5);
+    }
+
+    #[test]
+    fn refresh_status_items_populates_battery_volume_network() {
+        let mut server = MenuServer::new();
+        server.refresh_status_items();
+        let ids: Vec<&str> = server.status_items.iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&"battery"));
+        assert!(ids.contains(&"volume"));
+        assert!(ids.contains(&"network"));
+        // Labels are non-empty placeholders even without host tools.
+        for item in &server.status_items {
+            assert!(!item.label.is_empty());
+        }
     }
 }
