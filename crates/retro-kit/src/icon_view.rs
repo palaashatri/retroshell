@@ -28,6 +28,11 @@ pub struct IconView {
     pub spacing: f32,
     /// Callback triggered upon double-clicking an icon item.
     pub on_double_click: Option<Box<dyn FnMut(usize) + Send>>,
+    /// Index of the most recently double-clicked item, drained by
+    /// [`IconView::take_activated`]. The polling twin of `on_double_click`,
+    /// so apps can react to activation from their `update()`/event loop
+    /// without restructuring around callbacks.
+    activated: Option<usize>,
 }
 
 impl Default for IconView {
@@ -45,7 +50,14 @@ impl IconView {
             icon_size: 64.0,
             spacing: 8.0,
             on_double_click: None,
+            activated: None,
         }
+    }
+
+    /// Returns the index of the item double-clicked since the last call,
+    /// exactly once per activation.
+    pub fn take_activated(&mut self) -> Option<usize> {
+        self.activated.take()
     }
 }
 
@@ -116,6 +128,7 @@ impl Widget for IconView {
             Event::DoubleClick { point, .. } => {
                 for (i, item) in self.items.iter().enumerate() {
                     if item.rect.contains(*point) {
+                        self.activated = Some(i);
                         if let Some(cb) = &mut self.on_double_click {
                             (cb)(i);
                         }

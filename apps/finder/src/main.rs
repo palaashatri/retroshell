@@ -7,8 +7,8 @@ use retro_kit::toolbar::Toolbar;
 use retro_kit::tree_view::{TreeNode, TreeView};
 use retro_kit::window::Window;
 use retro_kit::{
-    AccessibilityNode, Event, EventResult, LayoutConstraint, Rect, Size, ThemeContext, Widget,
-    WidgetState,
+    AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint, PointerDispatcher,
+    Rect, Size, ThemeContext, Widget, WidgetState,
 };
 use retro_sdk::{build_menu, Application};
 use std::path::PathBuf;
@@ -156,6 +156,8 @@ pub struct FinderView {
     forward_stack: Vec<PathBuf>,
     info_text: Option<String>,
     drag_source_path: Option<PathBuf>,
+    focus: FocusManager,
+    pointer: PointerDispatcher,
 }
 
 impl Default for FinderView {
@@ -211,6 +213,8 @@ impl FinderView {
             forward_stack: Vec::new(),
             info_text: None,
             drag_source_path: None,
+            focus: FocusManager::new(),
+            pointer: PointerDispatcher::new(),
         };
         view.reload_directory();
         view
@@ -406,26 +410,114 @@ impl FinderView {
         true
     }
 
-    fn handle_toolbar_click(&mut self, point: retro_kit::Point) -> bool {
-        let Some(index) = self
-            .toolbar
-            .items
-            .iter()
-            .position(|item| item.rect().contains(point))
-        else {
-            return false;
-        };
+    /// Index of the toolbar button activated since last asked (via real
+    /// press/release or keyboard activation), drained through the widgets'
+    /// own `take_clicked()` rather than any geometry math here.
+    fn take_toolbar_click(&mut self) -> Option<usize> {
+        self.toolbar.items.iter_mut().position(|item| {
+            item.as_any_mut()
+                .downcast_mut::<Button>()
+                .is_some_and(|button| button.take_clicked())
+        })
+    }
 
+    fn run_toolbar_action(&mut self, index: usize) {
         match index {
-            0 => self.go_back(),
-            1 => self.go_forward(),
-            2 => self.go_to_parent(),
-            3 => self.create_new_folder(),
-            4 => self.duplicate_selected(),
-            5 => self.move_selected_to_trash(),
-            6 => self.show_selected_info(),
-            _ => false,
+            0 => {
+                self.go_back();
+            }
+            1 => {
+                self.go_forward();
+            }
+            2 => {
+                self.go_to_parent();
+            }
+            3 => {
+                self.create_new_folder();
+            }
+            4 => {
+                self.duplicate_selected();
+            }
+            5 => {
+                self.move_selected_to_trash();
+            }
+            6 => {
+                self.show_selected_info();
+            }
+            _ => {}
         }
+    }
+
+    /// Drain widget activations after an event went through generic
+    /// dispatch: toolbar buttons record clicks, the icon grid records
+    /// double-click activation.
+    fn process_activations(&mut self) {
+        if let Some(index) = self.take_toolbar_click() {
+            self.run_toolbar_action(index);
+            return;
+        }
+        if let Some(index) = self.file_grid.take_activated() {
+            let folder = self
+                .file_grid
+                .items
+                .get(index)
+                .filter(|item| item.icon.as_deref() == Some("folder"))
+                .map(|item| item.label.clone());
+            if let Some(folder) = folder {
+                self.enter_folder_named(&folder);
+            }
+        }
+    }
+
+    /// App-level keyboard accelerators; run only after the focused widget
+    /// declined the key.
+    fn handle_app_key(&mut self, event: &Event) -> EventResult {
+        let Event::KeyDown { key, modifiers } = event else {
+            return EventResult::Ignored;
+        };
+        if modifiers.meta {
+            match key {
+                KeyCode::ArrowUp => {
+                    if self.go_to_parent() {
+                        return EventResult::Handled;
+                    }
+                }
+                KeyCode::LeftBracket => {
+                    if self.go_back() {
+                        return EventResult::Handled;
+                    }
+                }
+                KeyCode::RightBracket => {
+                    if self.go_forward() {
+                        return EventResult::Handled;
+                    }
+                }
+                KeyCode::N if modifiers.shift => {
+                    self.create_new_folder();
+                    return EventResult::Handled;
+                }
+                KeyCode::Backspace => {
+                    self.move_selected_to_trash();
+                    return EventResult::Handled;
+                }
+                KeyCode::D => {
+                    self.duplicate_selected();
+                    return EventResult::Handled;
+                }
+                KeyCode::I => {
+                    self.show_selected_info();
+                    return EventResult::Handled;
+                }
+                _ => {}
+            }
+        } else if *key == KeyCode::Enter {
+            if let Some(item) = self.selected_item() {
+                if item.icon == Some("folder".to_string()) && self.enter_folder_named(&item.label) {
+                    return EventResult::Handled;
+                }
+            }
+        }
+        EventResult::Ignored
     }
 
     fn create_new_folder(&mut self) -> bool {
@@ -578,112 +670,94 @@ impl Widget for FinderView {
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
-        if let Event::KeyDown { key, modifiers } = event {
-            if modifiers.meta {
-                match key {
-                    KeyCode::ArrowUp => {
-                        if self.go_to_parent() {
-                            return EventResult::Handled;
-                        }
-                    }
-                    KeyCode::LeftBracket => {
-                        if self.go_back() {
-                            return EventResult::Handled;
-                        }
-                    }
-                    KeyCode::RightBracket => {
-                        if self.go_forward() {
-                            return EventResult::Handled;
-                        }
-                    }
-                    KeyCode::N if modifiers.shift => {
-                        self.create_new_folder();
-                        return EventResult::Handled;
-                    }
-                    KeyCode::Backspace => {
-                        self.move_selected_to_trash();
-                        return EventResult::Handled;
-                    }
-                    KeyCode::D => {
-                        self.duplicate_selected();
-                        return EventResult::Handled;
-                    }
-                    KeyCode::I => {
-                        self.show_selected_info();
-                        return EventResult::Handled;
-                    }
-                    _ => {}
-                }
-            } else if *key == KeyCode::Enter {
-                if let Some(item) = self.selected_item() {
-                    if item.icon == Some("folder".to_string())
-                        && self.enter_folder_named(&item.label)
-                    {
-                        return EventResult::Handled;
-                    }
-                }
-            }
-        } else if let Event::MouseDown { button, .. } = event {
-            match button {
-                MouseButton::Back if self.go_back() => return EventResult::Handled,
-                MouseButton::Forward if self.go_forward() => return EventResult::Handled,
-                _ => {}
-            }
-        }
-
         match event {
+            // Tab / Shift+Tab walk the focusable widgets (toolbar buttons).
+            Event::KeyDown {
+                key: KeyCode::Tab,
+                modifiers,
+            } => {
+                let mut focus = std::mem::take(&mut self.focus);
+                if modifiers.shift {
+                    focus.focus_prev(self);
+                } else {
+                    focus.focus_next(self);
+                }
+                self.focus = focus;
+                EventResult::Handled
+            }
+            // Focused widget first (Enter/Space activate a focused toolbar
+            // button); app accelerators only if the key was declined.
+            Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Char { .. } => {
+                let mut focus = std::mem::take(&mut self.focus);
+                let result = focus.dispatch_key(self, event);
+                self.focus = focus;
+                if matches!(result, EventResult::Handled) {
+                    self.process_activations();
+                    return EventResult::Handled;
+                }
+                self.handle_app_key(event)
+            }
+            // The icon-grid drag protocol stays app-level for now: nothing
+            // in the SDK loop synthesizes Drag* events yet, and the drop
+            // target is an *item*, not a widget.
             Event::DragStart { point } => {
                 if self.start_drag_at(*point) {
-                    return EventResult::Handled;
+                    EventResult::Handled
+                } else {
+                    EventResult::Ignored
                 }
             }
             Event::DragEnd { point } | Event::Drop { point } => {
                 if self.finish_drag_at(*point) {
-                    return EventResult::Handled;
+                    EventResult::Handled
+                } else {
+                    EventResult::Ignored
                 }
             }
-            _ => {}
-        }
-
-        if let Event::MouseDown {
-            button: MouseButton::Left,
-            point,
-            ..
-        } = event
-        {
-            if self.handle_toolbar_click(*point) {
-                return EventResult::Handled;
-            }
-        }
-
-        let mut result = self.sidebar.handle_event(event);
-        if let EventResult::Ignored = result {
-            let previous_selection = self.selected_path();
-            result = self.file_grid.handle_event(event);
-            if matches!(result, EventResult::Handled) {
-                if self.selected_path() != previous_selection {
-                    self.info_text = None;
-                }
-                self.refresh_status_bar();
-            }
-        }
-
-        if let Event::DoubleClick { point, .. } = event {
-            let folder_to_enter = self
-                .file_grid
-                .items
-                .iter()
-                .find(|item| item.rect.contains(*point) && item.icon == Some("folder".to_string()))
-                .map(|item| item.label.clone());
-
-            if let Some(folder) = folder_to_enter {
-                if self.enter_folder_named(&folder) {
-                    return EventResult::Handled;
+            // Mouse history buttons are chords on the whole window, not
+            // positional clicks.
+            Event::MouseDown {
+                button: MouseButton::Back,
+                ..
+            } => {
+                if self.go_back() {
+                    EventResult::Handled
+                } else {
+                    EventResult::Ignored
                 }
             }
+            Event::MouseDown {
+                button: MouseButton::Forward,
+                ..
+            } => {
+                if self.go_forward() {
+                    EventResult::Handled
+                } else {
+                    EventResult::Ignored
+                }
+            }
+            // Everything positional goes through generic rect-checked
+            // dispatch with implicit capture; no hand-rolled hit-testing.
+            Event::MouseDown { .. }
+            | Event::MouseUp { .. }
+            | Event::MouseMove { .. }
+            | Event::DoubleClick { .. }
+            | Event::MouseLeave => {
+                let previous_selection = self.selected_path();
+                let mut pointer = std::mem::take(&mut self.pointer);
+                let result = pointer.dispatch(self, event);
+                self.pointer = pointer;
+                if matches!(result, EventResult::Handled) {
+                    self.process_activations();
+                    if self.selected_path() != previous_selection {
+                        self.info_text = None;
+                        self.refresh_status_bar();
+                    }
+                }
+                result
+            }
+            _ => EventResult::Ignored,
         }
-
-        result
     }
 
     fn update(&mut self) {
@@ -843,9 +917,16 @@ mod tests {
 
     fn click_toolbar_button(view: &mut FinderView, index: usize) -> EventResult {
         let rect = view.toolbar.items[index].rect();
-        view.handle_event(&Event::MouseDown {
+        let point = retro_kit::Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        let down = view.handle_event(&Event::MouseDown {
             button: MouseButton::Left,
-            point: retro_kit::Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0),
+            point,
+            modifiers: Modifiers::NONE,
+        });
+        assert!(matches!(down, EventResult::Handled), "press must land on the button");
+        view.handle_event(&Event::MouseUp {
+            button: MouseButton::Left,
+            point,
             modifiers: Modifiers::NONE,
         })
     }
@@ -1086,6 +1167,95 @@ mod tests {
             view.status_bar.items[0].text,
             "MOVE CANCELLED - DROP ON A FOLDER"
         );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finder_click_selects_item_through_generic_dispatch() {
+        let root = temp_finder_root();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("note.txt"), "hello").unwrap();
+
+        let mut view = FinderView::new();
+        view.set_current_path(root.clone());
+        view.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+
+        let note_rect = view
+            .file_grid
+            .items
+            .iter()
+            .find(|item| item.label == "note.txt")
+            .expect("note is listed")
+            .rect;
+        let handled = view.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point: rect_center(note_rect),
+            modifiers: Modifiers::NONE,
+        });
+
+        assert!(matches!(handled, EventResult::Handled));
+        assert!(view.selected_item().is_some_and(|item| item.label == "note.txt"));
+        assert_eq!(view.status_bar.items[0].text, "1 of 1 selected");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finder_double_click_enters_folder_through_dispatch() {
+        let root = temp_finder_root();
+        fs::create_dir_all(root.join("Child")).unwrap();
+
+        let mut view = FinderView::new();
+        view.set_current_path(root.clone());
+        view.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+
+        let folder_rect = view
+            .file_grid
+            .items
+            .iter()
+            .find(|item| item.label == "Child")
+            .expect("folder is listed")
+            .rect;
+        let handled = view.handle_event(&Event::DoubleClick {
+            button: MouseButton::Left,
+            point: rect_center(folder_rect),
+            modifiers: Modifiers::NONE,
+        });
+
+        assert!(matches!(handled, EventResult::Handled));
+        assert_eq!(view.current_path, root.join("Child"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finder_tab_then_enter_activates_focused_toolbar_button() {
+        let root = temp_finder_root();
+        fs::create_dir_all(&root).unwrap();
+
+        let mut view = FinderView::new();
+        view.set_current_path(root.clone());
+        view.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+
+        // Tab x4 lands on the fourth toolbar button: NEW FOLDER.
+        for _ in 0..4 {
+            assert!(matches!(
+                view.handle_event(&Event::KeyDown {
+                    key: KeyCode::Tab,
+                    modifiers: Modifiers::NONE,
+                }),
+                EventResult::Handled
+            ));
+        }
+        assert!(view.toolbar.items[3].widget_state().focused);
+
+        let handled = view.handle_event(&Event::KeyDown {
+            key: KeyCode::Enter,
+            modifiers: Modifiers::NONE,
+        });
+        assert!(matches!(handled, EventResult::Handled));
+        assert!(root.join("New Folder").is_dir());
 
         fs::remove_dir_all(root).unwrap();
     }
