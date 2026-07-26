@@ -4,8 +4,8 @@ use retro_kit::label::Label;
 use retro_kit::slider::Slider;
 use retro_kit::window::Window;
 use retro_kit::{
-    AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint, Point,
-    PointerDispatcher, Rect, Size, ThemeContext, Widget, WidgetState,
+    AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint, PointerDispatcher,
+    Rect, Size, ThemeContext, Widget, WidgetState,
 };
 use retro_sdk::{build_menu, Application};
 use retro_shell::DisplayConfig;
@@ -1319,6 +1319,7 @@ impl Widget for SettingsView {
 mod tests {
     use super::*;
     use retro_kit::event::MouseButton;
+    use retro_kit::Point;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
