@@ -46,6 +46,10 @@ Three defects in one widget: `draw()` paints nothing; `MouseDown` is consumed
 **without checking the click is inside the button**; and there is no
 `on_click` — a `Button` has no way to notify anyone it was pressed.
 
+And the app-side bypass, for every app:
+`apps/finder/src/main.rs:409-429` (toolbar by index), `apps/settings/src/main.rs:974-996`,
+`apps/textedit/src/main.rs:778`, `apps/appstore/src/main.rs:1236`.
+
 The infrastructure to fix this already exists and is simply unused:
 
 ```rust
@@ -154,23 +158,40 @@ without being rewritten.
 
 ## 3. Per-widget work
 
-| Widget | Verdict today | Change needed |
+Verdicts below are from a full read of all 21 widgets against their SDK painters
+and their actual app consumers. **Three widgets are genuinely fine** — the
+toolkit is not uniformly broken, which matters for planning.
+
+| Widget | Verdict | Evidence / change needed |
 |---|---|---|
-| `Button` | render-only; consumes clicks with no hit test; no activation | press/release state, `on_click` / `take_clicked`, real `draw()` |
-| `TextField` | input works, but no focus gate, so all fields consume all keys | gate on `state.focused`, `focusable() = true`, caret + selection rendering, password masking (`is_password` is currently ignored when drawing) |
-| `PopupButton` | toggles `open` on any click anywhere; the open menu is never rendered or selectable | hit-test the button rect, render the menu, hit-test items, `on_select(index)` |
-| `TabView` | headers drawn but not clickable; `select_tab` has no callers | header rect hit-test → `select_tab`, keyboard Left/Right when focused |
-| `ScrollView` | wheel events change an offset that is only applied inside `layout()`, which does not re-run → visually inert; offset unclamped | apply offset at paint time, clamp to content bounds, scrollbar hit-test/drag |
-| `Dialog` | buttons unclickable | route through generic dispatch; default/cancel button semantics (Enter/Escape) |
-| `ListView` | selection works via app-level hit tests | own the hit test; keyboard Up/Down/Home/End; `on_activate` for double-click |
-| `TreeView` | same as ListView, plus expand/collapse | disclosure-triangle hit region, Left/Right to collapse/expand |
-| `Slider` | drag math is correct; app drives it | own the drag grab, keyboard arrows, `on_change` |
-| `MenuBar` | works (shell drives it) | keep, but move hit-testing into the widget |
-| `Toolbar` | app-driven | own hit test, `on_action(index)` |
-| `IconView` | app-driven selection and drag | own hit test + rubber-band selection; keyboard arrows |
-| `SplitView` | divider not draggable | divider grab + min/max constraints |
-| `StatusBar`, `Label`, `ProgressBar`, `MonospaceView` | display-only, which is correct | give them real `draw()` when the painter moves (§4) |
-| `DockView`, `WorkspaceGridView` | shell-driven | own hit test, expose activation |
+| `ListView` | **works** | Real: guards `if !self.rect().contains(*point) { return Ignored }`, row pitch matches the painter. Add keyboard nav, scrolling, and implement the declared-but-unused `multi_select`. |
+| `Slider` | **works** | Real end-to-end, rect-guarded drag with the same 9px inset as the painter, unit-tested. Add keyboard arrows and `on_change` (consumers poll `.value` today). |
+| `MenuBar` | **works** | The one widget that publishes its own geometry (`menu_rects`, `dropdown_rect`) and hit-tests properly. Use it as the model for the others. |
+| `Button` | render-only | `draw()` discards its computed colors; `MouseDown` returns `Handled` for **any** click in the window. Needs rect gate, press/release state, `on_click`/`take_clicked`. |
+| `Toolbar` | render-only, **actively harmful** | Fans events to children in reverse with no rect check; combined with `Button` returning `Handled` unconditionally, **the last toolbar item swallows every left click in the window**. Both consumers therefore avoid it entirely. |
+| `TextField` | partial | Input mutates text correctly, but `on_change` is never assigned anywhere in the repo, and there is no focus gate. Needs click-to-focus, `focusable()`, caret rendering, and password masking (`is_password` is ignored by the painter). |
+| `IconView` | partial | Selection genuinely hit-tests item rects. But `on_double_click` is never assigned, so Finder and the shell both re-scan items themselves. Needs a real activation channel (`take_activated()`). |
+| `TreeView` | partial, **wrong** | Hit-tests only the outer rect, then slices the view into three fixed percentage bands (`<30%`, `<60%`, else) returning hardcoded paths `[0,3]`/`[0,4]`/`[0,5]`. Clicking "Favorites" selects Desktop. Needs a real visible-row list built in `layout()` and shared with the painter. |
+| `Window` | partial | `FocusIn`/`FocusOut` are winit *platform-window* events, not widget focus. The titlebar it appears to own is reimplemented in the shell with duplicated magic numbers. Should expose titlebar/close/zoom/resize rects from `layout()`. |
+| `PopupButton` | dead | Any click anywhere toggles `open`; the painter never reads `open` or the non-selected items, so an open popup renders identically to a closed one. No click→item mapping exists. Not instantiated anywhere. |
+| `TabView` | dead | Headers are painted with geometry computed inline in the painter; `TabView` stores none, so headers cannot be hit-tested and `select_tab` has no callers. Also launders lifetimes with `unsafe { &mut *(r as *mut dyn Widget) }` in `children_mut` — **fix or remove that regardless**. |
+| `ScrollView` | dead | The SDK sends `MouseWheel` to the root with no pointer target, so the first `ScrollView` in the tree consumes every wheel event wherever the cursor is. Offset is never clamped to content height and no scrollbar is painted. |
+| `SplitView` | dead | Divider is inert — `divider_position` is never modified by any event. Not used anywhere; Finder and Settings hand-roll sidebars in `layout()`. |
+| `Dialog` | dead | Does not override `handle_event` at all, inheriting the trait default `Ignored`. No default button, no dismissal, no result. Not constructed anywhere. |
+| `Label`, `ProgressBar`, `StatusBar`, `MonospaceView`, `DockView`, `WorkspaceGridView` | render-only *by design* | Correct as display-only; they just need real `draw()` when the painter moves (§4). |
+
+### The one fix that unlocks the most
+
+`Toolbar`, `Layout`, `SplitView` and `Window` all forward positional events to
+children **without a rect check**. That single missing guard, plus `Button`
+returning `Handled` unconditionally, is why every app abandoned the toolkit and
+hand-rolled its own dispatch. One shared helper —
+
+```rust
+fn dispatch_positional(children: &mut [&mut dyn Widget], at: Point, ev: &Event) -> EventResult;
+```
+
+— used by all four containers is the highest-leverage change in this document.
 
 ---
 
