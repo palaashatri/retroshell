@@ -194,6 +194,25 @@ fn collect_render_elements(
 ) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
     let mut elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
 
+    // Cursor first: the element slice is front-to-back, so the pointer must
+    // lead or it renders underneath the windows it is pointing at. Only a
+    // client-provided surface can be drawn here; a named cursor needs a theme
+    // (XCursor) which the DRM path does not load yet.
+    if let CursorImageStatus::Surface(ref surface) = state.cursor_status {
+        let loc = (
+            state.pointer_location.x.round() as i32,
+            state.pointer_location.y.round() as i32,
+        );
+        elements.extend(render_elements_from_surface_tree(
+            renderer,
+            surface,
+            loc,
+            1.0,
+            1.0,
+            Kind::Cursor,
+        ));
+    }
+
     // Layer-shell chrome (menu bar, dock) sits above ordinary windows.
     for layer in state.layer_surfaces.iter().rev() {
         elements.extend(render_elements_from_surface_tree(
@@ -805,6 +824,7 @@ pub fn run_drm_session() -> Result<()> {
         running: true,
         need_full_redraw: true,
         drm_compositor,
+        cursor_status: CursorImageStatus::default_named(),
     };
 
     eprintln!(
@@ -955,6 +975,8 @@ struct MappedLayer {
 // ---------------------------------------------------------------------------
 
 struct DrmSessionState {
+    /// Latest client-set cursor image; drawn topmost each frame.
+    cursor_status: CursorImageStatus,
     /// GL compositor over the scanout surface. `None` when it could not be
     /// built, in which case the session falls back to a solid dumb-buffer flip.
     /// Lives in the state so the vblank handler can call `frame_submitted()`.
@@ -1307,7 +1329,11 @@ impl SeatHandler for DrmSessionState {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+    /// Remember the client-set cursor so the compositor can draw it. Ignoring
+    /// this is why the DRM session had no visible pointer at all.
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.cursor_status = image;
+    }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let client = focused.and_then(|s| s.client());
