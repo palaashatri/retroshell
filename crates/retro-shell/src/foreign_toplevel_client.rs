@@ -184,6 +184,16 @@ mod linux {
                 _ => {}
             }
         }
+
+        // The `toplevel` event carries a new_id: wayland-client requires this
+        // specialization to build the child proxy's dispatch data, and its
+        // default implementation is a hard `panic!` in a non-unwinding
+        // context — i.e. without this, the first toplevel a real compositor
+        // (labwc, KDE) announces aborts the whole shell. Found live on
+        // 2026-07-27: opening Force Quit under labwc killed the session.
+        wayland_client::event_created_child!(State, ExtForeignToplevelListV1, [
+            ext_foreign_toplevel_list_v1::EVT_TOPLEVEL_OPCODE => (ExtForeignToplevelHandleV1, ()),
+        ]);
     }
 
     impl Dispatch<ExtForeignToplevelHandleV1, ()> for State {
