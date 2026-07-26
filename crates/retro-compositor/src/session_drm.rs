@@ -25,8 +25,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use smithay::backend::allocator::gbm::GbmDevice;
+use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
+use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags};
+use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::DrmDeviceFd;
+use smithay::backend::renderer::element::surface::{
+    render_elements_from_surface_tree, WaylandSurfaceRenderElement,
+};
+use smithay::backend::renderer::element::Kind;
+use smithay::backend::allocator::Fourcc as DrmFourcc;
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -96,6 +103,18 @@ use crate::{
 /// Compositor-owned selection payload keyed by mime type.
 type MimePayload = Arc<HashMap<String, Vec<u8>>>;
 
+/// The concrete `DrmCompositor` this session uses: GBM-allocated buffers,
+/// GBM framebuffer export, no per-frame user data, over a DRM device fd.
+type RetroDrmCompositor = DrmCompositor<
+    GbmAllocator<DrmDeviceFd>,
+    GbmFramebufferExporter<DrmDeviceFd>,
+    (),
+    DrmDeviceFd,
+>;
+
+/// Desktop background behind all client surfaces (classic retro gray).
+const DRM_CLEAR_COLOR: [f32; 4] = [0.596, 0.596, 0.580, 1.0];
+
 /// Probe whether a DRM session looks bootable (nodes exist under /dev/dri).
 pub fn drm_session_available() -> bool {
     !discover_drm_nodes().is_empty() || Path::new("/dev/dri").exists()
@@ -161,6 +180,50 @@ fn present_armed_frame(
         }
     }
     Ok(())
+}
+
+/// Build the render element list for one frame: layer-shell chrome plus every
+/// window visible on the active workspace, bottom-to-top in stacking order.
+///
+/// `render_elements_from_surface_tree` returns elements front-to-back for a
+/// single surface tree, and `DrmCompositor::render_frame` also wants
+/// front-to-back overall — so surfaces are walked top-of-stack first.
+fn collect_render_elements(
+    renderer: &mut GlesRenderer,
+    state: &DrmSessionState,
+) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
+    let mut elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
+
+    // Layer-shell chrome (menu bar, dock) sits above ordinary windows.
+    for layer in state.layer_surfaces.iter().rev() {
+        elements.extend(render_elements_from_surface_tree(
+            renderer,
+            layer.surface.wl_surface(),
+            (0, 0),
+            1.0,
+            1.0,
+            Kind::Unspecified,
+        ));
+    }
+
+    // Windows: last mapped is topmost, so iterate in reverse for front-to-back.
+    for w in state
+        .windows
+        .iter()
+        .rev()
+        .filter(|w| state.workspace_state.is_visible(&w.window_id))
+    {
+        elements.extend(render_elements_from_surface_tree(
+            renderer,
+            w.toplevel.wl_surface(),
+            (w.position.x, w.position.y),
+            1.0,
+            1.0,
+            Kind::Unspecified,
+        ));
+    }
+
+    elements
 }
 
 /// Allocate the session's single scanout dumb buffer and its framebuffer.
@@ -294,7 +357,7 @@ pub fn run_drm_session() -> Result<()> {
         )
         .with_context(|| format!("session.open({})", primary.display()))?;
     let device_fd = DrmDeviceFd::new(DeviceFd::from(owned));
-    let (mut drm, _drm_notifier) =
+    let (mut drm, drm_notifier) =
         smithay::backend::drm::DrmDevice::new(device_fd.clone(), true).context("DrmDevice::new")?;
     let gbm = GbmDevice::new(device_fd.clone()).context("GbmDevice::new")?;
 
@@ -460,7 +523,77 @@ pub fn run_drm_session() -> Result<()> {
             modeset_plan.mode_w, modeset_plan.mode_h
         );
     }
-    let _renderer = renderer;
+    // Renderer and device stay alive: the renderer composites client surfaces
+    // into the DrmCompositor's GBM swapchain, the device owns cursor sizing.
+    let mut renderer = renderer;
+
+    // ---- GL composition (ROADMAP 1.2) ----
+    // Build a DrmCompositor over the scanout surface so client buffers reach
+    // the screen. The dumb-buffer path below stays only as a fallback for when
+    // this cannot be constructed (no GBM formats, inactive surface, …), because
+    // a solid flip at least proves the modeset works.
+    let mut drm_compositor: Option<RetroDrmCompositor> = None;
+    if let Some(surface) = drm_surface.take() {
+        let output_for_comp = Output::new(
+            modeset_plan.connector_name.clone(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "RetroShell".into(),
+                model: "DRM".into(),
+            },
+        );
+        output_for_comp.change_current_state(
+            Some(Mode {
+                size: (modeset_plan.mode_w, modeset_plan.mode_h).into(),
+                refresh: if modeset_plan.refresh_mhz > 0 {
+                    modeset_plan.refresh_mhz
+                } else {
+                    refresh_mhz
+                },
+            }),
+            Some(Transform::Normal),
+            None,
+            None,
+        );
+        let allocator = GbmAllocator::new(
+            gbm.clone(),
+            GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+        );
+        let exporter = GbmFramebufferExporter::new(gbm.clone(), None);
+        let renderer_formats = renderer.egl_context().dmabuf_render_formats().clone();
+        match DrmCompositor::new(
+            &output_for_comp,
+            surface,
+            None,
+            allocator,
+            exporter,
+            [DrmFourcc::Xrgb8888, DrmFourcc::Argb8888],
+            renderer_formats,
+            drm.cursor_size(),
+            Some(gbm.clone()),
+        ) {
+            Ok(comp) => {
+                eprintln!(
+                    "[retro-compositor] DRM GL compositor ready ({}x{}) — client surfaces will be composited",
+                    modeset_plan.mode_w, modeset_plan.mode_h
+                );
+                tracing::info!(
+                    stage = DrmPresentationStage::PageFlipOrPresent.as_str(),
+                    "DrmCompositor initialized; GL composition active"
+                );
+                drm_compositor = Some(comp);
+            }
+            Err(err) => {
+                eprintln!(
+                    "[retro-compositor] DrmCompositor init failed ({err}); falling back to solid dumb-buffer present"
+                );
+                tracing::warn!(error = %err, "DrmCompositor init failed");
+            }
+        }
+    }
+    let composition_active = drm_compositor.is_some();
+
     // Keep DrmDevice alive for the session (ControlDevice for page_flip path).
     let _drm = drm;
 
@@ -472,7 +605,7 @@ pub fn run_drm_session() -> Result<()> {
     let mut scanout_armed = false;
     let mut armed_fb: Option<smithay::reexports::drm::control::framebuffer::Handle> = None;
     let mut _scanout_owners = None;
-    if let Some(surface) = drm_surface.as_ref() {
+    if let Some(surface) = drm_surface.as_ref().filter(|_| !composition_active) {
         match arm_scanout_framebuffer(surface, modeset_plan.mode_w, modeset_plan.mode_h) {
             Ok((buffer, fb)) => {
                 let handle = *fb.as_ref();
@@ -601,6 +734,23 @@ pub fn run_drm_session() -> Result<()> {
         })
         .map_err(|e| anyhow!("insert libinput: {e}"))?;
 
+    // DRM vblank: frame_submitted() MUST follow each queued flip or the
+    // swapchain runs out of buffers and rendering stalls after a few frames.
+    loop_handle
+        .insert_source(drm_notifier, |event, _meta, state| match event {
+            smithay::backend::drm::DrmEvent::VBlank(_crtc) => {
+                if let Some(comp) = state.drm_compositor.as_mut() {
+                    if let Err(err) = comp.frame_submitted() {
+                        tracing::warn!(error = %err, "frame_submitted failed");
+                    }
+                }
+            }
+            smithay::backend::drm::DrmEvent::Error(err) => {
+                tracing::error!(error = %err, "DRM device error");
+            }
+        })
+        .map_err(|e| anyhow!("insert drm notifier: {e}"))?;
+
     // Session notifier (VT switch)
     loop_handle
         .insert_source(session_notifier, |event, _, state| match event {
@@ -654,6 +804,7 @@ pub fn run_drm_session() -> Result<()> {
         dnd_icon: None,
         running: true,
         need_full_redraw: true,
+        drm_compositor,
     };
 
     eprintln!(
@@ -673,7 +824,43 @@ pub fn run_drm_session() -> Result<()> {
         if force_present {
             state.need_full_redraw = false;
         }
-        if scanout_armed && (force_present || frame_i % 60 == 0) {
+        if state.drm_compositor.is_some() {
+            // Composite every visible client surface plus layer-shell chrome
+            // into the GBM swapchain and page-flip it. This is what puts client
+            // pixels on a real screen; the dumb-buffer path below only ever
+            // showed a solid colour.
+            //
+            // Elements are collected before taking the &mut on the compositor:
+            // both live on `state`, and the borrow checker cannot split fields
+            // across the helper call.
+            let elements = collect_render_elements(&mut renderer, &state);
+            let comp = state
+                .drm_compositor
+                .as_mut()
+                .expect("checked is_some above");
+            match comp.render_frame::<_, _>(
+                &mut renderer,
+                &elements,
+                DRM_CLEAR_COLOR,
+                FrameFlags::DEFAULT,
+            ) {
+                Ok(result) => {
+                    if !result.is_empty {
+                        // Drop the borrow of `result` before queueing.
+                        drop(result);
+                        if let Err(err) = comp.queue_frame(()) {
+                            tracing::debug!(error = %err, "queue_frame failed");
+                            // A failed queue leaves no pending flip, so the
+                            // vblank handler will not fire; recover next tick.
+                            let _ = comp.frame_submitted();
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "render_frame failed");
+                }
+            }
+        } else if scanout_armed && (force_present || frame_i % 60 == 0) {
             if let (Some(surface), Some(fb)) = (drm_surface_keepalive.as_ref(), armed_fb) {
                 if let Err(err) = present_armed_frame(surface, fb, present_w, present_h) {
                     tracing::debug!(error = %err, "periodic DRM present failed");
@@ -768,6 +955,10 @@ struct MappedLayer {
 // ---------------------------------------------------------------------------
 
 struct DrmSessionState {
+    /// GL compositor over the scanout surface. `None` when it could not be
+    /// built, in which case the session falls back to a solid dumb-buffer flip.
+    /// Lives in the state so the vblank handler can call `frame_submitted()`.
+    drm_compositor: Option<RetroDrmCompositor>,
     display_handle: DisplayHandle,
     loop_signal: LoopSignal,
     compositor_state: CompositorState,
@@ -1082,6 +1273,11 @@ impl CompositorHandler for DrmSessionState {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        // Promote the newly attached buffer into renderable state. Without
+        // this, render_elements_from_surface_tree finds no texture and the
+        // compositor paints only its clear colour — clients map and render but
+        // never appear on screen.
+        smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
         for w in self.windows.iter_mut() {
             if w.toplevel.wl_surface() == surface {
                 let st = w.toplevel.current_state();
