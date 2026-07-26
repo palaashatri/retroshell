@@ -1448,7 +1448,8 @@ mod tests {
         view.layout(LayoutConstraint::tight(Size::new(900.0, 640.0)));
         view.query.set_text("zzz");
 
-        let result = click(&mut view, rect_center(view.search_button.rect()));
+        let point = rect_center(view.search_button.rect());
+        let result = click(&mut view, point);
 
         assert!(matches!(result, EventResult::Handled));
         assert!(
