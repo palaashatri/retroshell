@@ -15,6 +15,10 @@ pub use workspace_focus::{
 #[cfg(target_os = "linux")]
 pub mod session_drm;
 
+/// Real DRM/KMS property access: HDR metadata blobs, Colorspace, max bpc, VRR.
+#[cfg(target_os = "linux")]
+pub mod drm_props;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 

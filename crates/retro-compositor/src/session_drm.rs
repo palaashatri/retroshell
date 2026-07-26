@@ -361,6 +361,75 @@ pub fn run_drm_session() -> Result<()> {
         tracing::debug!(stage = stage.as_str(), "drm presentation pipeline stage");
     }
 
+    // ---- Real HDR / VRR capability probe on the chosen connector ----
+    // Replaces the old hardcoded `hdr_supported = false`: these read the actual
+    // kernel properties, so a capable display reports true and a VM reports
+    // false for the honest reason (vmwgfx exposes neither property).
+    if let Some((conn, _mode, _idx)) = picked {
+        match crate::drm_props::PropertyIndex::read(&drm, conn) {
+            Ok(conn_props) => {
+                let caps = crate::drm_props::probe_hdr(&conn_props);
+                eprintln!("[retro-compositor] connector HDR: {}", caps.summary());
+                tracing::info!(
+                    hdr_metadata = caps.has_hdr_metadata,
+                    bt2020 = caps.has_bt2020_colorspace,
+                    max_bpc = ?caps.max_bpc,
+                    hdr10_capable = caps.hdr10_capable(),
+                    "connector HDR capability probed from DRM properties"
+                );
+                hdr_caps.hdr_supported = caps.hdr10_capable();
+                if caps.hdr10_capable() {
+                    hdr_caps
+                        .supported_color_spaces
+                        .push(crate::hdr::ColorSpace::Rec2020);
+                }
+
+                let crtc_props = drm
+                    .crtcs()
+                    .first()
+                    .and_then(|&c| crate::drm_props::PropertyIndex::read(&drm, c).ok())
+                    .unwrap_or_default();
+                let vrr = crate::drm_props::probe_vrr(&conn_props, &crtc_props);
+                eprintln!(
+                    "[retro-compositor] connector VRR: capable={} controllable={} enabled={}",
+                    vrr.capable, vrr.controllable, vrr.enabled
+                );
+
+                // Apply what the user asked for, but only what the hardware allows.
+                if display_policy.hdr_requested {
+                    let md = crate::drm_props::HdrOutputMetadata::hdr10(1000, 0.005, 1000, 400);
+                    match crate::drm_props::apply_hdr10(&drm, conn, &conn_props, &md) {
+                        Ok(Some(_blob)) => {
+                            eprintln!("[retro-compositor] HDR10 metadata applied to connector")
+                        }
+                        Ok(None) => eprintln!(
+                            "[retro-compositor] HDR requested but connector is not HDR10-capable; staying SDR"
+                        ),
+                        Err(err) => {
+                            eprintln!("[retro-compositor] HDR apply failed: {err}")
+                        }
+                    }
+                }
+                if display_policy.vrr_adaptive {
+                    if let Some(&crtc) = drm.crtcs().first() {
+                        match crate::drm_props::set_vrr_enabled(
+                            &drm, crtc, &crtc_props, vrr, true,
+                        ) {
+                            Ok(true) => eprintln!("[retro-compositor] VRR_ENABLED set on CRTC"),
+                            Ok(false) => eprintln!(
+                                "[retro-compositor] VRR requested but connector is not vrr_capable; fixed refresh"
+                            ),
+                            Err(err) => eprintln!("[retro-compositor] VRR apply failed: {err}"),
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "could not read connector properties");
+            }
+        }
+    }
+
     // Attempt real DrmSurface on first CRTC + connected connector (scanout path).
     let mut drm_surface: Option<DrmSurface> = None;
     if let Some((conn, mode, _idx)) = picked {
@@ -852,7 +921,7 @@ impl DrmSessionState {
             PointerButtonEvent, PointerMotionEvent,
         };
         use smithay::input::keyboard::{FilterResult, Keysym};
-        use smithay::input::pointer::{ButtonEvent, MotionEvent};
+        use smithay::input::pointer::ButtonEvent;
 
         match event {
             InputEvent::Keyboard { event } => {
