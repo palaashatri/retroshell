@@ -1647,24 +1647,15 @@ fn draw_progress_bar(canvas: &mut Canvas<'_>, rect: Rect, pb: &ProgressBar) {
     }
 }
 
-fn draw_workspace_grid_view(canvas: &mut Canvas<'_>, rect: Rect, grid: &WorkspaceGridView) {
-    let margin = 8.0;
-    let grid_rect = Rect::new(
-        rect.x + margin,
-        rect.y + margin,
-        rect.width - margin * 2.0,
-        rect.height - margin * 2.0,
-    );
-
-    let cell_w = (grid_rect.width - 6.0) / 2.0;
-    let cell_h = (grid_rect.height - 6.0) / 2.0;
-
+fn draw_workspace_grid_view(canvas: &mut Canvas<'_>, _rect: Rect, grid: &WorkspaceGridView) {
+    // Cell geometry comes from the widget — the same rects its
+    // `handle_event` hit-tests, so paint and input cannot drift.
     for i in 0..4 {
-        let row = i / 2;
-        let col = i % 2;
-        let cell_x = grid_rect.x + col as f32 * (cell_w + 6.0);
-        let cell_y = grid_rect.y + row as f32 * (cell_h + 6.0);
-        let cell_r = Rect::new(cell_x, cell_y, cell_w, cell_h);
+        let cell_r = grid.cell_rect(i);
+        let cell_w = cell_r.width;
+        let cell_h = cell_r.height;
+        let cell_x = cell_r.x;
+        let cell_y = cell_r.y;
 
         let bg_color = if i == grid.active_index {
             ui(rgb(204, 221, 240), rgb(48, 70, 96))
@@ -1747,28 +1738,22 @@ fn draw_tab_view(canvas: &mut Canvas<'_>, rect: Rect, tv: &TabView) {
     }
 }
 
-fn draw_dock_view(canvas: &mut Canvas<'_>, rect: Rect, dock: &DockView) {
+fn draw_dock_view(canvas: &mut Canvas<'_>, _rect: Rect, dock: &DockView) {
     if dock.items.is_empty() {
         return;
     }
-    
-    let item_size = 48.0;
-    let padding = 8.0;
-    let item_spacing = 6.0;
-    let total_width = dock.items.len() as f32 * (item_size + item_spacing) - item_spacing + padding * 2.0;
-    
-    let dock_x = rect.x + (rect.width - total_width) * 0.5;
-    let dock_y = rect.y + rect.height - item_size - padding * 2.0;
-    let dock_rect = Rect::new(dock_x, dock_y, total_width, item_size + padding * 2.0);
-    
+
+    // Geometry comes from the widget itself — the same rects its
+    // `handle_event` hit-tests, so paint and input cannot drift.
+    let dock_rect = dock.strip_rect();
+
     let bg_color = ui(rgb(230, 230, 226), rgb(28, 30, 32));
     canvas.rect(dock_rect, bg_color);
     draw_beveled_rect(canvas, dock_rect, bg_color, true);
-    
-    let mut current_x = dock_x + padding;
-    for item in &dock.items {
-        let item_rect = Rect::new(current_x, dock_y + padding, item_size, item_size);
-        
+
+    for (i, item) in dock.items.iter().enumerate() {
+        let item_rect = dock.item_rect(i);
+
         if item.is_focused {
             let highlight_rect = Rect::new(item_rect.x - 2.0, item_rect.y - 2.0, item_rect.width + 4.0, item_rect.height + 4.0);
             canvas.rect(highlight_rect, ui(rgb(180, 200, 240), rgb(60, 80, 120)));
@@ -1779,8 +1764,8 @@ fn draw_dock_view(canvas: &mut Canvas<'_>, rect: Rect, dock: &DockView) {
         canvas.rect(item_rect, icon_bg);
         draw_beveled_rect(canvas, item_rect, icon_bg, true);
         
-        let symbol_x = item_rect.x + (item_size - 32.0) * 0.5;
-        let symbol_y = item_rect.y + (item_size - 32.0) * 0.5 - 2.0;
+        let symbol_x = item_rect.x + (item_rect.width - 32.0) * 0.5;
+        let symbol_y = item_rect.y + (item_rect.height - 32.0) * 0.5 - 2.0;
         
         match item.label.as_str() {
             "Finder" => draw_app_icon(canvas, symbol_x - 6.0, symbol_y - 6.0),
@@ -1796,8 +1781,6 @@ fn draw_dock_view(canvas: &mut Canvas<'_>, rect: Rect, dock: &DockView) {
                 ui(rgb(60, 60, 55), rgb(200, 200, 195)),
             );
         }
-        
-        current_x += item_size + item_spacing;
     }
 }
 

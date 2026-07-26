@@ -192,8 +192,10 @@ pub use workspace_manager::{
 };
 
 use parking_lot::RwLock;
+use retro_kit::dispatch::{for_each_widget_mut, hit_test};
 use retro_kit::event::MouseButton;
 use retro_kit::icon_view::{IconItem, IconView};
+use retro_kit::PointerDispatcher;
 use retro_kit::button::Button;
 use retro_kit::list_view::ListView;
 use retro_kit::workspace_grid_view::WorkspaceGridView;
@@ -359,6 +361,11 @@ struct ShellDesktop {
     desktop: IconView,
     windows: Vec<ShellWindow>,
     window_interaction: Option<WindowInteraction>,
+    /// Generic pointer routing (implicit capture + hover synthesis) over the
+    /// shell's widget tree. Window-manager geometry — z-order picking,
+    /// titlebar chrome, drag interactions — runs before it; everything that
+    /// is a widget is dispatched through this.
+    pointer: PointerDispatcher,
     menu_server: Arc<RwLock<MenuServer>>,
     launch_services: Arc<RwLock<LaunchServices>>,
     window_manager: Arc<RwLock<WindowManager>>,
@@ -422,11 +429,6 @@ struct ShellWindow {
     restore_rect: Option<Rect>,
     mode: ShellWindowMode,
     workspace: usize,
-}
-
-struct FolderOpenTarget {
-    title: String,
-    path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -520,6 +522,7 @@ impl ShellDesktop {
             desktop,
             windows: Vec::new(),
             window_interaction: None,
+            pointer: PointerDispatcher::new(),
             menu_server,
             launch_services,
             window_manager,
@@ -1250,6 +1253,13 @@ impl ShellDesktop {
         self.windows.iter().position(|window| window.id == id)
     }
 
+    /// Topmost window on the active workspace whose frame contains `point`.
+    ///
+    /// This is window-manager geometry, not widget hit-testing, and it stays
+    /// geometric by design (the `TOOLKIT_REMEDIATION.md` §3 escape hatch):
+    /// z-order lives in `self.windows` order and workspace membership lives in
+    /// `ShellWindow.workspace` — neither is knowable from the widget tree,
+    /// which is exactly why generic dispatch must not make this call.
     fn top_window_index_at(&self, point: Point) -> Option<usize> {
         let active_workspace = self.active_workspace();
         self.windows
@@ -1257,63 +1267,139 @@ impl ShellDesktop {
             .enumerate()
             .rev()
             .find(|(_, window)| {
-                window.workspace == active_workspace && window.window.rect().contains(point)
+                window.workspace == active_workspace
+                    && hit_test(&window.window, point)
             })
             .map(|(index, _)| index)
     }
 
-    fn folder_open_target_at(&self, window_index: usize, point: Point) -> Option<FolderOpenTarget> {
-        let shell_window = self.windows.get(window_index)?;
-        let folder_path = shell_window.folder_path.as_ref()?;
-        let icon_view = shell_window
-            .window
-            .content
-            .as_ref()
-            .and_then(|content| content.as_any().downcast_ref::<IconView>())?;
-        let item = icon_view
-            .items
-            .iter()
-            .find(|item| item.rect.contains(point))?;
-        if item.icon.as_deref() != Some("folder") {
-            return None;
-        }
-
-        let path = folder_path.join(&item.label);
-        if !path.is_dir() {
-            return None;
-        }
-
-        Some(FolderOpenTarget {
-            title: item.label.clone(),
-            path,
-        })
+    /// Route a pointer event through generic dispatch (implicit capture +
+    /// hover synthesis over the shell's children, topmost first), then drain
+    /// whatever activations the widgets recorded.
+    fn dispatch_pointer_event(&mut self, event: &Event) -> EventResult {
+        let mut pointer = std::mem::take(&mut self.pointer);
+        let result = pointer.dispatch(self, event);
+        self.pointer = pointer;
+        self.process_pointer_activations();
+        result
     }
 
-    /// File (non-directory) icon under a folder window at `point`, if any.
-    fn folder_file_target_at(&self, window_index: usize, point: Point) -> Option<PathBuf> {
-        let shell_window = self.windows.get(window_index)?;
-        let folder_path = shell_window.folder_path.as_ref()?;
-        let icon_view = shell_window
-            .window
-            .content
-            .as_ref()
-            .and_then(|content| content.as_any().downcast_ref::<IconView>())?;
-        let item = icon_view
-            .items
-            .iter()
-            .find(|item| item.rect.contains(point))?;
-        // Folders are handled by folder_open_target_at.
-        if item.icon.as_deref() == Some("folder") {
-            return None;
+    /// Drain widget activations recorded during dispatch and apply their
+    /// shell-level meaning. This is the replacement for the old downcast
+    /// hit-test chains: the widget decides *that* it was activated (with real
+    /// press/release semantics), the shell only decides what that means.
+    fn process_pointer_activations(&mut self) {
+        // Dock: launch the pressed item's app.
+        if let Some(item_idx) = self.dock_view.take_clicked() {
+            let app_id = self.dock.write().launch_app(item_idx);
+            if let Some(app_id) = app_id {
+                self.launch_external_app(&app_id);
+            }
         }
-        let path = folder_path.join(&item.label);
-        if path.is_dir() {
-            return None;
+
+        // Desktop icons: double-click launches.
+        if let Some(item_idx) = self.desktop.take_activated() {
+            self.launch_item(item_idx);
         }
-        if !path.exists() {
-            return None;
+
+        // Shell windows: buttons, the workspace grid, and folder-window icon
+        // views record activations inside the tree; collect the resulting
+        // actions first, then apply them (no borrows held across mutations).
+        enum WindowAction {
+            Close(Uuid),
+            ForceQuit { id: Uuid, entry: Option<String> },
+            SwitchWorkspace { id: Uuid, cell: usize },
+            OpenFolder { title: String, path: PathBuf },
+            OpenFile(PathBuf),
         }
-        Some(path)
+        let mut actions: Vec<WindowAction> = Vec::new();
+        for shell_window in &mut self.windows {
+            let id = shell_window.id;
+            let title = shell_window.window.title().to_string();
+
+            let mut clicked_buttons: Vec<String> = Vec::new();
+            let mut grid_cell: Option<usize> = None;
+            let mut activated_icon: Option<(String, Option<String>)> = None;
+            for_each_widget_mut(&mut shell_window.window, &mut |widget| {
+                if let Some(button) = widget.as_any_mut().downcast_mut::<Button>() {
+                    if button.take_clicked() {
+                        clicked_buttons.push(button.label().to_string());
+                    }
+                } else if let Some(grid) =
+                    widget.as_any_mut().downcast_mut::<WorkspaceGridView>()
+                {
+                    if let Some(cell) = grid.take_activated() {
+                        grid_cell = Some(cell);
+                    }
+                } else if let Some(icons) = widget.as_any_mut().downcast_mut::<IconView>() {
+                    if let Some(item_idx) = icons.take_activated() {
+                        activated_icon = icons
+                            .items
+                            .get(item_idx)
+                            .map(|item| (item.label.clone(), item.icon.clone()));
+                    }
+                }
+            });
+
+            for label in clicked_buttons {
+                match (title.as_str(), label.as_str()) {
+                    ("Force Quit", "Cancel") | ("About RetroShell", "OK") => {
+                        actions.push(WindowAction::Close(id));
+                    }
+                    ("Force Quit", "Force Quit") => {
+                        let entry = shell_window.window.content.as_deref().and_then(|content| {
+                            let layout_view = content.as_any().downcast_ref::<LayoutView>()?;
+                            let Layout::Vertical { children, .. } = &layout_view.layout else {
+                                return None;
+                            };
+                            let list = children.get(1)?.as_any().downcast_ref::<ListView>()?;
+                            list.selected_index.and_then(|i| list.items.get(i).cloned())
+                        });
+                        actions.push(WindowAction::ForceQuit { id, entry });
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(cell) = grid_cell {
+                if title == "Workspace" {
+                    actions.push(WindowAction::SwitchWorkspace { id, cell });
+                }
+            }
+
+            if let (Some((label, icon)), Some(folder)) =
+                (activated_icon, shell_window.folder_path.clone())
+            {
+                let path = folder.join(&label);
+                if icon.as_deref() == Some("folder") {
+                    if path.is_dir() {
+                        actions.push(WindowAction::OpenFolder { title: label, path });
+                    }
+                } else if path.exists() && !path.is_dir() {
+                    actions.push(WindowAction::OpenFile(path));
+                }
+            }
+        }
+
+        for action in actions {
+            match action {
+                WindowAction::Close(id) => self.close_window(id),
+                WindowAction::ForceQuit { id, entry } => {
+                    if let Some(entry) = entry {
+                        let _ = self.apply_force_quit_entry(&entry);
+                    }
+                    self.close_window(id);
+                }
+                WindowAction::SwitchWorkspace { id, cell } => {
+                    self.handle_menu_action(&format!("workspace.switch.{cell}"));
+                    self.close_window(id);
+                }
+                WindowAction::OpenFolder { title, path } => {
+                    self.open_folder_window(title, path);
+                }
+                WindowAction::OpenFile(path) => self.open_path_with_mime(path),
+            }
+        }
     }
 
     /// Open a filesystem path via MIME registry (`open_plan` + optional live spawn).
@@ -2108,6 +2194,7 @@ impl ShellDesktop {
         btn_layout.add(Box::new(Button::new("OK")));
         layout.add(Box::new(LayoutView::new(btn_layout)));
 
+        let rect = fit_dialog_rect(&mut layout, rect, self.content_bounds());
         let mut window = Window::new("About RetroShell");
         window.set_content(Box::new(LayoutView::new(layout)));
         window.set_rect(rect);
@@ -2228,6 +2315,7 @@ impl ShellDesktop {
         btn_layout.add(Box::new(Button::new("Force Quit")));
         layout.add(Box::new(LayoutView::new(btn_layout)));
 
+        let rect = fit_dialog_rect(&mut layout, rect, self.content_bounds());
         let mut window = Window::new("Force Quit");
         window.set_content(Box::new(LayoutView::new(layout)));
         window.set_rect(rect);
@@ -2438,6 +2526,26 @@ fn minimized_window_rect(bounds: Rect, slot: usize) -> Rect {
     let x = bounds.x + gap + (slot as f32 * (width + gap)) % (bounds.width - width - gap).max(1.0);
     let y = bounds.y + bounds.height - height - gap;
     Rect::new(x, y, width, height)
+}
+
+/// Grow a dialog's frame to hold its content's natural height (then clamp to
+/// the shell bounds). The old dialog rects were fixed guesses; a too-small
+/// frame left the button row arranged *below* the window's bottom edge, which
+/// the old geometry chains happily hit-tested (an invisible click zone
+/// outside the drawn window) but rect-checked dispatch correctly refuses.
+fn fit_dialog_rect(layout: &mut Layout, rect: Rect, bounds: Rect) -> Rect {
+    let natural = layout.layout_size(LayoutConstraint {
+        min_width: 0.0,
+        max_width: (rect.width - 2.0).max(0.0),
+        min_height: 0.0,
+        max_height: f32::INFINITY,
+    });
+    // Window frame: 25px titlebar + 1px border top, 1px border elsewhere
+    // (content rect is `y + 25, height - 26` in `Window::layout`).
+    clamp_window_rect(
+        Rect::new(rect.x, rect.y, rect.width, natural.height + 26.0),
+        bounds,
+    )
 }
 
 fn clamp_window_rect(rect: Rect, bounds: Rect) -> Rect {
@@ -3051,181 +3159,60 @@ impl Widget for ShellDesktop {
                 point,
                 ..
             } => {
-                let dock_rect = self.dock_view.rect();
-                if dock_rect.contains(*point) {
-                    let item_size = 48.0;
-                    let padding = 8.0;
-                    let item_spacing = 6.0;
-                    let items_count = self.dock_view.items.len();
-                    let total_width = items_count as f32 * (item_size + item_spacing) - item_spacing + padding * 2.0;
-                    let dock_x = dock_rect.x + (dock_rect.width - total_width) * 0.5;
-                    let click_offset_x = point.x - dock_x - padding;
-                    if click_offset_x >= 0.0 {
-                        let item_idx = (click_offset_x / (item_size + item_spacing)) as usize;
-                        if item_idx < items_count {
-                            let app_id = self.dock.write().launch_app(item_idx);
-                            if let Some(app_id) = app_id {
-                                self.launch_external_app(&app_id);
-                            }
-                        }
-                    }
-                    return EventResult::Handled;
-                }
-
-                let Some(index) = self.top_window_index_at(*point) else {
-                    return self.desktop.handle_event(event);
-                };
-                let window_id = self.windows[index].id;
-                self.focus_window(window_id);
-                let Some(index) = self.window_index(window_id) else {
-                    return EventResult::Ignored;
-                };
-                let window_rect = self.windows[index].window.rect();
-                if close_box_rect(window_rect).contains(*point) {
-                    self.close_window(window_id);
-                    return EventResult::Handled;
-                }
-
-                if minimize_box_rect(window_rect).contains(*point) {
-                    self.toggle_window_minimized(window_id);
-                    return EventResult::Handled;
-                }
-
-                if zoom_box_rect(window_rect).contains(*point) {
-                    self.toggle_window_zoom(window_id);
-                    return EventResult::Handled;
-                }
-
-                if resize_handle_rect(window_rect).contains(*point) {
-                    self.window_interaction = Some(WindowInteraction::Resize {
-                        window_id,
-                        start_point: *point,
-                        start_rect: window_rect,
-                    });
-                    return EventResult::Handled;
-                }
-
-                if titlebar_rect(window_rect).contains(*point) {
-                    self.window_interaction = Some(WindowInteraction::Move {
-                        window_id,
-                        pointer_offset: Point::new(
-                            point.x - window_rect.x,
-                            point.y - window_rect.y,
-                        ),
-                    });
-                    return EventResult::Handled;
-                }
-
-                if self.windows[index].window.title() == "Force Quit" {
-                    // Collect click outcome without holding a borrow across mut methods.
-                    enum FqClick {
-                        Cancel,
-                        Confirm { entry: Option<String> },
-                    }
-                    let fq_click = (|| {
-                        let content = self.windows[index].window.content.as_deref()?;
-                        let layout_view = content.as_any().downcast_ref::<LayoutView>()?;
-                        let Layout::Vertical { children, .. } = &layout_view.layout else {
-                            return None;
+                // Window-manager policy first: raise the window under the
+                // pointer and run its frame chrome (close/minimize/zoom
+                // boxes, resize handle, titlebar drag). The dock strip is
+                // chrome stacked above windows, so it exempts the WM pass —
+                // generic dispatch below will route the click to `DockView`.
+                if !hit_test(&self.dock_view, *point) {
+                    if let Some(index) = self.top_window_index_at(*point) {
+                        let window_id = self.windows[index].id;
+                        self.focus_window(window_id);
+                        let Some(index) = self.window_index(window_id) else {
+                            return EventResult::Ignored;
                         };
-                        if children.len() < 3 {
-                            return None;
+                        let window_rect = self.windows[index].window.rect();
+                        if close_box_rect(window_rect).contains(*point) {
+                            self.close_window(window_id);
+                            return EventResult::Handled;
                         }
-                        let list_view = children[1].as_any().downcast_ref::<ListView>();
-                        let btn_layout_widget =
-                            children[2].as_any().downcast_ref::<LayoutView>()?;
-                        let Layout::Horizontal {
-                            children: btn_children,
-                            ..
-                        } = &btn_layout_widget.layout
-                        else {
-                            return None;
-                        };
-                        if btn_children.len() < 2 {
-                            return None;
+
+                        if minimize_box_rect(window_rect).contains(*point) {
+                            self.toggle_window_minimized(window_id);
+                            return EventResult::Handled;
                         }
-                        let cancel_btn = btn_children[0].as_any().downcast_ref::<Button>()?;
-                        let force_quit_btn = btn_children[1].as_any().downcast_ref::<Button>()?;
-                        if cancel_btn.rect().contains(*point) {
-                            return Some(FqClick::Cancel);
+
+                        if zoom_box_rect(window_rect).contains(*point) {
+                            self.toggle_window_zoom(window_id);
+                            return EventResult::Handled;
                         }
-                        if force_quit_btn.rect().contains(*point) {
-                            let entry = list_view.and_then(|list| {
-                                list.selected_index
-                                    .and_then(|i| list.items.get(i).cloned())
+
+                        if resize_handle_rect(window_rect).contains(*point) {
+                            self.window_interaction = Some(WindowInteraction::Resize {
+                                window_id,
+                                start_point: *point,
+                                start_rect: window_rect,
                             });
-                            return Some(FqClick::Confirm { entry });
-                        }
-                        None
-                    })();
-
-                    match fq_click {
-                        Some(FqClick::Cancel) => {
-                            self.close_window(window_id);
                             return EventResult::Handled;
                         }
-                        Some(FqClick::Confirm { entry }) => {
-                            if let Some(entry) = entry {
-                                let _ = self.apply_force_quit_entry(&entry);
-                            }
-                            self.close_window(window_id);
+
+                        if titlebar_rect(window_rect).contains(*point) {
+                            self.window_interaction = Some(WindowInteraction::Move {
+                                window_id,
+                                pointer_offset: Point::new(
+                                    point.x - window_rect.x,
+                                    point.y - window_rect.y,
+                                ),
+                            });
                             return EventResult::Handled;
                         }
-                        None => {}
                     }
                 }
 
-                if self.windows[index].window.title() == "Workspace" {
-                    if let Some(content) = self.windows[index].window.content.as_deref() {
-                        if let Some(layout_view) = content.as_any().downcast_ref::<LayoutView>() {
-                            if let Layout::Vertical { children, .. } = &layout_view.layout {
-                                if children.len() >= 2 {
-                                    if let Some(grid) = children[1].as_any().downcast_ref::<WorkspaceGridView>() {
-                                        let grid_rect = grid.rect();
-                                        if grid_rect.contains(*point) {
-                                            let local_x = point.x - grid_rect.x;
-                                            let local_y = point.y - grid_rect.y;
-                                            let col = if local_x < grid_rect.width * 0.5 { 0 } else { 1 };
-                                            let row = if local_y < grid_rect.height * 0.5 { 0 } else { 1 };
-                                            let clicked_idx = row * 2 + col;
-                                            self.handle_menu_action(&format!("workspace.switch.{}", clicked_idx));
-                                            self.close_window(window_id);
-                                            return EventResult::Handled;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if self.windows[index].window.title() == "About RetroShell" {
-                    if let Some(content) = self.windows[index].window.content.as_deref() {
-                        if let Some(layout_view) = content.as_any().downcast_ref::<LayoutView>() {
-                            if let Layout::Vertical { children, .. } = &layout_view.layout {
-                                if children.len() >= 11 {
-                                    if let Some(btn_layout_widget) = children[10].as_any().downcast_ref::<LayoutView>() {
-                                        if let Layout::Horizontal { children: btn_children, .. } = &btn_layout_widget.layout {
-                                            if !btn_children.is_empty() {
-                                                if let Some(btn) = btn_children[0].as_any().downcast_ref::<Button>() {
-                                                    if btn.rect().contains(*point) {
-                                                        self.close_window(window_id);
-                                                        return EventResult::Handled;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                let result = self.windows[index].window.handle_event(event);
-                if matches!(result, EventResult::Handled | EventResult::StopPropagation) {
-                    return result;
-                }
+                // Everything that is a widget — dock icons, dialog buttons,
+                // workspace grid cells, desktop icons, window content — goes
+                // through generic dispatch; activations drain afterwards.
+                self.dispatch_pointer_event(event)
             }
             Event::MouseMove { point, .. } => {
                 if let Some(interaction) = self.window_interaction {
@@ -3245,12 +3232,7 @@ impl Widget for ShellDesktop {
                     return EventResult::Handled;
                 }
 
-                if let Some(index) = self.top_window_index_at(*point) {
-                    let result = self.windows[index].window.handle_event(event);
-                    if matches!(result, EventResult::Handled | EventResult::StopPropagation) {
-                        return result;
-                    }
-                }
+                self.dispatch_pointer_event(event)
             }
             Event::MouseUp {
                 button: MouseButton::Left,
@@ -3259,50 +3241,23 @@ impl Widget for ShellDesktop {
                 if self.window_interaction.take().is_some() {
                     return EventResult::Handled;
                 }
+
+                self.dispatch_pointer_event(event)
             }
             Event::DoubleClick { point, .. } => {
+                // WM: a double-click raises the window under it, then the
+                // widgets decide what it means (folder-window and desktop
+                // `IconView`s record activations that drain below).
                 if let Some(index) = self.top_window_index_at(*point) {
                     let window_id = self.windows[index].id;
                     self.focus_window(window_id);
-                    let Some(index) = self.window_index(window_id) else {
-                        return EventResult::Ignored;
-                    };
-
-                    if let Some(target) = self.folder_open_target_at(index, *point) {
-                        self.open_folder_window(target.title, target.path);
-                        return EventResult::Handled;
-                    }
-
-                    // File (not folder): MIME open_plan + spawn when handler exists.
-                    if let Some(path) = self.folder_file_target_at(index, *point) {
-                        self.open_path_with_mime(path);
-                        return EventResult::Handled;
-                    }
-
-                    let result = self.windows[index].window.handle_event(event);
-                    if matches!(result, EventResult::Handled | EventResult::StopPropagation) {
-                        return result;
-                    }
                 }
-            }
-            _ => {}
-        }
 
-        if let Event::DoubleClick {
-            button: MouseButton::Left,
-            point,
-            ..
-        } = event
-        {
-            for (index, item) in self.desktop.items.iter().enumerate() {
-                if item.rect.contains(*point) {
-                    self.launch_item(index);
-                    return EventResult::Handled;
-                }
+                self.dispatch_pointer_event(event)
             }
+            Event::MouseLeave => self.dispatch_pointer_event(event),
+            _ => self.desktop.handle_event(event),
         }
-
-        self.desktop.handle_event(event)
     }
 
     fn update(&mut self) {
@@ -4273,6 +4228,206 @@ mod tests {
             window_manager::WindowState::Normal
         );
         assert_rect_eq(desktop.windows[0].window.rect(), original);
+    }
+
+    /// Rect of the first descendant `Button` with `label` in a shell window,
+    /// found through the widget tree (no geometry math in the test — the
+    /// same tree generic dispatch walks).
+    fn button_rect_in_window(window: &ShellWindow, label: &str) -> Rect {
+        fn find(widget: &dyn Widget, label: &str) -> Option<Rect> {
+            if let Some(button) = widget.as_any().downcast_ref::<Button>() {
+                if button.label() == label {
+                    return Some(button.rect());
+                }
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| find(child, label))
+        }
+        find(&window.window, label).expect("button exists in window")
+    }
+
+    fn center(rect: Rect) -> Point {
+        Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0)
+    }
+
+    fn left_down(point: Point) -> Event {
+        Event::MouseDown {
+            button: MouseButton::Left,
+            point,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    fn left_up(point: Point) -> Event {
+        Event::MouseUp {
+            button: MouseButton::Left,
+            point,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn force_quit_cancel_closes_via_generic_dispatch() {
+        let (mut desktop, _) = test_desktop();
+        desktop.handle_menu_action("shell.force_quit");
+        let fq_window = desktop.windows.last().expect("force quit window");
+        assert_eq!(fq_window.window.title(), "Force Quit");
+        let fq_id = fq_window.id;
+        let cancel = center(button_rect_in_window(fq_window, "Cancel"));
+
+        // Real button semantics: the press alone must not activate.
+        let _ = desktop.handle_event(&left_down(cancel));
+        assert!(
+            desktop.windows.iter().any(|w| w.id == fq_id),
+            "press alone must not close the dialog"
+        );
+
+        let _ = desktop.handle_event(&left_up(cancel));
+        assert!(
+            !desktop.windows.iter().any(|w| w.id == fq_id),
+            "press + release on Cancel closes the dialog"
+        );
+    }
+
+    #[test]
+    fn force_quit_release_outside_button_cancels_the_press() {
+        let (mut desktop, _) = test_desktop();
+        desktop.handle_menu_action("shell.force_quit");
+        let fq_window = desktop.windows.last().expect("force quit window");
+        let fq_id = fq_window.id;
+        let cancel = center(button_rect_in_window(fq_window, "Cancel"));
+
+        let _ = desktop.handle_event(&left_down(cancel));
+        // Implicit capture routes the outside release back to the pressed
+        // button, which cancels instead of activating.
+        let _ = desktop.handle_event(&left_up(Point::new(500.0, 400.0)));
+        assert!(
+            desktop.windows.iter().any(|w| w.id == fq_id),
+            "release outside the pressed button must not activate it"
+        );
+
+        // A later release inside without a fresh press is inert too.
+        let _ = desktop.handle_event(&left_up(cancel));
+        assert!(desktop.windows.iter().any(|w| w.id == fq_id));
+    }
+
+    #[test]
+    fn about_ok_closes_via_generic_dispatch() {
+        let (mut desktop, _) = test_desktop();
+        desktop.handle_menu_action("shell.about");
+        let about = desktop.windows.last().expect("about window");
+        assert_eq!(about.window.title(), "About RetroShell");
+        let about_id = about.id;
+        let ok = center(button_rect_in_window(about, "OK"));
+
+        let _ = desktop.handle_event(&left_down(ok));
+        let _ = desktop.handle_event(&left_up(ok));
+        assert!(!desktop.windows.iter().any(|w| w.id == about_id));
+    }
+
+    #[test]
+    fn workspace_grid_cell_press_switches_and_closes_overview() {
+        let (mut desktop, _) = test_desktop();
+        desktop.handle_menu_action("workspace.next");
+        assert_eq!(desktop.active_workspace(), 1);
+        let overview = desktop.windows.last().expect("workspace overview window");
+        assert_eq!(overview.window.title(), "Workspace");
+        let overview_id = overview.id;
+
+        fn grid_cell_center(window: &ShellWindow, cell: usize) -> Point {
+            fn find(widget: &dyn Widget, cell: usize) -> Option<Point> {
+                if let Some(grid) = widget.as_any().downcast_ref::<WorkspaceGridView>() {
+                    return Some(center(grid.cell_rect(cell)));
+                }
+                widget
+                    .children()
+                    .into_iter()
+                    .find_map(|child| find(child, cell))
+            }
+            find(&window.window, cell).expect("workspace grid exists")
+        }
+        let cell0 = grid_cell_center(desktop.windows.last().unwrap(), 0);
+
+        let result = desktop.handle_event(&left_down(cell0));
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(desktop.active_workspace(), 0, "cell 0 press switches back");
+        assert!(
+            !desktop.windows.iter().any(|w| w.id == overview_id),
+            "overview closes after switching"
+        );
+    }
+
+    #[test]
+    fn dock_item_press_launches_through_dispatch() {
+        let (mut desktop, _) = test_desktop();
+        desktop.dock.write().items.clear();
+        desktop.dock.write().add_item("com.retro.ghost", "Ghost");
+        desktop.dock_view.items = vec![retro_kit::dock_view::DockViewItem {
+            label: "Ghost".to_string(),
+            icon: String::new(),
+            is_focused: false,
+            is_running: false,
+        }];
+        let item = center(desktop.dock_view.item_rect(0));
+
+        let result = desktop.handle_event(&left_down(item));
+
+        assert!(matches!(result, EventResult::Handled));
+        let err = desktop.last_error.as_deref().unwrap_or("");
+        assert!(
+            err.contains("No binary registered"),
+            "dock press reached launch_external_app: {err}"
+        );
+    }
+
+    #[test]
+    fn dialog_buttons_sit_inside_their_window_frame() {
+        // The old fixed dialog rects arranged the button row below the
+        // window's bottom edge; the old geometry chains hit-tested that
+        // invisible zone, rect-checked dispatch refuses it. `fit_dialog_rect`
+        // sizes the frame to the content instead.
+        let (mut desktop, _) = test_desktop();
+
+        desktop.handle_menu_action("shell.force_quit");
+        let fq = desktop.windows.last().expect("force quit window");
+        let frame = fq.window.rect();
+        for label in ["Cancel", "Force Quit"] {
+            let b = button_rect_in_window(fq, label);
+            assert!(
+                b.y + b.height <= frame.y + frame.height && b.x >= frame.x,
+                "{label} button {b:?} must sit inside the frame {frame:?}"
+            );
+        }
+
+        desktop.handle_menu_action("shell.about");
+        let about = desktop.windows.last().expect("about window");
+        let frame = about.window.rect();
+        let ok = button_rect_in_window(about, "OK");
+        assert!(
+            ok.y + ok.height <= frame.y + frame.height,
+            "OK button {ok:?} must sit inside the frame {frame:?}"
+        );
+    }
+
+    #[test]
+    fn window_body_click_is_opaque_to_whatever_is_underneath() {
+        let (mut desktop, _) = test_desktop();
+        let window_rect = desktop.windows[0].window.rect();
+        // Inside the window body: below the titlebar, away from every
+        // chrome box and the resize handle.
+        let body = Point::new(
+            window_rect.x + window_rect.width * 0.5,
+            window_rect.y + window_rect.height * 0.5,
+        );
+
+        let result = desktop.handle_event(&left_down(body));
+        assert!(
+            matches!(result, EventResult::Handled),
+            "a window swallows clicks on its empty area instead of letting \
+             them fall through to the desktop"
+        );
     }
 
     #[test]

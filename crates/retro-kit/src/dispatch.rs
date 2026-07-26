@@ -18,9 +18,16 @@ fn is_live(widget: &dyn Widget) -> bool {
 }
 
 /// `widget` itself is a valid hit target at `at`: live and its rect contains
-/// the point.
-fn hits(widget: &dyn Widget, at: Point) -> bool {
+/// the point. Public so an owner running policy *around* dispatch (the
+/// shell's window-manager layer asking "is this point on chrome?") uses the
+/// dispatcher's own eligibility predicate instead of hand-rolling
+/// `rect().contains`.
+pub fn hit_test(widget: &dyn Widget, at: Point) -> bool {
     is_live(widget) && widget.rect().contains(at)
+}
+
+fn hits(widget: &dyn Widget, at: Point) -> bool {
+    hit_test(widget, at)
 }
 
 /// Deepest visible, enabled widget whose rect contains `at`.
@@ -226,6 +233,18 @@ impl PointerDispatcher {
             }
             self.hover = now;
         }
+    }
+}
+
+/// Depth-first mutable visit of `root` and every descendant. This is the
+/// drain walk: after a dispatch, an owner of a *dynamic* widget tree (one
+/// built as boxed `Layout` children rather than named struct fields — the
+/// shell's dialog windows) uses this to collect `take_clicked()` /
+/// `take_activated()` style activations without knowing the tree's shape.
+pub fn for_each_widget_mut(root: &mut dyn Widget, f: &mut dyn FnMut(&mut dyn Widget)) {
+    f(root);
+    for child in root.children_mut() {
+        for_each_widget_mut(child, f);
     }
 }
 

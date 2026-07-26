@@ -50,7 +50,8 @@ pub use button::Button;
 pub use clipboard::Clipboard;
 pub use dialog::Dialog;
 pub use dispatch::{
-    deliver_to, dispatch_pointer, dispatch_positional, widget_at, widget_by_id, PointerDispatcher,
+    deliver_to, dispatch_pointer, dispatch_positional, for_each_widget_mut, hit_test, widget_at,
+    widget_by_id, PointerDispatcher,
 };
 pub use dnd::{DragData, DragSession, DragSource, DropTarget};
 pub use dock_view::{DockView, DockViewItem};
