@@ -46,9 +46,9 @@ Nothing else on this list is trustworthy until this exists.
 
 | Task | Detail | State |
 |---|---|---|
-| Linux CI | GitHub Actions running `cargo build --workspace`, `cargo test --workspace`, `cargo clippy -- -D warnings` on `ubuntu-latest` with the dev deps from `build.sh`. **This alone would have caught the six-week build break.** | TODO |
+| Linux CI | `.github/workflows/ci.yml` — build (`--all-targets`), test, clippy, plus a release-build gate and a non-blocking fmt check. **This alone would have caught the six-week build break.** | DONE |
 | VM harness | `packaging/vm/` — VirtualBox + Arch, VMSVGA (vmwgfx = real KMS + render node), SSH port-forward for scripted QA | DONE |
-| Screenshot QA | Scripted scenario runs producing artifacts under `qa/`, driven over SSH | DONE (labwc path), TODO (compositor path) |
+| Screenshot QA | Scripted scenario runs producing artifacts under `qa/`, driven over SSH | DONE (both paths; see `docs/screenshots/vm-drm-composited.png`) |
 | Ban self-scoring | Delete the score tables from `README.md`, `WARPATH_SCORECARD.md`, `DEEP_AUDIT_90_CLAIM.md`. Replace with a capability matrix whose every row cites a test name or a QA artifact. | TODO |
 
 **Exit criterion:** a green CI badge, and `packaging/vm/qa-vm.sh` producing
@@ -86,11 +86,13 @@ buffers never became renderable). Verified by
   vblank handler
 **Exit:** damage-tracked composition across two outputs with no full redraws.
 
-### 1.3 Input correctness
-Landed: libinput keyboard/pointer now reach the seat. Remaining:
+### 1.3 Input correctness — *in progress*
+Landed: libinput keyboard/pointer reach the seat; `cursor_image` stores the
+`CursorImageStatus` and the client cursor surface is drawn topmost with
+`Kind::Cursor` so it can reach the hardware cursor plane. Remaining:
+- **named cursors**: load an XCursor theme so `CursorImageStatus::Named`
+  renders. Until then a client that never sets a surface has no pointer.
 - pointer axis/scroll, touch, tablet
-- `wl_pointer` cursor surface (`CursorImageStatus`) — currently ignored, so there
-  is no visible cursor on the DRM path
 - keyboard repeat, XKB layout from config rather than `XkbConfig::default()`
 - **Diagnose why keyboard never reaches `retro-shell` under labwc** (QA finding B)
 **Exit:** typing works in a terminal client under `retro-compositor`; the mouse
