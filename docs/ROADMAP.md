@@ -108,7 +108,7 @@ the right place and dismisses correctly.
 
 ---
 
-## Phase 2 — The toolkit is real  *(2–3 months)* — **steps 1–3 DONE 2026-07-27**
+## Phase 2 — The toolkit is real  *(2–3 months)* — **steps 1–6 DONE 2026-07-27**
 
 **Landed (steps 1–2):** `retro-kit/src/dispatch.rs` (`widget_at`,
 `dispatch_pointer`, `dispatch_positional`) and `retro-kit/src/focus.rs`
@@ -163,21 +163,56 @@ surface, not the input path.
   behaviour. This is the "explicit documented decision" escape hatch from
   `TOOLKIT_REMEDIATION.md` §3.
 
-673 workspace tests pass. `rect().contains` remaining outside `retro-kit`:
-the shell (step 5, not started) and item-level checks (`IconItem.rect` in
-Finder's drag protocol — the drop target is an item, not a widget; the SDK
-loop does not synthesize Drag* events yet).
+**Landed (steps 5–6, verified live 2026-07-27):** the shell is ported.
+`ShellDesktop` owns one `PointerDispatcher`; every pointer event runs
+window-manager policy first (z-order pick via the dispatcher's public
+`hit_test`, titlebar/close/zoom/resize chrome — geometry by design, the
+§3 escape hatch, since z-order and workspace membership are not knowable
+from the widget tree) and then generic dispatch + drains:
+- **Dock** clicks: `DockView` gained real hit-testing (`item_rect`/`item_at`
+  are also what the SDK painter draws from, so paint and input share one
+  geometry) and a `take_clicked()` drain. Live: dock press launched the real
+  Settings app (`shell-dispatch-dock-launch.png`).
+- **Dialogs**: Force Quit / About buttons drain via `Button::take_clicked`
+  through a `for_each_widget_mut` walk — the downcast hit-test chains are
+  gone. Live: About OK and Force Quit Cancel close their dialogs; a press
+  that leaves the button before release does *not* activate (implicit
+  capture; `shell-dispatch-press-cancel.png`).
+- **Workspace grid**: `WorkspaceGridView` gained cell hit-testing
+  (`cell_rect` shared with the painter) and `take_activated()`.
+- **Desktop icons + folder windows**: both are `IconView`s; double-click
+  activation drains via `take_activated` (live:
+  `shell-dispatch-folder-open.png` — /etc opened from Retro HD).
+- **Window opacity**: `Window::handle_event` is rect-checked and swallows
+  positional events its content ignores — clicks can no longer fall through
+  a window (or a notification banner) to desktop icons underneath. The
+  content is delegated via `handle_event`, never walked directly, because
+  the SDK wraps every app root (including the shell) in a `Window` and the
+  root owns its own routing.
 
-A preview of what migration costs: adding the focus gate to `TextField`
-immediately broke the shell's lock screen and four TextEdit tests, because both
-track focus in their own state and never mirrored it onto
-`WidgetState.focused`. Both are now synced. Expect the same class of fix in
-the shell port.
+Three defects this port surfaced, all fixed:
+1. **Dialog overflow**: the fixed Force Quit/About rects arranged the button
+   row *below* the window's bottom edge; the old geometry chains happily
+   hit-tested that invisible zone. `fit_dialog_rect` now sizes dialog frames
+   to measured content (`dialog_buttons_sit_inside_their_window_frame`).
+2. **Shell abort under a real compositor**: opening Force Quit under labwc
+   killed the whole session — `foreign_toplevel_client` lacked the
+   `event_created_child` specialization for `ext_foreign_toplevel_list_v1`'s
+   `toplevel` event, which is a hard abort in wayland-client. Fixed; the
+   Force Quit list now shows real compositor toplevels live
+   (`shell-dispatch-forcequit-open.png`).
+3. **Click-through**: window body clicks used to leak to the desktop below
+   (`window_body_click_is_opaque_to_whatever_is_underneath`).
 
-**Next: migration step 5** — port the shell (`ShellDesktop::handle_event`),
-the biggest consumer, which also owns the lock screen and menu bar. Then
-step 6: grep for `rect().contains(` outside `crates/retro-kit` and delete
-what remains.
+Step 6 exit: `rect().contains(` (and its variant spellings) is gone from
+`crates/retro-shell` except the five frame-chrome helpers
+(`close_box_rect(..)` etc., unit-tested WM geometry) and the pure-layer
+`DesktopManager::icon_at_point` (no live callers). Terminal remains
+not-ported by design. Shell keyboard policy intentionally stays on
+`keyboard_nav`/chrome-focus (it is WM policy with its own a11y
+integration, not widget focus); adopting `FocusManager` for dialog tab
+order is a possible follow-up. 688 workspace tests pass. Live QA under
+labwc (Xvfb, WSL) 2026-07-27; screenshots in `docs/screenshots/`.
 
 
 This is the largest single body of work and the prerequisite for every app
