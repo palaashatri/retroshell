@@ -48,7 +48,8 @@ use smithay::reexports::wayland_server::protocol::{
     wl_buffer, wl_data_source::WlDataSource, wl_seat, wl_surface::WlSurface,
 };
 use smithay::reexports::wayland_server::{Client, Display, DisplayHandle, Resource};
-use smithay::utils::{DeviceFd, Logical, Point, Serial, Size, Transform};
+use smithay::desktop::utils::send_frames_surface_tree;
+use smithay::utils::{Clock, DeviceFd, Logical, Monotonic, Point, Serial, Size, Transform};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     with_states, CompositorClientState, CompositorHandler, CompositorState,
@@ -589,6 +590,7 @@ pub fn run_drm_session() -> Result<()> {
     eprintln!(
         "[retro-compositor] DRM session loop running (Wayland + seat + udev + libinput + layer-shell + foreign-toplevel; scanout_armed={scanout_armed})"
     );
+    let clock = Clock::<Monotonic>::new();
     let mut frame_i: u64 = 0;
     while state.running {
         let _ = frame_scheduler.record_frame();
@@ -610,6 +612,39 @@ pub fn run_drm_session() -> Result<()> {
             }
         }
         frame_i = frame_i.wrapping_add(1);
+
+        // Release frame callbacks every tick. Clients that throttle on
+        // wl_surface.frame (winit/wgpu — every RetroShell app) render one frame
+        // and then wait forever without this. Note the DRM path does not yet
+        // composite client buffers to scanout (see ROADMAP 1.2); callbacks are
+        // still required so clients stay live and keep their content current.
+        {
+            let now = clock.now();
+            if let Some(output) = state.outputs.first().cloned() {
+                let visible: Vec<WlSurface> = state
+                    .windows
+                    .iter()
+                    .filter(|w| state.workspace_state.is_visible(&w.window_id))
+                    .map(|w| w.toplevel.wl_surface().clone())
+                    .collect();
+                for surface in visible {
+                    send_frames_surface_tree(&surface, &output, now, Some(Duration::ZERO), |_, _| {
+                        None
+                    });
+                }
+                let layers: Vec<WlSurface> = state
+                    .layer_surfaces
+                    .iter()
+                    .map(|l| l.surface.wl_surface().clone())
+                    .collect();
+                for surface in layers {
+                    send_frames_surface_tree(&surface, &output, now, Some(Duration::ZERO), |_, _| {
+                        None
+                    });
+                }
+            }
+        }
+
         event_loop
             .dispatch(Some(Duration::from_millis(16)), &mut state)
             .context("event_loop.dispatch")?;
