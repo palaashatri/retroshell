@@ -108,24 +108,41 @@ the right place and dismisses correctly.
 
 ---
 
-## Phase 2 — The toolkit is real  *(2–3 months)* — **steps 1–2 DONE 2026-07-27**
+## Phase 2 — The toolkit is real  *(2–3 months)* — **steps 1–3 DONE 2026-07-27**
 
-**Landed:** `retro-kit/src/dispatch.rs` (`widget_at`, `dispatch_pointer`,
-`dispatch_positional`) and `retro-kit/src/focus.rs` (`FocusManager` with Tab
-traversal), `Widget::focusable()` as a defaulted trait method, and per-widget
-remediation for Button, Toolbar, SplitView, TreeView, TabView, PopupButton,
-ScrollView, Dialog and TextField. 653 tests pass (was 545); build clean.
+**Landed (steps 1–2):** `retro-kit/src/dispatch.rs` (`widget_at`,
+`dispatch_pointer`, `dispatch_positional`) and `retro-kit/src/focus.rs`
+(`FocusManager` with Tab traversal), `Widget::focusable()` as a defaulted
+trait method, and per-widget remediation for Button, Toolbar, SplitView,
+TreeView, TabView, PopupButton, ScrollView, Dialog and TextField.
 
-**Verified how far:** compile + unit tests only. Nobody has clicked these
-widgets in a running app yet, and the apps still hand-roll their own
-hit-testing alongside the new dispatch. **Next: migration step 3** — port
-Settings to `dispatch_pointer` + `take_clicked()` and confirm it in the VM.
+**Landed (step 3, verified live):** Settings is ported — its `handle_event`
+contains no `rect().contains` chains; pointer events go through the new
+`PointerDispatcher` (implicit capture: the widget that handles `MouseDown`
+receives all motion/release until release, which is what keeps slider drags
+alive off-track; plus hover enter/leave synthesis), keys go through
+`FocusManager` (Tab/Shift+Tab, Enter/Space activation), and activations are
+drained via `take_clicked()`. `Button` gained `focusable()`, key activation,
+and press-cancel on an outside release; the SDK painter draws a focus ring.
+664 workspace tests pass. **Live QA under labwc (Xvfb, WSL), 2026-07-27:**
+sidebar + option clicks land through generic dispatch and persist
+(`hdr_requested=true` written), Tab×3 shows the focus ring on the third
+category and Space activates it, and a slider drag that leaves the track
+mid-gesture keeps tracking via capture (volume 75→15 persisted). Evidence:
+`docs/screenshots/settings-dispatch-hdr-click.png`,
+`settings-dispatch-tab-focus.png`, `settings-dispatch-slider-drag.png`.
+Notable: keyboard reaches a normal winit app under labwc fine, which narrows
+QA finding B (keyboard never reaching `retro-shell`) to the shell's own
+surface, not the input path.
 
-A preview of what that migration costs: adding the focus gate to `TextField`
+A preview of what migration costs: adding the focus gate to `TextField`
 immediately broke the shell's lock screen and four TextEdit tests, because both
 track focus in their own state and never mirrored it onto
 `WidgetState.focused`. Both are now synced (TextEdit via `sync_focus_flags()`).
 Expect the same class of fix in every app that is ported.
+
+**Next: migration step 4** — port Finder, TextEdit, AppStore and Terminal one
+at a time to `PointerDispatcher` + `FocusManager`, then the shell (step 5).
 
 
 This is the largest single body of work and the prerequisite for every app
