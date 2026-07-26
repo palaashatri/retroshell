@@ -1144,9 +1144,10 @@ mod tests {
         view.layout(LayoutConstraint::tight(Size::new(700.0, 460.0)));
         assert!(view.editor.widget_state().focused);
 
-        // Click COPY (index 7): the action runs but focus must stay in the
-        // editor so the user can keep typing.
-        let result = click_toolbar_button(&mut view, 7);
+        // Click UNDO (index 4; clipboard-neutral, tests share one global
+        // clipboard): the action runs but focus must stay in the editor so
+        // the user can keep typing.
+        let result = click_toolbar_button(&mut view, 4);
         assert!(matches!(result, EventResult::Handled));
         assert!(view.editor.widget_state().focused);
 
