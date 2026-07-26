@@ -251,6 +251,12 @@ mod linux {
             return Ok(());
         };
 
+        // Phase 1: create every surface and do the initial buffer-less commit.
+        // A layer surface must NOT carry a buffer until the compositor has sent
+        // its first configure and we have acked it — attaching earlier is a
+        // protocol error ("layer_surface has never been configured") that kills
+        // the whole client connection.
+        let mut pending = Vec::new();
         for req in requests {
             let surface = compositor.create_surface(qh, ());
             let layer = match req.layer.as_str() {
@@ -259,14 +265,8 @@ mod linux {
                 "overlay" => Layer::Overlay,
                 _ => Layer::Top,
             };
-            let ls = layer_shell.get_layer_surface(
-                &surface,
-                None,
-                layer,
-                format!("{}-buf", req.namespace),
-                qh,
-                format!("{}-buf", req.namespace),
-            );
+            let ns = format!("{}-buf", req.namespace);
+            let ls = layer_shell.get_layer_surface(&surface, None, layer, ns.clone(), qh, ns.clone());
             let mut anchor = Anchor::Left | Anchor::Right;
             if req.anchor_top {
                 anchor |= Anchor::Top;
@@ -278,7 +278,25 @@ mod linux {
             ls.set_exclusive_zone(req.exclusive_zone);
             ls.set_size(req.width.max(1), req.height.max(1));
             surface.commit();
+            pending.push((ns, surface, ls, req));
+        }
 
+        // Phase 2: let the configures arrive; the ZwlrLayerSurfaceV1 dispatch
+        // acks each one and records its namespace in `state.configured`.
+        let _ = conn.flush();
+        for _ in 0..8 {
+            let _ = event_queue.roundtrip(state);
+            if pending.iter().all(|(ns, ..)| state.configured.contains(ns)) {
+                break;
+            }
+        }
+
+        // Phase 3: attach content only to surfaces the compositor configured.
+        for (ns, surface, ls, req) in &pending {
+            if !state.configured.contains(ns) {
+                tracing::warn!(namespace = %ns, "layer surface never configured; skipping buffer attach");
+                continue;
+            }
             let w = req.width.max(1) as i32;
             let h = req.height.max(1) as i32;
             let stride = w * 4;

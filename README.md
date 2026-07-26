@@ -46,13 +46,23 @@ DoAction queue → lock/log_out/force_quit/workspace/window/dock/desktop; i18n
 **menus + lock**; shell→comp `RETROSHELL_OUTPUTS_LAYOUT`; install-session +
 daily-driver checklist (packaging).
 
+> ⚠️ **The scores and "landed / live" list above are NOT trustworthy.** A QA pass on
+> 2026-07-26 (see `docs/QA_REPORT_2026-07-26.md`) found that `retro-compositor` had
+> **not compiled on Linux since 2026-07-11** and, once fixed, still could not serve
+> any Wayland client because the nested event loop never called `dispatch_clients`
+> and never sent frame callbacks. Every compositor-side "live path" claimed after
+> 2026-07-11 was therefore written against a binary that could not have been run.
+> Treat the table above as *aspirational* until re-measured on real hardware.
+
 **Honest residual (why not 90):** live greeter **NOT RUN**; PipeWire ScreenCast
 **stubs**; Orca not end-to-end (DoAction **does** open Retro menu / dock / desktop
 context status windows); display arrange is env bridge not live KMS modeset;
 window rules partial on real surfaces; §12 **0/7**; placeholder rects still
-possible without committed buffers.
+possible without committed buffers; **the session "lock screen" does not lock a
+multi-client session** — it only covers the shell's own surface (QA report §3).
 
-Would you replace Plasma for a week? **No.** Honest score **~85**, not 90.
+Would you replace Plasma for a week? **No.** The honest score is **unknown and
+lower than 85** until the compositor is verified on DRI3-capable hardware.
 
 ---
 

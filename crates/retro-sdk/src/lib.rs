@@ -68,6 +68,12 @@ pub mod theme_accents {
     pub const BLUEBERRY: [f32; 4] = [0.15, 0.25, 0.62, 1.0];
     /// Strawberry — red-pink
     pub const STRAWBERRY: [f32; 4] = [0.82, 0.23, 0.28, 1.0];
+    /// Solarized — #268bd2 (matches ThemeName::Solarized in retro-shell)
+    pub const SOLARIZED: [f32; 4] = [0.15, 0.55, 0.82, 1.0];
+    /// Dracula — #bd93f9
+    pub const DRACULA: [f32; 4] = [0.74, 0.58, 0.98, 1.0];
+    /// HighContrast — yellow
+    pub const HIGH_CONTRAST: [f32; 4] = [1.0, 1.0, 0.0, 1.0];
 }
 
 /// Read settings.conf and return (is_dark, accent_color) for the current theme.
@@ -102,11 +108,16 @@ fn parse_theme_preference(content: &str) -> (bool, [f32; 4]) {
     }
     // Named theme takes precedence over appearance
     if let Some(name) = theme_name {
+        // Must stay in sync with retro_shell::theme_manager::ThemeName
+        // (accent + is_dark); a name missing here silently renders as Classic.
         return match name.as_str() {
             "grape" => (true, theme_accents::GRAPE),
             "blueberry" => (true, theme_accents::BLUEBERRY),
             "strawberry" => (false, theme_accents::STRAWBERRY),
             "dark" => (true, theme_accents::DARK),
+            "solarized" => (true, theme_accents::SOLARIZED),
+            "dracula" => (true, theme_accents::DRACULA),
+            "highcontrast" => (false, theme_accents::HIGH_CONTRAST),
             _ => (false, theme_accents::CLASSIC), // classic and unknown
         };
     }
@@ -284,7 +295,22 @@ impl Application {
         self.running = true;
         tracing::info!("Application '{}' started", self.name);
 
-        let event_loop = retro_render::event_loop::RetroEventLoop::new();
+        let event_loop = match retro_render::event_loop::RetroEventLoop::new() {
+            Ok(event_loop) => event_loop,
+            Err(err) => {
+                tracing::error!(
+                    app = %self.name,
+                    wayland_display = ?std::env::var("WAYLAND_DISPLAY").ok(),
+                    display = ?std::env::var("DISPLAY").ok(),
+                    "cannot start: no display server connection: {err}"
+                );
+                eprintln!(
+                    "[{}] cannot start: no Wayland/X11 display server reachable ({err})",
+                    self.name
+                );
+                std::process::exit(1);
+            }
+        };
         let main_window = self.main_window.take();
 
         struct AppHandler {
@@ -332,6 +358,16 @@ impl Application {
             }
 
             fn paint(&mut self) {
+                // Re-layout before drawing. update() can swap in entirely new
+                // content (lock screen fields, a new terminal tab, dialogs);
+                // without this those widgets keep Rect::ZERO until the next
+                // resize and draw_widget skips them, painting an empty window.
+                if let Some(ref mut win) = self.window {
+                    let size = Size::new(win.rect().width, win.rect().height);
+                    if size.width > 0.0 && size.height > 0.0 {
+                        win.layout(LayoutConstraint::tight(size));
+                    }
+                }
                 let Some(window) = &self.window else {
                     return;
                 };
@@ -2249,20 +2285,25 @@ fn draw_tree_node(
 /// - **FIXME**: Characters are assumed to have a fixed layout width (7px width spacing inside `Canvas`).
 ///   This function only checks character length (`label.len()`) rather than visual bounding boxes.
 fn truncate_label(label: &str, max_len: usize) -> String {
-    if label.len() <= max_len {
+    // Counted and sliced in chars, never bytes: labels are user filenames and
+    // may be multi-byte UTF-8; byte slicing panics on non-boundaries.
+    let char_count = label.chars().count();
+    if char_count <= max_len {
         return label.to_string();
     }
+    let prefix = |n: usize| -> String { label.chars().take(n).collect() };
     if max_len <= 4 {
-        return format!("{}...", &label[..max_len.max(3) - 3]);
+        return format!("{}...", prefix(max_len.max(3) - 3));
     }
     if let Some(pos) = label.rfind('.') {
         let ext = &label[pos..];
-        if ext.len() < max_len - 3 {
-            let base_len = max_len - 3 - ext.len();
-            return format!("{}...{}", &label[..base_len], ext);
+        let ext_chars = ext.chars().count();
+        if ext_chars < max_len - 3 {
+            let base_len = max_len - 3 - ext_chars;
+            return format!("{}...{}", prefix(base_len), ext);
         }
     }
-    format!("{}...", &label[..max_len - 3])
+    format!("{}...", prefix(max_len - 3))
 }
 
 /// Renders the `IconView` grid.

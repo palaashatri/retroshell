@@ -461,11 +461,7 @@ impl PackageBackend {
     }
 
     fn execute_transaction(&self, plan: &TransactionPlan) -> Result<String, String> {
-        if std::env::var("RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES")
-            .ok()
-            .as_deref()
-            != Some("1")
-        {
+        if !package_changes_allowed() {
             return Err(
                 "CONFIRM BLOCKED - SET RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES=1".to_string(),
             );
@@ -501,6 +497,14 @@ impl PackageBackend {
         let Some(manager) = self.manager else {
             return Err("NO PACKAGE MANAGER FOUND".to_string());
         };
+
+        // Same package-change gate execute_transaction enforces. Without it the
+        // INSTALL button runs `sudo <pm> install -y` on the very first click.
+        if !package_changes_allowed() {
+            return Err(
+                "INSTALL BLOCKED - SET RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES=1".to_string(),
+            );
+        }
 
         // Check sudo availability
         if !sudo_available() && manager != PackageManager::Brew {
@@ -586,6 +590,15 @@ fn command_exists(binary: &str) -> bool {
 
 fn sudo_available() -> bool {
     command_exists("sudo")
+}
+
+/// Opt-in gate for anything that mutates system packages. Every install/
+/// remove/update path must consult this before spawning a package manager.
+fn package_changes_allowed() -> bool {
+    std::env::var("RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 /// Fallback search using `dpkg -l | grep <query>` (works when apt-cache is absent).

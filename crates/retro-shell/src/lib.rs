@@ -4432,6 +4432,37 @@ mod tests {
     }
 
     #[test]
+    fn lock_screen_typed_password_unlocks_and_wrong_one_does_not() {
+        let (mut desktop, _) = test_desktop();
+        desktop.expected_lock_password = Some("secret".into());
+        desktop.dispatch_a11y_invoke("shell.lock");
+        assert!(desktop.locked, "lock did not engage");
+
+        // Wrong password: characters must accumulate, Enter must reject.
+        for ch in "wrong".chars() {
+            desktop.handle_event(&Event::Char { character: ch });
+        }
+        assert_eq!(desktop.lock_password_field.text(), "wrong");
+        desktop.handle_event(&Event::KeyDown {
+            key: retro_kit::event::KeyCode::Enter,
+            modifiers: retro_kit::event::Modifiers::NONE,
+        });
+        assert!(desktop.locked, "wrong password unlocked the screen");
+        assert_eq!(desktop.lock_password_field.text(), "");
+
+        // Correct password must unlock.
+        for ch in "secret".chars() {
+            desktop.handle_event(&Event::Char { character: ch });
+        }
+        assert_eq!(desktop.lock_password_field.text(), "secret");
+        desktop.handle_event(&Event::KeyDown {
+            key: retro_kit::event::KeyCode::Enter,
+            modifiers: retro_kit::event::Modifiers::NONE,
+        });
+        assert!(!desktop.locked, "correct password did not unlock");
+    }
+
+    #[test]
     fn a11y_dispatch_chrome_window_close_and_activate_next() {
         let (mut desktop, window_manager) = test_desktop();
         // Start with the default Finder; open a second window so activate can cycle.

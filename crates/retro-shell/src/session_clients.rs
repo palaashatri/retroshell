@@ -201,6 +201,8 @@ fn which_exists(name: &str) -> bool {
 pub fn build_app_command(path: &std::path::Path) -> Command {
     let mut command = Command::new(path);
     command.env("RETROSHELL_GLOBAL_MENU", "1");
+    // The lock secret is shell-only; child apps must never see it.
+    command.env_remove("RETROSHELL_LOCK_PASSWORD");
     // Prefer Wayland when a session is available; do not force a wrong display.
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         command.env("WINIT_UNIX_BACKEND", "wayland");

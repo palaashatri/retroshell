@@ -58,8 +58,15 @@ impl TextField {
         self.cursor_position
     }
 
+    /// Clamps to the text length and snaps down to the nearest UTF-8 char
+    /// boundary — the cursor is a byte offset and must never sit inside a
+    /// multi-byte character.
     pub fn set_cursor_position(&mut self, pos: usize) {
-        self.cursor_position = pos.min(self.text.len());
+        let mut pos = pos.min(self.text.len());
+        while pos > 0 && !self.text.is_char_boundary(pos) {
+            pos -= 1;
+        }
+        self.cursor_position = pos;
     }
 }
 
@@ -101,8 +108,14 @@ impl Widget for TextField {
                 ..
             } => {
                 if self.cursor_position > 0 {
-                    self.text.remove(self.cursor_position - 1);
-                    self.cursor_position -= 1;
+                    // Step back one full character (may be multi-byte).
+                    let prev = self.text[..self.cursor_position]
+                        .char_indices()
+                        .next_back()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    self.text.remove(prev);
+                    self.cursor_position = prev;
                     if let Some(cb) = &mut self.on_change {
                         (cb)(self.text.clone());
                     }
@@ -111,7 +124,7 @@ impl Widget for TextField {
             }
             Event::Char { character } => {
                 self.text.insert(self.cursor_position, *character);
-                self.cursor_position += 1;
+                self.cursor_position += character.len_utf8();
                 if let Some(cb) = &mut self.on_change {
                     (cb)(self.text.clone());
                 }

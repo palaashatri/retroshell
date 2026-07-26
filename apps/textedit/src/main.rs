@@ -1032,8 +1032,15 @@ mod tests {
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
+    /// Serializes tests that read or mutate the process-global TEXTEDIT_FILE
+    /// env var; without it, parallel test threads race on default_file_path().
+    static DEFAULT_FILE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn textedit_cmd_s_without_path_saves_to_default() {
+        let _env = DEFAULT_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let default_path = default_file_path();
         let mut view = TextEditView::open(None);
         // Clear initial text so we can check what gets written.
@@ -1288,6 +1295,9 @@ mod tests {
     fn textedit_cmd_o_without_path_field_uses_default() {
         // Use an isolated temp path via TEXTEDIT_FILE to avoid collisions with the
         // save-to-default test which also uses default_file_path().
+        let _env = DEFAULT_FILE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let path = temp_textedit_path("cmd-o-default.txt");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, "default open content").unwrap();
