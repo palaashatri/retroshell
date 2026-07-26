@@ -80,10 +80,19 @@ per-workspace, and keep rendering — none of which was possible before the
 `dispatch_clients` and `wl_surface.frame` fixes. Process RSS fell 60.5 MB → 52.7 MB
 over the same run, confirming the per-present framebuffer leak is gone.
 
-**What it does not prove yet:** the DRM path still flips a single solid dumb buffer
-instead of compositing client surfaces, so the screen is blank even though clients
-render correctly. That is [ROADMAP](docs/ROADMAP.md) phase 1.2 and is the next
-piece of work.
+### GL composition (ROADMAP phase 1.2) — done
+
+The DRM path now runs a real `DrmCompositor`: client surfaces are composited into
+a GBM swapchain and page-flipped, paced by vblank.
+
+![Composited on real KMS](docs/screenshots/vm-drm-composited.png)
+
+*A real `VBoxManage` capture of the guest framebuffer: a Terminal client with
+titlebar, menu bar and a live PTY prompt, stacked over the shell surface, on
+`vmwgfx` KMS.* The progression that got here is worth recording — black screen
+(no compositor), then the retro gray clear colour (compositor live, flipping),
+then actual windows once `on_commit_buffer_handler` was wired into the DRM
+path's `commit` so attached buffers became renderable.
 
 ### HDR / VRR
 

@@ -67,17 +67,24 @@ buffers, correct z-order, working input, on both the DRM/KMS and nested paths.
 - front-to-back render element order for `draw_render_elements`
 **Exit:** a screenshot of a real client window rendered by `retro-compositor`.
 
-### 1.2 Replace the dumb-buffer scanout with GL composition (DRM path)
-Today `session_drm.rs` flips one solid dumb buffer and never composites client
-surfaces. Needed:
-- `GbmBufferedSurface` (or `DrmCompositor`) instead of the hand-rolled dumb
-  buffer + `page_flip`
-- render client surfaces with `render_elements_from_surface_tree` into the
-  GBM-backed target, same as the nested path
-- honor `WorkspaceState::is_visible` and `need_full_redraw`
-- page-flip event handling via `DrmDevice` calloop source, so frames are paced
-  by the flip, not `frame_i % 60`
-**Exit:** two client windows composited on KMS, damage-tracked, no placeholders.
+### 1.2 Replace the dumb-buffer scanout with GL composition (DRM path) — **DONE 2026-07-26**
+Landed: `DrmCompositor` over the scanout surface, elements collected from
+layer-shell chrome + workspace-filtered windows, `render_frame`/`queue_frame`
+paced by a calloop vblank handler calling `frame_submitted()`, and
+`on_commit_buffer_handler` wired into the DRM `commit` (its absence was why
+buffers never became renderable). Verified by
+`docs/screenshots/vm-drm-composited.png`. Remaining in this area:
+- damage-driven redraw instead of rendering every tick (use the
+  `RenderFrameResult` damage and `need_full_redraw` rather than unconditional
+  `render_frame`)
+- reschedule on `FrameError::EmptyFrame` with a one-shot timer (~one retrace)
+  instead of spinning
+- direct scan-out of client buffers: pass a real `import_node` to
+  `GbmFramebufferExporter::new` so suitable client dmabufs go straight to a
+  plane
+- multi-output: one `DrmCompositor` per CRTC, keyed by `crtc::Handle` in the
+  vblank handler
+**Exit:** damage-tracked composition across two outputs with no full redraws.
 
 ### 1.3 Input correctness
 Landed: libinput keyboard/pointer now reach the seat. Remaining:
