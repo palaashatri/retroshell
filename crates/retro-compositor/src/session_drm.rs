@@ -100,30 +100,23 @@ pub fn drm_session_available() -> bool {
     !discover_drm_nodes().is_empty() || Path::new("/dev/dri").exists()
 }
 
-/// Present one solid dumb-buffer frame via `DrmSurface::commit` then `page_flip`.
+/// Present one frame from an already-allocated scanout framebuffer via
+/// `DrmSurface::commit`, falling back to `page_flip`.
 ///
-/// This is the real scanout path (framebuffer + flip), not open-device only.
-fn try_present_dumb_frame(
+/// The framebuffer is allocated once per session by [`arm_scanout_framebuffer`]
+/// and reused. Allocating (and leaking) a full-screen dumb buffer per present —
+/// which this used to do at ~1 Hz — is an unbounded kernel memory leak.
+fn present_armed_frame(
     surface: &smithay::backend::drm::DrmSurface,
+    fb_handle: smithay::reexports::drm::control::framebuffer::Handle,
     width: i32,
     height: i32,
 ) -> Result<()> {
-    use smithay::backend::allocator::dumb::DumbAllocator;
-    use smithay::backend::allocator::{Allocator, Fourcc, Modifier};
-    use smithay::backend::drm::dumb::framebuffer_from_dumb_buffer;
-    use smithay::backend::drm::{DrmDeviceFd, PlaneConfig, PlaneState};
+    use smithay::backend::drm::{PlaneConfig, PlaneState};
     use smithay::utils::{Buffer as BufferCoords, Physical, Rectangle, Transform};
 
     let w = width.max(1) as u32;
     let h = height.max(1) as u32;
-    let fd: DrmDeviceFd = surface.device_fd().clone();
-    let mut dumb = DumbAllocator::new(fd.clone());
-    let buffer = dumb
-        .create_buffer(w, h, Fourcc::Xrgb8888, &[Modifier::Linear])
-        .context("DumbAllocator::create_buffer for scanout")?;
-    let fb = framebuffer_from_dumb_buffer(&fd, &buffer, true)
-        .context("framebuffer_from_dumb_buffer")?;
-    let fb_handle = *fb.as_ref();
 
     let plane = surface.plane();
     let dst = Rectangle::<i32, Physical>::from_size((w as i32, h as i32).into());
@@ -166,12 +159,37 @@ fn try_present_dumb_frame(
                 .context("DrmSurface::page_flip")?;
         }
     }
-
-    // Keep fb/buffer alive for the queued flip (process-lifetime leak is acceptable
-    // for the single startup present; surface is retained by caller).
-    std::mem::forget(fb);
-    std::mem::forget(buffer);
     Ok(())
+}
+
+/// Allocate the session's single scanout dumb buffer and its framebuffer.
+///
+/// Returns both owners; the caller must keep them alive for as long as the
+/// framebuffer handle is used in plane state, otherwise the kernel frees the
+/// backing object out from under the flip.
+fn arm_scanout_framebuffer(
+    surface: &smithay::backend::drm::DrmSurface,
+    width: i32,
+    height: i32,
+) -> Result<(
+    smithay::backend::allocator::dumb::DumbBuffer,
+    smithay::backend::drm::dumb::DumbFramebuffer,
+)> {
+    use smithay::backend::allocator::dumb::DumbAllocator;
+    use smithay::backend::allocator::{Allocator, Fourcc, Modifier};
+    use smithay::backend::drm::dumb::framebuffer_from_dumb_buffer;
+    use smithay::backend::drm::DrmDeviceFd;
+
+    let w = width.max(1) as u32;
+    let h = height.max(1) as u32;
+    let fd: DrmDeviceFd = surface.device_fd().clone();
+    let mut dumb = DumbAllocator::new(fd.clone());
+    let buffer = dumb
+        .create_buffer(w, h, Fourcc::Xrgb8888, &[Modifier::Linear])
+        .context("DumbAllocator::create_buffer for scanout")?;
+    let fb =
+        framebuffer_from_dumb_buffer(&fd, &buffer, true).context("framebuffer_from_dumb_buffer")?;
+    Ok((buffer, fb))
 }
 
 fn w_from_env_or_default() -> i32 {
@@ -377,28 +395,48 @@ pub fn run_drm_session() -> Result<()> {
     let _drm = drm;
 
     // ---- Pageflip / present attempt (not drop-the-surface) ----
-    // Allocate a dumb XRGB8888 buffer, export as framebuffer, and issue a
-    // modeset commit or page_flip so presentation is exercised when possible.
+    // Allocate ONE dumb XRGB8888 buffer + framebuffer for the whole session and
+    // issue a modeset commit or page_flip with it. `_scanout_owners` must stay
+    // in scope for as long as `armed_fb` is flipped, or the kernel frees the
+    // backing object mid-flight.
     let mut scanout_armed = false;
+    let mut armed_fb: Option<smithay::reexports::drm::control::framebuffer::Handle> = None;
+    let mut _scanout_owners = None;
     if let Some(surface) = drm_surface.as_ref() {
-        match try_present_dumb_frame(surface, modeset_plan.mode_w, modeset_plan.mode_h) {
-            Ok(()) => {
-                scanout_armed = true;
-                eprintln!(
-                    "[retro-compositor] DRM pageflip/commit present succeeded ({}x{})",
-                    modeset_plan.mode_w, modeset_plan.mode_h
-                );
-                tracing::info!(
-                    stage = DrmPresentationStage::PageFlipOrPresent.as_str(),
-                    "dumb-buffer pageflip/commit path armed"
-                );
+        match arm_scanout_framebuffer(surface, modeset_plan.mode_w, modeset_plan.mode_h) {
+            Ok((buffer, fb)) => {
+                let handle = *fb.as_ref();
+                match present_armed_frame(
+                    surface,
+                    handle,
+                    modeset_plan.mode_w,
+                    modeset_plan.mode_h,
+                ) {
+                    Ok(()) => {
+                        scanout_armed = true;
+                        armed_fb = Some(handle);
+                        _scanout_owners = Some((buffer, fb));
+                        eprintln!(
+                            "[retro-compositor] DRM pageflip/commit present succeeded ({}x{})",
+                            modeset_plan.mode_w, modeset_plan.mode_h
+                        );
+                        tracing::info!(
+                            stage = DrmPresentationStage::PageFlipOrPresent.as_str(),
+                            "dumb-buffer pageflip/commit path armed"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "DRM present path failed; surface kept for session, protocol continues"
+                        );
+                        eprintln!("[retro-compositor] DRM present failed: {err:#}");
+                    }
+                }
             }
             Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    "DRM present path failed; surface kept for session, protocol continues"
-                );
-                eprintln!("[retro-compositor] DRM present failed: {err:#}");
+                tracing::warn!(error = %err, "could not allocate scanout framebuffer");
+                eprintln!("[retro-compositor] scanout framebuffer alloc failed: {err:#}");
             }
         }
     }
@@ -406,6 +444,7 @@ pub fn run_drm_session() -> Result<()> {
     // Re-present periodically so scanout is continuous when armed (not one-shot).
     let mut drm_surface_keepalive = drm_surface;
     let scanout_armed = scanout_armed;
+    let armed_fb = armed_fb;
     let present_w = modeset_plan.mode_w;
     let present_h = modeset_plan.mode_h;
 
@@ -564,8 +603,8 @@ pub fn run_drm_session() -> Result<()> {
             state.need_full_redraw = false;
         }
         if scanout_armed && (force_present || frame_i % 60 == 0) {
-            if let Some(surface) = drm_surface_keepalive.as_ref() {
-                if let Err(err) = try_present_dumb_frame(surface, present_w, present_h) {
+            if let (Some(surface), Some(fb)) = (drm_surface_keepalive.as_ref(), armed_fb) {
+                if let Err(err) = present_armed_frame(surface, fb, present_w, present_h) {
                     tracing::debug!(error = %err, "periodic DRM present failed");
                 }
             }
@@ -751,31 +790,160 @@ impl DrmSessionState {
         }
     }
 
+    /// Topmost window whose geometry contains `pos` (last mapped wins).
+    fn window_at(&self, pos: Point<f64, Logical>) -> Option<usize> {
+        self.windows
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| self.workspace_state.is_visible(&w.window_id))
+            .rev()
+            .find(|(_, w)| {
+                let x0 = w.position.x as f64;
+                let y0 = w.position.y as f64;
+                pos.x >= x0
+                    && pos.y >= y0
+                    && pos.x < x0 + w.size.w as f64
+                    && pos.y < y0 + w.size.h as f64
+            })
+            .map(|(i, _)| i)
+    }
+
     fn handle_libinput(
         &mut self,
         event: smithay::backend::input::InputEvent<LibinputInputBackend>,
     ) {
         use smithay::backend::input::{
-            AbsolutePositionEvent, Event as _, InputEvent, KeyboardKeyEvent, PointerButtonEvent,
+            AbsolutePositionEvent, ButtonState, Event as _, InputEvent, KeyState, KeyboardKeyEvent,
+            PointerButtonEvent, PointerMotionEvent,
         };
+        use smithay::input::keyboard::{FilterResult, Keysym};
+        use smithay::input::pointer::{ButtonEvent, MotionEvent};
+
         match event {
             InputEvent::Keyboard { event } => {
-                // Key filter for Super+workspace is not yet bound on DRM seat input;
-                // when added, call cycle_workspace_* / activate_workspace_index so
-                // focus + full redraw stay honest (same as nested X11 main).
-                let _ = event.key_code();
-                let _ = event.time_msec();
+                let serial = self.next_serial();
+                let time = event.time_msec();
+                let keycode = event.key_code();
+                let key_state = event.state();
+                let Some(kb) = self.seat.get_keyboard() else {
+                    return;
+                };
+                kb.input::<(), _>(self, keycode, key_state, serial, time, |data, mods, keysym| {
+                    // Super+Left/Right/PageUp/PageDown and Super+1..8 switch
+                    // workspaces, matching the nested X11 bindings.
+                    if key_state == KeyState::Pressed && mods.logo {
+                        let sym = keysym.modified_sym();
+                        if sym == Keysym::Right || sym == Keysym::Page_Down {
+                            data.cycle_workspace_next();
+                            return FilterResult::Intercept(());
+                        }
+                        if sym == Keysym::Left || sym == Keysym::Page_Up {
+                            data.cycle_workspace_prev();
+                            return FilterResult::Intercept(());
+                        }
+                        let digit = match sym {
+                            Keysym::_1 => Some(0u8),
+                            Keysym::_2 => Some(1),
+                            Keysym::_3 => Some(2),
+                            Keysym::_4 => Some(3),
+                            Keysym::_5 => Some(4),
+                            Keysym::_6 => Some(5),
+                            Keysym::_7 => Some(6),
+                            Keysym::_8 => Some(7),
+                            _ => None,
+                        };
+                        if let Some(i) = digit {
+                            data.activate_workspace_index(i);
+                            return FilterResult::Intercept(());
+                        }
+                    }
+                    FilterResult::Forward
+                });
             }
             InputEvent::PointerMotionAbsolute { event } => {
                 let x = event.x_transformed(self.output_size.0);
                 let y = event.y_transformed(self.output_size.1);
                 self.pointer_location = Point::from((x, y));
+                self.forward_pointer_motion(event.time_msec());
+            }
+            InputEvent::PointerMotion { event } => {
+                // Relative motion (real mice): accumulate and clamp to output.
+                let (dx, dy) = (event.delta_x(), event.delta_y());
+                let x = (self.pointer_location.x + dx).clamp(0.0, self.output_size.0 as f64 - 1.0);
+                let y = (self.pointer_location.y + dy).clamp(0.0, self.output_size.1 as f64 - 1.0);
+                self.pointer_location = Point::from((x, y));
+                self.forward_pointer_motion(event.time_msec());
             }
             InputEvent::PointerButton { event } => {
-                let _ = event.button_code();
+                let serial = self.next_serial();
+                let time = event.time_msec();
+                let button = event.button_code();
+                let btn_state = event.state();
+
+                if btn_state == ButtonState::Pressed {
+                    let pos = self.pointer_location;
+                    match self.window_at(pos) {
+                        Some(idx) => self.focus_window_at_index(idx),
+                        None => {
+                            // Click on the desktop clears keyboard focus.
+                            self.focus_surface(None);
+                        }
+                    }
+                }
+
+                if let Some(ptr) = self.seat.get_pointer() {
+                    ptr.button(
+                        self,
+                        &ButtonEvent {
+                            serial,
+                            time,
+                            button,
+                            state: btn_state,
+                        },
+                    );
+                    ptr.frame(self);
+                }
             }
             _ => {}
         }
+    }
+
+    /// Send the current pointer location to the seat, retargeting focus to
+    /// whatever surface is under it.
+    fn forward_pointer_motion(&mut self, time: u32) {
+        use smithay::input::pointer::MotionEvent;
+
+        let pos = self.pointer_location;
+        let focus = self.window_at(pos).map(|idx| {
+            let w = &self.windows[idx];
+            let local = Point::from((pos.x - w.position.x as f64, pos.y - w.position.y as f64));
+            (w.toplevel.wl_surface().clone(), local)
+        });
+        let serial = self.next_serial();
+        if let Some(ptr) = self.seat.get_pointer() {
+            ptr.motion(
+                self,
+                focus,
+                &MotionEvent {
+                    location: pos,
+                    serial,
+                    time,
+                },
+            );
+            ptr.frame(self);
+        }
+    }
+
+    /// Raise the window at `idx` to the top of the stack and give it focus.
+    fn focus_window_at_index(&mut self, idx: usize) {
+        if idx >= self.windows.len() {
+            return;
+        }
+        let w = self.windows.remove(idx);
+        let surface = w.toplevel.wl_surface().clone();
+        self.windows.push(w);
+        self.focus_surface(Some(surface));
+        self.request_full_redraw();
     }
 
     fn focus_surface(&mut self, surface: Option<WlSurface>) {
