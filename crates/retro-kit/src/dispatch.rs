@@ -96,6 +96,22 @@ fn dispatch_positional_traced(
     None
 }
 
+/// Depth-first lookup of the widget with id `target`. Lets an app interrogate
+/// the widget a dispatch outcome named — e.g. "was the widget that captured
+/// this press focusable?" for click-to-focus — without walking the tree
+/// itself.
+pub fn widget_by_id(root: &dyn Widget, target: WidgetId) -> Option<&dyn Widget> {
+    if root.id() == target {
+        return Some(root);
+    }
+    for child in root.children() {
+        if let Some(found) = widget_by_id(child, target) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// Depth-first search for the widget with id `target`, delivering `ev` to it
 /// via `handle_event` if found. Returns `None` (rather than `Ignored`) when
 /// `target` isn't in the tree at all, so callers can tell "no such widget"

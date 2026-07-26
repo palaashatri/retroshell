@@ -124,9 +124,14 @@ impl Widget for TextField {
     // Was: no override, so every `TextField` was focusable-in-spirit but
     // never actually joined the tab order and nothing ever gated input on
     // it (see docs/TOOLKIT_REMEDIATION.md). Text input is exactly the case
-    // `focusable()` exists for.
+    // `focusable()` exists for. Hidden or disabled fields (e.g. a closed
+    // find bar) stay out of the tab order.
     fn focusable(&self) -> bool {
-        true
+        self.state.enabled && self.state.visibility == crate::Visibility::Visible
+    }
+
+    fn wants_click_focus(&self) -> bool {
+        self.focusable()
     }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {

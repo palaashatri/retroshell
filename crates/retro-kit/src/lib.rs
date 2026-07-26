@@ -49,7 +49,9 @@ pub use accessibility::{
 pub use button::Button;
 pub use clipboard::Clipboard;
 pub use dialog::Dialog;
-pub use dispatch::{deliver_to, dispatch_pointer, dispatch_positional, widget_at, PointerDispatcher};
+pub use dispatch::{
+    deliver_to, dispatch_pointer, dispatch_positional, widget_at, widget_by_id, PointerDispatcher,
+};
 pub use dnd::{DragData, DragSession, DragSource, DropTarget};
 pub use dock_view::{DockView, DockViewItem};
 pub use workspace_grid_view::WorkspaceGridView;

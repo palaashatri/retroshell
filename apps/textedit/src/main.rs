@@ -1,13 +1,13 @@
 use retro_kit::button::Button;
 use retro_kit::clipboard::Clipboard;
-use retro_kit::event::{KeyCode, Modifiers, MouseButton};
+use retro_kit::event::{KeyCode, Modifiers};
 use retro_kit::label::Label;
 use retro_kit::text_field::TextField;
 use retro_kit::toolbar::Toolbar;
 use retro_kit::window::Window;
 use retro_kit::{
-    AccessibilityNode, Event, EventResult, LayoutConstraint, Point, Rect, Size, ThemeContext,
-    Widget, WidgetState,
+    widget_by_id, AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint,
+    PointerDispatcher, Rect, Size, ThemeContext, Visibility, Widget, WidgetState,
 };
 use retro_sdk::{build_menu, Application};
 use std::fs;
@@ -171,14 +171,6 @@ fn main() {
     app.run();
 }
 
-/// Which field currently receives keyboard input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FocusedField {
-    Editor,
-    Path,
-    Find,
-}
-
 struct TextEditView {
     state: WidgetState,
     toolbar: Toolbar,
@@ -196,11 +188,12 @@ struct TextEditView {
     notification: Option<String>,
     undo_stack: Vec<String>,
     redo_stack: Vec<String>,
-    focused: FocusedField,
     /// Whether the find bar row is currently visible.
     find_visible: bool,
     /// Last search string used for find-next.
     last_find_query: String,
+    focus: FocusManager,
+    pointer: PointerDispatcher,
 }
 
 impl TextEditView {
@@ -255,13 +248,36 @@ impl TextEditView {
             notification: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
-            focused: FocusedField::Editor,
             find_visible: false,
             last_find_query: String::new(),
+            focus: FocusManager::new(),
+            pointer: PointerDispatcher::new(),
         };
-        view.sync_focus_flags();
+        view.apply_find_visibility();
+        let editor_id = view.editor.id();
+        view.focus_widget(editor_id);
         view.refresh_status();
         view
+    }
+
+    /// Focus `id` through the real focus system (sets `WidgetState.focused`
+    /// on exactly that widget, clears it everywhere else in the tree).
+    fn focus_widget(&mut self, id: retro_kit::WidgetId) {
+        let mut focus = std::mem::take(&mut self.focus);
+        focus.focus(self, id);
+        self.focus = focus;
+    }
+
+    /// Keep the find row's widget visibility in sync with `find_visible`, so
+    /// hit-testing and the tab order skip it while it is closed.
+    fn apply_find_visibility(&mut self) {
+        let visibility = if self.find_visible {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
+        self.find_label.widget_state_mut().visibility = visibility;
+        self.find_field.widget_state_mut().visibility = visibility;
     }
 
     fn window_title(&self) -> String {
@@ -516,26 +532,15 @@ impl TextEditView {
 
     // ----- Find -----
 
-    /// Mirrors `self.focused` onto `WidgetState.focused` for the three text
-    /// fields. `TextField::handle_event` now gates `Char`/`Backspace`/arrow
-    /// input on that flag (see docs/TOOLKIT_REMEDIATION.md); this app tracks
-    /// "which field is active" itself via `FocusedField` rather than
-    /// `FocusManager`, so every assignment to `self.focused` must call this
-    /// or the field it names silently stops accepting keystrokes.
-    fn sync_focus_flags(&mut self) {
-        self.path_field.widget_state_mut().focused = self.focused == FocusedField::Path;
-        self.find_field.widget_state_mut().focused = self.focused == FocusedField::Find;
-        self.editor.widget_state_mut().focused = self.focused == FocusedField::Editor;
-    }
-
     fn toggle_find(&mut self) {
         self.find_visible = !self.find_visible;
-        if self.find_visible {
-            self.focused = FocusedField::Find;
+        self.apply_find_visibility();
+        let target = if self.find_visible {
+            self.find_field.id()
         } else {
-            self.focused = FocusedField::Editor;
-        }
-        self.sync_focus_flags();
+            self.editor.id()
+        };
+        self.focus_widget(target);
         self.refresh_status();
     }
 
@@ -577,31 +582,53 @@ impl TextEditView {
         }
     }
 
-    fn handle_toolbar_click(&mut self, point: Point) -> bool {
-        let Some(index) = self
-            .toolbar
-            .items
-            .iter()
-            .position(|item| item.rect().contains(point))
-        else {
+    /// Index of the toolbar button activated since last asked, drained
+    /// through the widgets' own `take_clicked()`.
+    fn take_toolbar_click(&mut self) -> Option<usize> {
+        self.toolbar.items.iter_mut().position(|item| {
+            item.as_any_mut()
+                .downcast_mut::<Button>()
+                .is_some_and(|button| button.take_clicked())
+        })
+    }
+
+    /// Drain widget activations after an event went through generic
+    /// dispatch. Returns whether a toolbar action ran.
+    fn process_activations(&mut self) -> bool {
+        let Some(index) = self.take_toolbar_click() else {
             return false;
         };
-
         match index {
-            0 => self.new_document(),
-            1 => self.open_document(),
-            2 => self.save_document(),
-            3 => self.save_as_from_path_field(),
-            4 => self.undo(),
-            5 => self.redo(),
+            0 => {
+                self.new_document();
+            }
+            1 => {
+                self.open_document();
+            }
+            2 => {
+                self.save_document();
+            }
+            3 => {
+                self.save_as_from_path_field();
+            }
+            4 => {
+                self.undo();
+            }
+            5 => {
+                self.redo();
+            }
             6 => {
                 self.toggle_find();
-                true
             }
-            7 => self.copy_document(),
-            8 => self.paste_document(),
-            _ => false,
+            7 => {
+                self.copy_document();
+            }
+            8 => {
+                self.paste_document();
+            }
+            _ => return false,
         }
+        true
     }
 }
 
@@ -767,99 +794,93 @@ impl Widget for TextEditView {
                 }
             }
 
-            // Enter in find field executes the search.
-            if *key == KeyCode::Enter && self.focused == FocusedField::Find {
+            // Enter in the find field executes the search.
+            if *key == KeyCode::Enter && self.find_field.widget_state().focused {
                 self.execute_find();
                 return EventResult::Handled;
             }
 
             // Escape closes the find bar.
-            if *key == KeyCode::Escape && self.focused == FocusedField::Find {
+            if *key == KeyCode::Escape && self.find_field.widget_state().focused {
                 self.find_visible = false;
-                self.focused = FocusedField::Editor;
-                self.sync_focus_flags();
+                self.apply_find_visibility();
+                let editor_id = self.editor.id();
+                self.focus_widget(editor_id);
                 self.refresh_status();
                 return EventResult::Handled;
             }
         }
 
-        // Mouse focus routing.
-        if let Event::MouseDown {
-            button: MouseButton::Left,
-            point,
-            ..
-        } = event
-        {
-            if self.handle_toolbar_click(*point) {
-                return EventResult::Handled;
-            }
-            if self.path_field.rect().contains(*point) {
-                self.focused = FocusedField::Path;
-                self.sync_focus_flags();
-                return EventResult::Handled;
-            }
-            if self.find_visible && self.find_field.rect().contains(*point) {
-                self.focused = FocusedField::Find;
-                self.sync_focus_flags();
-                return EventResult::Handled;
-            }
-            if self.editor.rect().contains(*point) {
-                self.focused = FocusedField::Editor;
-                self.sync_focus_flags();
-            }
-        }
-
-        // Route character input and backspace to the focused field.
-        let is_text_input = matches!(
-            event,
-            Event::Char { .. }
-                | Event::KeyDown {
-                    key: KeyCode::Backspace,
-                    ..
+        match event {
+            // Tab / Shift+Tab walk the focusable widgets (toolbar buttons,
+            // path field, find field when visible, editor).
+            Event::KeyDown {
+                key: KeyCode::Tab,
+                modifiers,
+            } => {
+                let mut focus = std::mem::take(&mut self.focus);
+                if modifiers.shift {
+                    focus.focus_prev(self);
+                } else {
+                    focus.focus_next(self);
                 }
-        );
-
-        if is_text_input {
-            match self.focused {
-                FocusedField::Path => {
-                    let result = self.path_field.handle_event(event);
-                    if matches!(result, EventResult::Handled) {
-                        self.last_error = None;
-                        self.refresh_status();
+                self.focus = focus;
+                EventResult::Handled
+            }
+            // Keys go to the focused widget; the editor's text changes feed
+            // the undo stack and dirty tracking.
+            Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Char { .. } => {
+                let before_edit = self.editor.text().to_string();
+                let mut focus = std::mem::take(&mut self.focus);
+                let result = focus.dispatch_key(self, event);
+                self.focus = focus;
+                if matches!(result, EventResult::Handled) {
+                    if self.process_activations() {
+                        return EventResult::Handled;
                     }
-                    return result;
-                }
-                FocusedField::Find => {
-                    let result = self.find_field.handle_event(event);
-                    if matches!(result, EventResult::Handled) {
-                        self.last_error = None;
-                        self.refresh_status();
+                    if self.editor.text() != before_edit {
+                        if self.undo_stack.last() != Some(&before_edit) {
+                            self.undo_stack.push(before_edit);
+                            // Cap at 50 entries.
+                            if self.undo_stack.len() > 50 {
+                                self.undo_stack.remove(0);
+                            }
+                        }
+                        self.redo_stack.clear();
                     }
-                    return result;
+                    self.mark_dirty_from_editor();
                 }
-                FocusedField::Editor => {
-                    // Fall through to editor handling below.
-                }
+                result
             }
-        }
-
-        // Editor handles everything else.
-        let before_edit = self.editor.text().to_string();
-        let result = self.editor.handle_event(event);
-        if matches!(result, EventResult::Handled) {
-            if self.editor.text() != before_edit {
-                if self.undo_stack.last() != Some(&before_edit) {
-                    self.undo_stack.push(before_edit);
-                    // Cap at 50 entries.
-                    if self.undo_stack.len() > 50 {
-                        self.undo_stack.remove(0);
+            // Pointer events go through generic rect-checked dispatch with
+            // implicit capture; a press that lands on a focusable widget
+            // (the text fields) moves focus there.
+            Event::MouseDown { .. }
+            | Event::MouseUp { .. }
+            | Event::MouseMove { .. }
+            | Event::DoubleClick { .. }
+            | Event::MouseLeave => {
+                let mut pointer = std::mem::take(&mut self.pointer);
+                let result = pointer.dispatch(self, event);
+                let pressed = match event {
+                    Event::MouseDown { .. } | Event::DoubleClick { .. } => pointer.captured(),
+                    _ => None,
+                };
+                self.pointer = pointer;
+                if let Some(id) = pressed {
+                    if widget_by_id(self, id).is_some_and(|w| w.wants_click_focus()) {
+                        self.focus_widget(id);
                     }
                 }
-                self.redo_stack.clear();
+                if matches!(result, EventResult::Handled) && !self.process_activations() {
+                    // No toolbar action ran: a field click may have moved the
+                    // caret, so recompute the Ln display.
+                    self.refresh_status();
+                }
+                result
             }
-            self.mark_dirty_from_editor();
+            _ => EventResult::Ignored,
         }
-        result
     }
 
     fn update(&mut self) {
@@ -912,6 +933,8 @@ impl Widget for TextEditView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use retro_kit::event::MouseButton;
+    use retro_kit::Point;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -930,9 +953,16 @@ mod tests {
 
     fn click_toolbar_button(view: &mut TextEditView, index: usize) -> EventResult {
         let rect = view.toolbar.items[index].rect();
-        view.handle_event(&Event::MouseDown {
+        let point = Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        let down = view.handle_event(&Event::MouseDown {
             button: MouseButton::Left,
-            point: Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0),
+            point,
+            modifiers: Modifiers::NONE,
+        });
+        assert!(matches!(down, EventResult::Handled), "press must land on the button");
+        view.handle_event(&Event::MouseUp {
+            button: MouseButton::Left,
+            point,
             modifiers: Modifiers::NONE,
         })
     }
@@ -1106,6 +1136,50 @@ mod tests {
         assert!(matches!(typed, EventResult::Handled));
         assert_eq!(view.path_field.text(), "x");
         assert!(!view.editor.text().ends_with('x'));
+    }
+
+    #[test]
+    fn textedit_toolbar_click_does_not_steal_editor_focus() {
+        let mut view = TextEditView::open(None);
+        view.layout(LayoutConstraint::tight(Size::new(700.0, 460.0)));
+        assert!(view.editor.widget_state().focused);
+
+        // Click COPY (index 7): the action runs but focus must stay in the
+        // editor so the user can keep typing.
+        let result = click_toolbar_button(&mut view, 7);
+        assert!(matches!(result, EventResult::Handled));
+        assert!(view.editor.widget_state().focused);
+
+        let before = view.editor.text().to_string();
+        let typed = view.handle_event(&Event::Char { character: 'z' });
+        assert!(matches!(typed, EventResult::Handled));
+        assert_eq!(view.editor.text(), format!("{before}z"));
+    }
+
+    #[test]
+    fn textedit_hidden_find_field_is_skipped_by_tab_and_clicks() {
+        let mut view = TextEditView::open(None);
+        view.layout(LayoutConstraint::tight(Size::new(700.0, 460.0)));
+        assert!(!view.find_visible);
+        assert!(!view.find_field.focusable(), "hidden find field must not join tab order");
+
+        // Tab through every focusable widget; the find field must never
+        // become focused while hidden.
+        for _ in 0..12 {
+            let _ = view.handle_event(&Event::KeyDown {
+                key: KeyCode::Tab,
+                modifiers: Modifiers::NONE,
+            });
+            assert!(!view.find_field.widget_state().focused);
+        }
+
+        // Once the find bar opens it takes focus and accepts input.
+        view.toggle_find();
+        assert!(view.find_field.widget_state().focused);
+        let typed = view.handle_event(&Event::Char { character: 'q' });
+        assert!(matches!(typed, EventResult::Handled));
+        assert_eq!(view.find_field.text(), "q");
+        assert_eq!(view.editor.text(), view.saved_text, "editor must not receive the keystroke");
     }
 
     #[test]
