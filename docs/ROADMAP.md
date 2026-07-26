@@ -135,14 +135,49 @@ Notable: keyboard reaches a normal winit app under labwc fine, which narrows
 QA finding B (keyboard never reaching `retro-shell`) to the shell's own
 surface, not the input path.
 
+**Landed (step 4, verified live 2026-07-27):** the other apps are ported.
+- **Finder**: toolbar actions drain via `Button::take_clicked` (no more
+  index-geometry chains), icon-grid double-click activation drains via the
+  new `IconView::take_activated`, keys route to the focused widget before
+  app accelerators. Live: icon click selected `readme.txt`, toolbar NEW
+  FOLDER created a real directory, double-click navigated into a folder,
+  BACK returned (`docs/screenshots/finder-dispatch-*.png`).
+- **TextEdit**: the app-private `FocusedField` enum and `sync_focus_flags`
+  are gone — real `FocusManager` owns focus; click-to-focus uses the new
+  `Widget::wants_click_focus` hook (`TextField` yes, `Button` no, so a
+  toolbar click can't steal focus mid-typing); the hidden find bar is
+  `Visibility::Hidden` and out of tab order. Live: typed into the editor,
+  clicked the PATH field and typed `zz` (landed in the field, not the
+  editor), clicked SAVE and the file was written
+  (`docs/screenshots/textedit-dispatch-focus.png`).
+- **AppStore**: named buttons drain via `take_clicked`, list reactions key
+  off the dispatcher's captured press target, query takes click-to-focus.
+  Live against the real APT backend: result-row click selected a package,
+  category click filtered, typed `doom` + SEARCH returned 14 real results
+  (`docs/screenshots/appstore-dispatch-search.png`).
+- **Terminal**: explicitly **not ported, by design** — it has no buttons, no
+  focus contention (one full-window input target per tab), and its only
+  hit-testing is cell-address math inside `TerminalView::handle_event`,
+  which is exactly where the remediation wants hit-testing to live.
+  Wrapping its selection/mouse-reporting in capture would add risk and no
+  behaviour. This is the "explicit documented decision" escape hatch from
+  `TOOLKIT_REMEDIATION.md` §3.
+
+673 workspace tests pass. `rect().contains` remaining outside `retro-kit`:
+the shell (step 5, not started) and item-level checks (`IconItem.rect` in
+Finder's drag protocol — the drop target is an item, not a widget; the SDK
+loop does not synthesize Drag* events yet).
+
 A preview of what migration costs: adding the focus gate to `TextField`
 immediately broke the shell's lock screen and four TextEdit tests, because both
 track focus in their own state and never mirrored it onto
-`WidgetState.focused`. Both are now synced (TextEdit via `sync_focus_flags()`).
-Expect the same class of fix in every app that is ported.
+`WidgetState.focused`. Both are now synced. Expect the same class of fix in
+the shell port.
 
-**Next: migration step 4** — port Finder, TextEdit, AppStore and Terminal one
-at a time to `PointerDispatcher` + `FocusManager`, then the shell (step 5).
+**Next: migration step 5** — port the shell (`ShellDesktop::handle_event`),
+the biggest consumer, which also owns the lock screen and menu bar. Then
+step 6: grep for `rect().contains(` outside `crates/retro-kit` and delete
+what remains.
 
 
 This is the largest single body of work and the prerequisite for every app
