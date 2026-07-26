@@ -108,7 +108,25 @@ the right place and dismisses correctly.
 
 ---
 
-## Phase 2 — The toolkit is real  *(2–3 months)*
+## Phase 2 — The toolkit is real  *(2–3 months)* — **steps 1–2 DONE 2026-07-27**
+
+**Landed:** `retro-kit/src/dispatch.rs` (`widget_at`, `dispatch_pointer`,
+`dispatch_positional`) and `retro-kit/src/focus.rs` (`FocusManager` with Tab
+traversal), `Widget::focusable()` as a defaulted trait method, and per-widget
+remediation for Button, Toolbar, SplitView, TreeView, TabView, PopupButton,
+ScrollView, Dialog and TextField. 653 tests pass (was 545); build clean.
+
+**Verified how far:** compile + unit tests only. Nobody has clicked these
+widgets in a running app yet, and the apps still hand-roll their own
+hit-testing alongside the new dispatch. **Next: migration step 3** — port
+Settings to `dispatch_pointer` + `take_clicked()` and confirm it in the VM.
+
+A preview of what that migration costs: adding the focus gate to `TextField`
+immediately broke the shell's lock screen and four TextEdit tests, because both
+track focus in their own state and never mirrored it onto
+`WidgetState.focused`. Both are now synced (TextEdit via `sync_focus_flags()`).
+Expect the same class of fix in every app that is ported.
+
 
 This is the largest single body of work and the prerequisite for every app
 improvement. Full detail in `docs/TOOLKIT_REMEDIATION.md`; summary here.
