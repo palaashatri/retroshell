@@ -89,6 +89,13 @@ pub trait Widget: Send {
         self.widget_state_mut().enabled = enabled;
     }
 
+    /// Can this widget take keyboard focus (via `FocusManager`)? Default
+    /// false; widgets that accept keyboard input (`TextField`, etc.) override
+    /// this to join the tab order.
+    fn focusable(&self) -> bool {
+        false
+    }
+
     fn layout(&mut self, constraint: LayoutConstraint) -> Size;
     fn draw(&self, theme: &ThemeContext);
     fn handle_event(&mut self, _event: &Event) -> EventResult {

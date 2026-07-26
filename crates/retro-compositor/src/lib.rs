@@ -19,6 +19,11 @@ pub mod session_drm;
 #[cfg(target_os = "linux")]
 pub mod drm_props;
 
+/// Procedural fallback cursor bitmap for `CursorImageStatus::Named` (no XCursor
+/// theme dependency).
+#[cfg(target_os = "linux")]
+pub mod cursor_theme;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 

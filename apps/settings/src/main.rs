@@ -10,7 +10,8 @@ use retro_kit::{
 use retro_sdk::{build_menu, Application};
 use retro_shell::DisplayConfig;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 fn main() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -694,7 +695,62 @@ impl SettingsStore {
         for (key, value) in map {
             content.push_str(&format!("{key}={value}\n"));
         }
-        fs::write(&self.path, content)
+        self.write_atomic(&content)
+    }
+
+    /// Write `content` to `self.path` without ever exposing a partially
+    /// written or truncated file to a concurrent reader/writer.
+    ///
+    /// The naive `fs::write(&self.path, content)` this replaces truncates the
+    /// destination in place: a second process reading `settings.conf` while
+    /// the write is in flight (or a process that crashes mid-write) can
+    /// observe a corrupt or empty file, and two writers racing the
+    /// read-modify-write in `save()` can clobber each other's keys. Instead we
+    /// write to a sibling temp file in the same directory (so the later
+    /// rename stays on one filesystem), `fsync` it so its bytes are durable,
+    /// then `fs::rename` it over the destination. Rename within a filesystem
+    /// is atomic: any reader sees either the complete old file or the
+    /// complete new file, never a mixture.
+    fn write_atomic(&self, content: &str) -> std::io::Result<()> {
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        let file_name = self.path.file_name().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "settings path has no file name",
+            )
+        })?;
+
+        // Unique per-process, per-call name so two SettingsStore instances
+        // (or two saves racing on separate threads of the same process)
+        // never collide on the same temp file; only the final rename touches
+        // the shared destination path. Wall-clock time alone can repeat
+        // within a process (coarse timer resolution on some platforms), so a
+        // monotonically increasing counter is included as a tiebreaker.
+        static SAVE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = SAVE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let mut tmp_name = file_name.to_os_string();
+        tmp_name.push(format!(".tmp.{}.{unique}.{sequence}", std::process::id()));
+        let tmp_path = parent.join(tmp_name);
+
+        let write_result = (|| -> std::io::Result<()> {
+            let mut file = fs::File::create(&tmp_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+            Ok(())
+        })();
+
+        if let Err(err) = write_result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+
+        fs::rename(&tmp_path, &self.path).inspect_err(|_| {
+            let _ = fs::remove_file(&tmp_path);
+        })
     }
 }
 
@@ -1344,6 +1400,78 @@ mod tests {
         assert!(content.contains("lock_password=secret123"));
         assert!(content.contains("custom_key=keepme"));
         assert!(content.contains("theme=solarized"));
+    }
+
+    #[test]
+    fn settings_save_is_atomic_leaves_only_destination_file() {
+        let path = temp_settings_path();
+        let store = SettingsStore::new(path.clone());
+        let state = SettingsState::default();
+        store.save(&state).unwrap();
+
+        // A crash or a second reader mid-write must never observe a stray
+        // `.tmp.` file or a missing/truncated destination: the temp file used
+        // by write_atomic() is renamed away (not copied), so exactly one file
+        // should exist in the directory afterward.
+        let dir_entries: Vec<String> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(dir_entries, vec!["settings.conf".to_string()]);
+        assert_eq!(store.load(), state);
+    }
+
+    #[test]
+    fn settings_save_survives_concurrent_writers_without_corruption() {
+        let path = temp_settings_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        // Seed an unknown key up front, the way another component
+        // (e.g. the lock screen writing lock_password) would.
+        fs::write(&path, "lock_password=seed\n").unwrap();
+
+        let store = SettingsStore::new(path.clone());
+        let handles: Vec<_> = (0..8u8)
+            .map(|i| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    let mut state = SettingsState::default();
+                    state.volume_percent = i * 10;
+                    store.save(&state).unwrap();
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Regardless of which writer's rename landed last, the destination
+        // must be a single well-formed file: every line is a full `key=value`
+        // pair, no key appears twice (which would indicate an interleaved,
+        // non-atomic write), and the unknown key survives every writer's
+        // read-modify-write.
+        let content = fs::read_to_string(&path).unwrap();
+        let mut seen_keys = std::collections::HashSet::new();
+        for line in content.lines() {
+            let (key, _value) = line
+                .split_once('=')
+                .expect("atomic save must never produce a partial line");
+            assert!(!key.is_empty());
+            assert!(
+                seen_keys.insert(key.to_string()),
+                "duplicate key {key} indicates a corrupted, non-atomic write"
+            );
+        }
+        assert!(seen_keys.contains("volume_percent"));
+        assert!(content.contains("lock_password=seed"));
+
+        let leftover_tmp = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| entry.file_name().to_string_lossy().contains(".tmp."));
+        assert!(!leftover_tmp, "atomic save must not leave temp files behind");
     }
 
     #[test]

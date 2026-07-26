@@ -1782,6 +1782,11 @@ impl ShellDesktop {
                 self.session_manager.write().lock_screen();
                 self.locked = true;
                 self.lock_password_field.set_text("");
+                // `TextField` now gates keyboard input on focus (see
+                // docs/TOOLKIT_REMEDIATION.md); the lock screen has no other
+                // widget to hand focus to, so it is always the one focused
+                // widget while locked.
+                self.lock_password_field.widget_state_mut().focused = true;
                 self.lock_error_message = None;
             } else {
                 self.notification_center.write().post(
@@ -3304,6 +3309,7 @@ impl Widget for ShellDesktop {
         // Sync lock state from SessionManager
         if self.session_manager.read().state == session_manager::SessionState::Locked && !self.locked {
             self.locked = true;
+            self.lock_password_field.widget_state_mut().focused = true;
         }
 
         // AT-SPI DoAction queue → real shell handlers (lock / log out / chrome.*).

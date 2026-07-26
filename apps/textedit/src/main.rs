@@ -259,6 +259,7 @@ impl TextEditView {
             find_visible: false,
             last_find_query: String::new(),
         };
+        view.sync_focus_flags();
         view.refresh_status();
         view
     }
@@ -515,6 +516,18 @@ impl TextEditView {
 
     // ----- Find -----
 
+    /// Mirrors `self.focused` onto `WidgetState.focused` for the three text
+    /// fields. `TextField::handle_event` now gates `Char`/`Backspace`/arrow
+    /// input on that flag (see docs/TOOLKIT_REMEDIATION.md); this app tracks
+    /// "which field is active" itself via `FocusedField` rather than
+    /// `FocusManager`, so every assignment to `self.focused` must call this
+    /// or the field it names silently stops accepting keystrokes.
+    fn sync_focus_flags(&mut self) {
+        self.path_field.widget_state_mut().focused = self.focused == FocusedField::Path;
+        self.find_field.widget_state_mut().focused = self.focused == FocusedField::Find;
+        self.editor.widget_state_mut().focused = self.focused == FocusedField::Editor;
+    }
+
     fn toggle_find(&mut self) {
         self.find_visible = !self.find_visible;
         if self.find_visible {
@@ -522,6 +535,7 @@ impl TextEditView {
         } else {
             self.focused = FocusedField::Editor;
         }
+        self.sync_focus_flags();
         self.refresh_status();
     }
 
@@ -763,6 +777,7 @@ impl Widget for TextEditView {
             if *key == KeyCode::Escape && self.focused == FocusedField::Find {
                 self.find_visible = false;
                 self.focused = FocusedField::Editor;
+                self.sync_focus_flags();
                 self.refresh_status();
                 return EventResult::Handled;
             }
@@ -780,14 +795,17 @@ impl Widget for TextEditView {
             }
             if self.path_field.rect().contains(*point) {
                 self.focused = FocusedField::Path;
+                self.sync_focus_flags();
                 return EventResult::Handled;
             }
             if self.find_visible && self.find_field.rect().contains(*point) {
                 self.focused = FocusedField::Find;
+                self.sync_focus_flags();
                 return EventResult::Handled;
             }
             if self.editor.rect().contains(*point) {
                 self.focused = FocusedField::Editor;
+                self.sync_focus_flags();
             }
         }
 
