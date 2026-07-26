@@ -1,11 +1,11 @@
 use retro_kit::button::Button;
-use retro_kit::event::{KeyCode, Modifiers, MouseButton};
+use retro_kit::event::{KeyCode, Modifiers};
 use retro_kit::label::Label;
 use retro_kit::slider::Slider;
 use retro_kit::window::Window;
 use retro_kit::{
-    AccessibilityNode, Event, EventResult, LayoutConstraint, Point, Rect, Size, ThemeContext,
-    Widget, WidgetState,
+    AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint, Point,
+    PointerDispatcher, Rect, Size, ThemeContext, Widget, WidgetState,
 };
 use retro_sdk::{build_menu, Application};
 use retro_shell::DisplayConfig;
@@ -847,6 +847,8 @@ struct SettingsView {
     settings: SettingsState,
     store: SettingsStore,
     last_error: Option<String>,
+    focus: FocusManager,
+    pointer: PointerDispatcher,
 }
 
 impl SettingsView {
@@ -870,6 +872,8 @@ impl SettingsView {
             settings,
             store,
             last_error: None,
+            focus: FocusManager::new(),
+            pointer: PointerDispatcher::new(),
         };
         view.refresh_labels();
         view
@@ -1027,42 +1031,43 @@ impl SettingsView {
         }
     }
 
-    fn handle_category_click(&mut self, point: Point) -> bool {
-        let Some(index) = self
+    /// Drain widget activations after an input event went through generic
+    /// dispatch: buttons record a click (`take_clicked`), sliders move their
+    /// `value`; this is where those turn into app behaviour.
+    fn process_activations(&mut self) {
+        if let Some(index) = self
             .category_buttons
-            .iter()
-            .position(|button| button.rect().contains(point))
-        else {
-            return false;
-        };
-        self.select_category(Category::ALL[index]);
-        true
-    }
-
-    fn handle_option_click(&mut self, point: Point) -> bool {
-        let Some(index) = self
-            .option_buttons
-            .iter()
-            .position(|button| button.rect().contains(point))
-        else {
-            return false;
-        };
-        let choice = self.selected_category.choices()[index].0;
-        self.apply_choice(choice)
-    }
-
-    fn handle_slider_event(&mut self, event: &Event) -> bool {
-        let handled = match self.selected_category {
-            Category::Sound => self.volume_slider.handle_event(event),
-            Category::Mouse => self.pointer_speed_slider.handle_event(event),
-            _ => EventResult::Ignored,
-        };
-
-        if matches!(handled, EventResult::Handled) {
-            return self.save_slider_value();
+            .iter_mut()
+            .position(|button| button.take_clicked())
+        {
+            self.select_category(Category::ALL[index]);
+            return;
         }
+        if let Some(index) = self
+            .option_buttons
+            .iter_mut()
+            .position(|button| button.take_clicked())
+        {
+            let choice = self.selected_category.choices()[index].0;
+            self.apply_choice(choice);
+            return;
+        }
+        self.sync_slider_value();
+    }
 
-        false
+    fn sync_slider_value(&mut self) {
+        let changed = match self.selected_category {
+            Category::Sound => {
+                self.volume_slider.value.round() as u8 != self.settings.volume_percent
+            }
+            Category::Mouse => {
+                self.pointer_speed_slider.value.round() as u8 != self.settings.pointer_speed
+            }
+            _ => false,
+        };
+        if changed {
+            self.save_slider_value();
+        }
     }
 }
 
@@ -1186,21 +1191,49 @@ impl Widget for SettingsView {
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
-        if self.handle_slider_event(event) {
-            return EventResult::Handled;
-        }
-
-        if let Event::MouseDown {
-            button: MouseButton::Left,
-            point,
-            ..
-        } = event
-        {
-            if self.handle_category_click(*point) || self.handle_option_click(*point) {
-                return EventResult::Handled;
+        match event {
+            // Tab / Shift+Tab walk the focusable widgets in tree order.
+            Event::KeyDown {
+                key: KeyCode::Tab,
+                modifiers,
+            } => {
+                let mut focus = std::mem::take(&mut self.focus);
+                if modifiers.shift {
+                    focus.focus_prev(self);
+                } else {
+                    focus.focus_next(self);
+                }
+                self.focus = focus;
+                EventResult::Handled
             }
+            // Every other key goes to the focused widget (Enter/Space
+            // activate the focused button).
+            Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Char { .. } => {
+                let mut focus = std::mem::take(&mut self.focus);
+                let result = focus.dispatch_key(self, event);
+                self.focus = focus;
+                if matches!(result, EventResult::Handled) {
+                    self.process_activations();
+                }
+                result
+            }
+            // Pointer events go through generic rect-checked dispatch with
+            // implicit capture; no hand-rolled hit-testing.
+            Event::MouseDown { .. }
+            | Event::MouseUp { .. }
+            | Event::MouseMove { .. }
+            | Event::DoubleClick { .. }
+            | Event::MouseLeave => {
+                let mut pointer = std::mem::take(&mut self.pointer);
+                let result = pointer.dispatch(self, event);
+                self.pointer = pointer;
+                if matches!(result, EventResult::Handled) {
+                    self.process_activations();
+                }
+                result
+            }
+            _ => EventResult::Ignored,
         }
-        EventResult::Ignored
     }
 
     fn update(&mut self) {
@@ -1285,6 +1318,7 @@ impl Widget for SettingsView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use retro_kit::event::MouseButton;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1301,22 +1335,36 @@ mod tests {
             .join("settings.conf")
     }
 
-    fn click_button(button: &Button) -> Event {
-        let rect = button.rect();
+    fn assert_handled(result: EventResult) {
+        assert!(matches!(result, EventResult::Handled));
+    }
+
+    fn mouse_down(point: Point) -> Event {
         Event::MouseDown {
             button: MouseButton::Left,
-            point: Point::new(rect.x + 2.0, rect.y + 2.0),
-            modifiers: Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: false,
-            },
+            point,
+            modifiers: Modifiers::NONE,
         }
     }
 
-    fn assert_handled(result: EventResult) {
-        assert!(matches!(result, EventResult::Handled));
+    fn mouse_up(point: Point) -> Event {
+        Event::MouseUp {
+            button: MouseButton::Left,
+            point,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    /// A real click is press + release inside the same rect; activation
+    /// happens on the release.
+    fn click(view: &mut SettingsView, rect: Rect) {
+        let point = Point::new(rect.x + 2.0, rect.y + 2.0);
+        assert_handled(view.handle_event(&mouse_down(point)));
+        assert_handled(view.handle_event(&mouse_up(point)));
+    }
+
+    fn key_down(key: KeyCode, modifiers: Modifiers) -> Event {
+        Event::KeyDown { key, modifiers }
     }
 
     #[test]
@@ -1362,12 +1410,13 @@ mod tests {
         view.layout(LayoutConstraint::tight(Size::new(640.0, 520.0)));
 
         // Arrange Mirror is index 11 in Display choices (0-based after HDR/VRR/refresh/color).
-        let mirror = view
+        let mirror_rect = view
             .option_buttons
             .iter()
             .find(|b| b.label.contains("Arrange Mirror"))
-            .expect("Arrange Mirror button");
-        assert_handled(view.handle_event(&click_button(mirror)));
+            .expect("Arrange Mirror button")
+            .rect();
+        click(&mut view, mirror_rect);
 
         let loaded = SettingsStore::new(path).load();
         assert_eq!(loaded.arrange_mode, "mirror");
@@ -1517,8 +1566,8 @@ mod tests {
         view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
         view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
 
-        let display_button = &view.category_buttons[3];
-        assert_handled(view.handle_event(&click_button(display_button)));
+        let display_rect = view.category_buttons[3].rect();
+        click(&mut view, display_rect);
 
         assert_eq!(view.selected_category, Category::Display);
         assert!(view.heading.text.contains("DISPLAY"));
@@ -1545,12 +1594,111 @@ mod tests {
         view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
         view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
 
-        let hdr_button = &view.option_buttons[1];
-        assert_handled(view.handle_event(&click_button(hdr_button)));
+        let hdr_rect = view.option_buttons[1].rect();
+        click(&mut view, hdr_rect);
 
         let loaded = SettingsStore::new(path).load();
         assert!(loaded.hdr_requested);
         assert!(view.status.text.contains("HDR REQUESTED"));
+    }
+
+    #[test]
+    fn settings_click_outside_every_widget_is_ignored() {
+        let store = SettingsStore::new(temp_settings_path());
+        let mut view = SettingsView::load(store);
+        view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
+        view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
+        let before = view.selected_category;
+
+        // Dead space between the sidebar and the option grid.
+        let point = Point::new(620.0, 410.0);
+        assert!(matches!(
+            view.handle_event(&mouse_down(point)),
+            EventResult::Ignored
+        ));
+        assert!(matches!(
+            view.handle_event(&mouse_up(point)),
+            EventResult::Ignored
+        ));
+        assert_eq!(view.selected_category, before);
+    }
+
+    #[test]
+    fn settings_press_and_release_on_different_buttons_activates_neither() {
+        let store = SettingsStore::new(temp_settings_path());
+        let mut view = SettingsView::load(store);
+        view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
+        view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
+        assert_eq!(view.selected_category, Category::Appearance);
+
+        let general = view.category_buttons[0].rect();
+        let display = view.category_buttons[3].rect();
+
+        // Press on General, drag to Display, release: pointer capture sends
+        // the release to General (outside its rect -> press cancelled), so
+        // neither category activates.
+        assert_handled(view.handle_event(&mouse_down(Point::new(general.x + 2.0, general.y + 2.0))));
+        let _ = view.handle_event(&mouse_up(Point::new(display.x + 2.0, display.y + 2.0)));
+        assert_eq!(view.selected_category, Category::Appearance);
+    }
+
+    #[test]
+    fn settings_tab_then_space_activates_category_via_keyboard() {
+        let store = SettingsStore::new(temp_settings_path());
+        let mut view = SettingsView::load(store);
+        view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
+        view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
+        assert_eq!(view.selected_category, Category::Appearance);
+
+        // Tab lands on the first focusable widget: the General category button.
+        assert_handled(view.handle_event(&key_down(KeyCode::Tab, Modifiers::NONE)));
+        assert!(view.category_buttons[0].widget_state().focused);
+        assert!(!view.category_buttons[1].widget_state().focused);
+
+        // Space activates it.
+        assert_handled(view.handle_event(&key_down(KeyCode::Space, Modifiers::NONE)));
+        assert_eq!(view.selected_category, Category::General);
+
+        // Shift+Tab from the first widget wraps to the last focusable one.
+        let shift = Modifiers {
+            shift: true,
+            control: false,
+            alt: false,
+            meta: false,
+        };
+        assert_handled(view.handle_event(&key_down(KeyCode::Tab, shift)));
+        assert!(!view.category_buttons[0].widget_state().focused);
+    }
+
+    #[test]
+    fn settings_slider_drag_keeps_tracking_outside_its_rect() {
+        let path = temp_settings_path();
+        let store = SettingsStore::new(path.clone());
+        let mut view = SettingsView::load(store);
+        view.select_category(Category::Sound);
+        view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
+        view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
+
+        let slider = view.volume_slider.rect();
+        // Press mid-track, then drag far off the slider (and off its row):
+        // implicit pointer capture must keep routing the motion to it.
+        assert_handled(view.handle_event(&mouse_down(Point::new(
+            slider.x + slider.width / 2.0,
+            slider.y + 12.0,
+        ))));
+        assert_handled(view.handle_event(&Event::MouseMove {
+            point: Point::new(slider.x - 200.0, slider.y + 150.0),
+            modifiers: Modifiers::NONE,
+        }));
+        assert_handled(view.handle_event(&mouse_up(Point::new(
+            slider.x - 200.0,
+            slider.y + 150.0,
+        ))));
+
+        // Dragged all the way left of the track -> clamped to 0 and saved.
+        let loaded = SettingsStore::new(path).load();
+        assert_eq!(loaded.volume_percent, 0);
+        assert!(!view.volume_slider.dragging);
     }
 
     #[test]

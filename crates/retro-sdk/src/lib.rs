@@ -1363,6 +1363,9 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
                 rect.y + 7.0,
                 ui(rgb(8, 8, 8), rgb(232, 232, 228)),
             );
+            if button.widget_state().focused {
+                canvas.stroke(rect, ui(rgb(64, 108, 186), rgb(146, 176, 226)));
+            }
             return;
         }
         let bg = if button.widget_state().hovered {
@@ -1378,6 +1381,9 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
             rect.y + 9.0,
             ui(rgb(20, 20, 20), rgb(236, 236, 232)),
         );
+        if button.widget_state().focused {
+            canvas.stroke(rect, ui(rgb(64, 108, 186), rgb(146, 176, 226)));
+        }
     } else if let Some(text_field) = widget.as_any().downcast_ref::<TextField>() {
         canvas.rect(rect, ui(rgb(255, 255, 252), rgb(18, 20, 22)));
         canvas.stroke(rect, ui(rgb(115, 115, 110), rgb(120, 124, 128)));

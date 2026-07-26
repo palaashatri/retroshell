@@ -63,6 +63,19 @@ pub fn dispatch_positional(
     at: Point,
     ev: &Event,
 ) -> EventResult {
+    match dispatch_positional_traced(children, at, ev) {
+        Some((_, result)) => result,
+        None => EventResult::Ignored,
+    }
+}
+
+/// Same walk as [`dispatch_positional`], but also reports *which* widget
+/// handled the event, which is what pointer capture needs.
+fn dispatch_positional_traced(
+    children: &mut [&mut dyn Widget],
+    at: Point,
+    ev: &Event,
+) -> Option<(WidgetId, EventResult)> {
     for child in children.iter_mut().rev() {
         // `children.iter_mut()` over `&mut [&mut dyn Widget]` yields
         // `&mut &mut dyn Widget`; reborrow down to a plain `&mut dyn Widget`
@@ -72,16 +85,132 @@ pub fn dispatch_positional(
             continue;
         }
         let mut grandchildren = child.children_mut();
-        let result = match dispatch_positional(&mut grandchildren, at, ev) {
-            EventResult::Ignored => child.handle_event(ev),
-            other => other,
-        };
-        match result {
+        if let Some(hit) = dispatch_positional_traced(&mut grandchildren, at, ev) {
+            return Some(hit);
+        }
+        match child.handle_event(ev) {
             EventResult::Ignored => continue,
-            other => return other,
+            other => return Some((child.id(), other)),
         }
     }
-    EventResult::Ignored
+    None
+}
+
+/// Depth-first search for the widget with id `target`, delivering `ev` to it
+/// via `handle_event` if found. Returns `None` (rather than `Ignored`) when
+/// `target` isn't in the tree at all, so callers can tell "no such widget"
+/// apart from "the widget ignored the event". Used by `FocusManager` for key
+/// routing and by [`PointerDispatcher`] for capture delivery.
+pub fn deliver_to(widget: &mut dyn Widget, target: WidgetId, ev: &Event) -> Option<EventResult> {
+    if widget.id() == target {
+        return Some(widget.handle_event(ev));
+    }
+    for child in widget.children_mut() {
+        if let Some(result) = deliver_to(child, target, ev) {
+            return Some(result);
+        }
+    }
+    None
+}
+
+/// Stateful pointer routing over a widget tree: rect-checked dispatch plus
+/// the two behaviours plain [`dispatch_positional`] cannot provide on its
+/// own —
+///
+/// - **implicit capture**: the widget that handles a `MouseDown` receives
+///   every subsequent `MouseMove`/`MouseUp` until release, even when the
+///   pointer leaves its rect. Without this a `Slider` drag dies the moment
+///   the cursor drifts off the track, and a `Button` pressed-then-released
+///   outside never learns its press was cancelled.
+/// - **hover tracking**: `MouseEnter`/`MouseLeave` are synthesized as the
+///   pointer moves between widgets, so `WidgetState.hovered` reflects the
+///   widget actually under the cursor instead of every widget that ever saw
+///   a `MouseMove`.
+///
+/// Events are delivered only to `root`'s *descendants*, never to `root`
+/// itself, so a root widget may call this from inside its own
+/// `handle_event` without recursing.
+#[derive(Default)]
+pub struct PointerDispatcher {
+    captured: Option<WidgetId>,
+    hover: Option<WidgetId>,
+}
+
+impl PointerDispatcher {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The widget currently holding the implicit pointer capture, if any.
+    pub fn captured(&self) -> Option<WidgetId> {
+        self.captured
+    }
+
+    pub fn dispatch(&mut self, root: &mut dyn Widget, ev: &Event) -> EventResult {
+        match ev {
+            Event::MouseDown { point, .. } | Event::DoubleClick { point, .. } => {
+                let mut children = root.children_mut();
+                match dispatch_positional_traced(&mut children, *point, ev) {
+                    Some((id, result)) => {
+                        self.captured = Some(id);
+                        result
+                    }
+                    None => EventResult::Ignored,
+                }
+            }
+            Event::MouseMove { point, .. } => {
+                if let Some(target) = self.captured {
+                    return deliver_to(root, target, ev).unwrap_or(EventResult::Ignored);
+                }
+                self.update_hover(root, *point);
+                let mut children = root.children_mut();
+                dispatch_positional(&mut children, *point, ev)
+            }
+            Event::MouseUp { point, .. } => {
+                if let Some(target) = self.captured.take() {
+                    return deliver_to(root, target, ev).unwrap_or(EventResult::Ignored);
+                }
+                let mut children = root.children_mut();
+                dispatch_positional(&mut children, *point, ev)
+            }
+            Event::MouseLeave => {
+                // Pointer left the window: end hover and cancel any capture.
+                // The hovered and captured widget are often the same one, so
+                // dedupe rather than deliver MouseLeave to it twice.
+                let mut result = EventResult::Ignored;
+                let mut delivered: Option<WidgetId> = None;
+                for target in [self.hover.take(), self.captured.take()]
+                    .into_iter()
+                    .flatten()
+                {
+                    if delivered == Some(target) {
+                        continue;
+                    }
+                    delivered = Some(target);
+                    if let Some(EventResult::Handled) = deliver_to(root, target, ev) {
+                        result = EventResult::Handled;
+                    }
+                }
+                result
+            }
+            _ => EventResult::Ignored,
+        }
+    }
+
+    fn update_hover(&mut self, root: &mut dyn Widget, at: Point) {
+        // Hover only over strict descendants: `widget_at` falls back to the
+        // root itself, which is not a hover target here.
+        let now = widget_at(root, at).filter(|&id| id != root.id());
+        if now != self.hover {
+            if let Some(prev) = self.hover {
+                let _ = deliver_to(root, prev, &Event::MouseLeave);
+            }
+            if let Some(next) = now {
+                let _ = deliver_to(root, next, &Event::MouseEnter);
+            }
+            self.hover = now;
+        }
+    }
 }
 
 /// Deliver a pointer event to the deepest hit widget under `root`, bubbling
@@ -369,5 +498,116 @@ mod tests {
 
         assert!(matches!(result, EventResult::Ignored));
         assert_eq!(only.hits, 0);
+    }
+
+    // ---- PointerDispatcher -------------------------------------------
+
+    fn mouse_down(x: f32, y: f32) -> Event {
+        Event::MouseDown {
+            button: crate::event::MouseButton::Left,
+            point: Point::new(x, y),
+            modifiers: crate::event::Modifiers::NONE,
+        }
+    }
+    fn mouse_up(x: f32, y: f32) -> Event {
+        Event::MouseUp {
+            button: crate::event::MouseButton::Left,
+            point: Point::new(x, y),
+            modifiers: crate::event::Modifiers::NONE,
+        }
+    }
+    fn mouse_move(x: f32, y: f32) -> Event {
+        Event::MouseMove {
+            point: Point::new(x, y),
+            modifiers: crate::event::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn capture_routes_motion_and_release_to_the_pressed_widget() {
+        let slider = TestWidget::new(Rect::new(0.0, 0.0, 50.0, 20.0));
+        let slider_id = slider.id();
+        let mut root = TestWidget::new(Rect::new(0.0, 0.0, 200.0, 200.0)).with_child(slider);
+        let mut pd = PointerDispatcher::new();
+
+        assert!(matches!(
+            pd.dispatch(&mut root, &mouse_down(10.0, 10.0)),
+            EventResult::Handled
+        ));
+        assert_eq!(pd.captured(), Some(slider_id));
+        assert_eq!(root.children[0].hits, 1);
+
+        // Motion far outside the widget's rect must still reach it while
+        // captured — this is what keeps a slider drag alive.
+        assert!(matches!(
+            pd.dispatch(&mut root, &mouse_move(190.0, 190.0)),
+            EventResult::Handled
+        ));
+        assert_eq!(root.children[0].hits, 2);
+
+        // Release also goes to the captured widget, then capture ends.
+        assert!(matches!(
+            pd.dispatch(&mut root, &mouse_up(190.0, 190.0)),
+            EventResult::Handled
+        ));
+        assert_eq!(root.children[0].hits, 3);
+        assert_eq!(pd.captured(), None);
+
+        // With capture released, motion outside every widget goes nowhere.
+        let _ = pd.dispatch(&mut root, &mouse_move(190.0, 190.0));
+        assert_eq!(root.children[0].hits, 3);
+    }
+
+    #[test]
+    fn press_ignored_by_everything_captures_nothing() {
+        let deaf = TestWidget::new(Rect::new(0.0, 0.0, 50.0, 50.0)).ignoring();
+        let mut root = TestWidget::new(Rect::new(0.0, 0.0, 100.0, 100.0)).with_child(deaf);
+        let mut pd = PointerDispatcher::new();
+
+        assert!(matches!(
+            pd.dispatch(&mut root, &mouse_down(10.0, 10.0)),
+            EventResult::Ignored
+        ));
+        assert_eq!(pd.captured(), None);
+        // Root is never a dispatch target for its own PointerDispatcher.
+        assert_eq!(root.hits, 0);
+    }
+
+    #[test]
+    fn hover_synthesizes_enter_and_leave_between_widgets() {
+        let left = TestWidget::new(Rect::new(0.0, 0.0, 50.0, 50.0));
+        let right = TestWidget::new(Rect::new(50.0, 0.0, 50.0, 50.0));
+        let mut root = TestWidget::new(Rect::new(0.0, 0.0, 100.0, 100.0))
+            .with_child(left)
+            .with_child(right);
+        let mut pd = PointerDispatcher::new();
+
+        // Move over `left`: it receives MouseEnter + the MouseMove itself.
+        let _ = pd.dispatch(&mut root, &mouse_move(10.0, 10.0));
+        assert_eq!(root.children[0].hits, 2);
+        assert_eq!(root.children[1].hits, 0);
+
+        // Cross to `right`: `left` gets MouseLeave, `right` Enter + move.
+        let _ = pd.dispatch(&mut root, &mouse_move(60.0, 10.0));
+        assert_eq!(root.children[0].hits, 3);
+        assert_eq!(root.children[1].hits, 2);
+    }
+
+    #[test]
+    fn window_mouse_leave_notifies_hovered_widget_and_clears_capture() {
+        let child = TestWidget::new(Rect::new(0.0, 0.0, 50.0, 50.0));
+        let mut root = TestWidget::new(Rect::new(0.0, 0.0, 100.0, 100.0)).with_child(child);
+        let mut pd = PointerDispatcher::new();
+
+        let _ = pd.dispatch(&mut root, &mouse_move(10.0, 10.0)); // hover (2 hits)
+        let _ = pd.dispatch(&mut root, &mouse_down(10.0, 10.0)); // capture (3 hits)
+
+        // Hovered and captured are the same widget: exactly one MouseLeave.
+        assert!(matches!(
+            pd.dispatch(&mut root, &Event::MouseLeave),
+            EventResult::Handled
+        ));
+        assert_eq!(root.children[0].hits, 4);
+        assert_eq!(pd.captured(), None);
     }
 }

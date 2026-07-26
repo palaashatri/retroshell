@@ -1,6 +1,8 @@
 use crate::{
-    event::MouseButton, theme::ThemeContext, AccessibilityNode, AccessibilityRole, Event,
-    EventResult, LayoutConstraint, Rect, Size, Widget, WidgetState,
+    event::{KeyCode, MouseButton},
+    theme::ThemeContext,
+    AccessibilityNode, AccessibilityRole, Event, EventResult, LayoutConstraint, Rect, Size,
+    Visibility, Widget, WidgetState,
 };
 
 pub struct Button {
@@ -98,6 +100,10 @@ impl Widget for Button {
                 ..
             } => {
                 if !self.rect().contains(*point) {
+                    // A release outside only reaches us through pointer
+                    // capture; the press is over either way, and it must not
+                    // fire later if some future release lands inside.
+                    self.pressed = false;
                     return EventResult::Ignored;
                 }
                 if self.pressed {
@@ -128,8 +134,29 @@ impl Widget for Button {
                 self.pressed = false;
                 EventResult::Handled
             }
+            Event::KeyDown {
+                key: KeyCode::Enter | KeyCode::Space,
+                ..
+            } => {
+                // Keyboard activation. Keys are routed here by
+                // `FocusManager::dispatch_key`, but gate on `focused` anyway
+                // so a container that broadcasts keys can't trigger every
+                // button at once.
+                if !self.state.focused {
+                    return EventResult::Ignored;
+                }
+                self.clicked = true;
+                if let Some(cb) = self.on_click.as_mut() {
+                    cb();
+                }
+                EventResult::Handled
+            }
             _ => EventResult::Ignored,
         }
+    }
+
+    fn focusable(&self) -> bool {
+        self.state.enabled && self.state.visibility == Visibility::Visible
     }
 
     fn accessibility(&self) -> Option<AccessibilityNode> {
@@ -236,6 +263,62 @@ mod tests {
         // press must not fire.
         assert!(matches!(button.handle_event(&up(10.0, 10.0)), EventResult::Ignored));
         assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn release_outside_cancels_press_so_a_later_inside_release_cannot_fire() {
+        let mut button = Button::new("OK");
+        button.set_rect(Rect::new(0.0, 0.0, 40.0, 28.0));
+
+        // Press inside, release outside (delivered via pointer capture).
+        button.handle_event(&down(10.0, 10.0));
+        assert!(matches!(button.handle_event(&up(500.0, 500.0)), EventResult::Ignored));
+        assert!(!button.pressed, "press must be cancelled, not left dangling");
+
+        // A later unrelated release inside must not fire the stale press.
+        assert!(matches!(button.handle_event(&up(10.0, 10.0)), EventResult::Ignored));
+        assert!(!button.take_clicked());
+    }
+
+    #[test]
+    fn button_is_focusable_unless_hidden_or_disabled() {
+        let mut button = Button::new("OK");
+        assert!(button.focusable());
+
+        button.widget_state_mut().enabled = false;
+        assert!(!button.focusable());
+
+        button.widget_state_mut().enabled = true;
+        button.widget_state_mut().visibility = crate::Visibility::Hidden;
+        assert!(!button.focusable());
+    }
+
+    #[test]
+    fn enter_and_space_activate_only_when_focused() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let counter = count.clone();
+        let mut button = Button::new("OK").on_click(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let enter = Event::KeyDown {
+            key: crate::event::KeyCode::Enter,
+            modifiers: Modifiers::NONE,
+        };
+        let space = Event::KeyDown {
+            key: crate::event::KeyCode::Space,
+            modifiers: Modifiers::NONE,
+        };
+
+        // Unfocused: a broadcast key must not trigger the button.
+        assert!(matches!(button.handle_event(&enter), EventResult::Ignored));
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+
+        button.widget_state_mut().focused = true;
+        assert!(matches!(button.handle_event(&enter), EventResult::Handled));
+        assert!(matches!(button.handle_event(&space), EventResult::Handled));
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        assert!(button.take_clicked());
     }
 
     #[test]

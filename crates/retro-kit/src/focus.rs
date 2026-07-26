@@ -11,6 +11,7 @@
 //!
 //! Like `dispatch.rs`, this is additive: nothing calls it yet.
 
+use crate::dispatch::deliver_to;
 use crate::{Event, EventResult, Widget, WidgetId};
 
 /// Sets `widget_state_mut().focused` to whether this widget is `target`, on
@@ -49,24 +50,6 @@ fn collect_focus_order(widget: &dyn Widget, order: &mut Vec<WidgetId>) {
     for child in widget.children() {
         collect_focus_order(child, order);
     }
-}
-
-/// Depth-first search for the widget with id `target`, delivering `ev` to it
-/// via `handle_event` if found. Returns `None` (rather than `Ignored`) when
-/// `target` isn't in the tree at all, so `dispatch_key` can tell "nothing is
-/// focused" apart from "the focused widget ignored the key" — both currently
-/// end up `Ignored` to the caller, but keeping them distinct here avoids
-/// baking that collapse into a place harder to change later.
-fn deliver_to(widget: &mut dyn Widget, target: WidgetId, ev: &Event) -> Option<EventResult> {
-    if widget.id() == target {
-        return Some(widget.handle_event(ev));
-    }
-    for child in widget.children_mut() {
-        if let Some(result) = deliver_to(child, target, ev) {
-            return Some(result);
-        }
-    }
-    None
 }
 
 /// Owns the single focused `WidgetId` for a tree and keeps
