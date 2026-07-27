@@ -58,6 +58,11 @@ fn test_dnd() {
 fn test_text_field_set_text_places_cursor_at_end() {
     let mut field = TextField::new();
     field.set_text("abc");
+    // `TextField` now gates keyboard input on focus (see
+    // docs/TOOLKIT_REMEDIATION.md section 2.3 / `text_field.rs`) — this test
+    // predates that fix and simulates an already-focused field the way a real
+    // `MouseDown` or `FocusManager::focus()` would leave it.
+    field.widget_state_mut().focused = true;
     let result = field.handle_event(&Event::Char { character: 'd' });
     assert!(matches!(result, EventResult::Handled));
     assert_eq!(field.text(), "abcd");

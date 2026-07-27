@@ -1,13 +1,13 @@
 use retro_kit::button::Button;
-use retro_kit::event::{KeyCode, Modifiers, MouseButton};
+use retro_kit::event::{KeyCode, Modifiers};
 use retro_kit::label::Label;
 use retro_kit::list_view::ListView;
 use retro_kit::progress_bar::ProgressBar;
 use retro_kit::text_field::TextField;
 use retro_kit::window::Window;
 use retro_kit::{
-    AccessibilityNode, Event, EventResult, LayoutConstraint, Point, Rect, Size, ThemeContext,
-    Widget, WidgetState,
+    widget_by_id, AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint,
+    PointerDispatcher, Rect, Size, ThemeContext, Widget, WidgetState,
 };
 use retro_sdk::{build_menu, Application};
 use std::process::Command;
@@ -461,11 +461,7 @@ impl PackageBackend {
     }
 
     fn execute_transaction(&self, plan: &TransactionPlan) -> Result<String, String> {
-        if std::env::var("RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES")
-            .ok()
-            .as_deref()
-            != Some("1")
-        {
+        if !package_changes_allowed() {
             return Err(
                 "CONFIRM BLOCKED - SET RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES=1".to_string(),
             );
@@ -501,6 +497,14 @@ impl PackageBackend {
         let Some(manager) = self.manager else {
             return Err("NO PACKAGE MANAGER FOUND".to_string());
         };
+
+        // Same package-change gate execute_transaction enforces. Without it the
+        // INSTALL button runs `sudo <pm> install -y` on the very first click.
+        if !package_changes_allowed() {
+            return Err(
+                "INSTALL BLOCKED - SET RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES=1".to_string(),
+            );
+        }
 
         // Check sudo availability
         if !sudo_available() && manager != PackageManager::Brew {
@@ -586,6 +590,15 @@ fn command_exists(binary: &str) -> bool {
 
 fn sudo_available() -> bool {
     command_exists("sudo")
+}
+
+/// Opt-in gate for anything that mutates system packages. Every install/
+/// remove/update path must consult this before spawning a package manager.
+fn package_changes_allowed() -> bool {
+    std::env::var("RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 /// Fallback search using `dpkg -l | grep <query>` (works when apt-cache is absent).
@@ -748,6 +761,8 @@ struct AppStoreView {
     all_results: Vec<String>,
     /// Background install job handle.
     install_job: Option<Arc<Mutex<InstallJob>>>,
+    focus: FocusManager,
+    pointer: PointerDispatcher,
 }
 
 impl AppStoreView {
@@ -787,9 +802,19 @@ impl AppStoreView {
             featured_mode: true,
             all_results: vec![],
             install_job: None,
+            focus: FocusManager::new(),
+            pointer: PointerDispatcher::new(),
         };
         view.load_featured();
         view
+    }
+
+    /// Focus `id` through the real focus system (sets `WidgetState.focused`
+    /// on exactly that widget, clears it everywhere else in the tree).
+    fn focus_widget(&mut self, id: retro_kit::WidgetId) {
+        let mut focus = std::mem::take(&mut self.focus);
+        focus.focus(self, id);
+        self.focus = focus;
     }
 
     /// Load featured packages when search query is empty.
@@ -986,28 +1011,60 @@ impl AppStoreView {
         }
     }
 
-    fn handle_button_click(&mut self, point: Point) -> bool {
-        if self.search_button.rect().contains(point) {
-            return self.run_search();
+    /// Drain button activations after an event went through generic
+    /// dispatch. Returns whether an action ran.
+    fn process_activations(&mut self) -> bool {
+        if self.search_button.take_clicked() {
+            self.run_search();
+            return true;
         }
-        if self.refresh_button.rect().contains(point) {
-            return self.refresh_backend();
+        if self.refresh_button.take_clicked() {
+            self.refresh_backend();
+            return true;
         }
-        if self.install_button.rect().contains(point) {
+        if self.install_button.take_clicked() {
             // Use background async install with progress
             self.start_install_async();
             return true;
         }
-        if self.remove_button.rect().contains(point) {
-            return self.plan_transaction(PackageAction::Remove);
+        if self.remove_button.take_clicked() {
+            self.plan_transaction(PackageAction::Remove);
+            return true;
         }
-        if self.update_button.rect().contains(point) {
-            return self.plan_transaction(PackageAction::Update);
+        if self.update_button.take_clicked() {
+            self.plan_transaction(PackageAction::Update);
+            return true;
         }
-        if self.confirm_button.rect().contains(point) {
-            return self.confirm_transaction();
+        if self.confirm_button.take_clicked() {
+            self.confirm_transaction();
+            return true;
         }
         false
+    }
+
+    /// React to a list selection made by a press the dispatcher attributed
+    /// to one of the two lists.
+    fn react_to_list_press(&mut self, pressed: retro_kit::WidgetId) {
+        if pressed == self.category_list.id() {
+            if let Some(idx) = self.category_list.selected_index {
+                if idx < CATEGORIES.len() && idx != self.category_index {
+                    self.category_index = idx;
+                    self.apply_category_filter();
+                    self.status.text = format!(
+                        "CATEGORY - {} | {} RESULTS",
+                        CATEGORIES[idx].0,
+                        self.results.items.len()
+                    );
+                    self.clear_detail();
+                }
+            }
+        } else if pressed == self.results.id() {
+            self.pending_transaction = None;
+            if let Some(package) = self.selected_package() {
+                self.status.text = format!("SELECTED - {}", package);
+                self.show_package_detail(&package);
+            }
+        }
     }
 }
 
@@ -1208,54 +1265,73 @@ impl Widget for AppStoreView {
                 }
                 return EventResult::Handled;
             }
-            if matches!(key, KeyCode::Enter) {
-                self.run_search();
-                return EventResult::Handled;
-            }
         }
 
-        if let Event::MouseDown {
-            button: MouseButton::Left,
-            point,
-            ..
-        } = event
-        {
-            if self.handle_button_click(*point) {
-                return EventResult::Handled;
-            }
-        }
-
-        // Category sidebar selection
-        let cat_result = self.category_list.handle_event(event);
-        if matches!(cat_result, EventResult::Handled) {
-            if let Some(idx) = self.category_list.selected_index {
-                if idx < CATEGORIES.len() && idx != self.category_index {
-                    self.category_index = idx;
-                    self.apply_category_filter();
-                    self.status.text =
-                        format!("CATEGORY - {} | {} RESULTS", CATEGORIES[idx].0, self.results.items.len());
-                    self.clear_detail();
+        match event {
+            // Tab / Shift+Tab walk the focusable widgets (buttons + query).
+            Event::KeyDown {
+                key: KeyCode::Tab,
+                modifiers,
+            } => {
+                let mut focus = std::mem::take(&mut self.focus);
+                if modifiers.shift {
+                    focus.focus_prev(self);
+                } else {
+                    focus.focus_next(self);
                 }
+                self.focus = focus;
+                EventResult::Handled
             }
-            return EventResult::Handled;
-        }
-
-        // Package results list selection
-        let result = self.results.handle_event(event);
-        if matches!(result, EventResult::Handled) {
-            self.pending_transaction = None;
-            if let Some(package) = self.selected_package() {
-                self.status.text = format!("SELECTED - {}", package);
-                self.show_package_detail(&package);
+            // Focused widget first (typing into the query field, Enter/Space
+            // on a focused button); an unclaimed Enter runs the search.
+            Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Char { .. } => {
+                let mut focus = std::mem::take(&mut self.focus);
+                let result = focus.dispatch_key(self, event);
+                self.focus = focus;
+                if matches!(result, EventResult::Handled) {
+                    self.process_activations();
+                    return EventResult::Handled;
+                }
+                if matches!(
+                    event,
+                    Event::KeyDown {
+                        key: KeyCode::Enter,
+                        ..
+                    }
+                ) {
+                    self.run_search();
+                    return EventResult::Handled;
+                }
+                result
             }
-            return EventResult::Handled;
+            // Pointer events go through generic rect-checked dispatch with
+            // implicit capture; a press on the query field moves focus there.
+            Event::MouseDown { .. }
+            | Event::MouseUp { .. }
+            | Event::MouseMove { .. }
+            | Event::DoubleClick { .. }
+            | Event::MouseLeave => {
+                let mut pointer = std::mem::take(&mut self.pointer);
+                let result = pointer.dispatch(self, event);
+                let pressed = match event {
+                    Event::MouseDown { .. } | Event::DoubleClick { .. } => pointer.captured(),
+                    _ => None,
+                };
+                self.pointer = pointer;
+                if let Some(id) = pressed {
+                    if widget_by_id(self, id).is_some_and(|w| w.wants_click_focus()) {
+                        self.focus_widget(id);
+                    }
+                }
+                if matches!(result, EventResult::Handled) && !self.process_activations() {
+                    if let Some(id) = pressed {
+                        self.react_to_list_press(id);
+                    }
+                }
+                result
+            }
+            _ => EventResult::Ignored,
         }
-
-        let result = self.query.handle_event(event);
-        if matches!(result, EventResult::Handled) {
-            return EventResult::Handled;
-        }
-        EventResult::Ignored
     }
 
     fn update(&mut self) {
@@ -1345,6 +1421,87 @@ impl Widget for AppStoreView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use retro_kit::event::MouseButton;
+    use retro_kit::Point;
+
+    fn click(view: &mut AppStoreView, point: Point) -> EventResult {
+        let down = view.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point,
+            modifiers: Modifiers::NONE,
+        });
+        assert!(matches!(down, EventResult::Handled), "press must land on a widget");
+        view.handle_event(&Event::MouseUp {
+            button: MouseButton::Left,
+            point,
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    fn rect_center(rect: Rect) -> Point {
+        Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0)
+    }
+
+    #[test]
+    fn appstore_search_button_click_dispatches_search() {
+        let mut view = AppStoreView::new(PackageBackend { manager: None });
+        view.layout(LayoutConstraint::tight(Size::new(900.0, 640.0)));
+        view.query.set_text("zzz");
+
+        let point = rect_center(view.search_button.rect());
+        let result = click(&mut view, point);
+
+        assert!(matches!(result, EventResult::Handled));
+        assert!(
+            view.status.text.contains("NO PACKAGE MANAGER"),
+            "search ran and reported the missing backend: {}",
+            view.status.text
+        );
+    }
+
+    #[test]
+    fn appstore_results_click_selects_package_and_fills_detail() {
+        let mut view = AppStoreView::new(PackageBackend { manager: None });
+        view.layout(LayoutConstraint::tight(Size::new(900.0, 640.0)));
+        view.results.items = vec![
+            "curl - transfer tool".to_string(),
+            "vim - editor".to_string(),
+        ];
+        view.results.selected_index = None;
+
+        // Second row: rows are 18px with a 3px inset.
+        let rect = view.results.rect();
+        let point = Point::new(rect.x + 10.0, rect.y + 3.0 + 18.0 + 9.0);
+        let down = view.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point,
+            modifiers: Modifiers::NONE,
+        });
+
+        assert!(matches!(down, EventResult::Handled));
+        assert_eq!(view.results.selected_index, Some(1));
+        assert!(view.status.text.contains("SELECTED - vim"), "{}", view.status.text);
+        assert!(view.detail_name.text.contains("VIM"));
+    }
+
+    #[test]
+    fn appstore_query_click_focuses_field_and_typing_lands_there() {
+        let mut view = AppStoreView::new(PackageBackend { manager: None });
+        view.layout(LayoutConstraint::tight(Size::new(900.0, 640.0)));
+
+        let rect = view.query.rect();
+        let down = view.handle_event(&Event::MouseDown {
+            button: MouseButton::Left,
+            point: Point::new(rect.x + 4.0, rect.y + 4.0),
+            modifiers: Modifiers::NONE,
+        });
+        assert!(matches!(down, EventResult::Handled));
+        assert!(view.query.widget_state().focused);
+
+        let typed = view.handle_event(&Event::Char { character: 'q' });
+        assert!(matches!(typed, EventResult::Handled));
+        assert_eq!(view.query.text(), "q");
+    }
 
     #[test]
     fn parses_package_search_results_with_limit() {

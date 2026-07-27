@@ -66,6 +66,7 @@ mod linux {
             },
             x11::{WindowBuilder, X11Backend, X11Event, X11Input, X11Surface},
         },
+        desktop::utils::send_frames_surface_tree,
         delegate_compositor, delegate_foreign_toplevel_list, delegate_layer_shell, delegate_output,
         delegate_seat, delegate_shm, delegate_xdg_shell,
         input::{
@@ -200,7 +201,7 @@ mod linux {
         display_handle: DisplayHandle,
         _loop_signal: LoopSignal,
         loop_handle: LoopHandle<'static, RetroCompositor>,
-        _clock: Clock<Monotonic>,
+        clock: Clock<Monotonic>,
 
         // Smithay protocol states
         compositor_state: CompositorState,
@@ -350,14 +351,6 @@ mod linux {
                     self.workspace_state.remove_window(&id);
                 }
             }
-        }
-
-        /// Windows that should paint on the active workspace (chrome always paints).
-        fn windows_visible_for_paint(&self) -> Vec<&MappedWindow> {
-            self.windows
-                .iter()
-                .filter(|w| self.workspace_state.is_visible(&w.window_id))
-                .collect()
         }
 
         /// After Super+workspace switch: unfocus windows now hidden; focus topmost
@@ -529,7 +522,14 @@ mod linux {
                 ));
             }
             // Workspace filter: hide surfaces not on the active virtual desktop.
-            let visible_windows = self.windows_visible_for_paint();
+            // Borrow only windows/workspace_state so self.renderer stays free
+            // for the render_elements_from_surface_tree calls below.
+            let workspace_state = &self.workspace_state;
+            let visible_windows: Vec<&MappedWindow> = self
+                .windows
+                .iter()
+                .filter(|w| workspace_state.is_visible(&w.window_id))
+                .collect();
             for (i, w) in visible_windows.iter().enumerate() {
                 let loc = Point::<i32, Physical>::from((w.position.x, w.position.y));
                 let els = render_elements_from_surface_tree(
@@ -613,18 +613,9 @@ mod linux {
                 eprintln!("[render] clear failed: {e}");
             }
 
-            // Real SHM / surface content first (visible windows + layer-shell chrome).
-            if !surface_elements.is_empty() {
-                if let Err(e) = draw_render_elements::<GlesRenderer, _, _>(
-                    &mut frame,
-                    1.0_f64,
-                    &surface_elements,
-                    &[full_screen],
-                ) {
-                    eprintln!("[render] draw_render_elements failed: {e}");
-                }
-            }
-            // Placeholders only for visible windows with no committed buffer.
+            // Placeholders first, i.e. UNDER all committed surface content:
+            // a solid rect for a buffer-less window must never cover layer-shell
+            // chrome or windows that do have content.
             if !placeholders.is_empty() {
                 if self.placeholder_stats.note_frame_with_placeholders() {
                     eprintln!(
@@ -640,6 +631,22 @@ mod linux {
                     eprintln!("[render] window placeholder clear failed: {e}");
                 }
             }
+            // Real SHM / surface content (visible windows + layer-shell chrome).
+            // surface_elements was built back-to-front (under layers → windows
+            // bottom→top → over layers); draw_render_elements expects
+            // front-to-back and occlusion-culls everything behind opaque
+            // elements, so draw the reversed list.
+            if !surface_elements.is_empty() {
+                surface_elements.reverse();
+                if let Err(e) = draw_render_elements::<GlesRenderer, _, _>(
+                    &mut frame,
+                    1.0_f64,
+                    &surface_elements,
+                    &[full_screen],
+                ) {
+                    eprintln!("[render] draw_render_elements failed: {e}");
+                }
+            }
 
             // Finish the frame (flushes GL commands)
             if let Err(e) = frame.finish() {
@@ -649,6 +656,38 @@ mod linux {
             // Present to the X11 window
             if let Err(e) = self.x11_surface.submit() {
                 eprintln!("[render] submit failed: {e}");
+            }
+
+            // Release frame callbacks for everything we just presented. Clients
+            // that throttle drawing on wl_surface.frame (winit/wgpu apps, and
+            // therefore every RetroShell app) render exactly one frame and then
+            // wait forever without this.
+            let now = self.clock.now();
+            if let Some(output) = self.outputs.first().cloned() {
+                // Throttle ZERO: always release, even for surfaces with no
+                // primary scan-out output (nothing assigns one on this path).
+                for w in self
+                    .windows
+                    .iter()
+                    .filter(|w| self.workspace_state.is_visible(&w.window_id))
+                {
+                    send_frames_surface_tree(
+                        w.toplevel.wl_surface(),
+                        &output,
+                        now,
+                        Some(Duration::ZERO),
+                        |_, _| None,
+                    );
+                }
+                for layer in &self.layer_surfaces {
+                    send_frames_surface_tree(
+                        layer.surface.wl_surface(),
+                        &output,
+                        now,
+                        Some(Duration::ZERO),
+                        |_, _| None,
+                    );
+                }
             }
 
             self.frame_scheduler.record_frame();
@@ -1851,27 +1890,6 @@ mod linux {
             );
         }
 
-        // Wayland listening socket
-        let socket = ListeningSocketSource::new_auto()?;
-        let socket_name = socket.socket_name().to_string_lossy().into_owned();
-        tracing::info!("Listening on WAYLAND_DISPLAY={}", socket_name);
-        eprintln!("[retro-compositor] WAYLAND_DISPLAY={}", socket_name);
-        println!("WAYLAND_DISPLAY={}", socket_name);
-        // Write the actual socket name to a file so the entrypoint can read it,
-        // and set the env var so child processes launched by the compositor see the right name.
-        let _ = std::fs::write("/tmp/runtime-root/wayland-display", &socket_name);
-        std::env::set_var("WAYLAND_DISPLAY", &socket_name);
-
-        // Insert socket source: accept new Wayland client connections
-        loop_handle
-            .insert_source(socket, |client_stream, _, state| {
-                state
-                    .display_handle
-                    .insert_client(client_stream, Arc::new(ClientState::default()))
-                    .expect("failed to insert client");
-            })
-            .expect("failed to insert wayland socket source");
-
         // -----------------------------------------------------------------------
         // X11 backend + GL renderer setup
         // -----------------------------------------------------------------------
@@ -1911,6 +1929,35 @@ mod linux {
         // SAFETY: we are the sole owner of `egl_context` and it is not current on any other thread.
         let renderer = unsafe { GlesRenderer::new(egl_context)? };
 
+        // Wayland listening socket. Created only AFTER the X11 backend and GL
+        // renderer are up: the socket name (and the wayland-display handshake
+        // file the session entrypoint polls) must never be advertised by a
+        // compositor that can still fail backend init and exit.
+        let socket = ListeningSocketSource::new_auto()?;
+        let socket_name = socket.socket_name().to_string_lossy().into_owned();
+        tracing::info!("Listening on WAYLAND_DISPLAY={}", socket_name);
+        eprintln!("[retro-compositor] WAYLAND_DISPLAY={}", socket_name);
+        println!("WAYLAND_DISPLAY={}", socket_name);
+        // Write the actual socket name to a file so the entrypoint can read it,
+        // and set the env var so child processes launched by the compositor see the right name.
+        let runtime_dir =
+            std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp/runtime-root".to_string());
+        let _ = std::fs::write(
+            std::path::Path::new(&runtime_dir).join("wayland-display"),
+            &socket_name,
+        );
+        std::env::set_var("WAYLAND_DISPLAY", &socket_name);
+
+        // Insert socket source: accept new Wayland client connections
+        loop_handle
+            .insert_source(socket, |client_stream, _, state| {
+                state
+                    .display_handle
+                    .insert_client(client_stream, Arc::new(ClientState::default()))
+                    .expect("failed to insert client");
+            })
+            .expect("failed to insert wayland socket source");
+
         loop_handle
             .insert_source(x11_backend, |event, _, state| match event {
                 X11Event::CloseRequested { .. } => {
@@ -1947,7 +1994,7 @@ mod linux {
             display_handle,
             _loop_signal: loop_signal,
             loop_handle,
-            _clock: clock,
+            clock,
             compositor_state,
             shm_state,
             seat_state,
@@ -2012,6 +2059,13 @@ mod linux {
 
             event_loop.dispatch(dispatch_timeout, &mut state)?;
 
+            // Process pending client requests. The listening-socket source only
+            // ACCEPTS connections; without this call no client request (bind,
+            // commit, …) is ever read, and every client hangs on its first
+            // roundtrip. Mirrors the DRM session loop in session_drm.rs.
+            display.dispatch_clients(&mut state)?;
+            display.flush_clients()?;
+
             // Steady-state frames: fixed rates render ~every N ticks; adaptive more often.
             frame_counter = frame_counter.wrapping_add(1);
             let render_every = match state.frame_scheduler.refresh_rate() {
@@ -2020,7 +2074,9 @@ mod linux {
                 RefreshRate::Hz144 | RefreshRate::Hz165 => 2,
                 RefreshRate::Adaptive => 1,
             };
-            if frame_counter % render_every == 1 {
+            // `x % 1 == 1` is never true, so adaptive (render_every == 1) must
+            // bypass the modulo gate or steady-state frames never render.
+            if render_every <= 1 || frame_counter % render_every == 1 {
                 state.render_frame();
             }
         }

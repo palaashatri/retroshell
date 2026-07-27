@@ -1,16 +1,17 @@
 use retro_kit::button::Button;
-use retro_kit::event::{KeyCode, Modifiers, MouseButton};
+use retro_kit::event::{KeyCode, Modifiers};
 use retro_kit::label::Label;
 use retro_kit::slider::Slider;
 use retro_kit::window::Window;
 use retro_kit::{
-    AccessibilityNode, Event, EventResult, LayoutConstraint, Point, Rect, Size, ThemeContext,
-    Widget, WidgetState,
+    AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint, PointerDispatcher,
+    Rect, Size, ThemeContext, Widget, WidgetState,
 };
 use retro_sdk::{build_menu, Application};
 use retro_shell::DisplayConfig;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 fn main() {
     let _ = tracing_subscriber::fmt::try_init();
@@ -694,7 +695,62 @@ impl SettingsStore {
         for (key, value) in map {
             content.push_str(&format!("{key}={value}\n"));
         }
-        fs::write(&self.path, content)
+        self.write_atomic(&content)
+    }
+
+    /// Write `content` to `self.path` without ever exposing a partially
+    /// written or truncated file to a concurrent reader/writer.
+    ///
+    /// The naive `fs::write(&self.path, content)` this replaces truncates the
+    /// destination in place: a second process reading `settings.conf` while
+    /// the write is in flight (or a process that crashes mid-write) can
+    /// observe a corrupt or empty file, and two writers racing the
+    /// read-modify-write in `save()` can clobber each other's keys. Instead we
+    /// write to a sibling temp file in the same directory (so the later
+    /// rename stays on one filesystem), `fsync` it so its bytes are durable,
+    /// then `fs::rename` it over the destination. Rename within a filesystem
+    /// is atomic: any reader sees either the complete old file or the
+    /// complete new file, never a mixture.
+    fn write_atomic(&self, content: &str) -> std::io::Result<()> {
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        let file_name = self.path.file_name().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "settings path has no file name",
+            )
+        })?;
+
+        // Unique per-process, per-call name so two SettingsStore instances
+        // (or two saves racing on separate threads of the same process)
+        // never collide on the same temp file; only the final rename touches
+        // the shared destination path. Wall-clock time alone can repeat
+        // within a process (coarse timer resolution on some platforms), so a
+        // monotonically increasing counter is included as a tiebreaker.
+        static SAVE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = SAVE_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let mut tmp_name = file_name.to_os_string();
+        tmp_name.push(format!(".tmp.{}.{unique}.{sequence}", std::process::id()));
+        let tmp_path = parent.join(tmp_name);
+
+        let write_result = (|| -> std::io::Result<()> {
+            let mut file = fs::File::create(&tmp_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+            Ok(())
+        })();
+
+        if let Err(err) = write_result {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+
+        fs::rename(&tmp_path, &self.path).inspect_err(|_| {
+            let _ = fs::remove_file(&tmp_path);
+        })
     }
 }
 
@@ -791,6 +847,8 @@ struct SettingsView {
     settings: SettingsState,
     store: SettingsStore,
     last_error: Option<String>,
+    focus: FocusManager,
+    pointer: PointerDispatcher,
 }
 
 impl SettingsView {
@@ -814,6 +872,8 @@ impl SettingsView {
             settings,
             store,
             last_error: None,
+            focus: FocusManager::new(),
+            pointer: PointerDispatcher::new(),
         };
         view.refresh_labels();
         view
@@ -971,42 +1031,43 @@ impl SettingsView {
         }
     }
 
-    fn handle_category_click(&mut self, point: Point) -> bool {
-        let Some(index) = self
+    /// Drain widget activations after an input event went through generic
+    /// dispatch: buttons record a click (`take_clicked`), sliders move their
+    /// `value`; this is where those turn into app behaviour.
+    fn process_activations(&mut self) {
+        if let Some(index) = self
             .category_buttons
-            .iter()
-            .position(|button| button.rect().contains(point))
-        else {
-            return false;
-        };
-        self.select_category(Category::ALL[index]);
-        true
-    }
-
-    fn handle_option_click(&mut self, point: Point) -> bool {
-        let Some(index) = self
-            .option_buttons
-            .iter()
-            .position(|button| button.rect().contains(point))
-        else {
-            return false;
-        };
-        let choice = self.selected_category.choices()[index].0;
-        self.apply_choice(choice)
-    }
-
-    fn handle_slider_event(&mut self, event: &Event) -> bool {
-        let handled = match self.selected_category {
-            Category::Sound => self.volume_slider.handle_event(event),
-            Category::Mouse => self.pointer_speed_slider.handle_event(event),
-            _ => EventResult::Ignored,
-        };
-
-        if matches!(handled, EventResult::Handled) {
-            return self.save_slider_value();
+            .iter_mut()
+            .position(|button| button.take_clicked())
+        {
+            self.select_category(Category::ALL[index]);
+            return;
         }
+        if let Some(index) = self
+            .option_buttons
+            .iter_mut()
+            .position(|button| button.take_clicked())
+        {
+            let choice = self.selected_category.choices()[index].0;
+            self.apply_choice(choice);
+            return;
+        }
+        self.sync_slider_value();
+    }
 
-        false
+    fn sync_slider_value(&mut self) {
+        let changed = match self.selected_category {
+            Category::Sound => {
+                self.volume_slider.value.round() as u8 != self.settings.volume_percent
+            }
+            Category::Mouse => {
+                self.pointer_speed_slider.value.round() as u8 != self.settings.pointer_speed
+            }
+            _ => false,
+        };
+        if changed {
+            self.save_slider_value();
+        }
     }
 }
 
@@ -1130,21 +1191,49 @@ impl Widget for SettingsView {
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
-        if self.handle_slider_event(event) {
-            return EventResult::Handled;
-        }
-
-        if let Event::MouseDown {
-            button: MouseButton::Left,
-            point,
-            ..
-        } = event
-        {
-            if self.handle_category_click(*point) || self.handle_option_click(*point) {
-                return EventResult::Handled;
+        match event {
+            // Tab / Shift+Tab walk the focusable widgets in tree order.
+            Event::KeyDown {
+                key: KeyCode::Tab,
+                modifiers,
+            } => {
+                let mut focus = std::mem::take(&mut self.focus);
+                if modifiers.shift {
+                    focus.focus_prev(self);
+                } else {
+                    focus.focus_next(self);
+                }
+                self.focus = focus;
+                EventResult::Handled
             }
+            // Every other key goes to the focused widget (Enter/Space
+            // activate the focused button).
+            Event::KeyDown { .. } | Event::KeyUp { .. } | Event::Char { .. } => {
+                let mut focus = std::mem::take(&mut self.focus);
+                let result = focus.dispatch_key(self, event);
+                self.focus = focus;
+                if matches!(result, EventResult::Handled) {
+                    self.process_activations();
+                }
+                result
+            }
+            // Pointer events go through generic rect-checked dispatch with
+            // implicit capture; no hand-rolled hit-testing.
+            Event::MouseDown { .. }
+            | Event::MouseUp { .. }
+            | Event::MouseMove { .. }
+            | Event::DoubleClick { .. }
+            | Event::MouseLeave => {
+                let mut pointer = std::mem::take(&mut self.pointer);
+                let result = pointer.dispatch(self, event);
+                self.pointer = pointer;
+                if matches!(result, EventResult::Handled) {
+                    self.process_activations();
+                }
+                result
+            }
+            _ => EventResult::Ignored,
         }
-        EventResult::Ignored
     }
 
     fn update(&mut self) {
@@ -1229,6 +1318,8 @@ impl Widget for SettingsView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use retro_kit::event::MouseButton;
+    use retro_kit::Point;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1245,22 +1336,36 @@ mod tests {
             .join("settings.conf")
     }
 
-    fn click_button(button: &Button) -> Event {
-        let rect = button.rect();
+    fn assert_handled(result: EventResult) {
+        assert!(matches!(result, EventResult::Handled));
+    }
+
+    fn mouse_down(point: Point) -> Event {
         Event::MouseDown {
             button: MouseButton::Left,
-            point: Point::new(rect.x + 2.0, rect.y + 2.0),
-            modifiers: Modifiers {
-                shift: false,
-                control: false,
-                alt: false,
-                meta: false,
-            },
+            point,
+            modifiers: Modifiers::NONE,
         }
     }
 
-    fn assert_handled(result: EventResult) {
-        assert!(matches!(result, EventResult::Handled));
+    fn mouse_up(point: Point) -> Event {
+        Event::MouseUp {
+            button: MouseButton::Left,
+            point,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    /// A real click is press + release inside the same rect; activation
+    /// happens on the release.
+    fn click(view: &mut SettingsView, rect: Rect) {
+        let point = Point::new(rect.x + 2.0, rect.y + 2.0);
+        assert_handled(view.handle_event(&mouse_down(point)));
+        assert_handled(view.handle_event(&mouse_up(point)));
+    }
+
+    fn key_down(key: KeyCode, modifiers: Modifiers) -> Event {
+        Event::KeyDown { key, modifiers }
     }
 
     #[test]
@@ -1306,12 +1411,13 @@ mod tests {
         view.layout(LayoutConstraint::tight(Size::new(640.0, 520.0)));
 
         // Arrange Mirror is index 11 in Display choices (0-based after HDR/VRR/refresh/color).
-        let mirror = view
+        let mirror_rect = view
             .option_buttons
             .iter()
             .find(|b| b.label.contains("Arrange Mirror"))
-            .expect("Arrange Mirror button");
-        assert_handled(view.handle_event(&click_button(mirror)));
+            .expect("Arrange Mirror button")
+            .rect();
+        click(&mut view, mirror_rect);
 
         let loaded = SettingsStore::new(path).load();
         assert_eq!(loaded.arrange_mode, "mirror");
@@ -1344,6 +1450,78 @@ mod tests {
         assert!(content.contains("lock_password=secret123"));
         assert!(content.contains("custom_key=keepme"));
         assert!(content.contains("theme=solarized"));
+    }
+
+    #[test]
+    fn settings_save_is_atomic_leaves_only_destination_file() {
+        let path = temp_settings_path();
+        let store = SettingsStore::new(path.clone());
+        let state = SettingsState::default();
+        store.save(&state).unwrap();
+
+        // A crash or a second reader mid-write must never observe a stray
+        // `.tmp.` file or a missing/truncated destination: the temp file used
+        // by write_atomic() is renamed away (not copied), so exactly one file
+        // should exist in the directory afterward.
+        let dir_entries: Vec<String> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(dir_entries, vec!["settings.conf".to_string()]);
+        assert_eq!(store.load(), state);
+    }
+
+    #[test]
+    fn settings_save_survives_concurrent_writers_without_corruption() {
+        let path = temp_settings_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        // Seed an unknown key up front, the way another component
+        // (e.g. the lock screen writing lock_password) would.
+        fs::write(&path, "lock_password=seed\n").unwrap();
+
+        let store = SettingsStore::new(path.clone());
+        let handles: Vec<_> = (0..8u8)
+            .map(|i| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    let mut state = SettingsState::default();
+                    state.volume_percent = i * 10;
+                    store.save(&state).unwrap();
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Regardless of which writer's rename landed last, the destination
+        // must be a single well-formed file: every line is a full `key=value`
+        // pair, no key appears twice (which would indicate an interleaved,
+        // non-atomic write), and the unknown key survives every writer's
+        // read-modify-write.
+        let content = fs::read_to_string(&path).unwrap();
+        let mut seen_keys = std::collections::HashSet::new();
+        for line in content.lines() {
+            let (key, _value) = line
+                .split_once('=')
+                .expect("atomic save must never produce a partial line");
+            assert!(!key.is_empty());
+            assert!(
+                seen_keys.insert(key.to_string()),
+                "duplicate key {key} indicates a corrupted, non-atomic write"
+            );
+        }
+        assert!(seen_keys.contains("volume_percent"));
+        assert!(content.contains("lock_password=seed"));
+
+        let leftover_tmp = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| entry.file_name().to_string_lossy().contains(".tmp."));
+        assert!(!leftover_tmp, "atomic save must not leave temp files behind");
     }
 
     #[test]
@@ -1389,8 +1567,8 @@ mod tests {
         view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
         view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
 
-        let display_button = &view.category_buttons[3];
-        assert_handled(view.handle_event(&click_button(display_button)));
+        let display_rect = view.category_buttons[3].rect();
+        click(&mut view, display_rect);
 
         assert_eq!(view.selected_category, Category::Display);
         assert!(view.heading.text.contains("DISPLAY"));
@@ -1417,12 +1595,111 @@ mod tests {
         view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
         view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
 
-        let hdr_button = &view.option_buttons[1];
-        assert_handled(view.handle_event(&click_button(hdr_button)));
+        let hdr_rect = view.option_buttons[1].rect();
+        click(&mut view, hdr_rect);
 
         let loaded = SettingsStore::new(path).load();
         assert!(loaded.hdr_requested);
         assert!(view.status.text.contains("HDR REQUESTED"));
+    }
+
+    #[test]
+    fn settings_click_outside_every_widget_is_ignored() {
+        let store = SettingsStore::new(temp_settings_path());
+        let mut view = SettingsView::load(store);
+        view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
+        view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
+        let before = view.selected_category;
+
+        // Dead space between the sidebar and the option grid.
+        let point = Point::new(620.0, 410.0);
+        assert!(matches!(
+            view.handle_event(&mouse_down(point)),
+            EventResult::Ignored
+        ));
+        assert!(matches!(
+            view.handle_event(&mouse_up(point)),
+            EventResult::Ignored
+        ));
+        assert_eq!(view.selected_category, before);
+    }
+
+    #[test]
+    fn settings_press_and_release_on_different_buttons_activates_neither() {
+        let store = SettingsStore::new(temp_settings_path());
+        let mut view = SettingsView::load(store);
+        view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
+        view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
+        assert_eq!(view.selected_category, Category::Appearance);
+
+        let general = view.category_buttons[0].rect();
+        let display = view.category_buttons[3].rect();
+
+        // Press on General, drag to Display, release: pointer capture sends
+        // the release to General (outside its rect -> press cancelled), so
+        // neither category activates.
+        assert_handled(view.handle_event(&mouse_down(Point::new(general.x + 2.0, general.y + 2.0))));
+        let _ = view.handle_event(&mouse_up(Point::new(display.x + 2.0, display.y + 2.0)));
+        assert_eq!(view.selected_category, Category::Appearance);
+    }
+
+    #[test]
+    fn settings_tab_then_space_activates_category_via_keyboard() {
+        let store = SettingsStore::new(temp_settings_path());
+        let mut view = SettingsView::load(store);
+        view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
+        view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
+        assert_eq!(view.selected_category, Category::Appearance);
+
+        // Tab lands on the first focusable widget: the General category button.
+        assert_handled(view.handle_event(&key_down(KeyCode::Tab, Modifiers::NONE)));
+        assert!(view.category_buttons[0].widget_state().focused);
+        assert!(!view.category_buttons[1].widget_state().focused);
+
+        // Space activates it.
+        assert_handled(view.handle_event(&key_down(KeyCode::Space, Modifiers::NONE)));
+        assert_eq!(view.selected_category, Category::General);
+
+        // Shift+Tab from the first widget wraps to the last focusable one.
+        let shift = Modifiers {
+            shift: true,
+            control: false,
+            alt: false,
+            meta: false,
+        };
+        assert_handled(view.handle_event(&key_down(KeyCode::Tab, shift)));
+        assert!(!view.category_buttons[0].widget_state().focused);
+    }
+
+    #[test]
+    fn settings_slider_drag_keeps_tracking_outside_its_rect() {
+        let path = temp_settings_path();
+        let store = SettingsStore::new(path.clone());
+        let mut view = SettingsView::load(store);
+        view.select_category(Category::Sound);
+        view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
+        view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
+
+        let slider = view.volume_slider.rect();
+        // Press mid-track, then drag far off the slider (and off its row):
+        // implicit pointer capture must keep routing the motion to it.
+        assert_handled(view.handle_event(&mouse_down(Point::new(
+            slider.x + slider.width / 2.0,
+            slider.y + 12.0,
+        ))));
+        assert_handled(view.handle_event(&Event::MouseMove {
+            point: Point::new(slider.x - 200.0, slider.y + 150.0),
+            modifiers: Modifiers::NONE,
+        }));
+        assert_handled(view.handle_event(&mouse_up(Point::new(
+            slider.x - 200.0,
+            slider.y + 150.0,
+        ))));
+
+        // Dragged all the way left of the track -> clamped to 0 and saved.
+        let loaded = SettingsStore::new(path).load();
+        assert_eq!(loaded.volume_percent, 0);
+        assert!(!view.volume_slider.dragging);
     }
 
     #[test]

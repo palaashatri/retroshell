@@ -46,13 +46,114 @@ DoAction queue → lock/log_out/force_quit/workspace/window/dock/desktop; i18n
 **menus + lock**; shell→comp `RETROSHELL_OUTPUTS_LAYOUT`; install-session +
 daily-driver checklist (packaging).
 
+> ⚠️ **The scores and "landed / live" list above are NOT trustworthy.** A QA pass on
+> 2026-07-26 (see `docs/QA_REPORT_2026-07-26.md`) found that `retro-compositor` had
+> **not compiled on Linux since 2026-07-11** and, once fixed, still could not serve
+> any Wayland client because the nested event loop never called `dispatch_clients`
+> and never sent frame callbacks. Every compositor-side "live path" claimed after
+> 2026-07-11 was therefore written against a binary that could not have been run.
+> Those three defects are now fixed and **verified on real DRM/KMS** — see
+> "Verified on real hardware" below — but the numbers above remain unmeasured.
+> Plan of record: **`docs/ROADMAP.md`**.
+
+---
+
+## Verified on real DRM/KMS (2026-07-26)
+
+`packaging/vm/` builds a VirtualBox Arch VM whose VMSVGA adapter gives the guest a
+real `vmwgfx` KMS device *and* a render node — the first environment this project
+has ever had that can actually run `retro-compositor`. (Xvfb, WSLg and
+Docker-on-mac have no DRI3, which is why `Dockerfile.qa` silently falls back to
+labwc and why nobody had ever run the real compositor.)
+
+```
+session_mode=session_drm (DRM/KMS seat path)
+EGL Initialized / GL Version: "OpenGL ES 3.0 Mesa 26.1.5-arch1.1"
+DRM pageflip/commit present succeeded (1280x800)
+toplevel mapped at (64,64) / (96,96) / (128,128)
+workspace active=0/8 windows=3 visible=3
+shell wgpu submissions: 178 -> 228   => FRAME_PUMP=RUNNING
+```
+
+**What that proves:** clients connect, map as real `xdg_toplevel`s, are tracked
+per-workspace, and keep rendering — none of which was possible before the
+`dispatch_clients` and `wl_surface.frame` fixes. Process RSS fell 60.5 MB → 52.7 MB
+over the same run, confirming the per-present framebuffer leak is gone.
+
+### GL composition (ROADMAP phase 1.2) — done
+
+The DRM path now runs a real `DrmCompositor`: client surfaces are composited into
+a GBM swapchain and page-flipped, paced by vblank.
+
+![Composited on real KMS](docs/screenshots/vm-drm-composited.png)
+
+*A real `VBoxManage` capture of the guest framebuffer: a Terminal client with
+titlebar, menu bar and a live PTY prompt, stacked over the shell surface, on
+`vmwgfx` KMS.* The progression that got here is worth recording — black screen
+(no compositor), then the retro gray clear colour (compositor live, flipping),
+then actual windows once `on_commit_buffer_handler` was wired into the DRM
+path's `commit` so attached buffers became renderable.
+
+### HDR / VRR
+
+Real DRM property control landed in `crates/retro-compositor/src/drm_props.rs`:
+`HDR_OUTPUT_METADATA` blobs with the exact kernel `hdr_output_metadata` layout
+(ST2084/PQ, BT.2020 primaries, D65, CTA-861 units), `Colorspace`, `max bpc`, and
+the `vrr_capable` / `VRR_ENABLED` pair. On the VM it correctly reports
+unsupported — for the right reason, not by hardcoding:
+
+```
+connector HDR: hdr_metadata=false bt2020_colorspace=false max_bpc=n/a => hdr10_capable=false
+connector VRR: capable=false controllable=true enabled=false
+HDR requested but connector is not HDR10-capable; staying SDR
+```
+
+Note `VRR controllable=true, capable=false` — the CRTC does expose `VRR_ENABLED`
+while the virtual connector is not `vrr_capable`. Distinguishing those is only
+possible because the properties are genuinely enumerated from the kernel.
+**A VM cannot validate HDR/VRR output** (no virtual connector exposes it); on real
+hardware the same path reports true and publishes the blob, verifiable with
+`sudo modetest -c`.
+
 **Honest residual (why not 90):** live greeter **NOT RUN**; PipeWire ScreenCast
 **stubs**; Orca not end-to-end (DoAction **does** open Retro menu / dock / desktop
 context status windows); display arrange is env bridge not live KMS modeset;
 window rules partial on real surfaces; §12 **0/7**; placeholder rects still
-possible without committed buffers.
+possible without committed buffers; **the session "lock screen" does not lock a
+multi-client session** — it only covers the shell's own surface (QA report §3).
 
-Would you replace Plasma for a week? **No.** Honest score **~85**, not 90.
+Would you replace Plasma for a week? **No.** The honest score is **unknown and
+lower than 85**; see `docs/ROADMAP.md` for what has to be true before it is
+answerable.
+
+---
+
+## Screenshots
+
+All captured from live QA runs, not mockups. These are the **labwc fallback
+path** (`retro-shell` as a Wayland client), which is what currently puts pixels
+on screen; the DRM path maps and pumps clients but does not composite them yet.
+
+| | |
+|---|---|
+| ![Desktop](docs/screenshots/desktop.png) **Desktop** — menu bar, icon grid, dock, Finder listing the real filesystem | ![Retro menu](docs/screenshots/retro-menu.png) **Retro menu** with shortcut labels |
+| ![Terminal](docs/screenshots/terminal.png) **Terminal** — real PTY, command executed and output rendered | ![Lock screen](docs/screenshots/lock-screen.png) **Lock screen** — prompt and password field (only render correctly after the paint-time layout fix) |
+| ![Workspaces](docs/screenshots/workspace-switcher.png) **Workspace switcher** (exposes 4 of the 8 desktops — known gap) | ![Dracula](docs/screenshots/theme-dracula.png) **Dracula theme** — dark palette now applies; note desktop icon labels are dark-on-dark, a known contrast bug |
+
+> The lock screen shown here covers only the shell's own surface. It is **not** a
+> session lock — a client launched while "locked" draws over it and receives
+> input. See `docs/QA_REPORT_2026-07-26.md` §A.
+
+---
+
+## Documentation
+
+| Document | What it is |
+|---|---|
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Staged plan from here to a daily-drivable desktop, with per-phase technical detail, demonstrable exit criteria, and an honest scope comparison against KDE/GNOME |
+| [`docs/QA_REPORT_2026-07-26.md`](docs/QA_REPORT_2026-07-26.md) | Full audit: 15 defects fixed, 10 open, with evidence |
+| [`docs/TOOLKIT_REMEDIATION.md`](docs/TOOLKIT_REMEDIATION.md) | Why the toolkit is render-only despite the apps working, and the ordered plan to fix it |
+| [`packaging/vm/`](packaging/vm/) | VirtualBox Arch VM harness for real DRM/KMS verification |
 
 ---
 

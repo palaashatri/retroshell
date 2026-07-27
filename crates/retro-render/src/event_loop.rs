@@ -7,16 +7,13 @@ pub struct RetroEventLoop {
     pub event_loop: EventLoop<()>,
 }
 
-impl Default for RetroEventLoop {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl RetroEventLoop {
-    pub fn new() -> Self {
-        let event_loop = EventLoop::new().unwrap();
-        Self { event_loop }
+    /// Fails when no display server connection is available (e.g. no
+    /// compositor behind WAYLAND_DISPLAY / DISPLAY); callers must not unwrap
+    /// this — a missing compositor is an expected runtime condition.
+    pub fn new() -> Result<Self, winit::error::EventLoopError> {
+        let event_loop = EventLoop::new()?;
+        Ok(Self { event_loop })
     }
 }
 

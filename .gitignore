@@ -9,3 +9,8 @@ target-docker/
 *.png
 !docs/screenshots/*.png
 docs/superpowers/
+
+# VM QA access key (generated locally by packaging/vm tooling)
+packaging/vm/qa_key
+packaging/vm/qa_key.pub
+packaging/vm/*.png

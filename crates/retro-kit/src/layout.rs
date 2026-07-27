@@ -402,6 +402,26 @@ impl Layout {
             }
         }
     }
+
+    pub fn children(&self) -> &[Box<dyn Widget>] {
+        match self {
+            Layout::Horizontal { children, .. }
+            | Layout::Vertical { children, .. }
+            | Layout::Grid { children, .. }
+            | Layout::Stack { children }
+            | Layout::Overlay { children } => children,
+        }
+    }
+
+    pub fn children_mut(&mut self) -> &mut [Box<dyn Widget>] {
+        match self {
+            Layout::Horizontal { children, .. }
+            | Layout::Vertical { children, .. }
+            | Layout::Grid { children, .. }
+            | Layout::Stack { children }
+            | Layout::Overlay { children } => children,
+        }
+    }
 }
 
 pub struct LayoutView {
@@ -449,6 +469,18 @@ impl Widget for LayoutView {
 
     fn update(&mut self) {
         self.layout.update();
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.layout.children().iter().map(|c| c.as_ref()).collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
+        self.layout
+            .children_mut()
+            .iter_mut()
+            .map(|c| &mut **c as &mut dyn Widget)
+            .collect()
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

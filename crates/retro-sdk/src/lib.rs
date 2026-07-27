@@ -68,6 +68,12 @@ pub mod theme_accents {
     pub const BLUEBERRY: [f32; 4] = [0.15, 0.25, 0.62, 1.0];
     /// Strawberry — red-pink
     pub const STRAWBERRY: [f32; 4] = [0.82, 0.23, 0.28, 1.0];
+    /// Solarized — #268bd2 (matches ThemeName::Solarized in retro-shell)
+    pub const SOLARIZED: [f32; 4] = [0.15, 0.55, 0.82, 1.0];
+    /// Dracula — #bd93f9
+    pub const DRACULA: [f32; 4] = [0.74, 0.58, 0.98, 1.0];
+    /// HighContrast — yellow
+    pub const HIGH_CONTRAST: [f32; 4] = [1.0, 1.0, 0.0, 1.0];
 }
 
 /// Read settings.conf and return (is_dark, accent_color) for the current theme.
@@ -102,11 +108,16 @@ fn parse_theme_preference(content: &str) -> (bool, [f32; 4]) {
     }
     // Named theme takes precedence over appearance
     if let Some(name) = theme_name {
+        // Must stay in sync with retro_shell::theme_manager::ThemeName
+        // (accent + is_dark); a name missing here silently renders as Classic.
         return match name.as_str() {
             "grape" => (true, theme_accents::GRAPE),
             "blueberry" => (true, theme_accents::BLUEBERRY),
             "strawberry" => (false, theme_accents::STRAWBERRY),
             "dark" => (true, theme_accents::DARK),
+            "solarized" => (true, theme_accents::SOLARIZED),
+            "dracula" => (true, theme_accents::DRACULA),
+            "highcontrast" => (false, theme_accents::HIGH_CONTRAST),
             _ => (false, theme_accents::CLASSIC), // classic and unknown
         };
     }
@@ -284,7 +295,22 @@ impl Application {
         self.running = true;
         tracing::info!("Application '{}' started", self.name);
 
-        let event_loop = retro_render::event_loop::RetroEventLoop::new();
+        let event_loop = match retro_render::event_loop::RetroEventLoop::new() {
+            Ok(event_loop) => event_loop,
+            Err(err) => {
+                tracing::error!(
+                    app = %self.name,
+                    wayland_display = ?std::env::var("WAYLAND_DISPLAY").ok(),
+                    display = ?std::env::var("DISPLAY").ok(),
+                    "cannot start: no display server connection: {err}"
+                );
+                eprintln!(
+                    "[{}] cannot start: no Wayland/X11 display server reachable ({err})",
+                    self.name
+                );
+                std::process::exit(1);
+            }
+        };
         let main_window = self.main_window.take();
 
         struct AppHandler {
@@ -332,6 +358,16 @@ impl Application {
             }
 
             fn paint(&mut self) {
+                // Re-layout before drawing. update() can swap in entirely new
+                // content (lock screen fields, a new terminal tab, dialogs);
+                // without this those widgets keep Rect::ZERO until the next
+                // resize and draw_widget skips them, painting an empty window.
+                if let Some(ref mut win) = self.window {
+                    let size = Size::new(win.rect().width, win.rect().height);
+                    if size.width > 0.0 && size.height > 0.0 {
+                        win.layout(LayoutConstraint::tight(size));
+                    }
+                }
                 let Some(window) = &self.window else {
                     return;
                 };
@@ -1327,6 +1363,9 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
                 rect.y + 7.0,
                 ui(rgb(8, 8, 8), rgb(232, 232, 228)),
             );
+            if button.widget_state().focused {
+                canvas.stroke(rect, ui(rgb(64, 108, 186), rgb(146, 176, 226)));
+            }
             return;
         }
         let bg = if button.widget_state().hovered {
@@ -1342,6 +1381,9 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
             rect.y + 9.0,
             ui(rgb(20, 20, 20), rgb(236, 236, 232)),
         );
+        if button.widget_state().focused {
+            canvas.stroke(rect, ui(rgb(64, 108, 186), rgb(146, 176, 226)));
+        }
     } else if let Some(text_field) = widget.as_any().downcast_ref::<TextField>() {
         canvas.rect(rect, ui(rgb(255, 255, 252), rgb(18, 20, 22)));
         canvas.stroke(rect, ui(rgb(115, 115, 110), rgb(120, 124, 128)));
@@ -1605,24 +1647,15 @@ fn draw_progress_bar(canvas: &mut Canvas<'_>, rect: Rect, pb: &ProgressBar) {
     }
 }
 
-fn draw_workspace_grid_view(canvas: &mut Canvas<'_>, rect: Rect, grid: &WorkspaceGridView) {
-    let margin = 8.0;
-    let grid_rect = Rect::new(
-        rect.x + margin,
-        rect.y + margin,
-        rect.width - margin * 2.0,
-        rect.height - margin * 2.0,
-    );
-
-    let cell_w = (grid_rect.width - 6.0) / 2.0;
-    let cell_h = (grid_rect.height - 6.0) / 2.0;
-
+fn draw_workspace_grid_view(canvas: &mut Canvas<'_>, _rect: Rect, grid: &WorkspaceGridView) {
+    // Cell geometry comes from the widget — the same rects its
+    // `handle_event` hit-tests, so paint and input cannot drift.
     for i in 0..4 {
-        let row = i / 2;
-        let col = i % 2;
-        let cell_x = grid_rect.x + col as f32 * (cell_w + 6.0);
-        let cell_y = grid_rect.y + row as f32 * (cell_h + 6.0);
-        let cell_r = Rect::new(cell_x, cell_y, cell_w, cell_h);
+        let cell_r = grid.cell_rect(i);
+        let cell_w = cell_r.width;
+        let cell_h = cell_r.height;
+        let cell_x = cell_r.x;
+        let cell_y = cell_r.y;
 
         let bg_color = if i == grid.active_index {
             ui(rgb(204, 221, 240), rgb(48, 70, 96))
@@ -1705,28 +1738,22 @@ fn draw_tab_view(canvas: &mut Canvas<'_>, rect: Rect, tv: &TabView) {
     }
 }
 
-fn draw_dock_view(canvas: &mut Canvas<'_>, rect: Rect, dock: &DockView) {
+fn draw_dock_view(canvas: &mut Canvas<'_>, _rect: Rect, dock: &DockView) {
     if dock.items.is_empty() {
         return;
     }
-    
-    let item_size = 48.0;
-    let padding = 8.0;
-    let item_spacing = 6.0;
-    let total_width = dock.items.len() as f32 * (item_size + item_spacing) - item_spacing + padding * 2.0;
-    
-    let dock_x = rect.x + (rect.width - total_width) * 0.5;
-    let dock_y = rect.y + rect.height - item_size - padding * 2.0;
-    let dock_rect = Rect::new(dock_x, dock_y, total_width, item_size + padding * 2.0);
-    
+
+    // Geometry comes from the widget itself — the same rects its
+    // `handle_event` hit-tests, so paint and input cannot drift.
+    let dock_rect = dock.strip_rect();
+
     let bg_color = ui(rgb(230, 230, 226), rgb(28, 30, 32));
     canvas.rect(dock_rect, bg_color);
     draw_beveled_rect(canvas, dock_rect, bg_color, true);
-    
-    let mut current_x = dock_x + padding;
-    for item in &dock.items {
-        let item_rect = Rect::new(current_x, dock_y + padding, item_size, item_size);
-        
+
+    for (i, item) in dock.items.iter().enumerate() {
+        let item_rect = dock.item_rect(i);
+
         if item.is_focused {
             let highlight_rect = Rect::new(item_rect.x - 2.0, item_rect.y - 2.0, item_rect.width + 4.0, item_rect.height + 4.0);
             canvas.rect(highlight_rect, ui(rgb(180, 200, 240), rgb(60, 80, 120)));
@@ -1737,8 +1764,8 @@ fn draw_dock_view(canvas: &mut Canvas<'_>, rect: Rect, dock: &DockView) {
         canvas.rect(item_rect, icon_bg);
         draw_beveled_rect(canvas, item_rect, icon_bg, true);
         
-        let symbol_x = item_rect.x + (item_size - 32.0) * 0.5;
-        let symbol_y = item_rect.y + (item_size - 32.0) * 0.5 - 2.0;
+        let symbol_x = item_rect.x + (item_rect.width - 32.0) * 0.5;
+        let symbol_y = item_rect.y + (item_rect.height - 32.0) * 0.5 - 2.0;
         
         match item.label.as_str() {
             "Finder" => draw_app_icon(canvas, symbol_x - 6.0, symbol_y - 6.0),
@@ -1754,8 +1781,6 @@ fn draw_dock_view(canvas: &mut Canvas<'_>, rect: Rect, dock: &DockView) {
                 ui(rgb(60, 60, 55), rgb(200, 200, 195)),
             );
         }
-        
-        current_x += item_size + item_spacing;
     }
 }
 
@@ -2249,20 +2274,25 @@ fn draw_tree_node(
 /// - **FIXME**: Characters are assumed to have a fixed layout width (7px width spacing inside `Canvas`).
 ///   This function only checks character length (`label.len()`) rather than visual bounding boxes.
 fn truncate_label(label: &str, max_len: usize) -> String {
-    if label.len() <= max_len {
+    // Counted and sliced in chars, never bytes: labels are user filenames and
+    // may be multi-byte UTF-8; byte slicing panics on non-boundaries.
+    let char_count = label.chars().count();
+    if char_count <= max_len {
         return label.to_string();
     }
+    let prefix = |n: usize| -> String { label.chars().take(n).collect() };
     if max_len <= 4 {
-        return format!("{}...", &label[..max_len.max(3) - 3]);
+        return format!("{}...", prefix(max_len.max(3) - 3));
     }
     if let Some(pos) = label.rfind('.') {
         let ext = &label[pos..];
-        if ext.len() < max_len - 3 {
-            let base_len = max_len - 3 - ext.len();
-            return format!("{}...{}", &label[..base_len], ext);
+        let ext_chars = ext.chars().count();
+        if ext_chars < max_len - 3 {
+            let base_len = max_len - 3 - ext_chars;
+            return format!("{}...{}", prefix(base_len), ext);
         }
     }
-    format!("{}...", &label[..max_len - 3])
+    format!("{}...", prefix(max_len - 3))
 }
 
 /// Renders the `IconView` grid.

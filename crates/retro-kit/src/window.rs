@@ -108,6 +108,32 @@ impl Widget for Window {
                 self.is_active = false;
                 EventResult::Handled
             }
+            // Positional events: a window is an opaque surface. Outside its
+            // rect it is not a target at all. Inside, the *content* owns
+            // routing — an app root sitting in an SDK window runs its own
+            // whole event pipeline (the shell's WM policy + dispatcher), so
+            // the window must delegate via `handle_event`, never walk the
+            // content's subtree itself. Whatever the content ignores, the
+            // window swallows — a click on a window's empty area must never
+            // fall through to whatever is stacked underneath (the shell's
+            // old click-through-to-desktop bug).
+            Event::MouseDown { point, .. }
+            | Event::MouseUp { point, .. }
+            | Event::MouseMove { point, .. }
+            | Event::DoubleClick { point, .. } => {
+                if !self.rect().contains(*point) {
+                    return EventResult::Ignored;
+                }
+                let result = if let Some(content) = &mut self.content {
+                    content.handle_event(event)
+                } else {
+                    self.layout.handle_event(event)
+                };
+                match result {
+                    EventResult::Ignored => EventResult::Handled,
+                    other => other,
+                }
+            }
             _ => {
                 if let Some(content) = &mut self.content {
                     content.handle_event(event)
@@ -136,14 +162,19 @@ impl Widget for Window {
     fn children(&self) -> Vec<&dyn Widget> {
         match &self.content {
             Some(c) => vec![c.as_ref()],
-            None => vec![],
+            None => self.layout.children().iter().map(|c| c.as_ref()).collect(),
         }
     }
 
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         match &mut self.content {
             Some(c) => vec![c.as_mut()],
-            None => vec![],
+            None => self
+                .layout
+                .children_mut()
+                .iter_mut()
+                .map(|c| &mut **c as &mut dyn Widget)
+                .collect(),
         }
     }
 

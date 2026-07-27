@@ -89,6 +89,21 @@ pub trait Widget: Send {
         self.widget_state_mut().enabled = enabled;
     }
 
+    /// Can this widget take keyboard focus (via `FocusManager`)? Default
+    /// false; widgets that accept keyboard input (`TextField`, etc.) override
+    /// this to join the tab order.
+    fn focusable(&self) -> bool {
+        false
+    }
+
+    /// Should a pointer press on this widget move keyboard focus to it?
+    /// Distinct from [`Widget::focusable`]: buttons join the tab order but a
+    /// click on one must not steal focus from a text field mid-typing, while
+    /// clicking into a text field is exactly how focus is supposed to move.
+    fn wants_click_focus(&self) -> bool {
+        false
+    }
+
     fn layout(&mut self, constraint: LayoutConstraint) -> Size;
     fn draw(&self, theme: &ThemeContext);
     fn handle_event(&mut self, _event: &Event) -> EventResult {

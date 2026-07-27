@@ -25,8 +25,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use smithay::backend::allocator::gbm::GbmDevice;
+use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
+use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags};
+use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::DrmDeviceFd;
+use smithay::backend::renderer::element::surface::{
+    render_elements_from_surface_tree, WaylandSurfaceRenderElement,
+};
+use smithay::backend::renderer::element::Kind;
+use smithay::backend::allocator::Fourcc as DrmFourcc;
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -48,7 +55,8 @@ use smithay::reexports::wayland_server::protocol::{
     wl_buffer, wl_data_source::WlDataSource, wl_seat, wl_surface::WlSurface,
 };
 use smithay::reexports::wayland_server::{Client, Display, DisplayHandle, Resource};
-use smithay::utils::{DeviceFd, Logical, Point, Serial, Size, Transform};
+use smithay::desktop::utils::send_frames_surface_tree;
+use smithay::utils::{Clock, DeviceFd, Logical, Monotonic, Point, Serial, Size, Transform};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     with_states, CompositorClientState, CompositorHandler, CompositorState,
@@ -95,35 +103,40 @@ use crate::{
 /// Compositor-owned selection payload keyed by mime type.
 type MimePayload = Arc<HashMap<String, Vec<u8>>>;
 
+/// The concrete `DrmCompositor` this session uses: GBM-allocated buffers,
+/// GBM framebuffer export, no per-frame user data, over a DRM device fd.
+type RetroDrmCompositor = DrmCompositor<
+    GbmAllocator<DrmDeviceFd>,
+    GbmFramebufferExporter<DrmDeviceFd>,
+    (),
+    DrmDeviceFd,
+>;
+
+/// Desktop background behind all client surfaces (classic retro gray).
+const DRM_CLEAR_COLOR: [f32; 4] = [0.596, 0.596, 0.580, 1.0];
+
 /// Probe whether a DRM session looks bootable (nodes exist under /dev/dri).
 pub fn drm_session_available() -> bool {
     !discover_drm_nodes().is_empty() || Path::new("/dev/dri").exists()
 }
 
-/// Present one solid dumb-buffer frame via `DrmSurface::commit` then `page_flip`.
+/// Present one frame from an already-allocated scanout framebuffer via
+/// `DrmSurface::commit`, falling back to `page_flip`.
 ///
-/// This is the real scanout path (framebuffer + flip), not open-device only.
-fn try_present_dumb_frame(
+/// The framebuffer is allocated once per session by [`arm_scanout_framebuffer`]
+/// and reused. Allocating (and leaking) a full-screen dumb buffer per present —
+/// which this used to do at ~1 Hz — is an unbounded kernel memory leak.
+fn present_armed_frame(
     surface: &smithay::backend::drm::DrmSurface,
+    fb_handle: smithay::reexports::drm::control::framebuffer::Handle,
     width: i32,
     height: i32,
 ) -> Result<()> {
-    use smithay::backend::allocator::dumb::DumbAllocator;
-    use smithay::backend::allocator::{Allocator, Fourcc, Modifier};
-    use smithay::backend::drm::dumb::framebuffer_from_dumb_buffer;
-    use smithay::backend::drm::{DrmDeviceFd, PlaneConfig, PlaneState};
+    use smithay::backend::drm::{PlaneConfig, PlaneState};
     use smithay::utils::{Buffer as BufferCoords, Physical, Rectangle, Transform};
 
     let w = width.max(1) as u32;
     let h = height.max(1) as u32;
-    let fd: DrmDeviceFd = surface.device_fd().clone();
-    let mut dumb = DumbAllocator::new(fd.clone());
-    let buffer = dumb
-        .create_buffer(w, h, Fourcc::Xrgb8888, &[Modifier::Linear])
-        .context("DumbAllocator::create_buffer for scanout")?;
-    let fb = framebuffer_from_dumb_buffer(&fd, &buffer, true)
-        .context("framebuffer_from_dumb_buffer")?;
-    let fb_handle = *fb.as_ref();
 
     let plane = surface.plane();
     let dst = Rectangle::<i32, Physical>::from_size((w as i32, h as i32).into());
@@ -166,12 +179,100 @@ fn try_present_dumb_frame(
                 .context("DrmSurface::page_flip")?;
         }
     }
-
-    // Keep fb/buffer alive for the queued flip (process-lifetime leak is acceptable
-    // for the single startup present; surface is retained by caller).
-    std::mem::forget(fb);
-    std::mem::forget(buffer);
     Ok(())
+}
+
+/// Build the render element list for one frame: layer-shell chrome plus every
+/// window visible on the active workspace, bottom-to-top in stacking order.
+///
+/// `render_elements_from_surface_tree` returns elements front-to-back for a
+/// single surface tree, and `DrmCompositor::render_frame` also wants
+/// front-to-back overall — so surfaces are walked top-of-stack first.
+fn collect_render_elements(
+    renderer: &mut GlesRenderer,
+    state: &DrmSessionState,
+) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
+    let mut elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
+
+    // Cursor first: the element slice is front-to-back, so the pointer must
+    // lead or it renders underneath the windows it is pointing at. Only a
+    // client-provided surface can be drawn here; a named cursor needs a theme
+    // (XCursor) which the DRM path does not load yet.
+    if let CursorImageStatus::Surface(ref surface) = state.cursor_status {
+        let loc = (
+            state.pointer_location.x.round() as i32,
+            state.pointer_location.y.round() as i32,
+        );
+        elements.extend(render_elements_from_surface_tree(
+            renderer,
+            surface,
+            loc,
+            1.0,
+            1.0,
+            Kind::Cursor,
+        ));
+    }
+
+    // Layer-shell chrome (menu bar, dock) sits above ordinary windows.
+    for layer in state.layer_surfaces.iter().rev() {
+        elements.extend(render_elements_from_surface_tree(
+            renderer,
+            layer.surface.wl_surface(),
+            (0, 0),
+            1.0,
+            1.0,
+            Kind::Unspecified,
+        ));
+    }
+
+    // Windows: last mapped is topmost, so iterate in reverse for front-to-back.
+    for w in state
+        .windows
+        .iter()
+        .rev()
+        .filter(|w| state.workspace_state.is_visible(&w.window_id))
+    {
+        elements.extend(render_elements_from_surface_tree(
+            renderer,
+            w.toplevel.wl_surface(),
+            (w.position.x, w.position.y),
+            1.0,
+            1.0,
+            Kind::Unspecified,
+        ));
+    }
+
+    elements
+}
+
+/// Allocate the session's single scanout dumb buffer and its framebuffer.
+///
+/// Returns both owners; the caller must keep them alive for as long as the
+/// framebuffer handle is used in plane state, otherwise the kernel frees the
+/// backing object out from under the flip.
+fn arm_scanout_framebuffer(
+    surface: &smithay::backend::drm::DrmSurface,
+    width: i32,
+    height: i32,
+) -> Result<(
+    smithay::backend::allocator::dumb::DumbBuffer,
+    smithay::backend::drm::dumb::DumbFramebuffer,
+)> {
+    use smithay::backend::allocator::dumb::DumbAllocator;
+    use smithay::backend::allocator::{Allocator, Fourcc, Modifier};
+    use smithay::backend::drm::dumb::framebuffer_from_dumb_buffer;
+    use smithay::backend::drm::DrmDeviceFd;
+
+    let w = width.max(1) as u32;
+    let h = height.max(1) as u32;
+    let fd: DrmDeviceFd = surface.device_fd().clone();
+    let mut dumb = DumbAllocator::new(fd.clone());
+    let buffer = dumb
+        .create_buffer(w, h, Fourcc::Xrgb8888, &[Modifier::Linear])
+        .context("DumbAllocator::create_buffer for scanout")?;
+    let fb =
+        framebuffer_from_dumb_buffer(&fd, &buffer, true).context("framebuffer_from_dumb_buffer")?;
+    Ok((buffer, fb))
 }
 
 fn w_from_env_or_default() -> i32 {
@@ -275,7 +376,7 @@ pub fn run_drm_session() -> Result<()> {
         )
         .with_context(|| format!("session.open({})", primary.display()))?;
     let device_fd = DrmDeviceFd::new(DeviceFd::from(owned));
-    let (mut drm, _drm_notifier) =
+    let (mut drm, drm_notifier) =
         smithay::backend::drm::DrmDevice::new(device_fd.clone(), true).context("DrmDevice::new")?;
     let gbm = GbmDevice::new(device_fd.clone()).context("GbmDevice::new")?;
 
@@ -342,6 +443,75 @@ pub fn run_drm_session() -> Result<()> {
         tracing::debug!(stage = stage.as_str(), "drm presentation pipeline stage");
     }
 
+    // ---- Real HDR / VRR capability probe on the chosen connector ----
+    // Replaces the old hardcoded `hdr_supported = false`: these read the actual
+    // kernel properties, so a capable display reports true and a VM reports
+    // false for the honest reason (vmwgfx exposes neither property).
+    if let Some((conn, _mode, _idx)) = picked {
+        match crate::drm_props::PropertyIndex::read(&drm, conn) {
+            Ok(conn_props) => {
+                let caps = crate::drm_props::probe_hdr(&conn_props);
+                eprintln!("[retro-compositor] connector HDR: {}", caps.summary());
+                tracing::info!(
+                    hdr_metadata = caps.has_hdr_metadata,
+                    bt2020 = caps.has_bt2020_colorspace,
+                    max_bpc = ?caps.max_bpc,
+                    hdr10_capable = caps.hdr10_capable(),
+                    "connector HDR capability probed from DRM properties"
+                );
+                hdr_caps.hdr_supported = caps.hdr10_capable();
+                if caps.hdr10_capable() {
+                    hdr_caps
+                        .supported_color_spaces
+                        .push(crate::hdr::ColorSpace::Rec2020);
+                }
+
+                let crtc_props = drm
+                    .crtcs()
+                    .first()
+                    .and_then(|&c| crate::drm_props::PropertyIndex::read(&drm, c).ok())
+                    .unwrap_or_default();
+                let vrr = crate::drm_props::probe_vrr(&conn_props, &crtc_props);
+                eprintln!(
+                    "[retro-compositor] connector VRR: capable={} controllable={} enabled={}",
+                    vrr.capable, vrr.controllable, vrr.enabled
+                );
+
+                // Apply what the user asked for, but only what the hardware allows.
+                if display_policy.hdr_requested {
+                    let md = crate::drm_props::HdrOutputMetadata::hdr10(1000, 0.005, 1000, 400);
+                    match crate::drm_props::apply_hdr10(&drm, conn, &conn_props, &md) {
+                        Ok(Some(_blob)) => {
+                            eprintln!("[retro-compositor] HDR10 metadata applied to connector")
+                        }
+                        Ok(None) => eprintln!(
+                            "[retro-compositor] HDR requested but connector is not HDR10-capable; staying SDR"
+                        ),
+                        Err(err) => {
+                            eprintln!("[retro-compositor] HDR apply failed: {err}")
+                        }
+                    }
+                }
+                if display_policy.vrr_adaptive {
+                    if let Some(&crtc) = drm.crtcs().first() {
+                        match crate::drm_props::set_vrr_enabled(
+                            &drm, crtc, &crtc_props, vrr, true,
+                        ) {
+                            Ok(true) => eprintln!("[retro-compositor] VRR_ENABLED set on CRTC"),
+                            Ok(false) => eprintln!(
+                                "[retro-compositor] VRR requested but connector is not vrr_capable; fixed refresh"
+                            ),
+                            Err(err) => eprintln!("[retro-compositor] VRR apply failed: {err}"),
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "could not read connector properties");
+            }
+        }
+    }
+
     // Attempt real DrmSurface on first CRTC + connected connector (scanout path).
     let mut drm_surface: Option<DrmSurface> = None;
     if let Some((conn, mode, _idx)) = picked {
@@ -372,33 +542,123 @@ pub fn run_drm_session() -> Result<()> {
             modeset_plan.mode_w, modeset_plan.mode_h
         );
     }
-    let _renderer = renderer;
-    // Keep DrmDevice alive for the session (ControlDevice for page_flip path).
-    let _drm = drm;
+    // Renderer and device stay alive: the renderer composites client surfaces
+    // into the DrmCompositor's GBM swapchain, the device owns cursor sizing.
+    let mut renderer = renderer;
 
-    // ---- Pageflip / present attempt (not drop-the-surface) ----
-    // Allocate a dumb XRGB8888 buffer, export as framebuffer, and issue a
-    // modeset commit or page_flip so presentation is exercised when possible.
-    let mut scanout_armed = false;
-    if let Some(surface) = drm_surface.as_ref() {
-        match try_present_dumb_frame(surface, modeset_plan.mode_w, modeset_plan.mode_h) {
-            Ok(()) => {
-                scanout_armed = true;
+    // ---- GL composition (ROADMAP 1.2) ----
+    // Build a DrmCompositor over the scanout surface so client buffers reach
+    // the screen. The dumb-buffer path below stays only as a fallback for when
+    // this cannot be constructed (no GBM formats, inactive surface, …), because
+    // a solid flip at least proves the modeset works.
+    let mut drm_compositor: Option<RetroDrmCompositor> = None;
+    if let Some(surface) = drm_surface.take() {
+        let output_for_comp = Output::new(
+            modeset_plan.connector_name.clone(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "RetroShell".into(),
+                model: "DRM".into(),
+            },
+        );
+        output_for_comp.change_current_state(
+            Some(Mode {
+                size: (modeset_plan.mode_w, modeset_plan.mode_h).into(),
+                refresh: if modeset_plan.refresh_mhz > 0 {
+                    modeset_plan.refresh_mhz
+                } else {
+                    refresh_mhz
+                },
+            }),
+            Some(Transform::Normal),
+            None,
+            None,
+        );
+        let allocator = GbmAllocator::new(
+            gbm.clone(),
+            GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+        );
+        let exporter = GbmFramebufferExporter::new(gbm.clone(), None);
+        let renderer_formats = renderer.egl_context().dmabuf_render_formats().clone();
+        match DrmCompositor::new(
+            &output_for_comp,
+            surface,
+            None,
+            allocator,
+            exporter,
+            [DrmFourcc::Xrgb8888, DrmFourcc::Argb8888],
+            renderer_formats,
+            drm.cursor_size(),
+            Some(gbm.clone()),
+        ) {
+            Ok(comp) => {
                 eprintln!(
-                    "[retro-compositor] DRM pageflip/commit present succeeded ({}x{})",
+                    "[retro-compositor] DRM GL compositor ready ({}x{}) — client surfaces will be composited",
                     modeset_plan.mode_w, modeset_plan.mode_h
                 );
                 tracing::info!(
                     stage = DrmPresentationStage::PageFlipOrPresent.as_str(),
-                    "dumb-buffer pageflip/commit path armed"
+                    "DrmCompositor initialized; GL composition active"
                 );
+                drm_compositor = Some(comp);
             }
             Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    "DRM present path failed; surface kept for session, protocol continues"
+                eprintln!(
+                    "[retro-compositor] DrmCompositor init failed ({err}); falling back to solid dumb-buffer present"
                 );
-                eprintln!("[retro-compositor] DRM present failed: {err:#}");
+                tracing::warn!(error = %err, "DrmCompositor init failed");
+            }
+        }
+    }
+    let composition_active = drm_compositor.is_some();
+
+    // Keep DrmDevice alive for the session (ControlDevice for page_flip path).
+    let _drm = drm;
+
+    // ---- Pageflip / present attempt (not drop-the-surface) ----
+    // Allocate ONE dumb XRGB8888 buffer + framebuffer for the whole session and
+    // issue a modeset commit or page_flip with it. `_scanout_owners` must stay
+    // in scope for as long as `armed_fb` is flipped, or the kernel frees the
+    // backing object mid-flight.
+    let mut scanout_armed = false;
+    let mut armed_fb: Option<smithay::reexports::drm::control::framebuffer::Handle> = None;
+    let mut _scanout_owners = None;
+    if let Some(surface) = drm_surface.as_ref().filter(|_| !composition_active) {
+        match arm_scanout_framebuffer(surface, modeset_plan.mode_w, modeset_plan.mode_h) {
+            Ok((buffer, fb)) => {
+                let handle = *fb.as_ref();
+                match present_armed_frame(
+                    surface,
+                    handle,
+                    modeset_plan.mode_w,
+                    modeset_plan.mode_h,
+                ) {
+                    Ok(()) => {
+                        scanout_armed = true;
+                        armed_fb = Some(handle);
+                        _scanout_owners = Some((buffer, fb));
+                        eprintln!(
+                            "[retro-compositor] DRM pageflip/commit present succeeded ({}x{})",
+                            modeset_plan.mode_w, modeset_plan.mode_h
+                        );
+                        tracing::info!(
+                            stage = DrmPresentationStage::PageFlipOrPresent.as_str(),
+                            "dumb-buffer pageflip/commit path armed"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "DRM present path failed; surface kept for session, protocol continues"
+                        );
+                        eprintln!("[retro-compositor] DRM present failed: {err:#}");
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "could not allocate scanout framebuffer");
+                eprintln!("[retro-compositor] scanout framebuffer alloc failed: {err:#}");
             }
         }
     }
@@ -406,6 +666,7 @@ pub fn run_drm_session() -> Result<()> {
     // Re-present periodically so scanout is continuous when armed (not one-shot).
     let mut drm_surface_keepalive = drm_surface;
     let scanout_armed = scanout_armed;
+    let armed_fb = armed_fb;
     let present_w = modeset_plan.mode_w;
     let present_h = modeset_plan.mode_h;
 
@@ -492,6 +753,23 @@ pub fn run_drm_session() -> Result<()> {
         })
         .map_err(|e| anyhow!("insert libinput: {e}"))?;
 
+    // DRM vblank: frame_submitted() MUST follow each queued flip or the
+    // swapchain runs out of buffers and rendering stalls after a few frames.
+    loop_handle
+        .insert_source(drm_notifier, |event, _meta, state| match event {
+            smithay::backend::drm::DrmEvent::VBlank(_crtc) => {
+                if let Some(comp) = state.drm_compositor.as_mut() {
+                    if let Err(err) = comp.frame_submitted() {
+                        tracing::warn!(error = %err, "frame_submitted failed");
+                    }
+                }
+            }
+            smithay::backend::drm::DrmEvent::Error(err) => {
+                tracing::error!(error = %err, "DRM device error");
+            }
+        })
+        .map_err(|e| anyhow!("insert drm notifier: {e}"))?;
+
     // Session notifier (VT switch)
     loop_handle
         .insert_source(session_notifier, |event, _, state| match event {
@@ -545,11 +823,14 @@ pub fn run_drm_session() -> Result<()> {
         dnd_icon: None,
         running: true,
         need_full_redraw: true,
+        drm_compositor,
+        cursor_status: CursorImageStatus::default_named(),
     };
 
     eprintln!(
         "[retro-compositor] DRM session loop running (Wayland + seat + udev + libinput + layer-shell + foreign-toplevel; scanout_armed={scanout_armed})"
     );
+    let clock = Clock::<Monotonic>::new();
     let mut frame_i: u64 = 0;
     while state.running {
         let _ = frame_scheduler.record_frame();
@@ -563,14 +844,83 @@ pub fn run_drm_session() -> Result<()> {
         if force_present {
             state.need_full_redraw = false;
         }
-        if scanout_armed && (force_present || frame_i % 60 == 0) {
-            if let Some(surface) = drm_surface_keepalive.as_ref() {
-                if let Err(err) = try_present_dumb_frame(surface, present_w, present_h) {
+        if state.drm_compositor.is_some() {
+            // Composite every visible client surface plus layer-shell chrome
+            // into the GBM swapchain and page-flip it. This is what puts client
+            // pixels on a real screen; the dumb-buffer path below only ever
+            // showed a solid colour.
+            //
+            // Elements are collected before taking the &mut on the compositor:
+            // both live on `state`, and the borrow checker cannot split fields
+            // across the helper call.
+            let elements = collect_render_elements(&mut renderer, &state);
+            let comp = state
+                .drm_compositor
+                .as_mut()
+                .expect("checked is_some above");
+            match comp.render_frame::<_, _>(
+                &mut renderer,
+                &elements,
+                DRM_CLEAR_COLOR,
+                FrameFlags::DEFAULT,
+            ) {
+                Ok(result) => {
+                    if !result.is_empty {
+                        // Drop the borrow of `result` before queueing.
+                        drop(result);
+                        if let Err(err) = comp.queue_frame(()) {
+                            tracing::debug!(error = %err, "queue_frame failed");
+                            // A failed queue leaves no pending flip, so the
+                            // vblank handler will not fire; recover next tick.
+                            let _ = comp.frame_submitted();
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "render_frame failed");
+                }
+            }
+        } else if scanout_armed && (force_present || frame_i % 60 == 0) {
+            if let (Some(surface), Some(fb)) = (drm_surface_keepalive.as_ref(), armed_fb) {
+                if let Err(err) = present_armed_frame(surface, fb, present_w, present_h) {
                     tracing::debug!(error = %err, "periodic DRM present failed");
                 }
             }
         }
         frame_i = frame_i.wrapping_add(1);
+
+        // Release frame callbacks every tick. Clients that throttle on
+        // wl_surface.frame (winit/wgpu — every RetroShell app) render one frame
+        // and then wait forever without this. Note the DRM path does not yet
+        // composite client buffers to scanout (see ROADMAP 1.2); callbacks are
+        // still required so clients stay live and keep their content current.
+        {
+            let now = clock.now();
+            if let Some(output) = state.outputs.first().cloned() {
+                let visible: Vec<WlSurface> = state
+                    .windows
+                    .iter()
+                    .filter(|w| state.workspace_state.is_visible(&w.window_id))
+                    .map(|w| w.toplevel.wl_surface().clone())
+                    .collect();
+                for surface in visible {
+                    send_frames_surface_tree(&surface, &output, now, Some(Duration::ZERO), |_, _| {
+                        None
+                    });
+                }
+                let layers: Vec<WlSurface> = state
+                    .layer_surfaces
+                    .iter()
+                    .map(|l| l.surface.wl_surface().clone())
+                    .collect();
+                for surface in layers {
+                    send_frames_surface_tree(&surface, &output, now, Some(Duration::ZERO), |_, _| {
+                        None
+                    });
+                }
+            }
+        }
+
         event_loop
             .dispatch(Some(Duration::from_millis(16)), &mut state)
             .context("event_loop.dispatch")?;
@@ -625,6 +975,12 @@ struct MappedLayer {
 // ---------------------------------------------------------------------------
 
 struct DrmSessionState {
+    /// Latest client-set cursor image; drawn topmost each frame.
+    cursor_status: CursorImageStatus,
+    /// GL compositor over the scanout surface. `None` when it could not be
+    /// built, in which case the session falls back to a solid dumb-buffer flip.
+    /// Lives in the state so the vblank handler can call `frame_submitted()`.
+    drm_compositor: Option<RetroDrmCompositor>,
     display_handle: DisplayHandle,
     loop_signal: LoopSignal,
     compositor_state: CompositorState,
@@ -751,31 +1107,160 @@ impl DrmSessionState {
         }
     }
 
+    /// Topmost window whose geometry contains `pos` (last mapped wins).
+    fn window_at(&self, pos: Point<f64, Logical>) -> Option<usize> {
+        self.windows
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| self.workspace_state.is_visible(&w.window_id))
+            .rev()
+            .find(|(_, w)| {
+                let x0 = w.position.x as f64;
+                let y0 = w.position.y as f64;
+                pos.x >= x0
+                    && pos.y >= y0
+                    && pos.x < x0 + w.size.w as f64
+                    && pos.y < y0 + w.size.h as f64
+            })
+            .map(|(i, _)| i)
+    }
+
     fn handle_libinput(
         &mut self,
         event: smithay::backend::input::InputEvent<LibinputInputBackend>,
     ) {
         use smithay::backend::input::{
-            AbsolutePositionEvent, Event as _, InputEvent, KeyboardKeyEvent, PointerButtonEvent,
+            AbsolutePositionEvent, ButtonState, Event as _, InputEvent, KeyState, KeyboardKeyEvent,
+            PointerButtonEvent, PointerMotionEvent,
         };
+        use smithay::input::keyboard::{FilterResult, Keysym};
+        use smithay::input::pointer::ButtonEvent;
+
         match event {
             InputEvent::Keyboard { event } => {
-                // Key filter for Super+workspace is not yet bound on DRM seat input;
-                // when added, call cycle_workspace_* / activate_workspace_index so
-                // focus + full redraw stay honest (same as nested X11 main).
-                let _ = event.key_code();
-                let _ = event.time_msec();
+                let serial = self.next_serial();
+                let time = event.time_msec();
+                let keycode = event.key_code();
+                let key_state = event.state();
+                let Some(kb) = self.seat.get_keyboard() else {
+                    return;
+                };
+                kb.input::<(), _>(self, keycode, key_state, serial, time, |data, mods, keysym| {
+                    // Super+Left/Right/PageUp/PageDown and Super+1..8 switch
+                    // workspaces, matching the nested X11 bindings.
+                    if key_state == KeyState::Pressed && mods.logo {
+                        let sym = keysym.modified_sym();
+                        if sym == Keysym::Right || sym == Keysym::Page_Down {
+                            data.cycle_workspace_next();
+                            return FilterResult::Intercept(());
+                        }
+                        if sym == Keysym::Left || sym == Keysym::Page_Up {
+                            data.cycle_workspace_prev();
+                            return FilterResult::Intercept(());
+                        }
+                        let digit = match sym {
+                            Keysym::_1 => Some(0u8),
+                            Keysym::_2 => Some(1),
+                            Keysym::_3 => Some(2),
+                            Keysym::_4 => Some(3),
+                            Keysym::_5 => Some(4),
+                            Keysym::_6 => Some(5),
+                            Keysym::_7 => Some(6),
+                            Keysym::_8 => Some(7),
+                            _ => None,
+                        };
+                        if let Some(i) = digit {
+                            data.activate_workspace_index(i);
+                            return FilterResult::Intercept(());
+                        }
+                    }
+                    FilterResult::Forward
+                });
             }
             InputEvent::PointerMotionAbsolute { event } => {
                 let x = event.x_transformed(self.output_size.0);
                 let y = event.y_transformed(self.output_size.1);
                 self.pointer_location = Point::from((x, y));
+                self.forward_pointer_motion(event.time_msec());
+            }
+            InputEvent::PointerMotion { event } => {
+                // Relative motion (real mice): accumulate and clamp to output.
+                let (dx, dy) = (event.delta_x(), event.delta_y());
+                let x = (self.pointer_location.x + dx).clamp(0.0, self.output_size.0 as f64 - 1.0);
+                let y = (self.pointer_location.y + dy).clamp(0.0, self.output_size.1 as f64 - 1.0);
+                self.pointer_location = Point::from((x, y));
+                self.forward_pointer_motion(event.time_msec());
             }
             InputEvent::PointerButton { event } => {
-                let _ = event.button_code();
+                let serial = self.next_serial();
+                let time = event.time_msec();
+                let button = event.button_code();
+                let btn_state = event.state();
+
+                if btn_state == ButtonState::Pressed {
+                    let pos = self.pointer_location;
+                    match self.window_at(pos) {
+                        Some(idx) => self.focus_window_at_index(idx),
+                        None => {
+                            // Click on the desktop clears keyboard focus.
+                            self.focus_surface(None);
+                        }
+                    }
+                }
+
+                if let Some(ptr) = self.seat.get_pointer() {
+                    ptr.button(
+                        self,
+                        &ButtonEvent {
+                            serial,
+                            time,
+                            button,
+                            state: btn_state,
+                        },
+                    );
+                    ptr.frame(self);
+                }
             }
             _ => {}
         }
+    }
+
+    /// Send the current pointer location to the seat, retargeting focus to
+    /// whatever surface is under it.
+    fn forward_pointer_motion(&mut self, time: u32) {
+        use smithay::input::pointer::MotionEvent;
+
+        let pos = self.pointer_location;
+        let focus = self.window_at(pos).map(|idx| {
+            let w = &self.windows[idx];
+            let local = Point::from((pos.x - w.position.x as f64, pos.y - w.position.y as f64));
+            (w.toplevel.wl_surface().clone(), local)
+        });
+        let serial = self.next_serial();
+        if let Some(ptr) = self.seat.get_pointer() {
+            ptr.motion(
+                self,
+                focus,
+                &MotionEvent {
+                    location: pos,
+                    serial,
+                    time,
+                },
+            );
+            ptr.frame(self);
+        }
+    }
+
+    /// Raise the window at `idx` to the top of the stack and give it focus.
+    fn focus_window_at_index(&mut self, idx: usize) {
+        if idx >= self.windows.len() {
+            return;
+        }
+        let w = self.windows.remove(idx);
+        let surface = w.toplevel.wl_surface().clone();
+        self.windows.push(w);
+        self.focus_surface(Some(surface));
+        self.request_full_redraw();
     }
 
     fn focus_surface(&mut self, surface: Option<WlSurface>) {
@@ -810,6 +1295,11 @@ impl CompositorHandler for DrmSessionState {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        // Promote the newly attached buffer into renderable state. Without
+        // this, render_elements_from_surface_tree finds no texture and the
+        // compositor paints only its clear colour — clients map and render but
+        // never appear on screen.
+        smithay::backend::renderer::utils::on_commit_buffer_handler::<Self>(surface);
         for w in self.windows.iter_mut() {
             if w.toplevel.wl_surface() == surface {
                 let st = w.toplevel.current_state();
@@ -839,7 +1329,11 @@ impl SeatHandler for DrmSessionState {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+    /// Remember the client-set cursor so the compositor can draw it. Ignoring
+    /// this is why the DRM session had no visible pointer at all.
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.cursor_status = image;
+    }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let client = focused.and_then(|s| s.client());
