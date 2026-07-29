@@ -40,7 +40,7 @@ See [docs/tasks/README.md](tasks/README.md) for the task format and status legen
 
 | Stage | Goal | Status | Docs |
 |---|---|---|---|
-| 0 | arm64 UTM Arch VM with real KMS + SSH bridge; Linux CI (exists) | Planned, unverified | [tasks/stage-0-vm-foundation.md](tasks/stage-0-vm-foundation.md) · [qa/stage-0.md](qa/stage-0.md) |
+| 0 | Arch VM with real KMS + SSH bridge (VBox/x86 active, UTM/arm64 dormant); Linux CI (exists) | Planned, unverified | [HANDOFF.md](HANDOFF.md) · [tasks/stage-0-vm-foundation.md](tasks/stage-0-vm-foundation.md) · [qa/stage-0.md](qa/stage-0.md) |
 | 1 | Prove the live path: one app window painting on the VM (verify-first) | Planned, unverified | [tasks/stage-1-prove-live-path.md](tasks/stage-1-prove-live-path.md) · [qa/stage-1.md](qa/stage-1.md) |
 | 2 | Real session: input routing, working shortcuts, `ext-session-lock-v1`, clickable toolkit | Not yet specced | — |
 | 3 | Self-contained `.app` bundles + app store that installs them | Not yet specced | — |
@@ -76,9 +76,17 @@ written only when grounded in real, observed behavior from the prior stage.
 
 ## Development environment
 
-- **Host:** macOS on arm64 (Apple Silicon), UTM.
-- **VM:** Arch Linux **aarch64** in UTM with **virtio-gpu** → real `/dev/dri/card0`
-  KMS (the capability WSL2/Docker lacked, and why the compositor was never run).
-- **Agent access:** UTM port-forward host→VM:22, key-based SSH; working tree
-  pushed via `rsync` over SSH.
+The VM must expose a **real DRM/KMS device with a render node** — the capability
+WSL2/Docker/Xvfb all lack, and the reason the compositor was never actually run.
+Two host paths satisfy this; **switching machines? read [HANDOFF.md](HANDOFF.md) first.**
+
+- **Active — Windows x86_64 + VirtualBox:** guest is Arch **x86_64**;
+  **VMSVGA + 3D accel → `vmwgfx`** gives `/dev/dri/card0` + render node. Use
+  `packaging/vm/create-vm.ps1`, `packaging/vm/arch-install.sh`, and the
+  `qa-*.sh` scripts. Runbook in [HANDOFF.md](HANDOFF.md) §3.
+- **Dormant — macOS arm64 + UTM:** guest is Arch **aarch64** with **virtio-gpu**.
+  The `*-arm64.sh` scripts and Stage-0 Path-A tasks target this; do not run them
+  on the VirtualBox path.
+- **Agent access (both):** host→VM port-forward on `:22` (VBox uses host `2222`),
+  key-based SSH; working tree synced over SSH.
 - All graphical/live work happens **in the VM**, never on the host.
