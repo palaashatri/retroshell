@@ -46,34 +46,55 @@ There are two ways to get the Stage 0 VM. **Do not mix them.**
 
 Host GUI + human. An agent cannot click UTM.
 
-Steps:
-1. Download the **Arch Linux ARM** VM from `https://mac.getutm.app/gallery/archlinux-arm`
-   and open it in UTM (double-click the `.utm`/downloaded bundle to import).
-2. Before first boot, in **VM Settings → Display**, confirm the emulated GPU is
-   **virtio-gpu (GL)** / **virtio-ramfb-gl**. If it is a plain VGA device, change
-   it to virtio-gpu — KMS/`/dev/dri` depends on it. In **Network**, keep
-   **Shared Network** (gateway `10.0.2.2`).
-3. Boot. Log in. **CONFIRM AT RUNTIME:** the default credentials ship with the
-   image — the gallery page documents them. Try the documented user; a common
-   fallback for this image family is `root` / `root`. Record the working
-   credentials in `docs/qa/stage-0.md`. Do not assume; verify what logs you in.
+**Confirmed image spec** (UTM gallery page, verified 2026-07-30): ArchLinux ARM,
+ARM64, **login `root` / `root`**, Memory **2048 MiB**, Disk **10 GiB**,
+**Display: Console** (no GPU device), SPICE tools not installed. As shipped this
+VM has **no `/dev/dri`** (Console display) and is **under-resourced** for a release
+build. This task reconfigures the VM hardware; the OS is fine as-is.
 
-Acceptance (in the VM, the Stage-0 gate check up front):
+Steps:
+1. Download/open the **Arch Linux ARM** VM (`https://mac.getutm.app/gallery/archlinux-arm`,
+   "Open in UTM") to import it.
+2. In **VM Settings**, before/while stopped, change three things:
+   - **Display →** remove the Console-only device and add / switch to
+     **virtio-gpu (GL)** (or virtio-ramfb-gl). *Mandatory* — Console gives no KMS.
+   - **Memory →** raise **2048 → 4096 MiB minimum** (8192 if you can spare it);
+     a release link of this workspace can OOM at 2 GB.
+   - **Drives →** increase the disk from **10 → ~40 GiB**. (UTM resizes the virtual
+     disk; the guest filesystem is grown in step 4.) Keep **Network = Shared**.
+3. Boot. Log in as **`root` / `root`**.
+4. Grow the root filesystem to use the enlarged disk. **CONFIRM AT RUNTIME** the
+   layout first, then extend the root partition and filesystem:
+   ```bash
+   lsblk                      # identify the root partition, e.g. /dev/vda2 (or vda1)
+   # install the resize helper if absent:
+   pacman -Sy --noconfirm cloud-guest-utils parted || true
+   # extend the partition to fill the disk (replace N with the root part number):
+   growpart /dev/vda N        # or: parted /dev/vda resizepart N 100%
+   resize2fs /dev/vda${N}     # ext4; use btrfs filesystem resize if btrfs
+   df -h /                    # confirm / is now ~40G
+   ```
+
+Acceptance (in the VM — the Stage-0 gate checks up front):
 ```bash
-uname -m                 # → aarch64
-ls /dev/dri/card0        # → /dev/dri/card0   (virtio-gpu KMS present)
-lspci | grep -i vga ; lsmod | grep virtio_gpu   # driver/module evidence
+uname -m                              # → aarch64
+free -m | awk '/Mem:/{print $2}'      # → ~4000+ (RAM was raised)
+df -h --output=size / | tail -1       # → ~40G (disk grown)
+ls /dev/dri/card0                     # → /dev/dri/card0   (virtio-gpu KMS present)
+lspci 2>/dev/null | grep -i vga; lsmod | grep virtio_gpu   # driver/module evidence
 ```
-→ expect: `aarch64` and `/dev/dri/card0` present. **If `card0` is absent**, the
-imported bundle's display device is not DRM/KMS — go back to step 2, set the
-display to virtio-gpu, reboot, and re-check. Record the result either way in
-`docs/qa/stage-0.md` (Task 0.1A row + the credentials + driver values).
+→ expect: `aarch64`, RAM ≥ ~4 GB, `/` ≈ 40 G, and **`/dev/dri/card0` present**.
+Record all values (plus confirmed `root`/`root`) in `docs/qa/stage-0.md`.
+**If `card0` is absent** after setting virtio-gpu: the driver isn't loaded yet —
+proceed to Task 0.4A (its provision step adds `virtio_gpu` to the initramfs), then
+reboot and re-check `/dev/dri/card0` before Task 1.
 
 DO NOT:
 - Run `arch-install-arm64.sh` (it reformats `/dev/vda` — destroys this image).
-- Proceed past a missing `/dev/dri/card0` — fix the display device first.
+- Leave Display on Console — there is no KMS without a virtio-gpu device.
+- Build the workspace before growing the disk — 10 GiB will fill up.
 
-Commit: _none (host/GUI action)._
+Commit: _none (host/GUI + VM console action; record evidence in qa/stage-0.md)._
 
 ---
 
