@@ -82,9 +82,13 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
+use smithay::wayland::session_lock::{
+    LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
+};
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_foreign_toplevel_list, delegate_layer_shell,
-    delegate_output, delegate_primary_selection, delegate_seat, delegate_shm, delegate_xdg_shell,
+    delegate_output, delegate_primary_selection, delegate_seat, delegate_session_lock,
+    delegate_shm, delegate_xdg_shell,
 };
 
 use crate::frame_timing::{FrameScheduler, RefreshRate};
@@ -114,6 +118,8 @@ type RetroDrmCompositor = DrmCompositor<
 
 /// Desktop background behind all client surfaces (classic retro gray).
 const DRM_CLEAR_COLOR: [f32; 4] = [0.596, 0.596, 0.580, 1.0];
+/// Solid black used while the session lock is active.
+const DRM_LOCK_CLEAR_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
 /// Probe whether a DRM session looks bootable (nodes exist under /dev/dri).
 pub fn drm_session_available() -> bool {
@@ -193,6 +199,34 @@ fn collect_render_elements(
     state: &DrmSessionState,
 ) -> Vec<WaylandSurfaceRenderElement<GlesRenderer>> {
     let mut elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
+
+    if state.locked {
+        for (_, lock_surface) in &state.lock_surfaces {
+            elements.extend(render_elements_from_surface_tree(
+                renderer,
+                lock_surface.wl_surface(),
+                (0, 0),
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            ));
+        }
+        if let CursorImageStatus::Surface(ref surface) = state.cursor_status {
+            let loc = (
+                state.pointer_location.x.round() as i32,
+                state.pointer_location.y.round() as i32,
+            );
+            elements.extend(render_elements_from_surface_tree(
+                renderer,
+                surface,
+                loc,
+                1.0,
+                1.0,
+                Kind::Cursor,
+            ));
+        }
+        return elements;
+    }
 
     // Cursor first: the element slice is front-to-back, so the pointer must
     // lead or it renders underneath the windows it is pointing at. Only a
@@ -356,6 +390,8 @@ pub fn run_drm_session() -> Result<()> {
     // once XWayland spawn is attached to this seat/session loop.
     let layer_shell_state = WlrLayerShellState::new::<DrmSessionState>(&dh);
     let foreign_toplevel_list = ForeignToplevelListState::new::<DrmSessionState>(&dh);
+    let session_lock_state =
+        SessionLockManagerState::new::<DrmSessionState, _>(&dh, |_client| true);
 
     let mut seat: Seat<DrmSessionState> = seat_state.new_wl_seat(&dh, "seat0");
     seat.add_keyboard(XkbConfig::default(), 200, 25)
@@ -806,6 +842,11 @@ pub fn run_drm_session() -> Result<()> {
         output_manager_state,
         layer_shell_state,
         foreign_toplevel_list,
+        session_lock_state,
+        locked: false,
+        lock_surfaces: Vec::new(),
+        lock_password_buffer: String::new(),
+        wayland_socket_name: socket_name,
         outputs: vec![output],
         windows: Vec::new(),
         workspace_state: WorkspaceState::new(),
@@ -858,10 +899,15 @@ pub fn run_drm_session() -> Result<()> {
                 .drm_compositor
                 .as_mut()
                 .expect("checked is_some above");
+            let clear = if state.locked {
+                DRM_LOCK_CLEAR_COLOR
+            } else {
+                DRM_CLEAR_COLOR
+            };
             match comp.render_frame::<_, _>(
                 &mut renderer,
                 &elements,
-                DRM_CLEAR_COLOR,
+                clear,
                 FrameFlags::DEFAULT,
             ) {
                 Ok(result) => {
@@ -897,26 +943,46 @@ pub fn run_drm_session() -> Result<()> {
         {
             let now = clock.now();
             if let Some(output) = state.outputs.first().cloned() {
-                let visible: Vec<WlSurface> = state
-                    .windows
-                    .iter()
-                    .filter(|w| state.workspace_state.is_visible(&w.window_id))
-                    .map(|w| w.toplevel.wl_surface().clone())
-                    .collect();
-                for surface in visible {
-                    send_frames_surface_tree(&surface, &output, now, Some(Duration::ZERO), |_, _| {
-                        None
-                    });
-                }
-                let layers: Vec<WlSurface> = state
-                    .layer_surfaces
-                    .iter()
-                    .map(|l| l.surface.wl_surface().clone())
-                    .collect();
-                for surface in layers {
-                    send_frames_surface_tree(&surface, &output, now, Some(Duration::ZERO), |_, _| {
-                        None
-                    });
+                if state.locked {
+                    for (_, lock_surface) in &state.lock_surfaces {
+                        send_frames_surface_tree(
+                            lock_surface.wl_surface(),
+                            &output,
+                            now,
+                            Some(Duration::ZERO),
+                            |_, _| None,
+                        );
+                    }
+                } else {
+                    let visible: Vec<WlSurface> = state
+                        .windows
+                        .iter()
+                        .filter(|w| state.workspace_state.is_visible(&w.window_id))
+                        .map(|w| w.toplevel.wl_surface().clone())
+                        .collect();
+                    for surface in visible {
+                        send_frames_surface_tree(
+                            &surface,
+                            &output,
+                            now,
+                            Some(Duration::ZERO),
+                            |_, _| None,
+                        );
+                    }
+                    let layers: Vec<WlSurface> = state
+                        .layer_surfaces
+                        .iter()
+                        .map(|l| l.surface.wl_surface().clone())
+                        .collect();
+                    for surface in layers {
+                        send_frames_surface_tree(
+                            &surface,
+                            &output,
+                            now,
+                            Some(Duration::ZERO),
+                            |_, _| None,
+                        );
+                    }
                 }
             }
         }
@@ -994,6 +1060,11 @@ struct DrmSessionState {
     output_manager_state: OutputManagerState,
     layer_shell_state: WlrLayerShellState,
     foreign_toplevel_list: ForeignToplevelListState,
+    session_lock_state: SessionLockManagerState,
+    locked: bool,
+    lock_surfaces: Vec<(Output, LockSurface)>,
+    lock_password_buffer: String,
+    wayland_socket_name: String,
     #[allow(dead_code)]
     outputs: Vec<Output>,
     windows: Vec<MappedWindow>,
@@ -1068,6 +1139,60 @@ impl DrmSessionState {
 
     fn request_full_redraw(&mut self) {
         self.need_full_redraw = true;
+    }
+
+    fn active_lock_surface(&self) -> Option<WlSurface> {
+        self.lock_surfaces
+            .first()
+            .map(|(_, lock)| lock.wl_surface().clone())
+    }
+
+    /// Compositor-side password buffer while locked. The lock client paints the
+    /// prompt; keystrokes are verified here so unlock works even when the lock
+    /// surface has not yet received wl_keyboard focus from the seat.
+    fn handle_lock_password_key(&mut self, sym: smithay::input::keyboard::Keysym) {
+        use smithay::input::keyboard::Keysym;
+        if sym == Keysym::Return || sym == Keysym::KP_Enter {
+            let expected = std::env::var("RETROSHELL_LOCK_PASSWORD")
+                .unwrap_or_else(|_| "retroshell".to_string());
+            if self.lock_password_buffer == expected {
+                self.unlock();
+            }
+            self.lock_password_buffer.clear();
+            return;
+        }
+        if sym == Keysym::BackSpace {
+            self.lock_password_buffer.pop();
+            return;
+        }
+        let raw: u32 = sym.into();
+        if (32..=126).contains(&raw) {
+            if let Some(ch) = char::from_u32(raw) {
+                self.lock_password_buffer.push(ch);
+            }
+        }
+    }
+
+    /// Spawn a first-party binary as a Wayland client of this compositor.
+    fn spawn_client(&self, bin: &str) {
+        let path = resolve_client_bin(bin);
+        let mut cmd = std::process::Command::new(&path);
+        cmd.env("WAYLAND_DISPLAY", &self.wayland_socket_name)
+            .env("WINIT_UNIX_BACKEND", "wayland");
+        if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
+            cmd.env("XDG_RUNTIME_DIR", runtime);
+        }
+        if let Ok(pw) = std::env::var("RETROSHELL_LOCK_PASSWORD") {
+            cmd.env("RETROSHELL_LOCK_PASSWORD", pw);
+        }
+        match cmd.spawn() {
+            Ok(child) => {
+                tracing::info!(bin, pid = child.id(), path = %path.display(), "spawned client");
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, bin, path = %path.display(), "spawn_client failed");
+            }
+        }
     }
 
     /// Super+workspace (or other key) entry points — full redraw + focus rebind.
@@ -1145,11 +1270,33 @@ impl DrmSessionState {
                 let Some(kb) = self.seat.get_keyboard() else {
                     return;
                 };
+                if self.locked {
+                    if let Some(surf) = self.active_lock_surface() {
+                        self.focus_surface(Some(surf));
+                    }
+                }
                 kb.input::<(), _>(self, keycode, key_state, serial, time, |data, mods, keysym| {
+                    if data.locked {
+                        if key_state == KeyState::Pressed && mods.logo {
+                            return FilterResult::Intercept(());
+                        }
+                        if key_state == KeyState::Pressed {
+                            data.handle_lock_password_key(keysym.modified_sym());
+                        }
+                        return FilterResult::Forward;
+                    }
                     // Super+Left/Right/PageUp/PageDown and Super+1..8 switch
                     // workspaces, matching the nested X11 bindings.
                     if key_state == KeyState::Pressed && mods.logo {
                         let sym = keysym.modified_sym();
+                        if sym == Keysym::o || sym == Keysym::O {
+                            data.spawn_client("finder");
+                            return FilterResult::Intercept(());
+                        }
+                        if sym == Keysym::l || sym == Keysym::L {
+                            data.spawn_client("retro-lock");
+                            return FilterResult::Intercept(());
+                        }
                         if sym == Keysym::Right || sym == Keysym::Page_Down {
                             data.cycle_workspace_next();
                             return FilterResult::Intercept(());
@@ -1197,7 +1344,7 @@ impl DrmSessionState {
                 let button = event.button_code();
                 let btn_state = event.state();
 
-                if btn_state == ButtonState::Pressed {
+                if btn_state == ButtonState::Pressed && !self.locked {
                     let pos = self.pointer_location;
                     match self.window_at(pos) {
                         Some(idx) => self.focus_window_at_index(idx),
@@ -1231,11 +1378,16 @@ impl DrmSessionState {
         use smithay::input::pointer::MotionEvent;
 
         let pos = self.pointer_location;
-        let focus = self.window_at(pos).map(|idx| {
-            let w = &self.windows[idx];
-            let local = Point::from((pos.x - w.position.x as f64, pos.y - w.position.y as f64));
-            (w.toplevel.wl_surface().clone(), local)
-        });
+        let focus = if self.locked {
+            self.active_lock_surface().map(|surf| (surf, Point::from((0.0, 0.0))))
+        } else {
+            self.window_at(pos).map(|idx| {
+                let w = &self.windows[idx];
+                let local =
+                    Point::from((pos.x - w.position.x as f64, pos.y - w.position.y as f64));
+                (w.toplevel.wl_surface().clone(), local)
+            })
+        };
         let serial = self.next_serial();
         if let Some(ptr) = self.seat.get_pointer() {
             ptr.motion(
@@ -1272,6 +1424,38 @@ impl DrmSessionState {
         set_data_device_focus(&self.display_handle, &self.seat, client.clone());
         set_primary_focus(&self.display_handle, &self.seat, client);
     }
+}
+
+fn resolve_client_bin(bin: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in path.split(':').filter(|d| !d.is_empty()) {
+            let candidate = Path::new(dir).join(bin);
+            if candidate.is_file() {
+                if candidate
+                    .metadata()
+                    .map(|m| m.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false)
+                {
+                    return candidate;
+                }
+            }
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let candidate = PathBuf::from(home)
+            .join("retroshell/target/release")
+            .join(bin);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    let system = PathBuf::from(format!("/usr/local/bin/{bin}"));
+    if system.is_file() {
+        return system;
+    }
+    PathBuf::from(bin)
 }
 
 // ---------------------------------------------------------------------------
@@ -1607,6 +1791,59 @@ impl WlrLayerShellHandler for DrmSessionState {
     }
 }
 delegate_layer_shell!(DrmSessionState);
+
+impl SessionLockHandler for DrmSessionState {
+    fn lock_state(&mut self) -> &mut SessionLockManagerState {
+        &mut self.session_lock_state
+    }
+
+    fn lock(&mut self, confirmation: SessionLocker) {
+        self.locked = true;
+        self.lock_password_buffer.clear();
+        confirmation.lock();
+        if let Some(surf) = self.active_lock_surface() {
+            self.focus_surface(Some(surf));
+        }
+        self.request_full_redraw();
+        tracing::info!("session locked");
+        eprintln!("[retro-compositor] session locked");
+    }
+
+    fn unlock(&mut self) {
+        self.locked = false;
+        self.lock_password_buffer.clear();
+        self.lock_surfaces.clear();
+        self.apply_focus_after_workspace_switch();
+        self.request_full_redraw();
+        tracing::info!("session unlocked");
+        eprintln!("[retro-compositor] session unlocked");
+    }
+
+    fn new_surface(
+        &mut self,
+        surface: LockSurface,
+        output: smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+    ) {
+        use smithay::reexports::wayland_server::Resource;
+        if let Some(out) = Output::from_resource(&output) {
+            let out = out.clone();
+            let size = out
+                .current_mode()
+                .map(|m| m.size)
+                .unwrap_or_else(|| Size::from(self.output_size));
+            surface.with_pending_state(|states| {
+                states.size = Some(Size::from((size.w as u32, size.h as u32)));
+            });
+            surface.send_configure();
+            self.lock_surfaces.push((out, surface));
+            if let Some(surf) = self.active_lock_surface() {
+                self.focus_surface(Some(surf));
+            }
+        }
+        self.request_full_redraw();
+    }
+}
+delegate_session_lock!(DrmSessionState);
 
 impl ForeignToplevelListHandler for DrmSessionState {
     fn foreign_toplevel_list_state(&mut self) -> &mut ForeignToplevelListState {

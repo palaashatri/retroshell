@@ -124,6 +124,7 @@ echo "=== install session files ==="
 arch-chroot /mnt /bin/bash -euxo pipefail <<CHROOT
 install -Dm755 /home/$USERNAME/retroshell/target/release/retro-compositor /usr/local/bin/retro-compositor
 install -Dm755 /home/$USERNAME/retroshell/target/release/retro-shell      /usr/local/bin/retro-shell
+install -Dm755 /home/$USERNAME/retroshell/target/release/retro-lock       /usr/local/bin/retro-lock || true
 for a in finder settings textedit terminal appstore; do
   install -Dm755 /home/$USERNAME/retroshell/target/release/\$a /usr/local/bin/\$a || true
 done
