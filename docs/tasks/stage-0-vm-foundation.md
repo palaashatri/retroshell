@@ -22,9 +22,218 @@ KMS." Nothing downstream is meaningful until this VM exists and builds the tree.
   `vmwgfx`.
 - Repo: `https://github.com/palaashatri/retroshell.git`, branch `main`.
 
+## Two paths to the VM — pick one
+
+There are two ways to get the Stage 0 VM. **Do not mix them.**
+
+- **Path A — Prebuilt image (recommended, chosen 2026-07-30):** import the UTM
+  gallery **Arch Linux ARM** prebuilt VM (`https://mac.getutm.app/gallery/archlinux-arm`).
+  The OS is already installed. You **provision on top** with
+  `packaging/vm/provision-arm64.sh`. This matches Stage 4's layer-onto-existing
+  model. **Skip Tasks 0.1, 0.3, 0.4** (the from-scratch path) and do
+  **0.1A / 0.3A / 0.4A** instead. Tasks 0.2, 0.5, 0.6, 0.7, 0.8 are shared.
+- **Path B — From scratch (ISO):** Tasks 0.1, 0.3, 0.4 build the VM from an
+  aarch64 Arch/archboot ISO with `arch-install-arm64.sh`. Kept for the Stage 4
+  bootable ISO and clean-room reproduction.
+
+> **⚠️ NEVER run `arch-install-arm64.sh` on a Path-A prebuilt image.** It runs
+> `sgdisk --zap-all /dev/vda` and reformats the disk — it will destroy the
+> prebuilt system. The installer is Path B only.
+
 ---
 
-### Task 0.1 — Create the UTM aarch64 VM and boot an Arch aarch64 live ISO   [UNVERIFIED]
+### Task 0.1A — Import and boot the UTM gallery Arch Linux ARM prebuilt VM   [UNVERIFIED · Path A]
+
+Host GUI + human. An agent cannot click UTM.
+
+Steps:
+1. Download the **Arch Linux ARM** VM from `https://mac.getutm.app/gallery/archlinux-arm`
+   and open it in UTM (double-click the `.utm`/downloaded bundle to import).
+2. Before first boot, in **VM Settings → Display**, confirm the emulated GPU is
+   **virtio-gpu (GL)** / **virtio-ramfb-gl**. If it is a plain VGA device, change
+   it to virtio-gpu — KMS/`/dev/dri` depends on it. In **Network**, keep
+   **Shared Network** (gateway `10.0.2.2`).
+3. Boot. Log in. **CONFIRM AT RUNTIME:** the default credentials ship with the
+   image — the gallery page documents them. Try the documented user; a common
+   fallback for this image family is `root` / `root`. Record the working
+   credentials in `docs/qa/stage-0.md`. Do not assume; verify what logs you in.
+
+Acceptance (in the VM, the Stage-0 gate check up front):
+```bash
+uname -m                 # → aarch64
+ls /dev/dri/card0        # → /dev/dri/card0   (virtio-gpu KMS present)
+lspci | grep -i vga ; lsmod | grep virtio_gpu   # driver/module evidence
+```
+→ expect: `aarch64` and `/dev/dri/card0` present. **If `card0` is absent**, the
+imported bundle's display device is not DRM/KMS — go back to step 2, set the
+display to virtio-gpu, reboot, and re-check. Record the result either way in
+`docs/qa/stage-0.md` (Task 0.1A row + the credentials + driver values).
+
+DO NOT:
+- Run `arch-install-arm64.sh` (it reformats `/dev/vda` — destroys this image).
+- Proceed past a missing `/dev/dri/card0` — fix the display device first.
+
+Commit: _none (host/GUI action)._
+
+---
+
+### Task 0.3A — Create `packaging/vm/provision-arm64.sh` (Path A)   [UNVERIFIED · Path A]
+
+Repo-side file authoring (no VM needed). This is the provision-on-top counterpart
+to `arch-install-arm64.sh`: it installs deps on an already-installed system and
+does **not** touch partitions.
+
+Precondition:
+```bash
+test -f packaging/vm/arch-install-arm64.sh && echo ok   # → ok (Path B installer exists)
+```
+
+Files: Create `packaging/vm/provision-arm64.sh`
+
+Steps:
+1. Create the file with exactly this content:
+
+```bash
+#!/usr/bin/env bash
+# Provision an ALREADY-INSTALLED Arch Linux ARM VM (e.g. the UTM gallery image)
+# with RetroShell's build + runtime deps, the host SSH key, tty1 autologin, and a
+# built workspace. Run INSIDE the VM as a sudo-capable user:
+#   curl -sL http://10.0.2.2:8000/provision-arm64.sh | bash
+#
+# This does NOT partition or format any disk. It is safe to run on a live system,
+# and idempotent (safe to re-run). It is the Path-A (prebuilt image) counterpart
+# to arch-install-arm64.sh, and matches Stage 4's layer-onto-existing model.
+set -euxo pipefail
+
+USERNAME="${SUDO_USER:-$(whoami)}"
+REPO_URL="${REPO_URL:-https://github.com/palaashatri/retroshell.git}"
+REPO_BRANCH="${REPO_BRANCH:-main}"
+HOST_HTTP="${HOST_HTTP:-http://10.0.2.2:8000}"
+
+echo "=== refresh keyring + sync ==="
+sudo pacman -Sy --noconfirm archlinux-keyring || true
+
+echo "=== install build + runtime deps (no base/kernel; system already installed) ==="
+sudo pacman -S --needed --noconfirm \
+  base-devel pkgconf git curl wget rust \
+  wayland wayland-protocols libxkbcommon libinput seatd libdrm mesa \
+  vulkan-icd-loader vulkan-swrast vulkan-tools \
+  libdisplay-info pixman \
+  dbus at-spi2-core \
+  fontconfig freetype2 ttf-dejavu ttf-liberation \
+  pipewire pipewire-pulse wireplumber libpipewire \
+  polkit xorg-xwayland labwc foot \
+  imagemagick grim wl-clipboard \
+  networkmanager nm-connection-editor upower \
+  openssh htop qemu-guest-agent
+
+echo "=== ensure virtio_gpu in initramfs (KMS at boot) ==="
+if ! grep -q 'virtio_gpu' /etc/mkinitcpio.conf; then
+  sudo sed -i 's/^MODULES=(\(.*\))/MODULES=(\1 virtio_gpu)/' /etc/mkinitcpio.conf
+  sudo mkinitcpio -P
+fi
+
+echo "=== groups for seat/DRM/input ==="
+sudo usermod -aG video,input "$USERNAME"
+sudo usermod -aG seat "$USERNAME" || true   # 'seat' group may not exist until seatd
+
+echo "=== services ==="
+sudo systemctl enable --now seatd || true
+sudo systemctl enable --now sshd
+sudo systemctl enable --now qemu-guest-agent || true
+
+echo "=== install host SSH public key ==="
+install -d -m 700 "$HOME/.ssh"
+curl -sL "$HOST_HTTP/qa_key.pub" -o "$HOME/.ssh/authorized_keys"
+chmod 600 "$HOME/.ssh/authorized_keys"
+
+echo "=== autologin on tty1 ==="
+sudo mkdir -p /etc/systemd/system/getty@tty1.service.d
+sudo tee /etc/systemd/system/getty@tty1.service.d/autologin.conf >/dev/null <<EOF
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin $USERNAME --noclear %I \$TERM
+EOF
+
+echo "=== clone + build RetroShell ==="
+if [ ! -d "$HOME/retroshell" ]; then
+  git clone --branch "$REPO_BRANCH" "$REPO_URL" "$HOME/retroshell" \
+    || git clone "$REPO_URL" "$HOME/retroshell"
+fi
+mkdir -p "$HOME/.config/retroshell"
+cat > "$HOME/.config/retroshell/settings.conf" <<EOF
+theme=classic
+appearance=light
+lock_password=retroshell
+EOF
+cd "$HOME/retroshell"
+cargo build --release --workspace
+
+echo "=== done; reboot so virtio_gpu + group membership take effect ==="
+```
+
+2. Make it executable and syntax-check it:
+   ```bash
+   chmod +x packaging/vm/provision-arm64.sh
+   bash -n packaging/vm/provision-arm64.sh && echo "syntax-ok"
+   ```
+
+Acceptance:
+```bash
+bash -n packaging/vm/provision-arm64.sh && echo "syntax-ok"        # → syntax-ok
+grep -c 'sgdisk\|mkfs\|--zap-all' packaging/vm/provision-arm64.sh   # → 0 (never formats)
+grep -q 'pacman -S --needed' packaging/vm/provision-arm64.sh && echo "installs-on-top"  # → installs-on-top
+```
+→ expect: `syntax-ok`, a format-command count of exactly `0`, and `installs-on-top`.
+
+DO NOT:
+- Add any partition/format command (`sgdisk`, `mkfs`, `parted`, `--zap-all`) — this
+  script must be safe to run on a live, already-installed system.
+- Touch `arch-install-arm64.sh`.
+
+Commit: `feat(vm): provision-on-top script for prebuilt Arch ARM VM (Path A)`
+
+---
+
+### Task 0.4A — Run the provision script in the prebuilt VM (deps, SSH key, autologin, build)   [UNVERIFIED · Path A]
+
+Runs **inside the VM**, on the already-installed system. Requires Task 0.2 (host
+serving `qa_key.pub` + scripts) and Task 0.1A (VM booted with `/dev/dri/card0`).
+
+Precondition (host serving files from Task 0.2):
+```bash
+curl -s http://127.0.0.1:8000/provision-arm64.sh | head -1   # → #!/usr/bin/env bash
+```
+
+Steps:
+1. In the VM (as a sudo-capable user), run:
+   ```bash
+   curl -sL http://10.0.2.2:8000/provision-arm64.sh | bash
+   ```
+   This installs build+runtime deps with `pacman -S` (no partitioning), ensures
+   `virtio_gpu` in initramfs, adds the user to `video`/`input`/`seat`, enables
+   `seatd`+`sshd`, installs the host SSH key, sets tty1 autologin, and clones +
+   `cargo build --release --workspace`.
+2. Reboot so group membership and initramfs changes take effect.
+
+Acceptance (in the VM after reboot):
+```bash
+systemctl is-active sshd                 # → active
+ls ~/retroshell/target/release/retro-compositor ~/retroshell/target/release/retro-shell
+groups | grep -o 'seat\|video\|input'    # → video input (seat if present)
+```
+→ expect: `active`, both release binaries present, and `video`+`input` groups.
+This replaces Path B's Tasks 0.4/0.6 for the prebuilt image. Continue at Task 0.5.
+
+DO NOT:
+- Run `arch-install-arm64.sh` here — it reformats the disk.
+- Rsync the working tree yet — that is Task 0.6 (do it after SSH works, 0.5).
+
+Commit: `feat(vm): provision-on-top script for prebuilt Arch ARM VM (Path A)`
+
+---
+
+### Task 0.1 — Create the UTM aarch64 VM and boot an Arch aarch64 live ISO   [UNVERIFIED · Path B]
 
 This task is **host GUI + human**: an agent cannot click UTM. Do it by hand, then
 report the console prompt you land on.
