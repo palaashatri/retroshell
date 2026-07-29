@@ -21,7 +21,7 @@ inside the VM (Task 0.7 prints `STAGE0-DOD-PASS`).
 | 0.5 | Host reaches VM over key-based SSH | PENDING | _paste host-side `ssh … uname -m` → aarch64_ |
 | 0.6 | Working tree syncs; release workspace builds in VM | PENDING | _paste `ls` of both release binaries_ |
 | 0.7 | **DoD:** `card0` + workspace build | PENDING | _paste `STAGE0-DOD-PASS` transcript_ |
-| 0.8 | Linux CI builds the workspace (already exists) | PENDING | _paste `CI-LINUX-BUILD-PRESENT`_ |
+| 0.8 | Linux CI builds the workspace (already exists) | VERIFIED | see Transcripts: Task 0.8 |
 
 ## Runtime-confirmed values (fill in during Task 0.4)
 
@@ -36,6 +36,22 @@ These could not be known before running on the VM (see CONFIRM AT RUNTIME marker
 _Paste raw command output here, newest first. Include the command line and its
 full output. Do not summarize — the raw transcript is the evidence._
 
+### Task 0.8 — Linux CI check (host, no VM needed)
+
+```bash
+$ grep -q 'ubuntu-latest' .github/workflows/ci.yml && grep -q 'cargo build --workspace' .github/workflows/ci.yml && echo CI-LINUX-BUILD-PRESENT
+CI-LINUX-BUILD-PRESENT
+
+$ grep -n 'runs-on: ubuntu-latest' .github/workflows/ci.yml
+25:    runs-on: ubuntu-latest
+67:    runs-on: ubuntu-latest
+96:    runs-on: ubuntu-latest
+
+$ grep -n 'cargo build --workspace' .github/workflows/ci.yml
+53:        run: cargo build --workspace --all-targets --locked
+92:        run: cargo build --workspace --release --locked
+```
+
 ```text
-(none yet — Stage 0 has not been run on a VM)
+(none yet — Stage 0 VM tasks have not been run)
 ```
