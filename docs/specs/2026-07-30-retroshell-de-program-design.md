@@ -51,21 +51,46 @@ program:
 | VM tooling | `packaging/vm/*` targets **x86 VirtualBox** with `vmwgfx`. The host is **arm64 (Apple Silicon)** using **UTM**. The scripts are wrong for this machine and must be rewritten. |
 | Docs | Only `docs/QA_REPORT_2026-07-26.md` survives. All prior docs were removed in `61f95a9`. |
 
-### 2.1 Open defects inherited from the QA report (must be closed on the VM)
+### 2.1 Defect reconciliation with the QA report (verified 2026-07-30)
 
-Critical/high items that require a running compositor to fix honestly:
+The QA report is dated 2026-07-26. Commit `868b9c5` ("Fix Linux build, address
+15 defects…") landed **after** it. A verbatim re-read of the current source on
+2026-07-30 shows several QA defects are **already fixed in code** (but still
+**unverified on hardware** — the VM has never existed):
+
+- **C (DRM buffer leak) — FIXED IN CODE.** No `mem::forget`/`Box::leak`/
+  `ManuallyDrop` in `session_drm.rs`. One dumb buffer+framebuffer is allocated
+  once per session (`arm_scanout_framebuffer`, ~L253) and held for the process
+  lifetime in `_scanout_owners` (~L626/L640); the handle is reused across
+  presents (~L883). No per-frame leak.
+- **D (input discarded) — FIXED IN CODE.** libinput events are read (~L750) and
+  dispatched in `handle_libinput` (~L1128–1226): keyboard, absolute + relative
+  pointer motion, and buttons. Only touch/axis/scroll/gesture/tablet fall through
+  a `_ => {}` catch-all (~L1224).
+- **#3 (frame callbacks) — FIXED IN CODE.** Sent every tick via
+  `send_frames_surface_tree` (~L892–922), mirroring the X11 path (main.rs
+  ~L661–691).
+
+**The real remaining DRM gap** (stated in the code itself, `session_drm.rs:894`):
+the DRM path **does not yet composite client buffers to scanout** — it presents a
+blank framebuffer and keeps clients alive via frame callbacks, but does not paint
+client windows. A GL `DrmCompositor` path exists, gated behind `composition_active`;
+whether it activates on virtio-gpu is **untested**. This is Stage 1's true target
+(see §4), and its exact fix can only be written after the VM reveals runtime
+behavior — writing it blind would be fabrication.
+
+Still-open QA defects (later stages, unaffected by the above):
 
 - **A** — Lock screen does not lock a multi-client session (needs
-  `ext-session-lock-v1`). Currently a security hole: apps draw over the lock.
+  `ext-session-lock-v1`). Security hole: apps draw over the lock. (Stage 2)
 - **B** — Keyboard input never reaches `retro-shell` on the labwc fallback path.
-- **C** — DRM present **leaks a dumb buffer + framebuffer every frame**
-  (`mem::forget`), ~1/sec — unbounded kernel memory leak.
-- **D** — DRM session **discards all libinput events** — zero input on bare metal.
-- **E/F/G** — portal string parsing garbage; screenshot/record are X11-only;
+  (Stage 2 — may be moot once the real compositor path works.)
+- **E/F/G** — portal string parsing garbage; screenshot/record X11-only;
   display-arrange writes to the wrong process and fabricates output geometry.
 - **H** — `retro-bus` transports are a facade (sends discarded, never receives).
 - **I** — terminal VT parser missing cursor CSIs, ED 0/1, HT, DECSTBM scroll.
 - **J** — toolkit interaction layer largely dead (buttons/scroll/focus inert).
+  (Stage 2 needs at least clickable buttons.)
 
 ## 3. Goals & non-goals
 
@@ -107,13 +132,22 @@ the planning phase) is the living index; this section is the authoritative shape
   --release --workspace'` succeeds, transcript captured in `docs/qa/stage-0.md`.
 
 ### Stage 1 — Prove the live path (the QA report's step zero)
-- On the VM's real KMS via `session_drm.rs`, get **one app window painting**.
-- Fix, against a running binary verified over SSH:
-  - **C** DRM present leak, **D** DRM libinput input drop, and confirm **#3**
-    frame callbacks fire on the DRM path.
-- **Definition of done:** a screenshot (captured on the VM) of Finder rendered
-  by `retro-compositor` — not labwc — with a visible cursor that moved in
-  response to an injected input event. Transcript + image in `docs/qa/stage-1.md`.
+Verification-first. C/D/#3 are already fixed in code (§2.1); the unknown is
+runtime behavior on virtio-gpu, which has never been observed. Tasks:
+- Bring `retro-compositor` up on the VM's real KMS via the DRM backend
+  (`RETROSHELL_PREFER_DRM`), capture `compositor.log` + a framebuffer screenshot.
+- Diagnose empirically: does the GL `DrmCompositor` path activate
+  (`composition_active`) and composite client buffers, or does only the
+  blank dumb-buffer path run? Record the answer with evidence.
+- **If clients do not paint** (the documented gap at `session_drm.rs:894`): that
+  becomes its own grounded spec — "composite client buffers to DRM scanout" —
+  written against the observed runtime, not blind. It is explicitly **out of
+  scope for the Stage 1 task docs**, which end at diagnosis.
+- Confirm input: inject a key/pointer event, confirm it reaches a client.
+- **Definition of done:** either (a) a screenshot (captured on the VM) of Finder
+  rendered by `retro-compositor` — not labwc — proving the path works end to end;
+  or (b) an evidenced diagnosis that isolates exactly why it does not, sufficient
+  to write the compositing spec. Transcript + image in `docs/qa/stage-1.md`.
 
 ### Stage 2 — Real session
 - Keyboard/pointer routed to shell + apps (defect **B**); documented shortcuts
@@ -282,3 +316,11 @@ speculative refactors.
   store (§5.3).
 - Distribution is layer-first (install onto existing Arch/Ubuntu), with a
   bootable ISO as a secondary path built from the same session files (§4 Stage 4).
+- **Repo structure: stay a single Cargo workspace monorepo** — do not split into
+  per-component repos (gershwin-desktop style) now. The Cargo workspace gives one
+  build graph, one lockfile, atomic cross-crate refactors, and one CI; gershwin's
+  many-repos model is a FreeBSD/GNUstep *ports* constraint that does not transfer
+  to Rust. The natural split seam is Stage 3's `.app` format: once `retro-sdk`'s
+  API is stable and versioned, first-party `apps/*` can peel off into their own
+  repos — the same seam third-party app developers use. Core (compositor, shell,
+  kit, sdk, bus) stays together.
