@@ -14,7 +14,7 @@ HOSTNAME=retroshell-vm
 USERNAME=retro
 PASSWORD=retro
 REPO_URL="${REPO_URL:-https://github.com/palaashatri/retroshell.git}"
-REPO_BRANCH="${REPO_BRANCH:-fix/qa-2026-07-26-compositor-and-panics}"
+REPO_BRANCH="${REPO_BRANCH:-main}"
 
 echo "=== clock + mirrors ==="
 timedatectl set-ntp true || true
