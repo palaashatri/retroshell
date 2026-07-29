@@ -1,22 +1,23 @@
 # Stage 1 — Prove the Live Path (verification-first)
 
 > **For executors:** read [docs/tasks/README.md](README.md) first. Do tasks in
-> order. **Stage status: UNVERIFIED.** Requires Stage 0 VERIFIED (a booting VM
-> with `/dev/dri/card0` and a release build). Paste every transcript/screenshot
-> into [docs/qa/stage-1.md](../qa/stage-1.md).
+> order. **Stage status: VERIFIED — DoD (a)** (2026-07-30, Windows+VBox/`vmwgfx`).
+> Evidence in [docs/qa/stage-1.md](../qa/stage-1.md) and
+> [docs/screenshots/stage1-finder.png](../screenshots/stage1-finder.png).
 
 **Goal:** answer one question with evidence — *does `retro-compositor` actually
-paint a client window on real virtio-gpu KMS?* Per the QA report the compositor
-never ran on real KMS, so we do not assume; we observe.
+paint a client window on real KMS?* (Originally written for virtio-gpu; this run
+used VirtualBox **`vmwgfx`**.) Per the QA report the compositor never ran on real
+KMS, so we do not assume; we observe.
 
 **Why verification-first (not "fix" tasks):** QA defects C (present-buffer leak),
 D (discarded libinput events), and #3 (missing frame callbacks) were **already
 fixed** in commit `868b9c5` (see spec §2.1). Writing tasks to "fix" them would be
 fabricated work. The one code comment that flags a *real* remaining gap is at
 `crates/retro-compositor/src/session_drm.rs:894`: "the DRM path does not yet
-composite client buffers to scanout." Whether that blank-scanout path is what
-actually runs on virtio-gpu — versus the GL `DrmCompositor` path — is unknown
-until we run it. Stage 1 finds out.
+composite client buffers to scanout." **Observed on vmwgfx:** that comment is
+outdated — the GL `DrmCompositor` path ran and painted `foot` + Finder. Stage 1
+found out.
 
 **Definition of done (from PROGRAM.md):** either
 (a) a screenshot **captured on the VM** of Finder rendered by `retro-compositor`
@@ -29,8 +30,9 @@ sufficient to write the Stage-2 compositing spec.
 - All commands run **in the VM** over SSH (`ssh -i packaging/vm/qa_key -p 2222
   retro@127.0.0.1 '<cmd>'`) unless a task says "on the host."
 - Screenshots are captured **inside the VM** (`grim`, installed in Stage 0), then
-  copied to the host with `scp`. A host screenshot of the UTM window is a
-  fallback, not the primary evidence.
+  copied to the host with `scp`. A host screenshot of the VirtualBox/UTM window is
+  a fallback, not the primary evidence. (**This run:** `grim` failed — no
+  screencopy protocol — so VBox `screenshotpng` was used.)
 - Backend selection env vars (from `main.rs` `linux::run`): `RETROSHELL_PREFER_DRM`
   (defaults on when `/dev/dri` exists), `RETROSHELL_FORCE_LABWC`,
   `RETROSHELL_COMPOSITOR=labwc`. To test our own compositor on KMS we must **not**
@@ -38,7 +40,7 @@ sufficient to write the Stage-2 compositing spec.
 
 ---
 
-### Task 1.1 — Capture a baseline compositor bring-up log on KMS   [UNVERIFIED]
+### Task 1.1 — Capture a baseline compositor bring-up log on KMS   [VERIFIED]
 
 Precondition:
 ```bash
@@ -83,6 +85,10 @@ and whether it reached the event loop. Record the full log in `docs/qa/stage-1.m
 This task **passes** when you have a real log to read — pass/fail of the compositor
 itself is decided in later tasks.
 
+**Evidence (2026-07-30):** SSH `setsid` launch produced `session_mode=session_drm`,
+EGL/GBM + GLES on SVGA3D, `DrmCompositor` active, `WAYLAND_DISPLAY=wayland-1`.
+See [qa/stage-1.md](../qa/stage-1.md).
+
 DO NOT:
 - Run the compositor over a plain SSH session expecting DRM master — it needs a
   seat/TTY. Use the console for the actual run.
@@ -92,7 +98,7 @@ Commit: _none (evidence goes in qa/stage-1.md)._
 
 ---
 
-### Task 1.2 — Determine which backend actually ran   [UNVERIFIED]
+### Task 1.2 — Determine which backend actually ran   [VERIFIED — DRM]
 
 Precondition:
 ```bash
@@ -124,7 +130,7 @@ Commit: _none (evidence only)._
 
 ---
 
-### Task 1.3 — Launch a client and observe compositing   [UNVERIFIED]
+### Task 1.3 — Launch a client and observe compositing   [VERIFIED — foot painted]
 
 This is the crux: with the compositor up on DRM, does a client window paint?
 
@@ -186,7 +192,7 @@ Commit: _none (evidence goes in qa/stage-1.md; screenshot is gitignored unless i
 
 ---
 
-### Task 1.4 — If the client painted: capture Finder as the DoD screenshot   [UNVERIFIED]
+### Task 1.4 — If the client painted: capture Finder as the DoD screenshot   [VERIFIED — DoD (a)]
 
 Precondition: Task 1.3 recorded "client window painted."
 
@@ -216,7 +222,7 @@ Commit: `docs(qa): stage-1 DoD — Finder painted by retro-compositor on KMS`
 
 ---
 
-### Task 1.5 — If it did NOT paint: write the evidenced diagnosis (DoD b)   [UNVERIFIED]
+### Task 1.5 — If it did NOT paint: write the evidenced diagnosis (DoD b)   [N/A — DoD (a) met]
 
 Precondition: Task 1.2 or 1.3 recorded a failure/blank result.
 

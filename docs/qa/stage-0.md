@@ -5,36 +5,82 @@
 > never `PASS`. See the honesty contract in [../PROGRAM.md](../PROGRAM.md).
 
 **Tasks under test:** [tasks/stage-0-vm-foundation.md](../tasks/stage-0-vm-foundation.md)
+(Mac/UTM Path A/B in that doc are **dormant**; this run used the Windows +
+VirtualBox pipeline from [HANDOFF.md](../HANDOFF.md) §3.)
 
 **Stage 0 definition of done:** over SSH from the host,
 `ls /dev/dri/card0` succeeds **and** `cargo build --release --workspace` succeeds
-inside the VM (Task 0.7 prints `STAGE0-DOD-PASS`).
+inside the VM (prints `STAGE0-DOD-PASS`).
 
-## Result table
+**Stage status: VERIFIED** (2026-07-30, Windows host + VirtualBox guest).
 
-| Task | What it proves | Status | Evidence |
+## Result table (Windows + VirtualBox / x86_64)
+
+| Check | What it proves | Status | Evidence |
 |---|---|---|---|
-| 0.1 | aarch64 VM boots an aarch64 live env; `/dev/vda` present | PENDING | _paste `uname -m` / `ls /dev/vda`_ |
-| 0.2 | Host serves installer + pubkey at `10.0.2.2:8000` | PENDING | _paste `curl` head of qa_key.pub_ |
-| 0.3 | arm64 installer exists and is syntactically valid | PENDING | _paste `bash -n` + grep count_ |
-| 0.4 | Installed system autologins; sshd active; `/dev/dri/card0` | PENDING | _paste `whoami`/`systemctl is-active sshd`/`ls /dev/dri`_ |
-| 0.5 | Host reaches VM over key-based SSH | PENDING | _paste host-side `ssh … uname -m` → aarch64_ |
-| 0.6 | Working tree syncs; release workspace builds in VM | PENDING | _paste `ls` of both release binaries_ |
-| 0.7 | **DoD:** `card0` + workspace build | PENDING | _paste `STAGE0-DOD-PASS` transcript_ |
-| 0.8 | Linux CI builds the workspace (already exists) | VERIFIED | see Transcripts: Task 0.8 |
+| VM exists | `retroshell-arch` with EFI, VMSVGA+3D, NAT `:2222→22` | VERIFIED | VBoxManage showvminfo (below) |
+| Autologin | boots to `retro` on tty1 | VERIFIED | screenshot + `whoami` |
+| SSH key | host reaches guest with `qa_key`, no password | VERIFIED | `uname -m` → `x86_64` |
+| KMS | `/dev/dri/card0` + `vmwgfx` | VERIFIED | transcript below |
+| Workspace build | `cargo build --release --workspace` | VERIFIED | `STAGE0-DOD-PASS` |
+| 0.8 CI | Linux CI builds workspace | VERIFIED | see Transcripts: Task 0.8 |
 
-## Runtime-confirmed values (fill in during Task 0.4)
+Mac/UTM Path A/B tasks in the Stage-0 task doc remain **UNVERIFIED** (dormant on
+this machine; not required for Stage 0 DoD here).
 
-These could not be known before running on the VM (see CONFIRM AT RUNTIME markers):
+## Runtime-confirmed values (Windows path)
 
-- aarch64 kernel package used (`linux` vs `linux-aarch64`): _____
-- aarch64 live ISO source/version: _____
-- DRM driver bound to card0 (`virtio_gpu` expected): _____
+- Host: Windows x86_64, VirtualBox 7.2.12
+- Guest arch: `x86_64`
+- DRM driver bound to card0: **`vmwgfx`**
+- Disk: `/dev/sda2` (~59G root)
+- User: `retro` (autologin tty1); SSH via `packaging/vm/qa_key`
 
 ## Transcripts
 
 _Paste raw command output here, newest first. Include the command line and its
 full output. Do not summarize — the raw transcript is the evidence._
+
+### Stage 0 DoD (2026-07-30, Windows host)
+
+```text
+$ ssh -i packaging/vm/qa_key -p 2222 retro@127.0.0.1 \
+    'ls /dev/dri/card0 && lsmod | grep vmwgfx | head -1 && cd ~/retroshell && cargo build --release --workspace && echo STAGE0-DOD-PASS'
+/dev/dri/card0
+vmwgfx                491520  0
+… (crate downloads + compile) …
+    Finished `release` profile [optimized] target(s) in 5m 32s
+STAGE0-DOD-PASS
+```
+
+Follow-up probe:
+
+```text
+$ ssh -i packaging/vm/qa_key -p 2222 retro@127.0.0.1 \
+    'ls /dev/dri/card0 && lsmod | grep vmwgfx; ls -1 ~/retroshell/target/release/retro-compositor ~/retroshell/target/release/retro-shell; uname -m; whoami; systemctl is-active sshd'
+/dev/dri/card0
+vmwgfx                491520  0
+drm_ttm_helper         20480  2 vmwgfx
+ttm                   151552  2 vmwgfx,drm_ttm_helper
+/home/retro/retroshell/target/release/retro-compositor
+/home/retro/retroshell/target/release/retro-shell
+x86_64
+retro
+active
+```
+
+### VM hardware (host)
+
+```text
+name="retroshell-arch"
+memory=8192
+firmware="EFI"
+cpus=4
+graphicscontroller="vmsvga"
+accelerate3d="on"
+NIC 1 Rule(0): ssh … host port = 2222 … guest port = 22
+Boot Device 1: HardDisk
+```
 
 ### Task 0.8 — Linux CI check (host, no VM needed)
 
@@ -50,8 +96,4 @@ $ grep -n 'runs-on: ubuntu-latest' .github/workflows/ci.yml
 $ grep -n 'cargo build --workspace' .github/workflows/ci.yml
 53:        run: cargo build --workspace --all-targets --locked
 92:        run: cargo build --workspace --release --locked
-```
-
-```text
-(none yet — Stage 0 VM tasks have not been run)
 ```

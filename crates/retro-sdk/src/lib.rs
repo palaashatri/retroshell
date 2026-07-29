@@ -392,17 +392,15 @@ impl Application {
         impl retro_render::event_loop::RetroAppHandler for AppHandler {
             fn init(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
                 let initial_size = self.initial_size;
-                let mut attrs = winit::window::Window::default_attributes()
+                // No winit/Adwaita CSD — classic Mac chrome is drawn by the kit
+                // (title bar) and the global menu lives in retro-shell layer-shell.
+                let attrs = winit::window::Window::default_attributes()
                     .with_title(&self.name)
                     .with_inner_size(winit::dpi::LogicalSize::new(
                         initial_size.width,
                         initial_size.height,
-                    ));
-                // FIXME: Hardcoded application name comparison ("RetroShell") to determine borderless state.
-                // This property should ideally be configured dynamically via options in App.toml or manifest attributes.
-                if self.name == "RetroShell" {
-                    attrs = attrs.with_decorations(false);
-                }
+                    ))
+                    .with_decorations(false);
 
                 match event_loop.create_window(attrs) {
                     Ok(window) => {

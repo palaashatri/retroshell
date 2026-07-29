@@ -116,9 +116,10 @@ compositor. These were written for VirtualBox and are correct here.
 | `2983fa7` | Stage 0 Task 0.8 **VERIFIED**: Linux CI builds the workspace |
 | `76805a0` `f28551d` `a105f7c` | Path A (UTM prebuilt image) — Mac-only, dormant here |
 
-**Verified so far:** only Task 0.8 (Linux CI builds `--workspace` on
-ubuntu-latest — that CI already existed). **Everything requiring the VM is
-UNVERIFIED** — no compositor has run on KMS yet. That is the immediate work.
+**Verified on this Windows+VBox machine (2026-07-30):** Stage 0 DoD
+(`card0`/`vmwgfx` + `STAGE0-DOD-PASS`) and Stage 1 DoD **(a)** (Finder painted by
+`retro-compositor` on DRM — see `docs/screenshots/stage1-finder.png` and
+`docs/qa/stage-1.md`). Mac/UTM Path-A tasks remain dormant/UNVERIFIED.
 
 ## 5. Stage 1 (after Stage 0 passes) — verification-first
 

@@ -40,8 +40,8 @@ See [docs/tasks/README.md](tasks/README.md) for the task format and status legen
 
 | Stage | Goal | Status | Docs |
 |---|---|---|---|
-| 0 | Arch VM with real KMS + SSH bridge (VBox/x86 active, UTM/arm64 dormant); Linux CI (exists) | Planned, unverified | [HANDOFF.md](HANDOFF.md) · [tasks/stage-0-vm-foundation.md](tasks/stage-0-vm-foundation.md) · [qa/stage-0.md](qa/stage-0.md) |
-| 1 | Prove the live path: one app window painting on the VM (verify-first) | Planned, unverified | [tasks/stage-1-prove-live-path.md](tasks/stage-1-prove-live-path.md) · [qa/stage-1.md](qa/stage-1.md) |
+| 0 | Arch VM with real KMS + SSH bridge (VBox/x86 active, UTM/arm64 dormant); Linux CI (exists) | **VERIFIED** (2026-07-30, Windows+VBox: `card0`/`vmwgfx` + `STAGE0-DOD-PASS`) | [HANDOFF.md](HANDOFF.md) · [tasks/stage-0-vm-foundation.md](tasks/stage-0-vm-foundation.md) · [qa/stage-0.md](qa/stage-0.md) |
+| 1 | Prove the live path: one app window painting on the VM (verify-first) | **VERIFIED** DoD (a) (2026-07-30: Finder on `retro-compositor` DRM/`vmwgfx`) | [tasks/stage-1-prove-live-path.md](tasks/stage-1-prove-live-path.md) · [qa/stage-1.md](qa/stage-1.md) · [screenshots/stage1-finder.png](screenshots/stage1-finder.png) |
 | 2 | Real session: input routing, working shortcuts, `ext-session-lock-v1`, clickable toolkit | Not yet specced | — |
 | 3 | Self-contained `.app` bundles + app store that installs them | Not yet specced | — |
 | 4 | Distribution: layer onto Arch/Ubuntu (primary) + bootable ISO (secondary) | Not yet specced | — |

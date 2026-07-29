@@ -15,6 +15,7 @@ USERNAME=retro
 PASSWORD=retro
 REPO_URL="${REPO_URL:-https://github.com/palaashatri/retroshell.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
+HOST_HTTP="${HOST_HTTP:-http://10.0.2.2:8000}"   # host file server (qa_key.pub)
 
 echo "=== clock + mirrors ==="
 timedatectl set-ntp true || true
@@ -91,6 +92,12 @@ cat > /etc/systemd/system/getty@tty1.service.d/autologin.conf <<EOF
 ExecStart=
 ExecStart=-/sbin/agetty -o '-p -f -- \\\\u' --noclear --autologin $USERNAME %I \$TERM
 EOF
+
+# Install the host's SSH public key for the retro user (served by Task 0.2).
+install -d -m 700 -o $USERNAME -g $USERNAME /home/$USERNAME/.ssh
+curl -sL $HOST_HTTP/qa_key.pub -o /home/$USERNAME/.ssh/authorized_keys
+chown $USERNAME:$USERNAME /home/$USERNAME/.ssh/authorized_keys
+chmod 600 /home/$USERNAME/.ssh/authorized_keys
 CHROOT
 
 echo "=== clone + build RetroShell as $USERNAME ==="
