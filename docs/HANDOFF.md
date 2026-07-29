@@ -133,7 +133,27 @@ composite client buffers to scanout") — but whether that blank-scanout path or
 GL `DrmCompositor` path runs on this GPU is unknown until observed. Full tasks:
 [tasks/stage-1-prove-live-path.md](tasks/stage-1-prove-live-path.md). DoD: a VM
 screenshot of Finder painted by `retro-compositor` (not labwc) **or** an evidenced
-diagnosis of exactly why it doesn't.
+diagnosis of exactly why it doesn't. **Done** — Stage 1 passed DoD (a).
+
+## 5a. The road ahead — Stages 2–4 are now specced (authored 2026-07-30)
+
+Atomic, executable task docs + QA docs exist for the remaining stages. Do them in
+order; each opens with a re-ground/verify task and every task ends in a copy-paste
+acceptance command. **All are UNVERIFIED until run on the VM.**
+
+- **Stage 2 — Real session:** [tasks/stage-2-real-session.md](tasks/stage-2-real-session.md)
+  · [qa/stage-2.md](qa/stage-2.md). Honest surprise from grounding: input already
+  works on the DRM path and `Widget::draw` is a no-op abstraction — so defects B/J
+  are *verification* tasks, and the real work is `ext-session-lock-v1` (2.3–2.6,
+  compositor/protocol — use a strong model, not a 4B one). DoD: lock unbypassable,
+  password unlock, `Super+O` opens Finder.
+- **Stage 3 — `.app` bundles + store:** [tasks/stage-3-app-bundles.md](tasks/stage-3-app-bundles.md)
+  · [qa/stage-3.md](qa/stage-3.md). Mostly host-testable (`cargo test`) until the
+  VM DoD. Uses spec §5.2 `Info.toml` (not the older `App.toml`).
+- **Stage 4 — Distribution:** [tasks/stage-4-distribution.md](tasks/stage-4-distribution.md)
+  · [qa/stage-4.md](qa/stage-4.md). Primary path is a layered `install.sh` reusing
+  the existing `scripts/install-session-files.sh`; needs a clean Arch VM **and** a
+  clean Ubuntu-server VM, plus an archiso ISO.
 
 ## 6. Decisions carried over (memory did not transfer)
 
