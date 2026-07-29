@@ -1,8 +1,0 @@
-target/
-target-docker/
-.git/
-*.png
-*.jpg
-*.mp4
-*.mov
-node_modules/
