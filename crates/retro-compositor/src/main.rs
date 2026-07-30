@@ -283,6 +283,8 @@ mod linux {
         xdisplay: Option<u32>,
         /// X11 surfaces we know about (not fully managed yet under nested X11).
         x11_surfaces: Vec<X11WmSurface>,
+        /// Wayland socket name advertised to spawned clients (Super+O/L shortcuts).
+        wayland_socket_name: String,
     }
 
     impl RetroCompositor {
@@ -1466,6 +1468,20 @@ mod linux {
                     // Super+Right / Super+Left: cycle virtual workspaces (live filter).
                     if key_state == KeyState::Pressed && mods.logo {
                         let sym = keysym.modified_sym();
+                        if sym == Keysym::o || sym == Keysym::O {
+                            retro_compositor::client_spawn::spawn_client(
+                                &data.wayland_socket_name,
+                                "finder",
+                            );
+                            return FilterResult::Intercept(());
+                        }
+                        if sym == Keysym::l || sym == Keysym::L {
+                            retro_compositor::client_spawn::spawn_client(
+                                &data.wayland_socket_name,
+                                "retro-lock",
+                            );
+                            return FilterResult::Intercept(());
+                        }
                         if sym == Keysym::Right || sym == Keysym::Page_Down {
                             data.cycle_workspace_next();
                             return FilterResult::Intercept(());
@@ -2036,6 +2052,7 @@ mod linux {
             xwm: None,
             xdisplay: None,
             x11_surfaces: Vec::new(),
+            wayland_socket_name: socket_name.clone(),
         };
 
         // P1.3: best-effort XWayland after state exists (needs loop_handle + display).

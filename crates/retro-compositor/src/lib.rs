@@ -4,6 +4,7 @@ pub mod frame_timing;
 pub mod hdr;
 pub mod perf_budget;
 pub mod workspace_focus;
+pub mod client_spawn;
 
 pub use workspace_focus::{
     assign_new_window_to_active, focus_window_after_workspace_switch, hit_test_allowed,

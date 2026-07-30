@@ -62,8 +62,8 @@ pub use audio::{
 };
 pub use capture::{start_recording, stop_recording, take_screenshot};
 pub use chrome_protocol::{
-    chrome_focus_order, next_chrome_focus, should_paint_kit_chrome, ChromeFocusTarget, ChromeRole,
-    ChromeSession, ProtocolChromeSurface,
+    chrome_focus_order, next_chrome_focus, session_output_size, should_paint_kit_chrome,
+    ChromeFocusTarget, ChromeRole, ChromeSession, ProtocolChromeSurface,
 };
 pub use desktop_manager::DesktopManager;
 pub use dock::Dock;
@@ -318,12 +318,22 @@ impl RetroShell {
     ///
     /// Call after `WAYLAND_DISPLAY` is set (compositor/labwc running). Non-fatal.
     pub(crate) fn attach_wayland_session_protocols(desktop: &mut ShellDesktop) {
-        if let Some(summary) = layer_shell_client::try_map_layer_shell_chrome(&desktop.chrome) {
-            tracing::info!(
-                surfaces = ?summary.mapped_namespaces,
-                "shell mapped layer-shell chrome"
+        // Layer-shell bind deferred: gray placeholder buffers replace kit chrome when
+        // layer_shell_bound is set. Kit paint owns menu bar + dock until real pixels ship.
+        if std::env::var_os("RETROSHELL_LAYER_SHELL_CHROME").is_some() {
+            if let Some(summary) =
+                layer_shell_client::try_map_layer_shell_chrome(&desktop.chrome)
+            {
+                tracing::info!(
+                    surfaces = ?summary.mapped_namespaces,
+                    "shell mapped layer-shell chrome (opt-in)"
+                );
+                desktop.layer_shell_bound = true;
+            }
+        } else {
+            tracing::debug!(
+                "layer-shell chrome bind skipped; kit menu bar + dock paint active"
             );
-            desktop.layer_shell_bound = true;
         }
         if let Some(n) =
             foreign_toplevel_client::try_sync_foreign_toplevels(&mut desktop.foreign_toplevels)
@@ -334,8 +344,9 @@ impl RetroShell {
     }
 
     pub fn run(&self) -> Result<()> {
+        let (out_w, out_h) = session_output_size();
         let mut app = retro_sdk::Application::new("RetroShell", "com.retro.shell");
-        app.set_initial_size(Size::new(1280.0, 800.0));
+        app.set_initial_size(Size::new(out_w as f32, out_h as f32));
 
         let desktop_view = ShellDesktop::new(
             self.menu_server.clone(),
@@ -416,6 +427,8 @@ struct ShellDesktop {
     last_mime_open: Option<OpenPlan>,
     /// Last menu-bar status refresh (battery / volume / network).
     last_status_refresh: std::time::Instant,
+    /// Throttle foreign-toplevel → global menu sync for compositor-spawned clients.
+    last_foreign_menu_sync: std::time::Instant,
     /// Last network connect attempt outcome (tests + status UI).
     last_network_connect: Option<std::result::Result<String, String>>,
     /// When false, network connect validates/plans only (unit tests; no nmcli spawn).
@@ -541,7 +554,12 @@ impl ShellDesktop {
             expected_lock_password,
             session_clients: SessionClientRegistry::new(),
             // Protocol chrome: menu bar (24) + dock (64) matching content_bounds insets.
-            chrome: ChromeSession::bootstrap_default(1280, 800, 24, 64),
+            chrome: ChromeSession::bootstrap_default(
+                session_output_size().0,
+                session_output_size().1,
+                24,
+                64,
+            ),
             foreign_toplevels: ForeignToplevelRegistry::new(),
             layer_shell_bound: false,
             foreign_toplevel_synced: false,
@@ -558,6 +576,7 @@ impl ShellDesktop {
             mime_open_spawn: true,
             last_mime_open: None,
             last_status_refresh: std::time::Instant::now(),
+            last_foreign_menu_sync: std::time::Instant::now(),
             last_network_connect: None,
             network_connect_spawn: true,
         };
@@ -1049,6 +1068,59 @@ impl ShellDesktop {
         };
         if let Err(err) = self.menu_server.write().load_menu_manifests_from_dir(dir) {
             tracing::warn!("failed to load menu manifests: {err}");
+        }
+    }
+
+    /// Map compositor foreign-toplevel `app_id` to a RetroShell bundle id.
+    fn bundle_id_for_foreign_app_id(app_id: &str) -> Option<&'static str> {
+        let id = app_id.trim().to_ascii_lowercase();
+        match id.as_str() {
+            "finder" => Some("com.retro.finder"),
+            "settings" => Some("com.retro.settings"),
+            "terminal" => Some("com.retro.terminal"),
+            "textedit" => Some("com.retro.textedit"),
+            "appstore" => Some("com.retro.appstore"),
+            _ => None,
+        }
+    }
+
+    /// When compositor spawns clients (Super+O), sync their menus into the shell bar.
+    fn maybe_sync_foreign_app_menu(&mut self) {
+        if self.last_foreign_menu_sync.elapsed() < std::time::Duration::from_secs(2) {
+            return;
+        }
+        self.last_foreign_menu_sync = std::time::Instant::now();
+        foreign_toplevel_client::try_sync_foreign_toplevels(&mut self.foreign_toplevels);
+
+        let active_internal = self.window_manager.read().active_window.and_then(|id| {
+            self.window_manager
+                .read()
+                .windows
+                .get(&id)
+                .map(|w| w.app_id.clone())
+        });
+
+        if let Some(app_id) = active_internal {
+            if app_id != "com.retro.finder" {
+                return;
+            }
+        }
+
+        let session_bundle = self
+            .session_clients
+            .clients()
+            .map(|c| c.bundle_id.clone())
+            .next();
+
+        let foreign_bundle = self
+            .foreign_toplevels
+            .entries()
+            .find_map(|e| Self::bundle_id_for_foreign_app_id(&e.app_id))
+            .map(str::to_owned);
+
+        let bundle = session_bundle.or(foreign_bundle);
+        if let Some(bundle) = bundle {
+            self.activate_app_menu(&bundle);
         }
     }
 
@@ -3300,6 +3372,8 @@ impl Widget for ShellDesktop {
             self.menu_server.write().refresh_status_items();
             self.last_status_refresh = std::time::Instant::now();
         }
+
+        self.maybe_sync_foreign_app_menu();
 
         // Update lock screen widget with current password field state (i18n strings).
         if self.locked {

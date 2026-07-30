@@ -2,8 +2,8 @@
 //! layer-shell role surfaces — not ShellWindow paint-rects.
 //!
 //! Pure geometry / session state; testable on any host (including macOS).
-//! When [`should_paint_kit_chrome`] is false (layer-shell client bound), the
-//! shell skips kit paint for menu bar/dock so chrome is not dual-drawn.
+//! Kit paint for menu bar + dock stays on via [`should_paint_kit_chrome`] until
+//! layer-shell surfaces carry real pixels (not gray placeholders).
 
 /// Layer-shell chrome role for protocol surfaces owned by the shell session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -172,10 +172,24 @@ impl ChromeSession {
 
 /// Whether the shell should still paint menu bar / dock with kit widgets.
 ///
-/// - `layer_shell_bound == true` → **false** (protocol chrome owns presentation)
-/// - otherwise → **true** (fallback paint for environments without layer-shell)
-pub fn should_paint_kit_chrome(layer_shell_bound: bool) -> bool {
-    !layer_shell_bound
+/// Layer-shell surfaces currently carry gray placeholder buffers only. Kit paint
+/// stays enabled so session chrome (menu bar + dock) remains visible at the top
+/// and bottom of the fullscreen shell surface until layer-shell carries real pixels.
+pub fn should_paint_kit_chrome(_layer_shell_bound: bool) -> bool {
+    true
+}
+
+/// Compositor output size from `RETROSHELL_COMPOSITOR_WIDTH` / `HEIGHT` (default 1024×768).
+pub fn session_output_size() -> (i32, i32) {
+    let w = std::env::var("RETROSHELL_COMPOSITOR_WIDTH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1024);
+    let h = std::env::var("RETROSHELL_COMPOSITOR_HEIGHT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(768);
+    (w.max(1), h.max(1))
 }
 
 /// Keyboard-only focus ring order for session chrome + desktop content.
@@ -209,9 +223,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn should_paint_kit_chrome_false_when_layer_bound() {
+    fn should_paint_kit_chrome_always_true_until_layer_pixels() {
         assert!(should_paint_kit_chrome(false));
-        assert!(!should_paint_kit_chrome(true));
+        assert!(should_paint_kit_chrome(true));
     }
 
     #[test]

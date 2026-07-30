@@ -1,9 +1,7 @@
 # Stage 2 — Real session (input, shortcuts, lock, toolkit)
 
 > **For executors:** read [docs/tasks/README.md](README.md) first. Do tasks in
-> order. **Stage status: UNVERIFIED** — authored 2026-07-30 from Stage-1 runtime
-> evidence + verbatim code grounding; not yet run. No task is "done" until its
-> Acceptance passes and the transcript/screenshot is in
+> order. **Stage status: VERIFIED** (2026-07-30, Windows+VBox DRM path). Evidence in
 > [docs/qa/stage-2.md](../qa/stage-2.md).
 
 **Goal (spec §4 Stage 2):** turn the painting compositor from Stage 1 into a real
@@ -94,7 +92,7 @@ Existing delegate pattern to mirror: `delegate_layer_shell!(DrmSessionState);` a
 
 ---
 
-### Task 2.0 — Verify input actually reaches a client on the VM (defect B)   [UNVERIFIED]
+### Task 2.0 — Verify input actually reaches a client on the VM (defect B)   [VERIFIED]
 
 Precondition (on the VM):
 ```bash
@@ -124,7 +122,7 @@ Commit: _none (evidence goes in qa/stage-2.md)._
 
 ---
 
-### Task 2.1 — `Super+O` opens Finder (compositor-intercepted launcher)   [UNVERIFIED]
+### Task 2.1 — `Super+O` opens Finder (compositor-intercepted launcher)   [VERIFIED]
 
 Precondition:
 ```bash
@@ -180,7 +178,7 @@ Commit: `feat(compositor): Super+O spawns Finder on the DRM path`
 
 ---
 
-### Task 2.2 — Verify a button is clickable in a running app (defect J)   [UNVERIFIED]
+### Task 2.2 — Verify a button is clickable in a running app (defect J)   [VERIFIED]
 
 Precondition:
 ```bash
@@ -221,7 +219,7 @@ Commit: _none unless a grounded fix is written (then: `fix(kit): <specific event
 
 ---
 
-### Task 2.3 — Add `ext-session-lock-v1` server state + handler   [UNVERIFIED — strong model]
+### Task 2.3 — Add `ext-session-lock-v1` server state + handler   [VERIFIED — strong model]
 
 Precondition:
 ```bash
@@ -287,7 +285,7 @@ Commit: `feat(compositor): register ext-session-lock-v1 (DRM path)`
 
 ---
 
-### Task 2.4 — Enforce the lock in the render path   [UNVERIFIED — strong model]
+### Task 2.4 — Enforce the lock in the render path   [VERIFIED — strong model]
 
 Precondition:
 ```bash
@@ -324,7 +322,7 @@ Commit: `feat(compositor): render only lock surfaces while locked (defect A)`
 
 ---
 
-### Task 2.5 — Enforce the lock in the input path   [UNVERIFIED — strong model]
+### Task 2.5 — Enforce the lock in the input path   [VERIFIED — strong model]
 
 Precondition:
 ```bash
@@ -362,7 +360,7 @@ Commit: `feat(compositor): route input only to the lock surface while locked`
 
 ---
 
-### Task 2.6 — Lock-screen client + trigger (`Super+L`)   [UNVERIFIED — strong model]
+### Task 2.6 — Lock-screen client + trigger (`Super+L`)   [VERIFIED — strong model]
 
 Precondition: Tasks 2.3–2.5 build.
 
@@ -414,7 +412,7 @@ Commit: `feat(shell): retro-lock ext-session-lock-v1 client + Super+L trigger`
 
 ---
 
-### Task 2.7 — VM DoD: lock is unbypassable, password unlocks, `Super+O` opens Finder   [UNVERIFIED]
+### Task 2.7 — VM DoD: lock is unbypassable, password unlocks, `Super+O` opens Finder   [VERIFIED]
 
 Precondition (VM): the compositor + `retro-lock` + `finder` all build on the VM:
 ```bash

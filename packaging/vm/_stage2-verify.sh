@@ -2,14 +2,14 @@
 # Stage 2 hold script — compositor + foot; host injects keys via VBox.
 set -uxo pipefail
 
-QA=~/qa-stage2
+QA="${HOME}/qa-stage2"
 mkdir -p "$QA"
 exec > >(tee "$QA/run.log") 2>&1
 
-pkill -f './target/release/retro-compositor' 2>/dev/null || true
-pkill -x foot 2>/dev/null || true
-pkill -f retro-lock 2>/dev/null || true
-pkill -x finder 2>/dev/null || true
+pkill -9 -f '[r]etro-compositor' 2>/dev/null || true
+pkill -9 -x foot 2>/dev/null || true
+pkill -9 -x finder 2>/dev/null || true
+pkill -9 -f retro-lock 2>/dev/null || true
 sleep 1
 
 export RETROSHELL_LOCK_PASSWORD=retroshell
@@ -59,17 +59,23 @@ pgrep -x foot >/dev/null && echo "FOOT_ALIVE=YES" >> "$QA/STATUS" || {
 }
 
 marker() {
-  echo "$1" > "$QA/MARKER"
-  echo "MARKER=$1" >> "$QA/run.log"
-  sleep "${2:-120}"
+  local name="$1"
+  rm -f "$QA/DONE_${name}"
+  echo "$name" > "$QA/MARKER"
+  echo "MARKER=$name" >> "$QA/run.log"
+  while [ ! -f "$QA/DONE_${name}" ]; do
+    sleep 1
+  done
+  rm -f "$QA/DONE_${name}"
 }
 
-marker WAIT_INPUT 150
-marker WAIT_SUPER_O 150
-marker WAIT_SUPER_L 150
-marker WAIT_LOCK_BYPASS 150
-marker WAIT_UNLOCK 150
-marker WAIT_SUPER_O2 150
+marker WAIT_INPUT
+marker WAIT_SUPER_O
+marker WAIT_BUTTON
+marker WAIT_SUPER_L
+marker WAIT_LOCK_BYPASS
+marker WAIT_UNLOCK
+marker WAIT_SUPER_O2
 
 echo "STAGE2_VERIFY_DONE" >> "$QA/STATUS"
 sleep 60

@@ -119,7 +119,8 @@ compositor. These were written for VirtualBox and are correct here.
 **Verified on this Windows+VBox machine (2026-07-30):** Stage 0 DoD
 (`card0`/`vmwgfx` + `STAGE0-DOD-PASS`) and Stage 1 DoD **(a)** (Finder painted by
 `retro-compositor` on DRM — see `docs/screenshots/stage1-finder.png` and
-`docs/qa/stage-1.md`). Mac/UTM Path-A tasks remain dormant/UNVERIFIED.
+`docs/qa/stage-1.md`). **Stage 2 is VERIFIED** — see `docs/qa/stage-2.md`.
+Mac/UTM Path-A tasks remain dormant/UNVERIFIED.
 
 ## 5. Stage 1 (after Stage 0 passes) — verification-first
 
@@ -139,14 +140,12 @@ diagnosis of exactly why it doesn't. **Done** — Stage 1 passed DoD (a).
 
 Atomic, executable task docs + QA docs exist for the remaining stages. Do them in
 order; each opens with a re-ground/verify task and every task ends in a copy-paste
-acceptance command. **All are UNVERIFIED until run on the VM.**
+acceptance command. **Stage 2 is VERIFIED** on the VBox DRM path (2026-07-30).
+Stages 3–4 are UNVERIFIED until run on the VM.
 
 - **Stage 2 — Real session:** [tasks/stage-2-real-session.md](tasks/stage-2-real-session.md)
-  · [qa/stage-2.md](qa/stage-2.md). Honest surprise from grounding: input already
-  works on the DRM path and `Widget::draw` is a no-op abstraction — so defects B/J
-  are *verification* tasks, and the real work is `ext-session-lock-v1` (2.3–2.6,
-  compositor/protocol — use a strong model, not a 4B one). DoD: lock unbypassable,
-  password unlock, `Super+O` opens Finder.
+  · [qa/stage-2.md](qa/stage-2.md). **Done** — lock unbypassable, `retro-lock`
+  password unlock, `Super+O` opens Finder, button click proves defect J fixed.
 - **Stage 3 — `.app` bundles + store:** [tasks/stage-3-app-bundles.md](tasks/stage-3-app-bundles.md)
   · [qa/stage-3.md](qa/stage-3.md). Mostly host-testable (`cargo test`) until the
   VM DoD. Uses spec §5.2 `Info.toml` (not the older `App.toml`).

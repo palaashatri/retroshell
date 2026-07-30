@@ -730,6 +730,8 @@ pub fn run_drm_session() -> Result<()> {
     // Advertise connector mode when known; else env/default virtual size.
     let w = modeset_plan.mode_w;
     let h = modeset_plan.mode_h;
+    std::env::set_var("RETROSHELL_COMPOSITOR_WIDTH", w.to_string());
+    std::env::set_var("RETROSHELL_COMPOSITOR_HEIGHT", h.to_string());
     let out_refresh = if modeset_plan.refresh_mhz > 0 {
         modeset_plan.refresh_mhz
     } else {
@@ -845,7 +847,6 @@ pub fn run_drm_session() -> Result<()> {
         session_lock_state,
         locked: false,
         lock_surfaces: Vec::new(),
-        lock_password_buffer: String::new(),
         wayland_socket_name: socket_name,
         outputs: vec![output],
         windows: Vec::new(),
@@ -871,6 +872,7 @@ pub fn run_drm_session() -> Result<()> {
     eprintln!(
         "[retro-compositor] DRM session loop running (Wayland + seat + udev + libinput + layer-shell + foreign-toplevel; scanout_armed={scanout_armed})"
     );
+    crate::client_spawn::spawn_client(&state.wayland_socket_name, "retro-shell");
     let clock = Clock::<Monotonic>::new();
     let mut frame_i: u64 = 0;
     while state.running {
@@ -1063,7 +1065,6 @@ struct DrmSessionState {
     session_lock_state: SessionLockManagerState,
     locked: bool,
     lock_surfaces: Vec<(Output, LockSurface)>,
-    lock_password_buffer: String,
     wayland_socket_name: String,
     #[allow(dead_code)]
     outputs: Vec<Output>,
@@ -1147,52 +1148,9 @@ impl DrmSessionState {
             .map(|(_, lock)| lock.wl_surface().clone())
     }
 
-    /// Compositor-side password buffer while locked. The lock client paints the
-    /// prompt; keystrokes are verified here so unlock works even when the lock
-    /// surface has not yet received wl_keyboard focus from the seat.
-    fn handle_lock_password_key(&mut self, sym: smithay::input::keyboard::Keysym) {
-        use smithay::input::keyboard::Keysym;
-        if sym == Keysym::Return || sym == Keysym::KP_Enter {
-            let expected = std::env::var("RETROSHELL_LOCK_PASSWORD")
-                .unwrap_or_else(|_| "retroshell".to_string());
-            if self.lock_password_buffer == expected {
-                self.unlock();
-            }
-            self.lock_password_buffer.clear();
-            return;
-        }
-        if sym == Keysym::BackSpace {
-            self.lock_password_buffer.pop();
-            return;
-        }
-        let raw: u32 = sym.into();
-        if (32..=126).contains(&raw) {
-            if let Some(ch) = char::from_u32(raw) {
-                self.lock_password_buffer.push(ch);
-            }
-        }
-    }
-
     /// Spawn a first-party binary as a Wayland client of this compositor.
     fn spawn_client(&self, bin: &str) {
-        let path = resolve_client_bin(bin);
-        let mut cmd = std::process::Command::new(&path);
-        cmd.env("WAYLAND_DISPLAY", &self.wayland_socket_name)
-            .env("WINIT_UNIX_BACKEND", "wayland");
-        if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
-            cmd.env("XDG_RUNTIME_DIR", runtime);
-        }
-        if let Ok(pw) = std::env::var("RETROSHELL_LOCK_PASSWORD") {
-            cmd.env("RETROSHELL_LOCK_PASSWORD", pw);
-        }
-        match cmd.spawn() {
-            Ok(child) => {
-                tracing::info!(bin, pid = child.id(), path = %path.display(), "spawned client");
-            }
-            Err(err) => {
-                tracing::warn!(error = %err, bin, path = %path.display(), "spawn_client failed");
-            }
-        }
+        crate::client_spawn::spawn_client(&self.wayland_socket_name, bin);
     }
 
     /// Super+workspace (or other key) entry points — full redraw + focus rebind.
@@ -1279,9 +1237,6 @@ impl DrmSessionState {
                     if data.locked {
                         if key_state == KeyState::Pressed && mods.logo {
                             return FilterResult::Intercept(());
-                        }
-                        if key_state == KeyState::Pressed {
-                            data.handle_lock_password_key(keysym.modified_sym());
                         }
                         return FilterResult::Forward;
                     }
@@ -1424,38 +1379,6 @@ impl DrmSessionState {
         set_data_device_focus(&self.display_handle, &self.seat, client.clone());
         set_primary_focus(&self.display_handle, &self.seat, client);
     }
-}
-
-fn resolve_client_bin(bin: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-
-    if let Ok(path) = std::env::var("PATH") {
-        for dir in path.split(':').filter(|d| !d.is_empty()) {
-            let candidate = Path::new(dir).join(bin);
-            if candidate.is_file() {
-                if candidate
-                    .metadata()
-                    .map(|m| m.permissions().mode() & 0o111 != 0)
-                    .unwrap_or(false)
-                {
-                    return candidate;
-                }
-            }
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        let candidate = PathBuf::from(home)
-            .join("retroshell/target/release")
-            .join(bin);
-        if candidate.is_file() {
-            return candidate;
-        }
-    }
-    let system = PathBuf::from(format!("/usr/local/bin/{bin}"));
-    if system.is_file() {
-        return system;
-    }
-    PathBuf::from(bin)
 }
 
 // ---------------------------------------------------------------------------
@@ -1799,7 +1722,6 @@ impl SessionLockHandler for DrmSessionState {
 
     fn lock(&mut self, confirmation: SessionLocker) {
         self.locked = true;
-        self.lock_password_buffer.clear();
         confirmation.lock();
         if let Some(surf) = self.active_lock_surface() {
             self.focus_surface(Some(surf));
@@ -1811,7 +1733,6 @@ impl SessionLockHandler for DrmSessionState {
 
     fn unlock(&mut self) {
         self.locked = false;
-        self.lock_password_buffer.clear();
         self.lock_surfaces.clear();
         self.apply_focus_after_workspace_switch();
         self.request_full_redraw();

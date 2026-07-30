@@ -26,7 +26,7 @@ use smithay_client_toolkit::session_lock::{
 };
 use smithay_client_toolkit::shm::{raw::RawPool, Shm, ShmHandler};
 use wayland_client::globals::registry_queue_init;
-use wayland_client::protocol::{wl_buffer, wl_keyboard, wl_output, wl_shm, wl_surface};
+use wayland_client::protocol::{wl_buffer, wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface};
 use wayland_client::{Connection, QueueHandle};
 
 struct LockApp {
@@ -39,6 +39,7 @@ struct LockApp {
     session_lock_state: SessionLockState,
     session_lock: Option<SessionLock>,
     lock_surfaces: Vec<SessionLockSurface>,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
     last_configure: Option<SessionLockSurfaceConfigure>,
     expected_password: String,
     entered_password: String,
@@ -65,6 +66,7 @@ impl LockApp {
             session_lock_state: SessionLockState::new(globals, qh),
             session_lock: None,
             lock_surfaces: Vec::new(),
+            keyboard: None,
             last_configure: None,
             expected_password,
             entered_password: String::new(),
@@ -221,7 +223,18 @@ fn simple_glyph(ch: char) -> [u8; 7] {
 }
 
 impl SessionLockHandler for LockApp {
-    fn locked(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _session_lock: SessionLock) {}
+    fn locked(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        session_lock: SessionLock,
+    ) {
+        for output in self.output_state.outputs() {
+            let surface = self.compositor_state.create_surface(qh);
+            let lock_surface = session_lock.create_lock_surface(surface, &output, qh);
+            self.lock_surfaces.push(lock_surface);
+        }
+    }
 
     fn finished(
         &mut self,
@@ -330,39 +343,39 @@ impl SeatHandler for LockApp {
         &mut self.seat_state
     }
 
-    fn new_seat(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _seat: wayland_client::protocol::wl_seat::WlSeat,
-    ) {
-    }
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
 
     fn new_capability(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _seat: wayland_client::protocol::wl_seat::WlSeat,
-        _capability: Capability,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
     ) {
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            let keyboard = self
+                .seat_state
+                .get_keyboard(qh, &seat, None)
+                .expect("keyboard capability");
+            self.keyboard = Some(keyboard);
+        }
     }
 
     fn remove_capability(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _seat: wayland_client::protocol::wl_seat::WlSeat,
-        _capability: Capability,
+        _: &QueueHandle<Self>,
+        _: wl_seat::WlSeat,
+        capability: Capability,
     ) {
+        if capability == Capability::Keyboard {
+            if let Some(keyboard) = self.keyboard.take() {
+                keyboard.release();
+            }
+        }
     }
 
-    fn remove_seat(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _seat: wayland_client::protocol::wl_seat::WlSeat,
-    ) {
-    }
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
 }
 delegate_seat!(LockApp);
 
@@ -472,13 +485,6 @@ fn main() -> anyhow::Result<()> {
             .lock(&qh)
             .map_err(|e| anyhow::anyhow!("ext-session-lock unavailable: {e}"))?,
     );
-
-    for output in app.output_state().outputs() {
-        let session_lock = app.session_lock.as_ref().expect("lock requested");
-        let surface = app.compositor_state.create_surface(&qh);
-        let lock_surface = session_lock.create_lock_surface(surface, &output, &qh);
-        app.lock_surfaces.push(lock_surface);
-    }
 
     WaylandSource::new(conn, event_queue)
         .insert(event_loop.handle())

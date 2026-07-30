@@ -17,12 +17,11 @@ appears in Finder/dock, and it launches. Evidence (transcript + screenshot) in
 
 ## Grounding caveat (honesty contract)
 
-Stage 1 is verified; **Stage 2 has not run yet.** These tasks are grounded in the
-current source (exact `file:line` anchors below) and spec §5, not in observed
-Stage-2 runtime. If Stage 2 changes launch/focus behavior, re-check Tasks 3.3 and
-3.10 against it. **Task 3.0 re-grounds before any change is made.** Most tasks
-here are **host-testable** with `cargo test`/`cargo build` — no VM needed until the
-final DoD (Task 3.10). Run the host tasks on the machine where you edit code.
+Stage 1 is verified; **Stage 2 is verified** (2026-07-30, VBox DRM path). These
+tasks are grounded in the current source and spec §5. If Stage 2 launch/focus
+behavior changes, re-check Tasks 3.3 and 3.10 against it. **Task 3.0 re-grounds
+before any change is made.** Most tasks here are **host-testable** with
+`cargo test`/`cargo build` — no VM needed until the final DoD (Task 3.10).
 
 ## Planner decisions (resolve spec §10 open questions — executor must NOT re-decide)
 

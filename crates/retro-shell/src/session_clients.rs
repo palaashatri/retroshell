@@ -203,6 +203,19 @@ pub fn build_app_command(path: &std::path::Path) -> Command {
     command.env("RETROSHELL_GLOBAL_MENU", "1");
     // The lock secret is shell-only; child apps must never see it.
     command.env_remove("RETROSHELL_LOCK_PASSWORD");
+    if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
+        let menu_dir = std::path::PathBuf::from(&runtime)
+            .join("retroshell")
+            .join("menus");
+        let _ = std::fs::create_dir_all(&menu_dir);
+        command.env("RETROSHELL_MENU_MANIFEST_DIR", menu_dir);
+    }
+    if let Ok(w) = std::env::var("RETROSHELL_COMPOSITOR_WIDTH") {
+        command.env("RETROSHELL_COMPOSITOR_WIDTH", w);
+    }
+    if let Ok(h) = std::env::var("RETROSHELL_COMPOSITOR_HEIGHT") {
+        command.env("RETROSHELL_COMPOSITOR_HEIGHT", h);
+    }
     // Prefer Wayland when a session is available; do not force a wrong display.
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         command.env("WINIT_UNIX_BACKEND", "wayland");
