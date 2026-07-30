@@ -123,12 +123,12 @@ origin yet.**
    `RETROSHELL_LAYER_SHELL_CHROME=1` — see `docs/screenshots/qa-layer-desktop-vbox.png`
    and `qa-layer-input-click.png` (menu opens on click). Compositor now hit-tests
    layer surfaces; smithay focus Point is surface **origin**, not pointer-local.
-2. **Polish pointer/keyboard (2b-iii remaining):** keyboard is only a KEY_* subset
+2. **DONE (Phase 3 exclusive chrome):** menu → Top exclusive, dock → Bottom exclusive,
+   wallpaper/icons → Background. Gray PoC live-bind removed (`try_map` is a noop);
+   `should_paint_kit_chrome(bound) → !bound`. Compositor sizes/positions layer strips
+   and hit-tests by geo. **Needs VBox screenshot evidence before calling verified.**
+3. **Polish pointer/keyboard (2b-iii remaining):** keyboard is only a KEY_* subset
    (no xkb yet); prefer sctk SeatHandler like `retro-lock` for full keysyms.
-3. **Phase 3: exclusive chrome.** Split menu bar → `top` layer (exclusive=menu_h)
-   and dock → `bottom` layer (exclusive=dock_h); wallpaper+icons stay on background.
-   Then DELETE the throwaway `crates/retro-shell/src/layer_shell_client.rs` and
-   un-stub `chrome_protocol.rs::should_paint_kit_chrome`.
 4. **Polish:** menu-bar item spacing; clock/live content via frame-callback/timer.
 5. **Re-QA Stage 2 functional claims** (lock unbypass, `Super+O`) on the reworked
    build; update `docs/qa/stage-2.md` with real evidence.
@@ -136,9 +136,7 @@ origin yet.**
 ## 7. Gotchas
 - Some docs (e.g. `docs/qa/stage-2.md`) had **CRLF** line endings from the Windows
   work — if a line-based Edit fails to match, use Write.
-- `RETROSHELL_LAYER_SHELL_CHROME` currently gates BOTH the new `layer_desktop`
-  path (in `run()`) AND the old throwaway `layer_shell_client` (in `startup()`);
-  remove the latter in Phase 3.
+- `RETROSHELL_LAYER_SHELL_CHROME` gates the `layer_desktop` multi-surface path.
 - Any Cargo.toml **dependency** change forces a ~15 min feature re-unification
   rebuild on the VM; code-only changes are fast.
 - Keep the winit default path working — it is the fallback and how `apps/*` render.

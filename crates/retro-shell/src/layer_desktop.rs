@@ -1,14 +1,11 @@
-//! wlr-layer-shell background surface driver for RetroShell.
+//! wlr-layer-shell exclusive chrome driver for RetroShell (Phase 3).
 //!
-//! Renders the desktop as a real root-level layer surface (fullscreen)
-//! via `zwlr_layer_shell_v1` instead of a winit xdg-toplevel. Gated behind
-//! `RETROSHELL_LAYER_SHELL_CHROME` environment variable.
+//! Three surfaces:
+//! - **Background** — wallpaper + icons + in-shell windows
+//! - **Top** menu bar — `exclusive_zone = menu_h`
+//! - **Bottom** dock — `exclusive_zone = dock_h`
 //!
-//! Phase 2b uses `Layer::Top` so the surface receives pointer/keyboard focus
-//! under our compositor. Phase 3 will split menu→Top exclusive, dock→Bottom,
-//! wallpaper→Background.
-//!
-//! Linux only; unavailable on macOS/Windows.
+//! Gated behind `RETROSHELL_LAYER_SHELL_CHROME`. Linux only.
 
 #![cfg(target_os = "linux")]
 
@@ -19,15 +16,25 @@ use retro_sdk::{RawSurfaceRenderer, UiRuntime};
 use std::ffi::c_void;
 use std::time::{SystemTime, UNIX_EPOCH};
 use wayland_client::{
-    protocol::{
-        wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm, wl_surface,
-    },
+    protocol::{wl_keyboard, wl_pointer, wl_registry, wl_surface},
     Connection, Dispatch, Proxy, QueueHandle, WEnum,
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{self, Layer, ZwlrLayerShellV1},
-    zwlr_layer_surface_v1::{self, Anchor, ZwlrLayerSurfaceV1},
+    zwlr_layer_surface_v1::{self, Anchor, KeyboardInteractivity, ZwlrLayerSurfaceV1},
 };
+
+use crate::{ShellDesktop, ShellPaintFilter};
+
+const MENU_H: u32 = 24;
+const DOCK_H: u32 = 64;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChromeSurfaceKind {
+    Background,
+    Menu,
+    Dock,
+}
 
 /// Linux BTN_* codes from `<linux/input-event-codes.h>`.
 fn mouse_button_from_linux(code: u32) -> Option<MouseButton> {
@@ -46,7 +53,6 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
-/// Map a subset of Linux KEY_* codes to kit KeyCode (enough for shell shortcuts).
 fn keycode_from_linux(code: u32) -> Option<KeyCode> {
     Some(match code {
         1 => KeyCode::Escape,
@@ -65,7 +71,15 @@ fn keycode_from_linux(code: u32) -> Option<KeyCode> {
     })
 }
 
-/// Main entry point: run the layer-shell desktop with the given content widget.
+struct LayerSurf {
+    kind: ChromeSurfaceKind,
+    wl: wl_surface::WlSurface,
+    layer: ZwlrLayerSurfaceV1,
+    configured: Option<(u32, u32)>,
+    renderer: Option<RawSurfaceRenderer>,
+}
+
+/// Main entry: exclusive Top/Bottom chrome + Background desktop.
 pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> anyhow::Result<()> {
     let conn = Connection::connect_to_env().map_err(|e| anyhow!("wayland connect: {}", e))?;
 
@@ -79,18 +93,17 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         shm: None,
         layer_shell: None,
         seat: None,
-        wl_surface: None,
         wl_pointer: None,
         wl_keyboard: None,
-        layer_surface: None,
-        configured_size: None,
+        surfaces: Vec::new(),
         runtime: None,
-        renderer: None,
+        output_w: width,
+        output_h: height,
         running: true,
         last_pointer: (0.0, 0.0),
+        pointer_kind: ChromeSurfaceKind::Background,
     };
 
-    // Roundtrip to collect globals
     event_queue
         .roundtrip(&mut state)
         .map_err(|e| anyhow!("registry roundtrip: {}", e))?;
@@ -99,97 +112,232 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         .compositor
         .clone()
         .ok_or_else(|| anyhow!("wl_compositor not found"))?;
-    let _shm = state
-        .shm
-        .clone()
-        .ok_or_else(|| anyhow!("wl_shm not found"))?;
     let layer_shell = state
         .layer_shell
         .clone()
         .ok_or_else(|| anyhow!("zwlr_layer_shell_v1 not found"))?;
 
-    // Create wl_surface
-    let surface = compositor.create_surface(&qh, ());
-
-    // Create layer surface as Top (interactive) for Phase 2b — receives pointer.
-    // Phase 3 splits menu→Top exclusive, dock→Bottom exclusive, wallpaper→Background.
-    let layer_surface = layer_shell.get_layer_surface(
-        &surface,
+    // Background — wallpaper + icons + in-shell windows
+    let bg_wl = compositor.create_surface(&qh, ChromeSurfaceKind::Background);
+    let bg_layer = layer_shell.get_layer_surface(
+        &bg_wl,
         None,
-        Layer::Top,
+        Layer::Background,
         "retroshell-desktop".into(),
         &qh,
-        (),
+        ChromeSurfaceKind::Background,
     );
-    let anchor = Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right;
-    layer_surface.set_anchor(anchor);
-    layer_surface.set_exclusive_zone(-1);
-    layer_surface.set_size(width, height);
+    bg_layer.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
+    bg_layer.set_exclusive_zone(0);
+    bg_layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+    bg_layer.set_size(width, height);
+    bg_wl.commit();
 
-    // Initial commit (protocol required before we can get a configure)
-    surface.commit();
+    // Top menu — exclusive band
+    let menu_wl = compositor.create_surface(&qh, ChromeSurfaceKind::Menu);
+    let menu_layer = layer_shell.get_layer_surface(
+        &menu_wl,
+        None,
+        Layer::Top,
+        "retroshell-menu".into(),
+        &qh,
+        ChromeSurfaceKind::Menu,
+    );
+    menu_layer.set_anchor(Anchor::Top | Anchor::Left | Anchor::Right);
+    menu_layer.set_exclusive_zone(MENU_H as i32);
+    menu_layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+    menu_layer.set_size(width, MENU_H);
+    menu_wl.commit();
 
-    // Store the surface and layer_surface for later use
-    state.wl_surface = Some(surface.clone());
-    state.layer_surface = Some(layer_surface.clone());
+    // Bottom dock — exclusive band
+    let dock_wl = compositor.create_surface(&qh, ChromeSurfaceKind::Dock);
+    let dock_layer = layer_shell.get_layer_surface(
+        &dock_wl,
+        None,
+        Layer::Bottom,
+        "retroshell-dock".into(),
+        &qh,
+        ChromeSurfaceKind::Dock,
+    );
+    dock_layer.set_anchor(Anchor::Bottom | Anchor::Left | Anchor::Right);
+    dock_layer.set_exclusive_zone(DOCK_H as i32);
+    dock_layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+    dock_layer.set_size(width, DOCK_H);
+    dock_wl.commit();
 
-    // Roundtrip to let the compositor send the configure event
-    event_queue
-        .roundtrip(&mut state)
-        .map_err(|e| anyhow!("configure roundtrip: {}", e))?;
+    state.surfaces = vec![
+        LayerSurf {
+            kind: ChromeSurfaceKind::Background,
+            wl: bg_wl,
+            layer: bg_layer,
+            configured: None,
+            renderer: None,
+        },
+        LayerSurf {
+            kind: ChromeSurfaceKind::Menu,
+            wl: menu_wl,
+            layer: menu_layer,
+            configured: None,
+            renderer: None,
+        },
+        LayerSurf {
+            kind: ChromeSurfaceKind::Dock,
+            wl: dock_wl,
+            layer: dock_layer,
+            configured: None,
+            renderer: None,
+        },
+    ];
 
-    // Determine actual size to use (configured or requested)
-    let (actual_width, actual_height) = state.configured_size.unwrap_or((width, height));
+    // Wait until all three surfaces have a configure.
+    for _ in 0..32 {
+        event_queue
+            .roundtrip(&mut state)
+            .map_err(|e| anyhow!("configure roundtrip: {}", e))?;
+        if state.surfaces.iter().all(|s| s.configured.is_some()) {
+            break;
+        }
+    }
+    if !state.surfaces.iter().all(|s| s.configured.is_some()) {
+        return Err(anyhow!("layer surfaces did not configure"));
+    }
 
-    // Extract raw pointers for wgpu integration
-    // UNCERTAINTY: wayland-client API for getting *mut wl_display and *mut wl_surface
-    // Using .backend().display_ptr() for display and surface.id().as_ptr() for surface.
     let display_ptr = conn.backend().display_ptr() as *mut c_void;
-    let surface_ptr = surface.id().as_ptr() as *mut c_void;
 
-    // Create RawSurfaceRenderer (async, uses block_on)
-    let mut renderer = futures::executor::block_on(unsafe {
-        RawSurfaceRenderer::new(display_ptr, surface_ptr, actual_width, actual_height)
-    })
-    .map_err(|e| anyhow!("RawSurfaceRenderer init: {}", e))?;
+    for surf in &mut state.surfaces {
+        let (cw, ch) = surf.configured.unwrap_or(match surf.kind {
+            ChromeSurfaceKind::Background => (width, height),
+            ChromeSurfaceKind::Menu => (width, MENU_H),
+            ChromeSurfaceKind::Dock => (width, DOCK_H),
+        });
+        let surface_ptr = surf.wl.id().as_ptr() as *mut c_void;
+        let renderer = futures::executor::block_on(unsafe {
+            RawSurfaceRenderer::new(display_ptr, surface_ptr, cw, ch)
+        })
+        .map_err(|e| anyhow!("RawSurfaceRenderer {:?}: {}", surf.kind, e))?;
+        surf.renderer = Some(renderer);
+    }
 
-    // Create UiRuntime
-    let mut runtime = UiRuntime::new(content, actual_width, actual_height, 1.0);
+    let (desk_w, desk_h) = state
+        .surfaces
+        .iter()
+        .find(|s| s.kind == ChromeSurfaceKind::Background)
+        .and_then(|s| s.configured)
+        .unwrap_or((width, height));
+    state.output_w = desk_w;
+    state.output_h = desk_h;
 
-    // Initial paint
-    runtime
-        .paint(&mut renderer)
-        .map_err(|e| anyhow!("initial paint: {}", e))?;
-    surface.commit();
-
-    // Store in state for the event loop
-    state.renderer = Some(renderer);
+    let mut runtime = UiRuntime::new(content, desk_w, desk_h, 1.0);
+    paint_all(&mut state, &mut runtime)?;
     state.runtime = Some(runtime);
 
-    // Main event loop: dispatch events, repaint if dirty
     while state.running {
         event_queue
             .blocking_dispatch(&mut state)
             .map_err(|e| anyhow!("dispatch: {}", e))?;
 
-        if let (Some(renderer), Some(runtime)) =
-            (state.renderer.as_mut(), state.runtime.as_mut())
-        {
-            // Per-frame tick drives ShellDesktop::update() (rebuilds the dock,
-            // notifications, clock). Without this the dock never populates.
+        if let Some(mut runtime) = state.runtime.take() {
             runtime.tick();
             if runtime.is_dirty() {
-                runtime
-                    .paint(renderer)
-                    .map_err(|e| anyhow!("repaint: {}", e))?;
-                if let Some(surface) = &state.wl_surface {
-                    surface.commit();
-                }
+                paint_all(&mut state, &mut runtime)?;
             }
+            state.runtime = Some(runtime);
         }
     }
 
     Ok(())
+}
+
+fn paint_all(state: &mut LayerDesktopState, runtime: &mut UiRuntime) -> anyhow::Result<()> {
+    let out_w = state.output_w as f32;
+    let menu_h = MENU_H as f32;
+    let dock_h = DOCK_H as f32;
+
+    // Background
+    runtime.with_root_content_mut(|w| {
+        if let Some(desktop) = w.as_any_mut().downcast_mut::<ShellDesktop>() {
+            desktop.set_paint_filter(ShellPaintFilter::Background);
+        }
+    });
+    if let Some(surf) = state
+        .surfaces
+        .iter_mut()
+        .find(|s| s.kind == ChromeSurfaceKind::Background)
+    {
+        if let Some(renderer) = surf.renderer.as_mut() {
+            runtime
+                .paint(renderer)
+                .map_err(|e| anyhow!("bg paint: {}", e))?;
+            surf.wl.commit();
+        }
+    }
+
+    // Menu strip
+    runtime.with_root_content_mut(|w| {
+        if let Some(desktop) = w.as_any_mut().downcast_mut::<ShellDesktop>() {
+            desktop.prepare_menu_strip_layout(out_w, menu_h);
+            desktop.set_paint_filter(ShellPaintFilter::MenuBar);
+        }
+    });
+    if let Some(surf) = state
+        .surfaces
+        .iter_mut()
+        .find(|s| s.kind == ChromeSurfaceKind::Menu)
+    {
+        if let Some(renderer) = surf.renderer.as_mut() {
+            runtime
+                .paint_ex(renderer, false, false)
+                .map_err(|e| anyhow!("menu paint: {}", e))?;
+            surf.wl.commit();
+        }
+    }
+
+    // Dock strip
+    runtime.with_root_content_mut(|w| {
+        if let Some(desktop) = w.as_any_mut().downcast_mut::<ShellDesktop>() {
+            desktop.prepare_dock_strip_layout(out_w, dock_h);
+            desktop.set_paint_filter(ShellPaintFilter::Dock);
+        }
+    });
+    if let Some(surf) = state
+        .surfaces
+        .iter_mut()
+        .find(|s| s.kind == ChromeSurfaceKind::Dock)
+    {
+        if let Some(renderer) = surf.renderer.as_mut() {
+            runtime
+                .paint_ex(renderer, false, false)
+                .map_err(|e| anyhow!("dock paint: {}", e))?;
+            surf.wl.commit();
+        }
+    }
+
+    // Restore full desktop layout so menu/dock hit-testing uses output coords.
+    runtime.with_root_content_mut(|w| {
+        if let Some(desktop) = w.as_any_mut().downcast_mut::<ShellDesktop>() {
+            desktop.set_paint_filter(ShellPaintFilter::Background);
+        }
+    });
+    runtime.resize(state.output_w, state.output_h, 1.0);
+
+    Ok(())
+}
+
+fn map_pointer_to_desktop(
+    kind: ChromeSurfaceKind,
+    surface_x: f64,
+    surface_y: f64,
+    output_h: u32,
+) -> (f32, f32) {
+    match kind {
+        ChromeSurfaceKind::Background | ChromeSurfaceKind::Menu => {
+            (surface_x as f32, surface_y as f32)
+        }
+        ChromeSurfaceKind::Dock => {
+            let y = (output_h.saturating_sub(DOCK_H) as f64) + surface_y;
+            (surface_x as f32, y as f32)
+        }
+    }
 }
 
 struct LayerDesktopState {
@@ -197,20 +345,15 @@ struct LayerDesktopState {
     shm: Option<wayland_client::protocol::wl_shm::WlShm>,
     layer_shell: Option<ZwlrLayerShellV1>,
     seat: Option<wayland_client::protocol::wl_seat::WlSeat>,
-    wl_surface: Option<wayland_client::protocol::wl_surface::WlSurface>,
     wl_pointer: Option<wayland_client::protocol::wl_pointer::WlPointer>,
     wl_keyboard: Option<wl_keyboard::WlKeyboard>,
-    layer_surface: Option<ZwlrLayerSurfaceV1>,
-    /// Configured (w, h) from the layer surface Configure event
-    configured_size: Option<(u32, u32)>,
-    /// UI runtime (initialized after configure)
+    surfaces: Vec<LayerSurf>,
     runtime: Option<UiRuntime>,
-    /// Raw surface renderer (initialized after configure)
-    renderer: Option<RawSurfaceRenderer>,
-    /// Keep running until false
+    output_w: u32,
+    output_h: u32,
     running: bool,
-    /// Last pointer position in surface coordinates (from Motion/Enter).
     last_pointer: (f64, f64),
+    pointer_kind: ChromeSurfaceKind,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for LayerDesktopState {
@@ -274,12 +417,14 @@ impl Dispatch<wayland_client::protocol::wl_shm::WlShm, ()> for LayerDesktopState
     }
 }
 
-impl Dispatch<wayland_client::protocol::wl_surface::WlSurface, ()> for LayerDesktopState {
+impl Dispatch<wayland_client::protocol::wl_surface::WlSurface, ChromeSurfaceKind>
+    for LayerDesktopState
+{
     fn event(
         _: &mut Self,
         _: &wayland_client::protocol::wl_surface::WlSurface,
         _: wayland_client::protocol::wl_surface::Event,
-        _: &(),
+        _: &ChromeSurfaceKind,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -328,8 +473,14 @@ impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for LayerDesk
                 ..
             } => {
                 state.last_pointer = (surface_x, surface_y);
+                let (dx, dy) = map_pointer_to_desktop(
+                    state.pointer_kind,
+                    surface_x,
+                    surface_y,
+                    state.output_h,
+                );
                 if let Some(runtime) = state.runtime.as_mut() {
-                    runtime.pointer_moved(surface_x as f32, surface_y as f32);
+                    runtime.pointer_moved(dx, dy);
                 }
             }
             wl_pointer::Event::Button {
@@ -345,19 +496,34 @@ impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for LayerDesk
                     WEnum::Value(wl_pointer::ButtonState::Pressed)
                 );
                 let (px, py) = state.last_pointer;
+                let (dx, dy) =
+                    map_pointer_to_desktop(state.pointer_kind, px, py, state.output_h);
                 if let Some(runtime) = state.runtime.as_mut() {
-                    runtime.pointer_moved(px as f32, py as f32);
+                    runtime.pointer_moved(dx, dy);
                     let _ = runtime.pointer_button(mouse, pressed, now_ms());
                 }
             }
             wl_pointer::Event::Enter {
+                surface,
                 surface_x,
                 surface_y,
                 ..
             } => {
+                state.pointer_kind = state
+                    .surfaces
+                    .iter()
+                    .find(|s| s.wl.id() == surface.id())
+                    .map(|s| s.kind)
+                    .unwrap_or(ChromeSurfaceKind::Background);
                 state.last_pointer = (surface_x, surface_y);
+                let (dx, dy) = map_pointer_to_desktop(
+                    state.pointer_kind,
+                    surface_x,
+                    surface_y,
+                    state.output_h,
+                );
                 if let Some(runtime) = state.runtime.as_mut() {
-                    runtime.pointer_moved(surface_x as f32, surface_y as f32);
+                    runtime.pointer_moved(dx, dy);
                     runtime.set_focus(true);
                 }
             }
@@ -432,12 +598,12 @@ impl Dispatch<ZwlrLayerShellV1, ()> for LayerDesktopState {
     }
 }
 
-impl Dispatch<ZwlrLayerSurfaceV1, ()> for LayerDesktopState {
+impl Dispatch<ZwlrLayerSurfaceV1, ChromeSurfaceKind> for LayerDesktopState {
     fn event(
         state: &mut Self,
         surface: &ZwlrLayerSurfaceV1,
         event: zwlr_layer_surface_v1::Event,
-        _: &(),
+        kind: &ChromeSurfaceKind,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
@@ -447,7 +613,23 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for LayerDesktopState {
             height,
         } = event
         {
-            state.configured_size = Some((width as u32, height as u32));
+            let w = if width == 0 {
+                state.output_w
+            } else {
+                width
+            };
+            let h = if height == 0 {
+                match kind {
+                    ChromeSurfaceKind::Menu => MENU_H,
+                    ChromeSurfaceKind::Dock => DOCK_H,
+                    ChromeSurfaceKind::Background => state.output_h,
+                }
+            } else {
+                height
+            };
+            if let Some(surf) = state.surfaces.iter_mut().find(|s| s.kind == *kind) {
+                surf.configured = Some((w, h));
+            }
             surface.ack_configure(serial);
         }
     }

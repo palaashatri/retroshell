@@ -56,10 +56,12 @@ smithay-client-toolkit (sctk, already a dep) for surface creation + input:
     wl_pointer/wl_keyboard into the core, (4) renders on frame callbacks. Gate the
     whole path behind `RETROSHELL_LAYER_SHELL_CHROME` so the winit default is
     untouched until the layer path is proven by a VM screenshot.
-- **Phase 3 — split exclusive chrome:** menu bar → `top` layer (exclusive=menu_h),
-  dock → `bottom` layer (exclusive=dock_h), background keeps wallpaper+icons. Now
-  maximized apps respect reserved zones and can't cover the menu/dock. Un-stub
-  `should_paint_kit_chrome`; delete the throwaway `layer_shell_client.rs` PoC.
+- **Phase 3 — DONE (Env B evidence):** menu bar → `top` layer (exclusive=menu_h),
+  dock → `bottom` layer (exclusive=dock_h), background keeps wallpaper+icons.
+  `should_paint_kit_chrome(bound) → !bound`. Gray live-bind PoC removed
+  (`try_map_layer_shell_chrome` is a noop; pure request helpers remain).
+  Screenshots: `qa-phase3-exclusive-chrome.png`, `qa-phase3-menu-click.png`.
+  Known polish: open menu dropdowns clip to the 24px Top strip.
 
 ## QA (this environment)
 - VM: UTM `Ubuntu` (aarch64), 192.168.64.15, user ubuntu. `/dev/dri/card0` KMS ok.

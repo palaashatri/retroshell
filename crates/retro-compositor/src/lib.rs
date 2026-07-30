@@ -238,7 +238,7 @@ impl LayerChromeSpec {
     pub fn dock(height: i32) -> Self {
         Self {
             name: "dock".into(),
-            layer: ChromeLayer::Top,
+            layer: ChromeLayer::Bottom,
             exclusive_zone: height,
             anchor_top: false,
             anchor_bottom: true,

@@ -51,20 +51,21 @@ is no in-window menu bar.
 
 ## Remaining (blocks DoD)
 
-- **Phase 3 exclusive chrome** (menu Top / dock Bottom / wallpaper Background) —
-  see [../tasks/stage-2b-layer-shell-chrome.md](../tasks/stage-2b-layer-shell-chrome.md).
-  Phase 2b single Top layer is proven on VBox under `retro-compositor`.
 - **Re-QA lock / unbypass / `Super+O`** on the reworked build (prior screenshots
   deleted; functional paths compile and the compositor spawns clients, but must be
   re-evidenced, not assumed).
+- Menu dropdown overlays currently clip to the 24px Top surface — needs Overlay
+  surface or expand-on-open (polish).
 
 ## Env B progress (Windows + VirtualBox, 2026-07-30)
 
 | Item | Status | Evidence |
 |---|---|---|
-| Layer desktop under `retro-compositor` | PASS | `docs/screenshots/qa-layer-desktop-vbox.png` — fullscreen menu/dock/desktop |
-| Pointer → layer surface → UI action | PASS | `docs/screenshots/qa-layer-input-click.png` — Finder menu open after click |
-| Skip gray `layer_shell_client` PoC when env set | PASS | compositor log: only `retroshell-desktop` layer |
+| Layer desktop under `retro-compositor` | PASS | `docs/screenshots/qa-layer-desktop-vbox.png` |
+| Pointer → layer surface → UI action | PASS | `docs/screenshots/qa-layer-input-click.png` |
+| Phase 3 exclusive Top/Bottom/Background | PASS | `docs/screenshots/qa-phase3-exclusive-chrome.png` — menu Top, dock Bottom, no dual menu; compositor log: `retroshell-menu` Top, `retroshell-dock` Bottom, `retroshell-desktop` Background |
+| Top menu receives pointer | PASS | `docs/screenshots/qa-phase3-menu-click.png` — View menu highlighted |
+| Gray PoC removed; kit chrome gated | PASS | `should_paint_kit_chrome(bound)=!bound`; `try_map_layer_shell_chrome` noop |
 
 Orchestration: `packaging/vm/_stage2b-start.sh` + `RETROSHELL_LAYER_SHELL_CHROME=1`.
 Note: ydotool absolute coords on this guest appear ~2× compositor logical coords.

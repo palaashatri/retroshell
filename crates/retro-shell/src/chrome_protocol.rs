@@ -2,8 +2,9 @@
 //! layer-shell role surfaces — not ShellWindow paint-rects.
 //!
 //! Pure geometry / session state; testable on any host (including macOS).
-//! Kit paint for menu bar + dock stays on via [`should_paint_kit_chrome`] until
-//! layer-shell surfaces carry real pixels (not gray placeholders).
+//! Kit paint for menu bar + dock is gated by [`should_paint_kit_chrome`]: when
+//! layer-shell chrome is bound, menu/dock pixels live on exclusive Top/Bottom
+//! surfaces (`layer_desktop`), not the kit canvas.
 
 /// Layer-shell chrome role for protocol surfaces owned by the shell session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
@@ -25,7 +26,8 @@ impl ChromeRole {
     /// Default layer-shell layer name for this role.
     pub fn default_layer(self) -> &'static str {
         match self {
-            Self::MenuBar | Self::Dock => "top",
+            Self::MenuBar => "top",
+            Self::Dock => "bottom",
             Self::NotificationOverlay => "overlay",
         }
     }
@@ -167,11 +169,10 @@ impl ChromeSession {
 
 /// Whether the shell should still paint menu bar / dock with kit widgets.
 ///
-/// Layer-shell surfaces currently carry gray placeholder buffers only. Kit paint
-/// stays enabled so session chrome (menu bar + dock) remains visible at the top
-/// and bottom of the fullscreen shell surface until layer-shell carries real pixels.
-pub fn should_paint_kit_chrome(_layer_shell_bound: bool) -> bool {
-    true
+/// When layer-shell chrome is bound, menu/dock are exclusive protocol surfaces
+/// (`layer_desktop`); kit dual-paint on the desktop canvas must stay off.
+pub fn should_paint_kit_chrome(layer_shell_bound: bool) -> bool {
+    !layer_shell_bound
 }
 
 /// Compositor output size from `RETROSHELL_COMPOSITOR_WIDTH` / `HEIGHT` (default 1024×768).
@@ -218,9 +219,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn should_paint_kit_chrome_always_true_until_layer_pixels() {
+    fn should_paint_kit_chrome_off_when_layer_shell_bound() {
         assert!(should_paint_kit_chrome(false));
-        assert!(should_paint_kit_chrome(true));
+        assert!(!should_paint_kit_chrome(true));
     }
 
     #[test]
@@ -261,7 +262,7 @@ mod tests {
             .find(|s| s.role == ChromeRole::Dock)
             .expect("dock");
         assert!(dock.mapped);
-        assert_eq!(dock.layer, "top");
+        assert_eq!(dock.layer, "bottom");
         assert_eq!(dock.exclusive_zone, 64);
         assert_eq!(dock.width, 1280);
         assert_eq!(dock.height, 64);
@@ -289,9 +290,9 @@ mod tests {
     }
 
     #[test]
-    fn layer_assignment_menu_dock_top_overlay_for_notifications() {
+    fn layer_assignment_menu_top_dock_bottom_overlay_for_notifications() {
         assert_eq!(ChromeRole::MenuBar.default_layer(), "top");
-        assert_eq!(ChromeRole::Dock.default_layer(), "top");
+        assert_eq!(ChromeRole::Dock.default_layer(), "bottom");
         assert_eq!(ChromeRole::NotificationOverlay.default_layer(), "overlay");
 
         let mut session = ChromeSession::bootstrap_default(1024, 768, 28, 48);

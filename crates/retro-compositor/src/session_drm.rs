@@ -56,7 +56,7 @@ use smithay::reexports::wayland_server::protocol::{
 };
 use smithay::reexports::wayland_server::{Client, Display, DisplayHandle, Resource};
 use smithay::desktop::utils::send_frames_surface_tree;
-use smithay::utils::{Clock, DeviceFd, Logical, Monotonic, Point, Serial, Size, Transform};
+use smithay::utils::{Clock, DeviceFd, Logical, Monotonic, Point, Rectangle, Serial, Size, Transform};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     with_states, CompositorClientState, CompositorHandler, CompositorState,
@@ -253,7 +253,7 @@ fn collect_render_elements(
             elements.extend(render_elements_from_surface_tree(
                 renderer,
                 layer.surface.wl_surface(),
-                (0, 0),
+                (layer.geo.loc.x, layer.geo.loc.y),
                 1.0,
                 1.0,
                 Kind::Unspecified,
@@ -283,7 +283,7 @@ fn collect_render_elements(
             elements.extend(render_elements_from_surface_tree(
                 renderer,
                 layer.surface.wl_surface(),
-                (0, 0),
+                (layer.geo.loc.x, layer.geo.loc.y),
                 1.0,
                 1.0,
                 Kind::Unspecified,
@@ -1060,6 +1060,41 @@ struct MappedLayer {
     layer: Layer,
     #[allow(dead_code)]
     namespace: String,
+    /// Output-local placement of this layer surface (menu strip, dock, …).
+    geo: Rectangle<i32, Logical>,
+}
+
+fn layer_geometry_for(
+    namespace: &str,
+    layer: Layer,
+    output: (i32, i32),
+    size: (i32, i32),
+) -> Rectangle<i32, Logical> {
+    let (ow, oh) = output;
+    let (w, h) = (size.0.clamp(1, ow.max(1)), size.1.clamp(1, oh.max(1)));
+    let bottom = matches!(layer, Layer::Bottom)
+        || namespace.contains("dock")
+        || namespace.ends_with("-dock");
+    let y = if bottom { (oh - h).max(0) } else { 0 };
+    Rectangle::from_loc_and_size((0, y), (w, h))
+}
+
+fn layer_geo_contains(geo: &Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> bool {
+    let x = pos.x as i32;
+    let y = pos.y as i32;
+    x >= geo.loc.x
+        && y >= geo.loc.y
+        && x < geo.loc.x + geo.size.w
+        && y < geo.loc.y + geo.size.h
+}
+
+fn layer_configure_size(namespace: &str, output: (i32, i32)) -> (i32, i32) {
+    let (ow, oh) = output;
+    match namespace {
+        "retroshell-menu" | "menu-bar" => (ow, 24),
+        "retroshell-dock" | "dock" => (ow, 64),
+        _ => (ow, oh),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1362,14 +1397,19 @@ impl DrmSessionState {
     /// The Point in the returned pair is the **surface origin in the same
     /// coordinate space as `MotionEvent.location`** (smithay sends
     /// `location - origin` to the client as surface-local coords).
+    /// Layer strips only hit when the pointer is inside their geo.
     fn surface_under(
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
         for layer in self.layer_surfaces.iter().rev() {
             if matches!(layer.layer, Layer::Overlay | Layer::Top) {
-                // Fullscreen layer surfaces are placed at the output origin.
-                return Some((layer.surface.wl_surface().clone(), Point::from((0.0, 0.0))));
+                if layer_geo_contains(&layer.geo, pos) {
+                    return Some((
+                        layer.surface.wl_surface().clone(),
+                        Point::from((layer.geo.loc.x as f64, layer.geo.loc.y as f64)),
+                    ));
+                }
             }
         }
         if let Some(idx) = self.window_at(pos) {
@@ -1381,7 +1421,12 @@ impl DrmSessionState {
         }
         for layer in self.layer_surfaces.iter().rev() {
             if matches!(layer.layer, Layer::Bottom | Layer::Background) {
-                return Some((layer.surface.wl_surface().clone(), Point::from((0.0, 0.0))));
+                if layer_geo_contains(&layer.geo, pos) {
+                    return Some((
+                        layer.surface.wl_surface().clone(),
+                        Point::from((layer.geo.loc.x as f64, layer.geo.loc.y as f64)),
+                    ));
+                }
             }
         }
         None
@@ -1469,6 +1514,19 @@ impl CompositorHandler for DrmSessionState {
                 let sw = st.size.map(|s| s.w).filter(|v| *v > 0).unwrap_or(DEFAULT_WINDOW_W);
                 let sh = st.size.map(|s| s.h).filter(|v| *v > 0).unwrap_or(DEFAULT_WINDOW_H);
                 w.size = Size::from((sw, sh));
+                break;
+            }
+        }
+        // Refresh layer strip geometry from the configured size after buffer commit.
+        for layer in self.layer_surfaces.iter_mut() {
+            if layer.surface.wl_surface() == surface {
+                let st = layer.surface.current_state();
+                let (ow, oh) = self.output_size;
+                let (w, h) = st
+                    .size
+                    .map(|s| (s.w.max(1), s.h.max(1)))
+                    .unwrap_or_else(|| layer_configure_size(&layer.namespace, (ow, oh)));
+                layer.geo = layer_geometry_for(&layer.namespace, layer.layer, (ow, oh), (w, h));
                 break;
             }
         }
@@ -1771,16 +1829,18 @@ impl WlrLayerShellHandler for DrmSessionState {
         eprintln!(
             "[retro-compositor/drm] layer-shell surface namespace={namespace} layer={layer:?}"
         );
-        // Size hint: full-output; clients still set exclusive zone / anchors.
-        let (w, h) = self.output_size;
+        let (ow, oh) = self.output_size;
+        let (w, h) = layer_configure_size(&namespace, (ow, oh));
         surface.with_pending_state(|state| {
             state.size = Some(Size::from((w, h)));
         });
         surface.send_configure();
+        let geo = layer_geometry_for(&namespace, layer, (ow, oh), (w, h));
         self.layer_surfaces.push(MappedLayer {
             surface,
             layer,
             namespace,
+            geo,
         });
     }
 

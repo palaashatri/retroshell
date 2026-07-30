@@ -938,11 +938,25 @@ impl UiRuntime {
     /// Layout (if needed), paint the widget tree and desktop backdrop through the renderer.
     /// Clears the dirty flag on success.
     pub fn paint(&mut self, renderer: &mut RawSurfaceRenderer) -> Result<(), String> {
-        // Re-layout before drawing, mirroring AppHandler::paint.
-        if let Some(ref mut win) = self.window {
-            let size = Size::new(win.rect().width, win.rect().height);
-            if size.width > 0.0 && size.height > 0.0 {
-                win.layout(LayoutConstraint::tight(size));
+        self.paint_ex(renderer, true, true)
+    }
+
+    /// Paint with optional backdrop and optional re-layout.
+    ///
+    /// Layer-shell chrome strips call this with `relayout = false` after manually
+    /// positioning menu/dock widgets onto strip-sized surfaces.
+    pub fn paint_ex(
+        &mut self,
+        renderer: &mut RawSurfaceRenderer,
+        backdrop: bool,
+        relayout: bool,
+    ) -> Result<(), String> {
+        if relayout {
+            if let Some(ref mut win) = self.window {
+                let size = Size::new(win.rect().width, win.rect().height);
+                if size.width > 0.0 && size.height > 0.0 {
+                    win.layout(LayoutConstraint::tight(size));
+                }
             }
         }
         let Some(window) = &self.window else {
@@ -953,11 +967,28 @@ impl UiRuntime {
         renderer.render(|canvas| {
             canvas.width /= scale;
             canvas.height /= scale;
-            draw_desktop_backdrop(canvas);
+            if backdrop {
+                draw_desktop_backdrop(canvas);
+            }
             draw_window(canvas, window);
         })?;
         self.dirty = false;
         Ok(())
+    }
+
+    /// Access the root content widget (under the chromeless Window).
+    pub fn with_root_content_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut dyn retro_kit::Widget) -> R,
+    ) -> Option<R> {
+        let win = self.window.as_mut()?;
+        let content = win.content.as_mut()?;
+        Some(f(content.as_mut()))
+    }
+
+    /// Mark the UI dirty so the next driver iteration repaints.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 
     /// Dispatch an event to the window and mark as dirty on any result.

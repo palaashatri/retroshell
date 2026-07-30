@@ -319,16 +319,13 @@ impl RetroShell {
     ///
     /// Call after `WAYLAND_DISPLAY` is set (compositor/labwc running). Non-fatal.
     pub(crate) fn attach_wayland_session_protocols(desktop: &mut ShellDesktop) {
-        // When RETROSHELL_LAYER_SHELL_CHROME is set, `layer_desktop` owns the real
-        // BACKGROUND surface (menu/dock/wallpaper). Do NOT also bind the throwaway
-        // gray `layer_shell_client` PoC — it races Top layers over the desktop.
+        // When RETROSHELL_LAYER_SHELL_CHROME is set, `layer_desktop` owns exclusive
+        // Top/Bottom/Background surfaces. The gray PoC bind path is gone.
         if std::env::var_os("RETROSHELL_LAYER_SHELL_CHROME").is_some() {
-            tracing::debug!(
-                "skipping layer_shell_client PoC; layer_desktop owns chrome surfaces"
-            );
+            tracing::debug!("layer_desktop owns exclusive chrome surfaces");
             desktop.layer_shell_bound = true;
         } else {
-            tracing::debug!("layer-shell chrome bind skipped; kit menu bar + dock paint active");
+            tracing::debug!("layer-shell chrome unset; kit menu bar + dock paint active");
         }
         if let Some(n) =
             foreign_toplevel_client::try_sync_foreign_toplevels(&mut desktop.foreign_toplevels)
@@ -446,6 +443,47 @@ struct ShellDesktop {
     last_network_connect: Option<std::result::Result<String, String>>,
     /// When false, network connect validates/plans only (unit tests; no nmcli spawn).
     network_connect_spawn: bool,
+    /// Which subset of the desktop to paint (layer-shell Phase 3 multi-surface).
+    paint_filter: ShellPaintFilter,
+}
+
+/// Paint subset for multi-surface layer-shell chrome (Phase 3).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ShellPaintFilter {
+    /// Full desktop including kit menu/dock (winit path).
+    #[default]
+    All,
+    /// Wallpaper + icons + in-shell windows (no menu/dock).
+    Background,
+    /// Menu bar only (Top exclusive surface).
+    MenuBar,
+    /// Dock only (Bottom exclusive surface).
+    Dock,
+}
+
+impl ShellDesktop {
+    /// Select which chrome/content subset the next `draw` emits.
+    pub(crate) fn set_paint_filter(&mut self, filter: ShellPaintFilter) {
+        self.paint_filter = filter;
+    }
+
+    /// Lay out the dock at the origin for painting onto a dock-height strip surface.
+    pub(crate) fn prepare_dock_strip_layout(&mut self, width: f32, dock_h: f32) {
+        self.dock_view
+            .set_rect(Rect::new(0.0, 0.0, width, dock_h));
+        let _ = self
+            .dock_view
+            .layout(LayoutConstraint::tight(Size::new(width, dock_h)));
+    }
+
+    /// Lay out the menu bar at the origin for a menu-height strip surface.
+    pub(crate) fn prepare_menu_strip_layout(&mut self, width: f32, menu_h: f32) {
+        self.menu_bar
+            .set_rect(Rect::new(0.0, 0.0, width, menu_h));
+        let _ = self
+            .menu_bar
+            .layout(LayoutConstraint::tight(Size::new(width, menu_h)));
+    }
 }
 
 struct ShellWindow {
@@ -591,6 +629,7 @@ impl ShellDesktop {
             last_foreign_menu_sync: std::time::Instant::now(),
             last_network_connect: None,
             network_connect_spawn: true,
+            paint_filter: ShellPaintFilter::All,
         };
         // Map layer-shell chrome + sync foreign-toplevel list when a compositor is live.
         RetroShell::attach_wayland_session_protocols(&mut shell);
@@ -3049,6 +3088,18 @@ impl Widget for ShellDesktop {
     }
 
     fn draw(&self, theme: &ThemeContext) {
+        match self.paint_filter {
+            ShellPaintFilter::MenuBar => {
+                self.menu_bar.draw(theme);
+                return;
+            }
+            ShellPaintFilter::Dock => {
+                self.dock_view.draw(theme);
+                return;
+            }
+            ShellPaintFilter::Background | ShellPaintFilter::All => {}
+        }
+
         if self.locked {
             self.lock_screen_widget.draw(theme);
             return;
@@ -3076,14 +3127,18 @@ impl Widget for ShellDesktop {
         }
         // When layer-shell chrome is bound, menu bar / dock are protocol surfaces —
         // skip kit dual-paint so chrome is not overdrawn in the shell canvas.
-        if should_paint_kit_chrome(self.layer_shell_bound) {
+        if should_paint_kit_chrome(self.layer_shell_bound)
+            && matches!(self.paint_filter, ShellPaintFilter::All)
+        {
             self.dock_view.draw(theme);
         }
         // Draw notification banners on top of windows and dock, below menu bar
         for popup in &self.notification_popup_windows {
             popup.draw(theme);
         }
-        if should_paint_kit_chrome(self.layer_shell_bound) {
+        if should_paint_kit_chrome(self.layer_shell_bound)
+            && matches!(self.paint_filter, ShellPaintFilter::All)
+        {
             self.menu_bar.draw(theme);
         }
     }
@@ -3506,6 +3561,11 @@ impl Widget for ShellDesktop {
         if self.locked {
             return vec![&self.lock_screen_widget as &dyn Widget];
         }
+        match self.paint_filter {
+            ShellPaintFilter::MenuBar => return vec![&self.menu_bar as &dyn Widget],
+            ShellPaintFilter::Dock => return vec![&self.dock_view as &dyn Widget],
+            ShellPaintFilter::Background | ShellPaintFilter::All => {}
+        }
         let capacity = self.windows.len() + 3 + self.notification_popup_windows.len();
         let mut children: Vec<&dyn Widget> = Vec::with_capacity(capacity);
         children.push(&self.desktop);
@@ -3515,12 +3575,19 @@ impl Widget for ShellDesktop {
                 children.push(&shell_window.window);
             }
         }
-        children.push(&self.dock_view);
-        // Notification banners are drawn above dock but below menu bar
+        if matches!(self.paint_filter, ShellPaintFilter::All)
+            && should_paint_kit_chrome(self.layer_shell_bound)
+        {
+            children.push(&self.dock_view);
+        }
         for popup in &self.notification_popup_windows {
             children.push(popup as &dyn Widget);
         }
-        children.push(&self.menu_bar);
+        if matches!(self.paint_filter, ShellPaintFilter::All)
+            && should_paint_kit_chrome(self.layer_shell_bound)
+        {
+            children.push(&self.menu_bar);
+        }
         children
     }
 
@@ -3528,6 +3595,13 @@ impl Widget for ShellDesktop {
         if self.locked {
             return vec![&mut self.lock_screen_widget as &mut dyn Widget];
         }
+        match self.paint_filter {
+            ShellPaintFilter::MenuBar => return vec![&mut self.menu_bar as &mut dyn Widget],
+            ShellPaintFilter::Dock => return vec![&mut self.dock_view as &mut dyn Widget],
+            ShellPaintFilter::Background | ShellPaintFilter::All => {}
+        }
+        let paint_chrome = matches!(self.paint_filter, ShellPaintFilter::All)
+            && should_paint_kit_chrome(self.layer_shell_bound);
         let capacity = self.windows.len() + 3 + self.notification_popup_windows.len();
         let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(capacity);
         children.push(&mut self.desktop);
@@ -3537,12 +3611,15 @@ impl Widget for ShellDesktop {
                 children.push(&mut shell_window.window);
             }
         }
-        children.push(&mut self.dock_view);
-        // Notification banners are drawn above dock but below menu bar
+        if paint_chrome {
+            children.push(&mut self.dock_view);
+        }
         for popup in &mut self.notification_popup_windows {
             children.push(popup as &mut dyn Widget);
         }
-        children.push(&mut self.menu_bar);
+        if paint_chrome {
+            children.push(&mut self.menu_bar);
+        }
         children
     }
 
