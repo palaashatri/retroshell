@@ -24,6 +24,7 @@ pub mod drm_props;
 /// theme dependency).
 #[cfg(target_os = "linux")]
 pub mod cursor_theme;
+pub mod screenshot;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

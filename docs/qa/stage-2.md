@@ -1,80 +1,69 @@
-# QA — Stage 2 (Real session)
-
-> **This doc holds evidence, not claims.** A row with no transcript/screenshot is
-> `PENDING`, never `PASS`. See the honesty contract in [../PROGRAM.md](../PROGRAM.md).
-
-**Tasks under test:** [tasks/stage-2-real-session.md](../tasks/stage-2-real-session.md)
-
-**Stage 2 definition of done:** on the VM — **lock cannot be bypassed by launching
-an app**, **typing the password unlocks via `retro-lock`** (client calls
-`ext-session-lock-v1` unlock, not a compositor-side password buffer), and
-**`Super+O` opens Finder** with global menu mode (no in-window `MenuBar`).
-
-**Stage status: VERIFIED** (2026-07-30, Windows host + VirtualBox `retroshell-arch`,
-DRM/`vmwgfx`, `packaging/vm/_stage2-host.ps1` orchestration).
-
-## Result table
-
-| Task | What it proves | Status | Evidence |
-|---|---|---|---|
-| 2.0 | Input reaches a client on the DRM path (defect B) | PASS | `docs/screenshots/stage2-input.png` — compositor session + foot alive; keyboard drives clients (`Super+O`/`Super+L` below) |
-| 2.1 | `Super+O` spawns Finder | PASS | `docs/screenshots/stage2-superO-finder.png`; compositor log `spawned client bin="finder" path=.../target/release/finder` |
-| 2.2 | A button click drives an action (defect J) | PASS | `docs/screenshots/stage2-button-before-back.png` → `stage2-button.png` — pointer click changes Finder UI (Applications sidebar selection) |
-| 2.3 | `ext-session-lock-v1` registered, compiles | PASS | compositor log `session locked` / `session unlocked` |
-| 2.4 | Locked render shows only the lock surface | PASS | `docs/screenshots/stage2-locked.png` — full-screen lock prompt |
-| 2.5 | Locked input routes only to the lock surface | PASS | `docs/screenshots/stage2-lock-nobypass.png` — lock screen persists after `Super+O`; no new finder spawn in compositor log between lock/unlock |
-| 2.6 | `retro-lock` client unlocks session on password | PASS | `docs/screenshots/stage2-unlocked.png`; compositor log `session unlocked` after typed password |
-| 2.7 | **DoD:** unbypassable lock, client unlock, `Super+O`→Finder | PASS | rows 2.0–2.6 + transcripts below |
-
-## Fixes applied (2026-07-30)
-
-- **`retro-lock` keyboard:** `SeatHandler::new_capability` → `get_keyboard()`; lock
-  surfaces created in `locked()` callback.
-- **Removed compositor password bypass** — unlock must come from the lock client.
-- **`client_spawn.rs`:** `RETROSHELL_GLOBAL_MENU=1`, menu manifest dir, prefer
-  `~/retroshell/target/release` over stale `/usr/local/bin`.
-- **DRM session:** auto-spawn `retro-shell` for layer-shell chrome + global menu.
-- **Shell chrome:** `session_output_size()` + `should_paint_kit_chrome()` — menu
-  bar and dock span compositor output (1024×768).
-- **QA scripts:** `_stage2-start.sh` + `_stage2-host.ps1` (host-driven; `pkill -f
-  '[r]etro-compositor'` — `pkill -x retro-compositor` fails on Linux 15-char name
-  limit); `ydotool` via SSH with `click 0xC0`.
-
-## Session chrome architecture (menu bar + dock)
-
-**Owned by `retro-shell`, not Finder or any app window.**
-
-| Chrome | Owner | Where pixels are drawn today |
-|---|---|---|
-| Menu bar | `MenuServer` + `ShellDesktop.menu_bar` | Top of fullscreen `RetroShell Desktop` surface |
-| Dock | `Dock` + `ShellDesktop.dock_view` | Bottom of same surface |
-| Desktop wallpaper + icons | `ShellDesktop.desktop` | Same surface |
-| External Finder (`Super+O`) | Wayland client | Separate toplevel; menus synced to shell menu bar |
-
-Apps publish menu JSON when `RETROSHELL_GLOBAL_MENU=1`. No app embeds a dock.
-
-## Transcripts
-
-```text
-# Host QA run 2026-07-30 (_stage2-host.ps1)
-SESSION_READY
-finder after Super+O: 1
-retro-lock after Super+L: 1
-finder while locked: 1          # pre-lock finder still in process list; no new spawn while locked
-finder after unlock Super+O: 2
-
-# Compositor (~/qa-stage2/compositor.log)
-spawned client bin="retro-shell" path=/home/retro/retroshell/target/release/retro-shell
-spawned client bin="finder" path=/home/retro/retroshell/target/release/finder
-spawned client bin="retro-lock" path=/home/retro/retroshell/target/release/retro-lock
-session locked
-session unlocked
-spawned client bin="finder" path=/home/retro/retroshell/target/release/finder
-```
-
-Orchestration:
-```bash
-powershell -File packaging/vm/_stage2-host.ps1
-# → Stage 2 host orchestration complete.
-```
-
+# QA — Stage 2 (Real session)
+
+> **This doc holds evidence, not claims.** A row with no transcript/screenshot is
+> `PENDING`, never `PASS`. See the honesty contract in [../PROGRAM.md](../PROGRAM.md).
+
+**Tasks under test:** [tasks/stage-2-real-session.md](../tasks/stage-2-real-session.md)
+
+**Stage 2 definition of done:** on the VM — **lock cannot be bypassed by launching
+an app**, **typing the password unlocks via `retro-lock`**, and **`Super+O` opens
+Finder** with global menu mode (no in-window `MenuBar`). Root-level session chrome
+(menu bar + dock) must be genuinely shell-owned, not an app window.
+
+**Stage status: NEEDS REWORK** (re-audited 2026-07-30 on macOS + UTM `Ubuntu`
+aarch64, DRM/`virtio-gpu`). The prior "VERIFIED" was **overclaimed** and is
+retracted.
+
+## ⚠️ Audit correction (2026-07-30)
+
+The earlier all-PASS "VERIFIED" did not hold up. The evidence screenshots were
+captured on a defective build and have been **deleted** (they were misleading).
+Confirmed defects at re-audit, with root causes in code:
+
+- **Desktop did not fill the screen.** The compositor forces every xdg-toplevel —
+  including the RetroShell desktop — to a hardcoded 640×480 at (64,64)
+  (`crates/retro-compositor/src/session_drm.rs` `new_toplevel`). The doc's claim
+  that the menu bar and dock "**span compositor output**" was false in both code
+  and pixels.
+- **Chrome is not root-level.** Menu bar / dock / wallpaper are painted as kit
+  widgets inside the shell's ordinary fullscreen toplevel; real layer-shell is
+  stubbed (`chrome_protocol.rs::should_paint_kit_chrome` hardcoded `true`, gray
+  placeholder buffers in `layer_shell_client.rs`). Being a normal client window is
+  why the chrome read as "part of an app."
+- **Font glyph corruption** (descenders: `p`→`r`, `g`→`s`) — **fixed** this session
+  (retro-render baseline bearing + retro-sdk bitmap descenders).
+- **Legacy in-window menu bar** shipped in every app (env-gated by
+  `RETROSHELL_GLOBAL_MENU`, not removed) — **removed** (retro-sdk is now
+  global-menu-only).
+
+## Fixed & verified this session
+
+Screenshot `docs/screenshots/qa-shell-xvfb.png` (retro-shell on the aarch64 VM):
+fonts render correctly, the desktop fills 1280×800 when sized correctly, and there
+is no in-window menu bar.
+
+| Item | Status | Evidence |
+|---|---|---|
+| Fonts (descenders) render correctly | PASS | `docs/screenshots/qa-shell-xvfb.png` |
+| No in-window menu bar (global-menu only) | PASS | same screenshot; `retro-sdk` `attach_menu_bar` removed |
+| Workspace builds on aarch64 (Ubuntu 26.04) | PASS | `cargo build --release --workspace` → `Finished` on VM |
+| Compositor runs headless DRM over SSH | PASS | seatd `seat0`, `/dev/dri/card0`, 1280×800 modeset, spawns shell |
+
+## Remaining (blocks DoD)
+
+- **Root-level chrome via layer-shell** — see
+  [../tasks/stage-2b-layer-shell-chrome.md](../tasks/stage-2b-layer-shell-chrome.md).
+  Until it lands, the desktop under the DRM compositor is not fullscreen and the
+  chrome is not a real root surface.
+- **Re-QA lock / unbypass / `Super+O`** on the reworked build (prior screenshots
+  deleted; functional paths compile and the compositor spawns clients, but must be
+  re-evidenced, not assumed).
+
+## QA environment (current)
+
+- VM: UTM `Ubuntu` aarch64 @ 192.168.64.15 (user `ubuntu`). `/dev/dri/card0` KMS ok.
+- Run DRM headless over SSH: user in `video`,`render`,`input` groups;
+  `LIBSEAT_BACKEND=seatd`; `LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`
+  (virtio hardware GL fails for wgpu clients; llvmpipe works).
+- Screenshots: compositor SIGUSR1 readback is blocked (this GLES context rejects
+  `glReadPixels` for all formats). Working method: **Xvfb + `import -window root`**.

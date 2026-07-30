@@ -1,5 +1,8 @@
+use parking_lot::Mutex;
 use retro_bus::RetroBus;
 use retro_kit::button::Button;
+use retro_kit::dialog::Dialog;
+use retro_kit::dock_view::DockView;
 use retro_kit::event::{KeyCode, Modifiers, MouseButton};
 use retro_kit::icon_view::{IconItem, IconView};
 use retro_kit::label::Label;
@@ -7,25 +10,22 @@ use retro_kit::layout::{Layout, LayoutView};
 use retro_kit::list_view::ListView;
 use retro_kit::menu::{Menu, MenuItem, MenuItemKind};
 use retro_kit::menu_bar::MenuBar;
-use retro_kit::scroll_view::ScrollView;
-use retro_kit::slider::Slider;
-use retro_kit::dialog::Dialog;
 use retro_kit::popup_button::PopupButton;
 use retro_kit::progress_bar::ProgressBar;
-use retro_kit::tab_view::TabView;
-use retro_kit::dock_view::DockView;
-use retro_kit::workspace_grid_view::WorkspaceGridView;
+use retro_kit::scroll_view::ScrollView;
+use retro_kit::slider::Slider;
 use retro_kit::split_view::SplitView;
 use retro_kit::status_bar::StatusBar;
+use retro_kit::tab_view::TabView;
 use retro_kit::text_field::TextField;
 use retro_kit::toolbar::Toolbar;
 use retro_kit::tree_view::{TreeNode, TreeView};
 use retro_kit::window::Window;
+use retro_kit::workspace_grid_view::WorkspaceGridView;
 use retro_kit::{Color, LayoutConstraint, MonospaceView, Point, Rect, Size, Widget};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -122,10 +122,7 @@ fn parse_theme_preference(content: &str) -> (bool, [f32; 4]) {
         };
     }
     // Fall back to appearance key
-    let is_dark = appearance
-        .as_deref()
-        .map(|a| a == "dark")
-        .unwrap_or(false);
+    let is_dark = appearance.as_deref().map(|a| a == "dark").unwrap_or(false);
     let accent = if is_dark {
         theme_accents::DARK
     } else {
@@ -264,33 +261,9 @@ impl Application {
         Ok(Some(path))
     }
 
-    fn attach_menu_bar(&mut self) {
-        let Some(mut window) = self.main_window.take() else {
-            return;
-        };
-        if self.menus.is_empty() {
-            self.main_window = Some(window);
-            return;
-        }
-
-        let menus = self.complete_menus();
-
-        let content = window.content.take();
-        let mut root = Layout::vertical(0.0);
-        root.add(Box::new(MenuBar::new(menus)));
-        if let Some(content) = content {
-            root.add(content);
-        }
-        window.set_content(Box::new(LayoutView::new(root)));
-        self.main_window = Some(window);
-    }
-
     pub fn run(&mut self) {
         if let Err(err) = self.publish_menu_manifest() {
             tracing::warn!("failed to publish menu manifest: {err}");
-        }
-        if !global_menu_mode_enabled() {
-            self.attach_menu_bar();
         }
         self.running = true;
         tracing::info!("Application '{}' started", self.name);
@@ -773,6 +746,47 @@ impl WgpuPresenter {
         let surface = instance
             .create_surface(window)
             .map_err(|err| format!("surface creation failed: {err}"))?;
+        Self::from_surface(instance, surface, size.width, size.height).await
+    }
+
+    /// Build a presenter from raw Wayland handles for a layer-shell surface
+    /// created outside winit. `display` = `*mut wl_display`, `surface` =
+    /// `*mut wl_surface`.
+    ///
+    /// SAFETY: both pointers must reference a valid `wl_display` / `wl_surface`
+    /// that outlive the returned presenter.
+    #[allow(dead_code)]
+    async unsafe fn new_raw(
+        display: *mut std::ffi::c_void,
+        surface: *mut std::ffi::c_void,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, String> {
+        use raw_window_handle::{
+            RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
+        };
+        let instance = wgpu::Instance::new(Default::default());
+        let display_nn =
+            std::ptr::NonNull::new(display).ok_or_else(|| "null wl_display".to_string())?;
+        let surface_nn =
+            std::ptr::NonNull::new(surface).ok_or_else(|| "null wl_surface".to_string())?;
+        let raw_display_handle = RawDisplayHandle::Wayland(WaylandDisplayHandle::new(display_nn));
+        let raw_window_handle = RawWindowHandle::Wayland(WaylandWindowHandle::new(surface_nn));
+        let wgpu_surface = instance
+            .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                raw_display_handle,
+                raw_window_handle,
+            })
+            .map_err(|err| format!("raw surface creation failed: {err}"))?;
+        Self::from_surface(instance, wgpu_surface, width, height).await
+    }
+
+    async fn from_surface(
+        instance: wgpu::Instance,
+        surface: wgpu::Surface<'static>,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, String> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -801,8 +815,8 @@ impl WgpuPresenter {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            width: size.width.max(1),
-            height: size.height.max(1),
+            width: width.max(1),
+            height: height.max(1),
             present_mode,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
@@ -1030,35 +1044,45 @@ impl<'a> Canvas<'a> {
     }
 
     fn glyph(&mut self, ch: char, x: f32, y: f32, color: [f32; 4]) -> f32 {
-        if let Some((data, w, h, advance)) = retro_render::rasterize_char(ch, 13.0) {
+        if let Some(glyph) = retro_render::rasterize_char(ch, 13.0) {
+            // Position glyph on a shared baseline. Callers pass `y` as the top of
+            // the text line, so the baseline sits `ascent` px below it. `glyph.top`
+            // (bounds.min.y) is negative for ink above the baseline, so a capital
+            // lands its ink-top ≈ y while descenders (p/g/y) hang below the baseline.
+            let baseline_y = y + glyph.ascent;
+            let glyph_top = baseline_y + glyph.top;
+
             // Subpixel antialiasing: apply horizontal smoothing pass before rendering.
             // For each pixel with alpha > 0 whose left neighbour has alpha == 0,
             // paint a faint hint at x-1 (alpha * 0.3) to simulate RGB subpixel rendering.
-            let mut smoothed: Vec<u8> = data.clone();
-            for row in 0..h {
-                for col in 1..w {
-                    let idx = (row * w + col) as usize;
-                    let left_idx = (row * w + col - 1) as usize;
-                    if data[idx] > 0 && data[left_idx] == 0 {
-                        let hint = (data[idx] as f32 * 0.3) as u8;
+            let mut smoothed: Vec<u8> = glyph.data.clone();
+            for row in 0..glyph.height {
+                for col in 1..glyph.width {
+                    let idx = (row * glyph.width + col) as usize;
+                    let left_idx = (row * glyph.width + col - 1) as usize;
+                    if glyph.data[idx] > 0 && glyph.data[left_idx] == 0 {
+                        let hint = (glyph.data[idx] as f32 * 0.3) as u8;
                         if hint > smoothed[left_idx] {
                             smoothed[left_idx] = hint;
                         }
                     }
                 }
             }
-            for row in 0..h {
-                for col in 0..w {
-                    let idx = (row * w + col) as usize;
+            for row in 0..glyph.height {
+                for col in 0..glyph.width {
+                    let idx = (row * glyph.width + col) as usize;
                     let alpha = smoothed[idx] as f32 / 255.0;
                     if alpha > 0.05 {
                         let mut c = color;
                         c[3] *= alpha;
-                        self.rect(Rect::new(x + col as f32, y + row as f32, 1.0, 1.0), c);
+                        self.rect(
+                            Rect::new(x + col as f32, glyph_top + row as f32, 1.0, 1.0),
+                            c,
+                        );
                     }
                 }
             }
-            advance.max(4.0)
+            glyph.advance.max(4.0)
         } else {
             for (row, bits) in glyph_pattern(ch).iter().enumerate() {
                 for col in 0..5 {
@@ -1156,15 +1180,9 @@ fn draw_desktop_backdrop(canvas: &mut Canvas<'_>) {
 
     // Menu bar area: slightly lighter top 24px with a 1px separator below it.
     if !render_dark_mode() {
-        canvas.rect(
-            Rect::new(0.0, 0.0, canvas.width, 24.0),
-            rgb(180, 180, 176),
-        );
+        canvas.rect(Rect::new(0.0, 0.0, canvas.width, 24.0), rgb(180, 180, 176));
         // 1px separator line between menu bar and desktop content
-        canvas.rect(
-            Rect::new(0.0, 24.0, canvas.width, 1.0),
-            rgb(100, 100, 96),
-        );
+        canvas.rect(Rect::new(0.0, 24.0, canvas.width, 1.0), rgb(100, 100, 96));
     }
 }
 
@@ -1612,23 +1630,47 @@ fn draw_popup_button(canvas: &mut Canvas<'_>, rect: Rect, pb: &PopupButton) {
     let arrow_y = rect.y + rect.height * 0.5 - 2.0;
     let arrow_color = ui(rgb(60, 60, 58), rgb(180, 180, 176));
     canvas.rect(Rect::new(arrow_x, arrow_y, 7.0, 1.0), arrow_color);
-    canvas.rect(Rect::new(arrow_x + 1.0, arrow_y + 1.0, 5.0, 1.0), arrow_color);
-    canvas.rect(Rect::new(arrow_x + 2.0, arrow_y + 2.0, 3.0, 1.0), arrow_color);
-    canvas.rect(Rect::new(arrow_x + 3.0, arrow_y + 3.0, 1.0, 1.0), arrow_color);
+    canvas.rect(
+        Rect::new(arrow_x + 1.0, arrow_y + 1.0, 5.0, 1.0),
+        arrow_color,
+    );
+    canvas.rect(
+        Rect::new(arrow_x + 2.0, arrow_y + 2.0, 3.0, 1.0),
+        arrow_color,
+    );
+    canvas.rect(
+        Rect::new(arrow_x + 3.0, arrow_y + 3.0, 1.0, 1.0),
+        arrow_color,
+    );
 
     // Separator line between label area and arrow area
     canvas.rect(
-        Rect::new(rect.x + rect.width - 18.0, rect.y + 2.0, 1.0, rect.height - 4.0),
+        Rect::new(
+            rect.x + rect.width - 18.0,
+            rect.y + 2.0,
+            1.0,
+            rect.height - 4.0,
+        ),
         ui(rgb(145, 145, 140), rgb(90, 92, 94)),
     );
 
     // Shadow line at bottom-right for depth
     canvas.rect(
-        Rect::new(rect.x + 1.0, rect.y + rect.height - 1.0, rect.width - 1.0, 1.0),
+        Rect::new(
+            rect.x + 1.0,
+            rect.y + rect.height - 1.0,
+            rect.width - 1.0,
+            1.0,
+        ),
         ui(rgb(100, 100, 96), rgb(30, 32, 34)),
     );
     canvas.rect(
-        Rect::new(rect.x + rect.width - 1.0, rect.y + 1.0, 1.0, rect.height - 1.0),
+        Rect::new(
+            rect.x + rect.width - 1.0,
+            rect.y + 1.0,
+            1.0,
+            rect.height - 1.0,
+        ),
         ui(rgb(100, 100, 96), rgb(30, 32, 34)),
     );
 }
@@ -1667,16 +1709,25 @@ fn draw_workspace_grid_view(canvas: &mut Canvas<'_>, _rect: Rect, grid: &Workspa
         } else {
             ui(rgb(140, 140, 135), rgb(80, 82, 84))
         };
-        
+
         canvas.stroke(cell_r, border_color);
         if i == grid.active_index {
             canvas.stroke(
-                Rect::new(cell_r.x + 1.0, cell_r.y + 1.0, cell_r.width - 2.0, cell_r.height - 2.0),
+                Rect::new(
+                    cell_r.x + 1.0,
+                    cell_r.y + 1.0,
+                    cell_r.width - 2.0,
+                    cell_r.height - 2.0,
+                ),
                 border_color,
             );
         }
 
-        let label = grid.items.get(i).cloned().unwrap_or_else(|| format!("Desktop {}", i + 1));
+        let label = grid
+            .items
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| format!("Desktop {}", i + 1));
         canvas.text(
             &label,
             cell_x + (cell_w - label.len() as f32 * 7.0) * 0.5,
@@ -1704,7 +1755,12 @@ fn draw_tab_view(canvas: &mut Canvas<'_>, rect: Rect, tv: &TabView) {
         let is_selected = tv.selected_tab_index == i;
         if is_selected {
             canvas.rect(tab_rect, ui(rgb(236, 235, 229), rgb(48, 50, 52)));
-            draw_beveled_rect(canvas, tab_rect, ui(rgb(238, 238, 232), rgb(52, 54, 56)), true);
+            draw_beveled_rect(
+                canvas,
+                tab_rect,
+                ui(rgb(238, 238, 232), rgb(52, 54, 56)),
+                true,
+            );
             canvas.rect(
                 Rect::new(tab_rect.x + 1.0, divider_y, tab_rect.width - 2.0, 1.0),
                 ui(rgb(238, 238, 232), rgb(52, 54, 56)),
@@ -1753,18 +1809,28 @@ fn draw_dock_view(canvas: &mut Canvas<'_>, _rect: Rect, dock: &DockView) {
         let item_rect = dock.item_rect(i);
 
         if item.is_focused {
-            let highlight_rect = Rect::new(item_rect.x - 2.0, item_rect.y - 2.0, item_rect.width + 4.0, item_rect.height + 4.0);
+            let highlight_rect = Rect::new(
+                item_rect.x - 2.0,
+                item_rect.y - 2.0,
+                item_rect.width + 4.0,
+                item_rect.height + 4.0,
+            );
             canvas.rect(highlight_rect, ui(rgb(180, 200, 240), rgb(60, 80, 120)));
-            draw_beveled_rect(canvas, highlight_rect, ui(rgb(180, 200, 240), rgb(60, 80, 120)), false);
+            draw_beveled_rect(
+                canvas,
+                highlight_rect,
+                ui(rgb(180, 200, 240), rgb(60, 80, 120)),
+                false,
+            );
         }
-        
+
         let icon_bg = ui(rgb(250, 250, 246), rgb(44, 46, 50));
         canvas.rect(item_rect, icon_bg);
         draw_beveled_rect(canvas, item_rect, icon_bg, true);
-        
+
         let symbol_x = item_rect.x + (item_rect.width - 32.0) * 0.5;
         let symbol_y = item_rect.y + (item_rect.height - 32.0) * 0.5 - 2.0;
-        
+
         match item.label.as_str() {
             "Finder" => draw_app_icon(canvas, symbol_x - 6.0, symbol_y - 6.0),
             "Settings" => draw_drive_icon(canvas, symbol_x - 6.0, symbol_y - 6.0),
@@ -1772,10 +1838,15 @@ fn draw_dock_view(canvas: &mut Canvas<'_>, _rect: Rect, dock: &DockView) {
             "Trash" => draw_trash_icon(canvas, symbol_x - 6.0, symbol_y - 6.0),
             _ => draw_app_icon(canvas, symbol_x - 6.0, symbol_y - 6.0),
         }
-        
+
         if item.is_running {
             canvas.rect(
-                Rect::new(item_rect.x + item_rect.width * 0.5 - 2.0, item_rect.y + item_rect.height - 5.0, 4.0, 4.0),
+                Rect::new(
+                    item_rect.x + item_rect.width * 0.5 - 2.0,
+                    item_rect.y + item_rect.height - 5.0,
+                    4.0,
+                    4.0,
+                ),
                 ui(rgb(60, 60, 55), rgb(200, 200, 195)),
             );
         }
@@ -2428,7 +2499,7 @@ fn draw_document_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
     canvas.rect(Rect::new(x + 16.0, y + 15.0, 14.0, 1.0), rgb(160, 160, 155));
     canvas.rect(Rect::new(x + 16.0, y + 21.0, 16.0, 1.0), rgb(160, 160, 155));
     canvas.rect(Rect::new(x + 16.0, y + 27.0, 12.0, 1.0), rgb(160, 160, 155));
-    
+
     // Top right folded corner
     canvas.rect(Rect::new(x + 29.0, y + 4.0, 7.0, 7.0), rgb(210, 210, 205));
     canvas.rect(Rect::new(x + 29.0, y + 11.0, 8.0, 1.0), rgb(130, 130, 125));
@@ -2469,14 +2540,11 @@ fn draw_app_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
         true,
     );
     // Screen area
-    canvas.rect(
-        Rect::new(x + 8.0, y + 8.0, 28.0, 20.0),
-        rgb(40, 44, 52),
-    );
+    canvas.rect(Rect::new(x + 8.0, y + 8.0, 28.0, 20.0), rgb(40, 44, 52));
     // Stand/base
     canvas.rect(Rect::new(x + 14.0, y + 36.0, 16.0, 4.0), rgb(180, 180, 175));
     canvas.rect(Rect::new(x + 10.0, y + 40.0, 24.0, 2.0), rgb(140, 140, 135));
-    
+
     // Stylized logo graphic
     let logo_color = rgb(90, 160, 240);
     canvas.rect(Rect::new(x + 20.0, y + 12.0, 4.0, 3.0), logo_color);
@@ -2489,21 +2557,34 @@ fn draw_trash_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
     let lid_color = rgb(190, 190, 185);
     let body_color = rgb(170, 170, 165);
     let shadow_color = rgb(110, 110, 105);
-    
+
     // Handle
     canvas.rect(Rect::new(x + 18.0, y + 2.0, 8.0, 3.0), lid_color);
     canvas.rect(Rect::new(x + 19.0, y + 1.0, 6.0, 1.0), rgb(240, 240, 240));
-    
+
     // Lid rim
-    draw_beveled_rect(canvas, Rect::new(x + 6.0, y + 5.0, 32.0, 5.0), lid_color, true);
-    
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x + 6.0, y + 5.0, 32.0, 5.0),
+        lid_color,
+        true,
+    );
+
     // Can body
-    draw_beveled_rect(canvas, Rect::new(x + 9.0, y + 10.0, 26.0, 34.0), body_color, true);
-    
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x + 9.0, y + 10.0, 26.0, 34.0),
+        body_color,
+        true,
+    );
+
     // Rib highlights
     for offset in [14.0, 20.0, 26.0, 32.0] {
         canvas.rect(Rect::new(x + offset, y + 14.0, 1.0, 26.0), shadow_color);
-        canvas.rect(Rect::new(x + offset + 1.0, y + 14.0, 1.0, 26.0), rgb(220, 220, 215));
+        canvas.rect(
+            Rect::new(x + offset + 1.0, y + 14.0, 1.0, 26.0),
+            rgb(220, 220, 215),
+        );
     }
 }
 
@@ -2561,221 +2642,223 @@ fn _color_to_rgb(color: Color) -> [f32; 4] {
     ]
 }
 
-fn glyph_pattern(ch: char) -> [u8; 7] {
+fn glyph_pattern(ch: char) -> [u8; 9] {
     match ch {
         'A' => [
-            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001, 0, 0,
         ],
         'B' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110,
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110, 0, 0,
         ],
         'C' => [
-            0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111,
+            0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111, 0, 0,
         ],
         'D' => [
-            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
+            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110, 0, 0,
         ],
         'E' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111, 0, 0,
         ],
         'F' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000,
+            0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0, 0,
         ],
         'G' => [
-            0b01111, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111,
+            0b01111, 0b10000, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111, 0, 0,
         ],
         'H' => [
-            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+            0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001, 0, 0,
         ],
         'I' => [
-            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111,
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111, 0, 0,
         ],
         'J' => [
-            0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100,
+            0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100, 0, 0,
         ],
         'K' => [
-            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001,
+            0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001, 0, 0,
         ],
         'L' => [
-            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
+            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111, 0, 0,
         ],
         'M' => [
-            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001,
+            0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001, 0, 0,
         ],
         'N' => [
-            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001,
+            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001, 0, 0,
         ],
         'O' => [
-            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0, 0,
         ],
         'P' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000,
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000, 0, 0,
         ],
         'Q' => [
-            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101, 0, 0,
         ],
         'R' => [
-            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001, 0, 0,
         ],
         'S' => [
-            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110,
+            0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110, 0, 0,
         ],
         'T' => [
-            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0, 0,
         ],
         'U' => [
-            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0, 0,
         ],
         'V' => [
-            0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100,
+            0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100, 0, 0,
         ],
         'W' => [
-            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010,
+            0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010, 0, 0,
         ],
         'X' => [
-            0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b01010, 0b10001,
+            0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b01010, 0b10001, 0, 0,
         ],
         'Y' => [
-            0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+            0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0, 0,
         ],
         'Z' => [
-            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111,
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111, 0, 0,
         ],
         'a' => [
-            0b00000, 0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111,
+            0b00000, 0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111, 0, 0,
         ],
         'b' => [
-            0b10000, 0b10000, 0b10110, 0b11001, 0b10001, 0b10001, 0b11110,
+            0b10000, 0b10000, 0b10110, 0b11001, 0b10001, 0b10001, 0b11110, 0, 0,
         ],
         'c' => [
-            0b00000, 0b00000, 0b01110, 0b10000, 0b10000, 0b10000, 0b01110,
+            0b00000, 0b00000, 0b01110, 0b10000, 0b10000, 0b10000, 0b01110, 0, 0,
         ],
         'd' => [
-            0b00001, 0b00001, 0b01101, 0b10011, 0b10001, 0b10001, 0b01111,
+            0b00001, 0b00001, 0b01101, 0b10011, 0b10001, 0b10001, 0b01111, 0, 0,
         ],
         'e' => [
-            0b00000, 0b00000, 0b01110, 0b10001, 0b11111, 0b10000, 0b01110,
+            0b00000, 0b00000, 0b01110, 0b10001, 0b11111, 0b10000, 0b01110, 0, 0,
         ],
         'f' => [
-            0b00110, 0b01001, 0b01000, 0b11110, 0b01000, 0b01000, 0b01000,
+            0b00110, 0b01001, 0b01000, 0b11110, 0b01000, 0b01000, 0b01000, 0, 0,
         ],
         'g' => [
-            0b00000, 0b00000, 0b01110, 0b10001, 0b01111, 0b00001, 0b01110,
+            0b00000, 0b00000, 0b01110, 0b10001, 0b01111, 0b00001, 0b01110, 0b00001, 0b01110,
         ],
         'h' => [
-            0b10000, 0b10000, 0b10110, 0b11001, 0b10001, 0b10001, 0b10001,
+            0b10000, 0b10000, 0b10110, 0b11001, 0b10001, 0b10001, 0b10001, 0, 0,
         ],
         'i' => [
-            0b00100, 0b00000, 0b01100, 0b00100, 0b00100, 0b00100, 0b01110,
+            0b00100, 0b00000, 0b01100, 0b00100, 0b00100, 0b00100, 0b01110, 0, 0,
         ],
         'j' => [
-            0b00010, 0b00000, 0b00110, 0b00010, 0b00010, 0b10010, 0b01100,
+            0b00010, 0b00000, 0b00110, 0b00010, 0b00010, 0b10010, 0b01100, 0b10010, 0b01100,
         ],
         'k' => [
-            0b10000, 0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010,
+            0b10000, 0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0, 0,
         ],
         'l' => [
-            0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+            0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110, 0, 0,
         ],
         'm' => [
-            0b00000, 0b00000, 0b11010, 0b10101, 0b10101, 0b10101, 0b10101,
+            0b00000, 0b00000, 0b11010, 0b10101, 0b10101, 0b10101, 0b10101, 0, 0,
         ],
         'n' => [
-            0b00000, 0b00000, 0b10110, 0b11001, 0b10001, 0b10001, 0b10001,
+            0b00000, 0b00000, 0b10110, 0b11001, 0b10001, 0b10001, 0b10001, 0, 0,
         ],
         'o' => [
-            0b00000, 0b00000, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110,
+            0b00000, 0b00000, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110, 0, 0,
         ],
         'p' => [
-            0b00000, 0b00000, 0b01100, 0b01010, 0b01100, 0b01000, 0b01000,
+            0b00000, 0b00000, 0b01100, 0b01010, 0b01100, 0b01000, 0b01000, 0b01000, 0b01000,
         ],
         'q' => [
-            0b00000, 0b00000, 0b01100, 0b10100, 0b01100, 0b00100, 0b00100,
+            0b00000, 0b00000, 0b01100, 0b10100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100,
         ],
         'r' => [
-            0b00000, 0b00000, 0b10110, 0b11001, 0b10000, 0b10000, 0b10000,
+            0b00000, 0b00000, 0b10110, 0b11001, 0b10000, 0b10000, 0b10000, 0, 0,
         ],
         's' => [
-            0b00000, 0b00000, 0b01111, 0b10000, 0b01110, 0b00001, 0b11110,
+            0b00000, 0b00000, 0b01111, 0b10000, 0b01110, 0b00001, 0b11110, 0, 0,
         ],
         't' => [
-            0b00100, 0b00100, 0b11110, 0b00100, 0b00100, 0b00100, 0b00011,
+            0b00100, 0b00100, 0b11110, 0b00100, 0b00100, 0b00100, 0b00011, 0, 0,
         ],
         'u' => [
-            0b00000, 0b00000, 0b10001, 0b10001, 0b10001, 0b10011, 0b01101,
+            0b00000, 0b00000, 0b10001, 0b10001, 0b10001, 0b10011, 0b01101, 0, 0,
         ],
         'v' => [
-            0b00000, 0b00000, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100,
+            0b00000, 0b00000, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100, 0, 0,
         ],
         'w' => [
-            0b00000, 0b00000, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010,
+            0b00000, 0b00000, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010, 0, 0,
         ],
         'x' => [
-            0b00000, 0b00000, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001,
+            0b00000, 0b00000, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0, 0,
         ],
         'y' => [
-            0b00000, 0b00000, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110,
+            0b00000, 0b00000, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110, 0b00001, 0b01110,
         ],
         'z' => [
-            0b00000, 0b00000, 0b11111, 0b00010, 0b00100, 0b01000, 0b11111,
+            0b00000, 0b00000, 0b11111, 0b00010, 0b00100, 0b01000, 0b11111, 0, 0,
         ],
         '0' => [
-            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110,
+            0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110, 0, 0,
         ],
         '1' => [
-            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110, 0, 0,
         ],
         '2' => [
-            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111,
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111, 0, 0,
         ],
         '3' => [
-            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110,
+            0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110, 0, 0,
         ],
         '4' => [
-            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010,
+            0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010, 0, 0,
         ],
         '5' => [
-            0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110,
+            0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110, 0, 0,
         ],
         '6' => [
-            0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110,
+            0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110, 0, 0,
         ],
         '7' => [
-            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000,
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0, 0,
         ],
         '8' => [
-            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110,
+            0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110, 0, 0,
         ],
         '9' => [
-            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110,
+            0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110, 0, 0,
         ],
-        '-' => [0, 0, 0, 0b11111, 0, 0, 0],
-        '+' => [0, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0],
-        '_' => [0, 0, 0, 0, 0, 0, 0b11111],
-        '.' => [0, 0, 0, 0, 0, 0b01100, 0b01100],
-        ':' => [0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0],
+        '-' => [0, 0, 0, 0b11111, 0, 0, 0, 0, 0],
+        '+' => [0, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0, 0, 0],
+        '_' => [0, 0, 0, 0, 0, 0, 0b11111, 0, 0],
+        '.' => [0, 0, 0, 0, 0, 0b01100, 0b01100, 0, 0],
+        ':' => [0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0, 0, 0],
         '/' => [
-            0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000,
+            0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000, 0, 0,
         ],
         '\\' => [
-            0b10000, 0b01000, 0b01000, 0b00100, 0b00010, 0b00010, 0b00001,
+            0b10000, 0b01000, 0b01000, 0b00100, 0b00010, 0b00010, 0b00001, 0, 0,
         ],
         '(' => [
-            0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010,
+            0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010, 0, 0,
         ],
         ')' => [
-            0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000,
+            0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000, 0, 0,
         ],
-        ',' => [0, 0, 0, 0, 0, 0b01100, 0b00100],
-        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0, 0b00100, 0],
-        '?' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100],
-        '=' => [0, 0, 0b11111, 0, 0b11111, 0, 0],
+        ',' => [0, 0, 0, 0, 0, 0b01100, 0b00100, 0b01100, 0b00100],
+        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0, 0b00100, 0, 0, 0],
+        '?' => [
+            0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100, 0, 0,
+        ],
+        '=' => [0, 0, 0b11111, 0, 0b11111, 0, 0, 0, 0],
         '&' => [
-            0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101,
+            0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101, 0, 0,
         ],
-        ' ' => [0, 0, 0, 0, 0, 0, 0],
+        ' ' => [0, 0, 0, 0, 0, 0, 0, 0, 0],
         _ => [
-            0b11111, 0b10001, 0b00010, 0b00100, 0b00000, 0b00100, 0b00100,
+            0b11111, 0b10001, 0b00010, 0b00100, 0b00000, 0b00100, 0b00100, 0, 0,
         ],
     }
 }

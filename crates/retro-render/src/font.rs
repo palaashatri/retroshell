@@ -67,7 +67,19 @@ fn load_ab_font() -> Option<FontArc> {
     None
 }
 
-pub fn rasterize_char(ch: char, font_size: f32) -> Option<(Vec<u8>, u32, u32, f32)> {
+/// Rasterized glyph data.
+pub struct RasterGlyph {
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub advance: f32,
+    /// Top offset relative to baseline (in pixels). Typically negative for ascenders.
+    pub top: f32,
+    /// Font ascent at this size (in pixels): distance from baseline to top of line.
+    pub ascent: f32,
+}
+
+pub fn rasterize_char(ch: char, font_size: f32) -> Option<RasterGlyph> {
     let font = AB_FONT.get_or_init(load_ab_font).as_ref()?;
     let glyph_id = AbFont::glyph_id(font, ch);
     if ch.is_control() {
@@ -79,15 +91,31 @@ pub fn rasterize_char(ch: char, font_size: f32) -> Option<(Vec<u8>, u32, u32, f3
     let px_scale = PxScale::from(font_size * 1.4);
     let scaled_font = font.as_scaled(px_scale);
     let advance = scaled_font.h_advance(glyph_id).max(font_size * 0.35);
+    let ascent = scaled_font.ascent();
     let glyph = glyph_id.with_scale(px_scale);
     let Some(outlined) = AbFont::outline_glyph(font, glyph) else {
-        return Some((Vec::new(), 0, 0, advance));
+        return Some(RasterGlyph {
+            data: Vec::new(),
+            width: 0,
+            height: 0,
+            advance,
+            top: 0.0,
+            ascent,
+        });
     };
     let bounds = outlined.px_bounds();
     let width = bounds.width().ceil() as u32;
     let height = bounds.height().ceil() as u32;
+    let top = bounds.min.y;
     if width == 0 || height == 0 {
-        return Some((Vec::new(), 0, 0, advance));
+        return Some(RasterGlyph {
+            data: Vec::new(),
+            width: 0,
+            height: 0,
+            advance,
+            top,
+            ascent,
+        });
     }
     let mut data = vec![0u8; (width * height) as usize];
     outlined.draw(|x, y, coverage| {
@@ -97,5 +125,12 @@ pub fn rasterize_char(ch: char, font_size: f32) -> Option<(Vec<u8>, u32, u32, f3
             data[iy * width as usize + ix] = (coverage * 255.0) as u8;
         }
     });
-    Some((data, width, height, advance))
+    Some(RasterGlyph {
+        data,
+        width,
+        height,
+        advance,
+        top,
+        ascent,
+    })
 }

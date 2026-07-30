@@ -349,6 +349,8 @@ pub fn run_drm_session() -> Result<()> {
         "[retro-compositor] starting DRM/KMS session path ({})",
         session_mode_summary(CompositorBackendKind::SessionDrm)
     );
+    // QA: SIGUSR1 → write a PNG of the next composited frame (see screenshot.rs).
+    crate::screenshot::install_signal_handler();
 
     let display_policy = DisplayPolicy::resolve();
     let mut hdr_caps = HdrCapabilities::detect();
@@ -897,15 +899,23 @@ pub fn run_drm_session() -> Result<()> {
             // both live on `state`, and the borrow checker cannot split fields
             // across the helper call.
             let elements = collect_render_elements(&mut renderer, &state);
-            let comp = state
-                .drm_compositor
-                .as_mut()
-                .expect("checked is_some above");
             let clear = if state.locked {
                 DRM_LOCK_CLEAR_COLOR
             } else {
                 DRM_CLEAR_COLOR
             };
+            // QA: honour a pending SIGUSR1 screenshot request before the real
+            // scanout render (offscreen readback; see screenshot.rs).
+            crate::screenshot::capture_if_requested(
+                &mut renderer,
+                &elements,
+                state.output_size,
+                clear,
+            );
+            let comp = state
+                .drm_compositor
+                .as_mut()
+                .expect("checked is_some above");
             match comp.render_frame::<_, _>(
                 &mut renderer,
                 &elements,
@@ -1558,12 +1568,10 @@ impl XdgShellHandler for DrmSessionState {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        surface.with_pending_state(|state| {
-            state.size = Some(Size::from((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)));
-            state.states.set(xdg_toplevel::State::Activated);
-        });
-        surface.send_configure();
-
+        // Read app_id BEFORE the first configure so we can size the shell to fill
+        // the output. The RetroShell desktop (app_id "com.retro.shell") is the
+        // root session surface: it must span the whole output, anchored at (0,0),
+        // not the cascaded 640×480 default used for ordinary app windows.
         let (title, app_id) = with_states(surface.wl_surface(), |states| {
             let data = states
                 .data_map
@@ -1579,14 +1587,36 @@ impl XdgShellHandler for DrmSessionState {
                 .unwrap_or_else(|| "retroshell.app".into());
             (title, app_id)
         });
+        let is_shell = app_id == "com.retro.shell" || app_id.starts_with("com.retro.shell");
+
+        let (win_w, win_h) = if is_shell {
+            self.output_size
+        } else {
+            (DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)
+        };
+        surface.with_pending_state(|state| {
+            state.size = Some(Size::from((win_w, win_h)));
+            state.states.set(xdg_toplevel::State::Activated);
+            if is_shell {
+                // Fill the output like a maximized/fullscreen surface.
+                state.states.set(xdg_toplevel::State::Maximized);
+                state.states.set(xdg_toplevel::State::Fullscreen);
+            }
+        });
+        surface.send_configure();
+
         let foreign = self
             .foreign_toplevel_list
             .new_toplevel::<DrmSessionState>(&title, &app_id);
 
-        let offset = (self.windows.len() as i32) * 32;
-        let position = Point::from((64 + offset, 64 + offset));
+        let position = if is_shell {
+            Point::from((0, 0))
+        } else {
+            let offset = (self.windows.len() as i32) * 32;
+            Point::from((64 + offset, 64 + offset))
+        };
         eprintln!(
-            "[retro-compositor/drm] toplevel mapped at ({},{}) title={title}",
+            "[retro-compositor/drm] toplevel mapped at ({},{}) size={win_w}x{win_h} title={title} app_id={app_id} shell={is_shell}",
             position.x, position.y
         );
 
@@ -1602,7 +1632,7 @@ impl XdgShellHandler for DrmSessionState {
             foreign,
             window_id: window_id.clone(),
             position,
-            size: Size::from((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)),
+            size: Size::from((win_w, win_h)),
         });
         // Listing/present filter: only active-workspace ids (client SHM composite TBD).
         eprintln!(

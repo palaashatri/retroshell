@@ -33,3 +33,6 @@ smithay = { version = "0.7", default-features = false, features = [
 # libinput context for seat-backed input (smithay backend_libinput wraps this).
 # OFlags for Session::open come from smithay::reexports::rustix.
 input = { version = "0.9", features = ["libinput_1_19", "udev"] }
+# QA screenshot: offscreen GL readback → PNG on SIGUSR1.
+image = { workspace = true }
+libc = "0.2"

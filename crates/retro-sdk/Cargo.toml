@@ -11,6 +11,7 @@ bytemuck = { workspace = true }
 futures = { workspace = true }
 wgpu = { workspace = true }
 winit = "0.30"
+raw-window-handle = "0.6"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

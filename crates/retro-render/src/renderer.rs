@@ -349,12 +349,13 @@ mod tests {
             hdr_enabled: false,
             vrr_adaptive: true,
         };
-        assert_eq!(
-            select_present_mode(&modes, policy),
-            PresentMode::AutoVsync
-        );
+        assert_eq!(select_present_mode(&modes, policy), PresentMode::AutoVsync);
 
-        let no_auto = [PresentMode::Mailbox, PresentMode::FifoRelaxed, PresentMode::Fifo];
+        let no_auto = [
+            PresentMode::Mailbox,
+            PresentMode::FifoRelaxed,
+            PresentMode::Fifo,
+        ];
         assert_eq!(
             select_present_mode(&no_auto, policy),
             PresentMode::FifoRelaxed
