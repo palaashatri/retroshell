@@ -800,7 +800,10 @@ impl UiRuntime {
         height_px: u32,
         scale: f32,
     ) -> Self {
-        let mut window = Window::new("RetroShell Layer");
+        // NOTE: the title MUST be "RetroShell Desktop" — draw_window special-cases
+        // that exact title to render chromeless (no titlebar, no content clip), so
+        // the menu bar sits at y=0 and the dock reaches the bottom edge.
+        let mut window = Window::new("RetroShell Desktop");
         window.set_content(content);
 
         let mut rt = Self {
@@ -829,6 +832,23 @@ impl UiRuntime {
         self.dark_mode = dark_mode;
         self.accent_color = accent_color;
         self.dirty = true;
+    }
+
+    /// Per-frame tick: reload theme preference and drive the content's
+    /// `update()` so dynamic content (dock items, notifications, etc.) is
+    /// rebuilt — mirrors the winit `AppHandler::about_to_wait` logic. A driver
+    /// must call this each event-loop iteration or the dock never populates.
+    pub fn tick(&mut self) {
+        let (dark, accent) = load_theme_preference();
+        if dark != self.dark_mode || accent != self.accent_color {
+            self.dark_mode = dark;
+            self.accent_color = accent;
+            self.dirty = true;
+        }
+        if let Some(ref mut win) = self.window {
+            win.update();
+            self.dirty = true;
+        }
     }
 
     /// Update the current modifier key state.

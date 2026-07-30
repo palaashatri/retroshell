@@ -126,17 +126,18 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
             .blocking_dispatch(&mut state)
             .map_err(|e| anyhow!("dispatch: {}", e))?;
 
-        if let Some(runtime) = &state.runtime {
+        if let (Some(renderer), Some(runtime)) =
+            (state.renderer.as_mut(), state.runtime.as_mut())
+        {
+            // Per-frame tick drives ShellDesktop::update() (rebuilds the dock,
+            // notifications, clock). Without this the dock never populates.
+            runtime.tick();
             if runtime.is_dirty() {
-                if let (Some(renderer), Some(runtime)) =
-                    (state.renderer.as_mut(), state.runtime.as_mut())
-                {
-                    runtime
-                        .paint(renderer)
-                        .map_err(|e| anyhow!("repaint: {}", e))?;
-                    if let Some(surface) = &state.wl_surface {
-                        surface.commit();
-                    }
+                runtime
+                    .paint(renderer)
+                    .map_err(|e| anyhow!("repaint: {}", e))?;
+                if let Some(surface) = &state.wl_surface {
+                    surface.commit();
                 }
             }
         }
