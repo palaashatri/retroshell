@@ -83,7 +83,7 @@ before any change is made.** Most tasks here are **host-testable** with
 
 ---
 
-### Task 3.0 — Re-ground: confirm the starting point   [UNVERIFIED]
+### Task 3.0 — Re-ground: confirm the starting point   [VERIFIED]
 
 Precondition:
 ```bash
@@ -115,7 +115,7 @@ Commit: _none (verification only)._
 
 ---
 
-### Task 3.1 — Add the bundle-manifest parser (`bundle.rs`)   [UNVERIFIED]
+### Task 3.1 — Add the bundle-manifest parser (`bundle.rs`)   [VERIFIED]
 
 Precondition:
 ```bash

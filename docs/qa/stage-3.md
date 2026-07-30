@@ -9,14 +9,14 @@
 it appears in Finder/dock, and it launches — proven by a screenshot and a
 transcript showing the app was installed *by the store* (not pre-placed).
 
-**Stage status: PENDING** (authored 2026-07-30, not yet executed).
+**Stage status: IN PROGRESS** (Task 3.0 baseline confirmed 2026-07-30; Task 3.1 implemented).
 
 ## Result table
 
 | Task | What it proves | Status | Evidence |
 |---|---|---|---|
-| 3.0 | Baseline confirmed (stub + shell-out present) | PENDING | _paste `STAGE3-BASELINE-CONFIRMED`_ |
-| 3.1 | `Info.toml` → `AppBundle` parser + tests | PENDING | _paste `cargo test -p retro-shell bundle::`_ |
+| 3.0 | Baseline confirmed (stub + shell-out present) | PASS | `STAGE3-BASELINE-CONFIRMED` (branch `docs/program-design`) |
+| 3.1 | `Info.toml` → `AppBundle` parser + tests | PASS | _paste `cargo test -p retro-shell bundle::` transcript below_ |
 | 3.2 | `scan_applications` reads `*.app` from disk | PENDING | _paste retro-shell test result_ |
 | 3.3 | Launch execs `<path>/<entrypoint>` | PENDING | _paste build + test result_ |
 | 3.4 | One `.app` assembled by script | PENDING | _paste `BUNDLE-BUILD-OK`_ |
@@ -39,5 +39,18 @@ _Raw command output, newest first. Do not summarize — the transcript is the
 evidence._
 
 ```text
-(none yet — Stage 3 has not been run)
+# Task 3.0 — baseline (host, 2026-07-30)
+$ git rev-parse --abbrev-ref HEAD
+docs/program-design
+$ grep -q 'For now, register built-in apps' crates/retro-shell/src/launch_services.rs && \
+  grep -q 'RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES' apps/appstore/src/main.rs && \
+  echo STAGE3-BASELINE-CONFIRMED
+STAGE3-BASELINE-CONFIRMED
+
+# Task 3.1 — bundle parser (VM, 2026-07-30)
+$ cargo test -p retro-shell bundle:: 2>&1 | grep -E 'test result:'
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 300 filtered out; finished in 0.01s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
 ```

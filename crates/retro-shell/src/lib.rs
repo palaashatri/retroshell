@@ -3,6 +3,7 @@ pub mod a11y_prefs;
 pub mod application_registry;
 pub mod atspi_bus;
 pub mod audio;
+pub mod bundle;
 pub mod capture;
 pub mod chrome_protocol;
 pub mod desktop_manager;
