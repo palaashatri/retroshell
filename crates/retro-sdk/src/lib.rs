@@ -731,12 +731,49 @@ fn dirs_settings_conf() -> Option<PathBuf> {
         })
 }
 
-struct WgpuPresenter {
+pub struct WgpuPresenter {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+}
+
+/// Renders immediate-mode UI onto a Wayland surface created outside winit
+/// (e.g. a wlr-layer-shell surface owned by retro-shell).
+pub struct RawSurfaceRenderer {
+    presenter: WgpuPresenter,
+}
+
+impl RawSurfaceRenderer {
+    /// Create a renderer from raw Wayland handles for a layer-shell surface.
+    ///
+    /// # Safety
+    ///
+    /// `display` must be a valid `*mut wl_display` and `surface` must be a valid
+    /// `*mut wl_surface`. Both must outlive the returned renderer. They will not
+    /// be freed by this renderer — the caller retains ownership and responsibility
+    /// for cleanup.
+    pub async unsafe fn new(
+        display: *mut std::ffi::c_void,
+        surface: *mut std::ffi::c_void,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            presenter: WgpuPresenter::new_raw(display, surface, width, height).await?,
+        })
+    }
+
+    /// Resize the rendering surface.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.presenter.resize(width, height);
+    }
+
+    /// Render a frame by calling the draw closure with a mutable Canvas.
+    pub fn render(&mut self, draw: impl FnOnce(&mut Canvas<'_>)) -> Result<(), String> {
+        self.presenter.render(draw)
+    }
 }
 
 impl WgpuPresenter {
@@ -755,8 +792,7 @@ impl WgpuPresenter {
     ///
     /// SAFETY: both pointers must reference a valid `wl_display` / `wl_surface`
     /// that outlive the returned presenter.
-    #[allow(dead_code)]
-    async unsafe fn new_raw(
+    pub async unsafe fn new_raw(
         display: *mut std::ffi::c_void,
         surface: *mut std::ffi::c_void,
         width: u32,
@@ -951,7 +987,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 }
 
-struct Canvas<'a> {
+pub struct Canvas<'a> {
     width: f32,
     height: f32,
     vertices: Vec<Vertex>,
@@ -960,7 +996,7 @@ struct Canvas<'a> {
 }
 
 impl<'a> Canvas<'a> {
-    fn new(width: f32, height: f32) -> Self {
+    pub fn new(width: f32, height: f32) -> Self {
         Self {
             width,
             height,
@@ -970,7 +1006,7 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    fn rect(&mut self, rect: Rect, color: [f32; 4]) {
+    pub fn rect(&mut self, rect: Rect, color: [f32; 4]) {
         let mut x0 = rect.x.max(0.0);
         let mut y0 = rect.y.max(0.0);
         let mut x1 = (rect.x + rect.width).min(self.width);
@@ -1017,7 +1053,7 @@ impl<'a> Canvas<'a> {
         ]);
     }
 
-    fn stroke(&mut self, rect: Rect, color: [f32; 4]) {
+    pub fn stroke(&mut self, rect: Rect, color: [f32; 4]) {
         self.rect(Rect::new(rect.x, rect.y, rect.width, 1.0), color);
         self.rect(
             Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
@@ -1030,7 +1066,7 @@ impl<'a> Canvas<'a> {
         );
     }
 
-    fn text(&mut self, text: &str, x: f32, y: f32, color: [f32; 4]) {
+    pub fn text(&mut self, text: &str, x: f32, y: f32, color: [f32; 4]) {
         let mut cursor_x = x;
         let mut cursor_y = y;
         for ch in text.chars() {
@@ -1095,7 +1131,7 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    fn with_clip(&mut self, clip: Rect, draw: impl FnOnce(&mut Self)) {
+    pub fn with_clip(&mut self, clip: Rect, draw: impl FnOnce(&mut Self)) {
         let old = self.clip;
         self.clip = Some(if let Some(old) = old {
             intersect_rect(old, clip).unwrap_or(Rect::ZERO)
