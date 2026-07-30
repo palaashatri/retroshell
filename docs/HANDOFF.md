@@ -124,14 +124,16 @@ origin yet.**
    and `qa-layer-input-click.png` (menu opens on click). Compositor now hit-tests
    layer surfaces; smithay focus Point is surface **origin**, not pointer-local.
 2. **DONE (Phase 3 exclusive chrome):** menu → Top exclusive, dock → Bottom exclusive,
-   wallpaper/icons → Background. Gray PoC live-bind removed (`try_map` is a noop);
-   `should_paint_kit_chrome(bound) → !bound`. Compositor sizes/positions layer strips
-   and hit-tests by geo. **Needs VBox screenshot evidence before calling verified.**
-3. **Polish pointer/keyboard (2b-iii remaining):** keyboard is only a KEY_* subset
-   (no xkb yet); prefer sctk SeatHandler like `retro-lock` for full keysyms.
-4. **Polish:** menu-bar item spacing; clock/live content via frame-callback/timer.
-5. **Re-QA Stage 2 functional claims** (lock unbypass, `Super+O`) on the reworked
-   build; update `docs/qa/stage-2.md` with real evidence.
+   wallpaper/icons → Background. Gray PoC live-bind removed; kit chrome gated.
+   Evidence: `qa-phase3-exclusive-chrome.png`.
+3. **DONE (keyboard + Stage 2 Re-QA on Env B):** layer_desktop maps letters/modifiers
+   and emits `Char` for lock typing; compositor Super+O/L already xkb-backed.
+   Re-QA under layer chrome: `stage2-reqa-*.png` + STATUS
+   (`FINDER_AFTER_SUPER_O=YES`, `LOCK_CLIENT=YES`, `FINDER_WHILE_LOCKED=1`, unlock
+   restores desktop). Known: open menu dropdowns still clip to the 24px Top strip;
+   full sctk KeyboardHandler remains nicer than the KEY_*/xkb-mask map.
+4. **Polish:** menu-bar item spacing; clock/live content via frame-callback/timer;
+   Overlay surface for open menus.
 
 ## 7. Gotchas
 - Some docs (e.g. `docs/qa/stage-2.md`) had **CRLF** line endings from the Windows

@@ -53,22 +53,143 @@ fn now_ms() -> u128 {
         .unwrap_or(0)
 }
 
+/// Map Linux KEY_* (evdev) codes to kit KeyCode.
+/// Covers letters/digits/modifiers needed for Super+O/L shell shortcuts and lock typing.
 fn keycode_from_linux(code: u32) -> Option<KeyCode> {
     Some(match code {
         1 => KeyCode::Escape,
+        2 => KeyCode::Key1,
+        3 => KeyCode::Key2,
+        4 => KeyCode::Key3,
+        5 => KeyCode::Key4,
+        6 => KeyCode::Key5,
+        7 => KeyCode::Key6,
+        8 => KeyCode::Key7,
+        9 => KeyCode::Key8,
+        10 => KeyCode::Key9,
+        11 => KeyCode::Key0,
+        12 => KeyCode::Minus,
+        13 => KeyCode::Equals,
         14 => KeyCode::Backspace,
         15 => KeyCode::Tab,
+        16 => KeyCode::Q,
+        17 => KeyCode::W,
+        18 => KeyCode::E,
+        19 => KeyCode::R,
+        20 => KeyCode::T,
+        21 => KeyCode::Y,
+        22 => KeyCode::U,
+        23 => KeyCode::I,
+        24 => KeyCode::O,
+        25 => KeyCode::P,
+        26 => KeyCode::LeftBracket,
+        27 => KeyCode::RightBracket,
         28 => KeyCode::Enter,
+        29 => KeyCode::ControlLeft,
+        30 => KeyCode::A,
+        31 => KeyCode::S,
+        32 => KeyCode::D,
+        33 => KeyCode::F,
+        34 => KeyCode::G,
+        35 => KeyCode::H,
+        36 => KeyCode::J,
+        37 => KeyCode::K,
+        38 => KeyCode::L,
+        39 => KeyCode::Semicolon,
+        40 => KeyCode::Quote,
+        42 => KeyCode::ShiftLeft,
+        43 => KeyCode::Backslash,
+        44 => KeyCode::Z,
+        45 => KeyCode::X,
+        46 => KeyCode::C,
+        47 => KeyCode::V,
+        48 => KeyCode::B,
+        49 => KeyCode::N,
+        50 => KeyCode::M,
+        51 => KeyCode::Comma,
+        52 => KeyCode::Period,
+        53 => KeyCode::Slash,
+        54 => KeyCode::ShiftRight,
+        56 => KeyCode::AltLeft,
         57 => KeyCode::Space,
+        58 => KeyCode::CapsLock,
+        97 => KeyCode::ControlRight,
+        100 => KeyCode::AltRight,
+        102 => KeyCode::Home,
+        103 => KeyCode::ArrowUp,
+        104 => KeyCode::PageUp,
         105 => KeyCode::ArrowLeft,
         106 => KeyCode::ArrowRight,
-        103 => KeyCode::ArrowUp,
-        108 => KeyCode::ArrowDown,
-        102 => KeyCode::Home,
         107 => KeyCode::End,
+        108 => KeyCode::ArrowDown,
+        109 => KeyCode::PageDown,
         111 => KeyCode::Delete,
+        125 => KeyCode::MetaLeft,
+        126 => KeyCode::MetaRight,
         _ => return None,
     })
+}
+
+/// Printable char for lock-password / text fields (US QWERTY, no full xkb).
+fn char_from_keycode(code: KeyCode, shift: bool) -> Option<char> {
+    let ch = match code {
+        KeyCode::A => 'a',
+        KeyCode::B => 'b',
+        KeyCode::C => 'c',
+        KeyCode::D => 'd',
+        KeyCode::E => 'e',
+        KeyCode::F => 'f',
+        KeyCode::G => 'g',
+        KeyCode::H => 'h',
+        KeyCode::I => 'i',
+        KeyCode::J => 'j',
+        KeyCode::K => 'k',
+        KeyCode::L => 'l',
+        KeyCode::M => 'm',
+        KeyCode::N => 'n',
+        KeyCode::O => 'o',
+        KeyCode::P => 'p',
+        KeyCode::Q => 'q',
+        KeyCode::R => 'r',
+        KeyCode::S => 's',
+        KeyCode::T => 't',
+        KeyCode::U => 'u',
+        KeyCode::V => 'v',
+        KeyCode::W => 'w',
+        KeyCode::X => 'x',
+        KeyCode::Y => 'y',
+        KeyCode::Z => 'z',
+        KeyCode::Key0 => '0',
+        KeyCode::Key1 => '1',
+        KeyCode::Key2 => '2',
+        KeyCode::Key3 => '3',
+        KeyCode::Key4 => '4',
+        KeyCode::Key5 => '5',
+        KeyCode::Key6 => '6',
+        KeyCode::Key7 => '7',
+        KeyCode::Key8 => '8',
+        KeyCode::Key9 => '9',
+        KeyCode::Space => ' ',
+        KeyCode::Minus => '-',
+        KeyCode::Equals => '=',
+        _ => return None,
+    };
+    Some(if shift {
+        ch.to_ascii_uppercase()
+    } else {
+        ch
+    })
+}
+
+/// Decode wl_keyboard mods_depressed (standard xkb mask) into kit Modifiers.
+fn modifiers_from_xkb_mask(depressed: u32) -> retro_kit::event::Modifiers {
+    retro_kit::event::Modifiers {
+        shift: depressed & (1 << 0) != 0,
+        control: depressed & (1 << 2) != 0,
+        alt: depressed & (1 << 3) != 0,
+        // Mod4 — Super/Logo/Meta on typical Linux layouts
+        meta: depressed & (1 << 6) != 0,
+    }
 }
 
 struct LayerSurf {
@@ -102,6 +223,7 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         running: true,
         last_pointer: (0.0, 0.0),
         pointer_kind: ChromeSurfaceKind::Background,
+        modifiers: retro_kit::event::Modifiers::NONE,
     };
 
     event_queue
@@ -354,6 +476,8 @@ struct LayerDesktopState {
     running: bool,
     last_pointer: (f64, f64),
     pointer_kind: ChromeSurfaceKind,
+    /// Current keyboard modifiers from wl_keyboard::Modifiers (xkb mask).
+    modifiers: retro_kit::event::Modifiers,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for LayerDesktopState {
@@ -546,15 +670,23 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for LayerDesktopState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        let Some(runtime) = state.runtime.as_mut() else {
-            return;
-        };
         match event {
+            wl_keyboard::Event::Modifiers {
+                mods_depressed, ..
+            } => {
+                state.modifiers = modifiers_from_xkb_mask(mods_depressed);
+                if let Some(runtime) = state.runtime.as_mut() {
+                    runtime.set_modifiers(state.modifiers);
+                }
+            }
             wl_keyboard::Event::Key {
                 key,
                 state: key_state,
                 ..
             } => {
+                let Some(runtime) = state.runtime.as_mut() else {
+                    return;
+                };
                 let Some(code) = keycode_from_linux(key) else {
                     return;
                 };
@@ -562,24 +694,35 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for LayerDesktopState {
                     key_state,
                     WEnum::Value(wl_keyboard::KeyState::Pressed)
                 );
+                let mods = state.modifiers;
                 let ev = if pressed {
                     Event::KeyDown {
                         key: code,
-                        modifiers: retro_kit::event::Modifiers::NONE,
+                        modifiers: mods,
                     }
                 } else {
                     Event::KeyUp {
                         key: code,
-                        modifiers: retro_kit::event::Modifiers::NONE,
+                        modifiers: mods,
                     }
                 };
                 runtime.key(ev);
+                // Feed printable chars for lock password / text fields.
+                if pressed && !mods.control && !mods.alt && !mods.meta {
+                    if let Some(ch) = char_from_keycode(code, mods.shift) {
+                        runtime.key(Event::Char { character: ch });
+                    }
+                }
             }
             wl_keyboard::Event::Enter { .. } => {
-                runtime.set_focus(true);
+                if let Some(runtime) = state.runtime.as_mut() {
+                    runtime.set_focus(true);
+                }
             }
             wl_keyboard::Event::Leave { .. } => {
-                runtime.set_focus(false);
+                if let Some(runtime) = state.runtime.as_mut() {
+                    runtime.set_focus(false);
+                }
             }
             _ => {}
         }
