@@ -1,192 +1,113 @@
-# HANDOFF — continue RetroShell on a new machine
+# HANDOFF — continue RetroShell (updated 2026-07-30)
 
-> **You are a fresh Claude Code instance with no memory of the prior session.**
-> This file is your entry point. Everything you need is in the repo (git is the
-> transfer mechanism). Read this top to bottom, then `docs/PROGRAM.md`.
+> You are a fresh coding agent taking over mid-effort. Read this top to bottom,
+> then `docs/PROGRAM.md` (honesty contract) and
+> `docs/tasks/stage-2b-layer-shell-chrome.md` (the active workstream).
+> **Honesty contract governs everything:** a task/stage is done only when its
+> acceptance command passes on the real VM, evidenced by a transcript or
+> screenshot — never by reading code or self-scoring. Do not mark anything
+> "verified" you have not actually run.
 
-## 0. How to resume
+## 1. What this project is
+RetroShell is a classic-Mac-styled Linux **desktop environment** in Rust (Cargo
+workspace). Own Wayland compositor (`crates/retro-compositor`, smithay), own shell
+(`crates/retro-shell`), a widget kit (`crates/retro-kit`), an app SDK
+(`crates/retro-sdk`, winit+wgpu), and first-party apps (`apps/*`).
 
-```bash
-git fetch origin
-git checkout docs/program-design      # the working branch (not merged to main yet)
-git pull --ff-only origin docs/program-design
-```
-
-Read, in order: this file → [PROGRAM.md](PROGRAM.md) (honesty contract + stage
-map) → [tasks/README.md](tasks/README.md) (task format) →
-[tasks/stage-0-vm-foundation.md](tasks/stage-0-vm-foundation.md).
-
-The SDD progress ledger lived in a git-ignored dir on the old machine and does
-**not** transfer — §4 below is the authoritative "what's done" list instead.
-
-## 1. What this project is (30 seconds)
-
-RetroShell is a classic-Mac-styled Linux **desktop environment and distribution**
-in Rust (Cargo workspace, ~50k LOC), in the spirit of helloSystem — own Wayland
-compositor (smithay), own shell, and a macOS-like self-contained `.app` store.
-
-**The honesty contract governs everything** (full text in PROGRAM.md §"honesty
-contract"): a prior session scored a compositor "85/100 daily-driver" that had
-never built cleanly, never dispatched a client, never painted a window. We do not
-repeat that. **A task is done only when its acceptance command passes; a stage is
-done only when its QA doc passes on the real VM — evidenced by a transcript or
-screenshot, never by reading code or self-scoring.** No unverified claims, no
-fabricated "fix" tasks for things already fixed.
-
-## 2. Environment change (this is the important part)
-
-The prior session set Stage 0 up for **macOS + UTM + arm64 + virtio-gpu**. You are
-now on **Windows + VirtualBox**, which means **x86_64** (VirtualBox only runs on
-x86_64 hosts) and a **VMSVGA → `vmwgfx`** virtual GPU.
-
-| Aspect | Old (Mac, dormant) | **Now (Windows — active)** |
-|---|---|---|
-| Host | macOS arm64 | **Windows x86_64** |
-| Hypervisor | UTM | **VirtualBox** |
-| Guest arch | aarch64 | **x86_64** |
-| Virtual GPU / KMS | virtio-gpu → `virtio_gpu` | **VMSVGA + 3D → `vmwgfx`** |
-| Disk device | `/dev/vda` | **`/dev/sda`** |
-| GRUB target | `arm64-efi` | **`x86_64-efi`** |
-| Install script | `arch-install-arm64.sh` | **`arch-install.sh`** (original x86) |
-| VM creation | UTM GUI | **`packaging/vm/create-vm.ps1`** |
-
-**Consequence:** the arm64/UTM scripts the prior session wrote
-(`packaging/vm/arch-install-arm64.sh`, `packaging/vm/provision-arm64.sh`, and the
-Path-A tasks 0.1A/0.3A/0.4A in the Stage-0 doc) are **Mac-only and now dormant** —
-do not run them. Use the repo's **original VirtualBox/Windows pipeline** instead
-(Path B in the Stage-0 doc, plus the PowerShell scripts). Those original scripts
-target exactly this environment and need no rewrite. Leave the arm64 scripts in
-the repo (useful if the Mac is ever used again, and for the Stage 4 ISO).
-
-## 3. Stage 0 on Windows + VirtualBox (the active runbook)
-
-Everything KMS-related is already handled by `create-vm.ps1` (VMSVGA + 3D → real
-`vmwgfx` DRM device with KMS *and* a render node — the capability WSL2/Docker
-lacked). Unlike the aarch64 ISO hunt, a standard **x86_64 Arch ISO** from
-archlinux.org works directly.
-
-1. **Prereqs (Windows host):** install VirtualBox (default path
-   `C:\Program Files\Oracle\VirtualBox\VBoxManage.exe`), PowerShell 7 (`pwsh`),
-   Git, and OpenSSH client (`ssh`, built into Windows 10/11). Download an
-   **x86_64** Arch ISO from https://archlinux.org/download/.
-2. **Create the VM:**
-   ```powershell
-   pwsh -File packaging\vm\create-vm.ps1 -IsoPath C:\path\to\archlinux-x86_64.iso -Recreate
-   ```
-   This makes `retroshell-arch`: 8192 MB / 4 CPU / 60 GB, EFI, **VMSVGA + 3D**,
-   NAT with host `2222`→guest `22`, ISO attached, boot-from-DVD.
-3. **Host file server + SSH key** (so the installer can fetch itself and your key):
-   ```powershell
-   ssh-keygen -t ed25519 -N '""' -f packaging\vm\qa_key -C retroshell-vm
-   cd packaging\vm ; python -m http.server 8000    # leave running; Ctrl-C when done
-   ```
-   (`qa_key*` is git-ignored — generate a fresh one here; it did not transfer.)
-   **Note:** the current `arch-install.sh` does **not** install your SSH public
-   key (the arm64 variant did). Either add that step (see §7) or set the `retro`
-   password at the console and use password SSH.
-4. **Start the VM and run the installer** — from the VirtualBox live console
-   (GUI window; `startvm retroshell-arch` shows it):
-   ```bash
-   curl -sL http://10.0.2.2:8000/arch-install.sh | bash
-   ```
-   `arch-install.sh` partitions `/dev/sda`, installs x86_64 Arch + all deps,
-   creates user `retro`/`retro`, builds `cargo build --release --workspace`,
-   installs binaries + the `retroshell.desktop` session, sets tty1 autologin,
-   and reboots. Detach the ISO on reboot (or rely on boot order = disk after DVD).
-5. **KMS gate (Stage 0 definition of done):** from the Windows host,
-   ```powershell
-   ssh -i packaging\vm\qa_key -p 2222 retro@127.0.0.1 "ls /dev/dri/card0 && lsmod | grep vmwgfx"
-   ssh -i packaging\vm\qa_key -p 2222 retro@127.0.0.1 "cd ~/retroshell && cargo build --release --workspace && echo STAGE0-DOD-PASS"
-   ```
-   → expect `/dev/dri/card0`, `vmwgfx` loaded, and `STAGE0-DOD-PASS`. Record the
-   transcript in [qa/stage-0.md](qa/stage-0.md) and mark Stage 0 VERIFIED.
-
-**QA helper scripts already fit this environment** (no rewrite needed):
-`packaging/vm/qa-vm.sh` greps for `vmwgfx`; `packaging/vm/qa-live.sh` uses
-`VBoxManage ... screenshotpng`; `packaging/vm/qa-compositor.sh` drives the
-compositor. These were written for VirtualBox and are correct here.
-
-## 4. What is already done (repo-side, committed on `docs/program-design`)
-
-| Commit | What |
-|---|---|
-| `3719928` | Design spec: `docs/specs/2026-07-30-retroshell-de-program-design.md` |
-| `0cf8211` | PROGRAM.md, task-format README, Stage 0 + Stage 1 atomic tasks, QA docs |
-| `7c1b4d3` | `arch-install-arm64.sh` (Mac/UTM — dormant here) |
-| `2983fa7` | Stage 0 Task 0.8 **VERIFIED**: Linux CI builds the workspace |
-| `76805a0` `f28551d` `a105f7c` | Path A (UTM prebuilt image) — Mac-only, dormant here |
-
-**Verified on this Windows+VBox machine (2026-07-30):** Stage 0 DoD
-(`card0`/`vmwgfx` + `STAGE0-DOD-PASS`) and Stage 1 DoD **(a)** (Finder painted by
-`retro-compositor` on DRM — see `docs/screenshots/stage1-finder.png` and
-`docs/qa/stage-1.md`). **Stage 2 is VERIFIED** — see `docs/qa/stage-2.md`.
-Mac/UTM Path-A tasks remain dormant/UNVERIFIED.
-
-## 5. Stage 1 (after Stage 0 passes) — verification-first
-
-Do **not** write "fix" tasks for QA defects C/D/#3 (present-buffer leak, discarded
-libinput events, missing frame callbacks) — they were already fixed by commit
-`868b9c5`; writing fixes for them would be fabricated work (spec §2.1). Stage 1
-**observes** whether `retro-compositor` actually paints a client on real KMS. The
-one real known gap is a code comment at
-`crates/retro-compositor/src/session_drm.rs:894` ("the DRM path does not yet
-composite client buffers to scanout") — but whether that blank-scanout path or the
-GL `DrmCompositor` path runs on this GPU is unknown until observed. Full tasks:
-[tasks/stage-1-prove-live-path.md](tasks/stage-1-prove-live-path.md). DoD: a VM
-screenshot of Finder painted by `retro-compositor` (not labwc) **or** an evidenced
-diagnosis of exactly why it doesn't. **Done** — Stage 1 passed DoD (a).
-
-## 5a. The road ahead — Stages 2–4 are now specced (authored 2026-07-30)
-
-Atomic, executable task docs + QA docs exist for the remaining stages. Do them in
-order; each opens with a re-ground/verify task and every task ends in a copy-paste
-acceptance command. **Stage 2 is VERIFIED** on the VBox DRM path (2026-07-30).
-Stages 3–4 are UNVERIFIED until run on the VM.
-
-- **Stage 2 — Real session:** [tasks/stage-2-real-session.md](tasks/stage-2-real-session.md)
-  · [qa/stage-2.md](qa/stage-2.md). **Done** — lock unbypassable, `retro-lock`
-  password unlock, `Super+O` opens Finder, button click proves defect J fixed.
-- **Stage 3 — `.app` bundles + store:** [tasks/stage-3-app-bundles.md](tasks/stage-3-app-bundles.md)
-  · [qa/stage-3.md](qa/stage-3.md). Mostly host-testable (`cargo test`) until the
-  VM DoD. Uses spec §5.2 `Info.toml` (not the older `App.toml`).
-- **Stage 4 — Distribution:** [tasks/stage-4-distribution.md](tasks/stage-4-distribution.md)
-  · [qa/stage-4.md](qa/stage-4.md). Primary path is a layered `install.sh` reusing
-  the existing `scripts/install-session-files.sh`; needs a clean Arch VM **and** a
-  clean Ubuntu-server VM, plus an archiso ISO.
-
-## 6. Decisions carried over (memory did not transfer)
-
-- **Repo stays a single Cargo workspace monorepo.** Do not split into per-component
-  repos (gershwin-desktop style) now — the Cargo workspace gives one build graph,
-  one lockfile, atomic cross-crate refactors, one CI. The split seam is Stage 3's
-  `.app` format: once `retro-sdk`'s API is stable, first-party `apps/*` can peel
-  off. (Also in spec §10.)
-- **App store is `.app`-only.** Package managers (pacman/apt) are reached via the
-  Terminal app, not the store (spec §5.3).
-- **Distribution is layer-first** (install onto existing Arch/Ubuntu incl. server),
-  bootable ISO secondary (spec §4 Stage 4).
-
-## 7. Open items to decide/handle on Windows
-
-- **SSH key install in `arch-install.sh`:** the x86 installer does not fetch
-  `qa_key.pub` (the arm64 one did). To get key-based SSH like the plan assumes,
-  add before the reboot, inside the user-clone chroot block:
+## 2. ENVIRONMENT — this is current; ignore any older Windows/VBox notes
+- **Host:** macOS (Apple Silicon). **VM:** UTM VM named `Ubuntu`, **aarch64**,
+  Ubuntu 26.04, at **192.168.64.15**, user `ubuntu`/`ubuntu` (passwordless sudo).
+- Start VM: `/Applications/UTM.app/Contents/MacOS/utmctl start Ubuntu`. Find IP if
+  it changed: `arp -a | grep 192.168.64`. No qemu-guest-agent (utmctl ip fails).
+- SSH: `ssh -i ~/.ssh/retroshell_utm ubuntu@192.168.64.15` (host key checking off).
+- The VM is fully provisioned (rust, wayland/drm/seatd/libinput/gbm/egl dev libs,
+  fonts-dejavu, xvfb, imagemagick, sway, grim, libxkbcommon-x11-0, 4G swap).
+  User is in `video,render,input` groups (the `seat` group does not exist here).
+- **Sync + build workflow** (edit on host, build on VM):
   ```bash
-  install -d -m 700 -o $USERNAME -g $USERNAME /home/$USERNAME/.ssh
-  curl -sL http://10.0.2.2:8000/qa_key.pub -o /home/$USERNAME/.ssh/authorized_keys
-  chown $USERNAME:$USERNAME /home/$USERNAME/.ssh/authorized_keys
-  chmod 600 /home/$USERNAME/.ssh/authorized_keys
+  rsync -az --exclude target --exclude .git --exclude docs/screenshots \
+    -e "ssh -i ~/.ssh/retroshell_utm" ./ ubuntu@192.168.64.15:/home/ubuntu/retroshell/
+  ssh -i ~/.ssh/retroshell_utm ubuntu@192.168.64.15 \
+    'cd ~/retroshell && source ~/.cargo/env && cargo build --release -p <crate>'
   ```
-  Otherwise set a password and use password SSH. (User `retro` / pass `retro`.)
-- **User identity is not an open question here:** `arch-install.sh` already creates
-  `retro`/`retro` in groups `wheel,video,input,seat`. (The root-vs-retro question
-  from the Mac path only applied to the prebuilt image, which you are not using.)
+  ⚠️ Any **dependency change** (Cargo.toml) triggers a ~15 min feature
+  re-unification rebuild; code-only changes are fast (20 s–2 min).
+- **You cannot build on the macOS host** (wayland/DRM). Always build on the VM.
+  Do not trust subagents that claim "cargo check passes" on the host.
 
-## 8. How the prior session was executing
+## 3. Running & screenshots on the VM
+- **Software GL is mandatory** for wgpu clients (virtio hardware GL fails):
+  `export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`.
+- **Compositor on real DRM/KMS** (headless over SSH):
+  `export XDG_RUNTIME_DIR=/run/user/1000 LIBSEAT_BACKEND=seatd` then
+  `./target/release/retro-compositor` → gets seat0 + /dev/dri/card0 + 1280×800
+  modeset + spawns retro-shell.
+- **Screenshots:** the compositor's SIGUSR1 offscreen dump
+  (`crates/retro-compositor/src/screenshot.rs`) is **BLOCKED** — this GLES driver
+  rejects `glReadPixels` for every format. Two working methods instead:
+  - **Layer-shell UI** (the shell desktop): run under **sway headless + grim** —
+    see the exact recipe in `docs/tasks/stage-2b-layer-shell-chrome.md` and the
+    `qa-layer-desktop.png` capture. (Xvfb cannot host layer-shell.)
+  - **Plain winit UI:** Xvfb + `import -window root` (winit uses X11 when DISPLAY
+    is set and WAYLAND_DISPLAY is unset).
 
-Subagent-driven: dispatch a Haiku subagent per delegatable task, review, commit;
-the user drives the VM GUI/console steps a subagent cannot. If your instance has
-the `superpowers` plugin, `subagent-driven-development` was the skill in use. If
-not, execute inline — the task docs are self-contained and each ends in a
-copy-paste acceptance command. Keep using Haiku for mechanical/transcription
-tasks; reserve stronger models for the Stage 1 diagnosis judgment.
+## 4. What was done this session (branch `docs/program-design`)
+Re-audited Cursor's Stage 2 (it was overclaimed "VERIFIED"); fixed and evidenced:
+- **Fonts fixed** — baseline bearing/ascent in `retro-render` + bitmap descenders
+  in `retro-sdk`. Verified (`docs/screenshots/qa-shell-xvfb.png`).
+- **Global-menu-only** — removed the legacy in-window `MenuBar` from `retro-sdk`.
+- **Audit corrections** — `docs/qa/stage-2.md` retracts the false "VERIFIED";
+  deleted misleading old screenshots; added `docs/FUTURE.md` backlog + HIG
+  constraints; added `docs/tasks/stage-2b-layer-shell-chrome.md`.
+- **Layer-shell rework (the big one) — Phase 2b rendering DONE:**
+  - `retro_sdk::RawSurfaceRenderer` — wgpu surface from raw wl_display/wl_surface.
+  - `retro_sdk::UiRuntime` — backend-agnostic render+input core (mirrors the winit
+    `AppHandler`); `tick()` drives `ShellDesktop::update()` (dock/notifications).
+  - `crates/retro-shell/src/layer_desktop.rs` — wlr-layer-shell **background**
+    surface driver; paints `ShellDesktop` fullscreen. Gated behind
+    `RETROSHELL_LAYER_SHELL_CHROME`; winit path untouched when unset.
+  - **Verified under sway+grim** (`docs/screenshots/qa-layer-desktop.png`):
+    fullscreen root-level desktop, full-width menu bar, correct fonts, desktop
+    icons, Finder window, dock. This is the milestone.
+- Compositor also got: a `new_toplevel` shell-fullscreen attempt (keyed on
+  app_id — does NOT fire, winit doesn't set app_id; superseded by layer-shell)
+  and the (blocked) SIGUSR1 screenshot tool.
+
+Commits (newest first): `2552fc6` polish (chromeless + dock) · `119abc5` evidence
+· `a7d5e37` layer_desktop · `db41171` UiRuntime · `1bd616c` RawSurfaceRenderer ·
+`441b6a6` scope · `aea7014` fonts/menu/audit.
+
+## 5. NEXT STEPS (priority order) — the active workstream
+1. **Verify under our OWN compositor.** So far the layer desktop is proven under
+   *sway*, not `retro-compositor`. Run `retro-compositor` on the VM with
+   `RETROSHELL_LAYER_SHELL_CHROME=1` in its env (spawned shell inherits it) and
+   confirm it composites the layer-shell background surface. If not, fix the DRM
+   path's layer-surface compositing (`session_drm.rs` `collect_render_elements`
+   likely doesn't include layer surfaces — the nested `main.rs` render_frame does;
+   port that). This is the real product integration and is UNVERIFIED.
+2. **Wire input (Phase 2b-iii).** `layer_desktop.rs` accepts wl_pointer events but
+   does NOT route them yet (see the `let _ = (state, event)` in the WlPointer
+   Dispatch). Route Motion→`runtime.pointer_moved(surface_x,surface_y)` and
+   Button→`runtime.pointer_button(map(button), pressed, time_ms)`; add wl_keyboard
+   (xkb) → `runtime.key(...)`. Model on `crates/retro-shell/src/bin/retro-lock.rs`.
+3. **Phase 3: split exclusive chrome.** Currently one background layer holds
+   everything, so a maximized app could cover the menu/dock. Split menu bar → a
+   `top` layer (exclusive_zone = menu_h) and dock → a `bottom` layer
+   (exclusive_zone = dock_h); keep wallpaper+icons on background. Then DELETE the
+   throwaway `crates/retro-shell/src/layer_shell_client.rs` (a PoC that maps gray
+   placeholder surfaces; still fired from `startup()` ~line 598 — remove that call)
+   and un-stub `chrome_protocol.rs::should_paint_kit_chrome`.
+4. **Minor polish:** menu-bar item spacing looks tight (words nearly touch);
+   clock/live content only updates on wayland events (blocking_dispatch) — add a
+   frame-callback or timer tick for liveness.
+5. **Re-QA Stage 2 functional claims** (lock unbypass, Super+O) on the reworked
+   build and update `docs/qa/stage-2.md` with real evidence.
+
+## 6. Gotchas
+- Some docs (e.g. `docs/qa/stage-2.md` before this session) had **CRLF** line
+  endings from the prior Windows work — use Write, not line-based Edit, if a match
+  mysteriously fails.
+- `RETROSHELL_LAYER_SHELL_CHROME` is overloaded: it gates BOTH the new
+  `layer_desktop` path (in `run()`) AND the old throwaway `layer_shell_client`
+  (in `startup()`). Remove the latter in Phase 3.
+- Keep the winit default path working — it's the fallback and how apps render.
