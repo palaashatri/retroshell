@@ -218,8 +218,7 @@ mod tests {
 
     #[test]
     fn parse_pactl_zero() {
-        let sample =
-            "Volume: front-left: 0 /   0% / -inf dB,   front-right: 0 /   0% / -inf dB\n";
+        let sample = "Volume: front-left: 0 /   0% / -inf dB,   front-right: 0 /   0% / -inf dB\n";
         assert_eq!(parse_pactl_volume(sample), Some(0));
     }
 
@@ -262,14 +261,20 @@ mod tests {
             pactl,
             vec!["pactl", "set-sink-volume", "@DEFAULT_SINK@", "42%"]
         );
-        assert_eq!(volume_pactl_set_plan(200).last().map(String::as_str), Some("100%"));
+        assert_eq!(
+            volume_pactl_set_plan(200).last().map(String::as_str),
+            Some("100%")
+        );
 
         let wpctl = volume_wpctl_set_plan(50);
         assert_eq!(
             wpctl,
             vec!["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "0.50"]
         );
-        assert_eq!(volume_wpctl_set_plan(0).last().map(String::as_str), Some("0.00"));
+        assert_eq!(
+            volume_wpctl_set_plan(0).last().map(String::as_str),
+            Some("0.00")
+        );
     }
 
     #[test]

@@ -75,10 +75,8 @@ impl IdleConfig {
                     }
                 }
                 "lock_on_suspend" => {
-                    cfg.lock_on_suspend = matches!(
-                        v.to_ascii_lowercase().as_str(),
-                        "1" | "true" | "yes" | "on"
-                    );
+                    cfg.lock_on_suspend =
+                        matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");
                 }
                 _ => {}
             }
@@ -174,7 +172,11 @@ pub fn recommended_action(phase: IdlePhase, already_locked: bool) -> IdleRecomme
 }
 
 /// Seconds remaining until next phase transition (for UI countdown). `None` if none.
-pub fn secs_until_next_phase(cfg: &IdleConfig, idle_secs: u64, already_locked: bool) -> Option<u64> {
+pub fn secs_until_next_phase(
+    cfg: &IdleConfig,
+    idle_secs: u64,
+    already_locked: bool,
+) -> Option<u64> {
     if cfg.inhibited {
         return None;
     }
@@ -216,10 +218,7 @@ mod tests {
         let cfg = IdleConfig::default();
         let mut inh = IdleInhibitState::new();
         inh.add(InhibitReason::Media);
-        assert_eq!(
-            idle_phase(&cfg, 99999, false, &inh),
-            IdlePhase::Active
-        );
+        assert_eq!(idle_phase(&cfg, 99999, false, &inh), IdlePhase::Active);
         inh.remove(InhibitReason::Media);
         assert_eq!(
             idle_phase(&cfg, cfg.lock_after_secs, false, &inh),

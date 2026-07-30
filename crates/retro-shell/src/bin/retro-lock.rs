@@ -14,10 +14,10 @@ use smithay_client_toolkit::delegate_seat;
 use smithay_client_toolkit::delegate_session_lock;
 use smithay_client_toolkit::delegate_shm;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
-use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
-use smithay_client_toolkit::registry_handlers;
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
+use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
+use smithay_client_toolkit::registry_handlers;
 use smithay_client_toolkit::seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::session_lock::{
@@ -146,7 +146,9 @@ fn paint_lock_surface(
         (),
         qh,
     );
-    session_lock_surface.wl_surface().attach(Some(&buffer), 0, 0);
+    session_lock_surface
+        .wl_surface()
+        .attach(Some(&buffer), 0, 0);
     session_lock_surface.wl_surface().commit();
     buffer.destroy();
 }
@@ -155,21 +157,30 @@ fn draw_prompt(pixels: &mut [u8], width: u32, height: u32, password: &str) {
     let label = "Enter password:";
     let x = (width / 2).saturating_sub(label.len() as u32 * 6);
     let y = height / 2;
-    draw_text(pixels, width, x, y.saturating_sub(24), label, 0xff, 0xff, 0xff);
+    draw_text(
+        pixels,
+        width,
+        x,
+        y.saturating_sub(24),
+        label,
+        0xff,
+        0xff,
+        0xff,
+    );
     let stars: String = std::iter::repeat_n('*', password.chars().count()).collect();
-    draw_text(pixels, width, x, y.saturating_add(8), &stars, 0xff, 0xe0, 0x60);
+    draw_text(
+        pixels,
+        width,
+        x,
+        y.saturating_add(8),
+        &stars,
+        0xff,
+        0xe0,
+        0x60,
+    );
 }
 
-fn draw_text(
-    pixels: &mut [u8],
-    width: u32,
-    mut x: u32,
-    y: u32,
-    text: &str,
-    r: u8,
-    g: u8,
-    b: u8,
-) {
+fn draw_text(pixels: &mut [u8], width: u32, mut x: u32, y: u32, text: &str, r: u8, g: u8, b: u8) {
     for ch in text.chars() {
         draw_char(pixels, width, x, y, ch, r, g, b);
         x = x.saturating_add(8);
@@ -223,12 +234,7 @@ fn simple_glyph(ch: char) -> [u8; 7] {
 }
 
 impl SessionLockHandler for LockApp {
-    fn locked(
-        &mut self,
-        _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        session_lock: SessionLock,
-    ) {
+    fn locked(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, session_lock: SessionLock) {
         for output in self.output_state.outputs() {
             let surface = self.compositor_state.create_surface(qh);
             let lock_surface = session_lock.create_lock_surface(surface, &output, qh);

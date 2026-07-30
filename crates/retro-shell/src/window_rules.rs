@@ -80,7 +80,9 @@ pub fn field_matches(kind: &MatchKind, pattern: &str, value: &str) -> bool {
     }
     match kind {
         MatchKind::Exact => value == pattern,
-        MatchKind::Contains => value.to_ascii_lowercase().contains(&pattern.to_ascii_lowercase()),
+        MatchKind::Contains => value
+            .to_ascii_lowercase()
+            .contains(&pattern.to_ascii_lowercase()),
         MatchKind::Glob => glob_match(pattern, value),
     }
 }

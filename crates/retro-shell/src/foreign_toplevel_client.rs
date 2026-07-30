@@ -63,7 +63,10 @@ pub fn try_sync_foreign_toplevels(registry: &mut ForeignToplevelRegistry) -> Opt
     {
         match linux::sync_once(registry) {
             Ok(n) => {
-                tracing::info!(toplevels = n, "foreign-toplevel-list synced from compositor");
+                tracing::info!(
+                    toplevels = n,
+                    "foreign-toplevel-list synced from compositor"
+                );
                 Some(n)
             }
             Err(err) => {
@@ -82,10 +85,7 @@ pub fn try_sync_foreign_toplevels(registry: &mut ForeignToplevelRegistry) -> Opt
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
-    use wayland_client::{
-        protocol::wl_registry,
-        Connection, Dispatch, Proxy, QueueHandle,
-    };
+    use wayland_client::{protocol::wl_registry, Connection, Dispatch, Proxy, QueueHandle};
     use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
         ext_foreign_toplevel_handle_v1::{self, ExtForeignToplevelHandleV1},
         ext_foreign_toplevel_list_v1::{self, ExtForeignToplevelListV1},
@@ -99,10 +99,9 @@ mod linux {
     }
 
     pub fn sync_once(registry: &mut ForeignToplevelRegistry) -> Result<usize, String> {
-        let _ = std::env::var("WAYLAND_DISPLAY")
-            .map_err(|_| "WAYLAND_DISPLAY unset".to_string())?;
-        let conn = Connection::connect_to_env()
-            .map_err(|e| format!("wayland connect: {e}"))?;
+        let _ =
+            std::env::var("WAYLAND_DISPLAY").map_err(|_| "WAYLAND_DISPLAY unset".to_string())?;
+        let conn = Connection::connect_to_env().map_err(|e| format!("wayland connect: {e}"))?;
         let mut event_queue = conn.new_event_queue();
         let qh = event_queue.handle();
         let display = conn.display();
@@ -156,7 +155,8 @@ mod linux {
             {
                 if interface == "ext_foreign_toplevel_list_v1" {
                     let v = version.min(1);
-                    state.list = Some(registry.bind::<ExtForeignToplevelListV1, _, _>(name, v, qh, ()));
+                    state.list =
+                        Some(registry.bind::<ExtForeignToplevelListV1, _, _>(name, v, qh, ()));
                 }
             }
         }

@@ -24,9 +24,16 @@ pub struct SessionCheckpoint {
 /// Ordered steps to restore a session from a checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveryStep {
-    RestartCompositor { bin: String, wayland_display: String },
-    RestartShell { bin: String },
-    RelaunchClient { bundle_id: String },
+    RestartCompositor {
+        bin: String,
+        wayland_display: String,
+    },
+    RestartShell {
+        bin: String,
+    },
+    RelaunchClient {
+        bundle_id: String,
+    },
 }
 
 impl SessionCheckpoint {
@@ -113,9 +120,9 @@ impl SessionCheckpoint {
                             lineno + 1
                         ));
                     };
-                    let pid: u32 = pid_s.parse().map_err(|_| {
-                        format!("line {}: invalid pid '{pid_s}'", lineno + 1)
-                    })?;
+                    let pid: u32 = pid_s
+                        .parse()
+                        .map_err(|_| format!("line {}: invalid pid '{pid_s}'", lineno + 1))?;
                     clients.push(CheckpointClient {
                         bundle_id: bundle_id.to_string(),
                         pid,
@@ -130,8 +137,7 @@ impl SessionCheckpoint {
         Ok(Self {
             wayland_display: wayland_display
                 .ok_or_else(|| "missing wayland_display".to_string())?,
-            compositor_bin: compositor_bin
-                .ok_or_else(|| "missing compositor_bin".to_string())?,
+            compositor_bin: compositor_bin.ok_or_else(|| "missing compositor_bin".to_string())?,
             shell_bin: shell_bin.ok_or_else(|| "missing shell_bin".to_string())?,
             clients,
         })

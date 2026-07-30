@@ -105,7 +105,9 @@ pub struct DisplayArrangement {
 /// Concrete apply plan (no side effects).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DisplayApplyStep {
-    SetPrimary { name: String },
+    SetPrimary {
+        name: String,
+    },
     Place {
         name: String,
         x: i32,
@@ -115,9 +117,14 @@ pub enum DisplayApplyStep {
         scale_percent: u32,
         refresh_mhz: u32,
     },
-    Disable { name: String },
+    Disable {
+        name: String,
+    },
     /// Env / compositor hint string (for nested / DRM bridge).
-    EmitLayoutEnv { key: String, value: String },
+    EmitLayoutEnv {
+        key: String,
+        value: String,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -174,12 +181,17 @@ pub fn normalize_arrangement(mut arr: DisplayArrangement) -> Result<DisplayArran
 /// Pure layout: place outputs according to mode.
 pub fn place_outputs(arr: &DisplayArrangement) -> Result<Vec<PlacedOutput>, String> {
     let arr = normalize_arrangement(arr.clone())?;
-    let mut enabled: Vec<DisplayOutput> = arr.outputs.iter().filter(|o| o.enabled).cloned().collect();
+    let mut enabled: Vec<DisplayOutput> =
+        arr.outputs.iter().filter(|o| o.enabled).cloned().collect();
     if enabled.is_empty() {
         return Err("no enabled outputs".into());
     }
     // Primary first for stable placement origin.
-    enabled.sort_by(|a, b| b.is_primary.cmp(&a.is_primary).then_with(|| a.name.cmp(&b.name)));
+    enabled.sort_by(|a, b| {
+        b.is_primary
+            .cmp(&a.is_primary)
+            .then_with(|| a.name.cmp(&b.name))
+    });
 
     match arr.mode {
         ArrangeMode::PrimaryOnly => {
@@ -193,26 +205,16 @@ pub fn place_outputs(arr: &DisplayArrangement) -> Result<Vec<PlacedOutput>, Stri
                 y: 0,
             }])
         }
-        ArrangeMode::Mirror => {
-            Ok(enabled
-                .into_iter()
-                .map(|output| PlacedOutput {
-                    output,
-                    x: 0,
-                    y: 0,
-                })
-                .collect())
-        }
+        ArrangeMode::Mirror => Ok(enabled
+            .into_iter()
+            .map(|output| PlacedOutput { output, x: 0, y: 0 })
+            .collect()),
         ArrangeMode::ExtendRight => {
             let mut x: i32 = 0;
             let mut out = Vec::with_capacity(enabled.len());
             for output in enabled {
                 let (lw, _) = output.logical_size();
-                out.push(PlacedOutput {
-                    output,
-                    x,
-                    y: 0,
-                });
+                out.push(PlacedOutput { output, x, y: 0 });
                 x = x.saturating_add(lw as i32);
             }
             Ok(out)
@@ -222,11 +224,7 @@ pub fn place_outputs(arr: &DisplayArrangement) -> Result<Vec<PlacedOutput>, Stri
             let mut out = Vec::with_capacity(enabled.len());
             for output in enabled {
                 let (_, lh) = output.logical_size();
-                out.push(PlacedOutput {
-                    output,
-                    x: 0,
-                    y,
-                });
+                out.push(PlacedOutput { output, x: 0, y });
                 y = y.saturating_add(lh as i32);
             }
             Ok(out)
@@ -288,12 +286,7 @@ pub fn plan_display_apply(arr: &DisplayArrangement) -> Result<DisplayApplyPlan, 
         .map(|p| {
             format!(
                 "{}:{}x{}@{},{}:s{}",
-                p.output.name,
-                p.output.width,
-                p.output.height,
-                p.x,
-                p.y,
-                p.output.scale_percent
+                p.output.name, p.output.width, p.output.height, p.x, p.y, p.output.scale_percent
             )
         })
         .collect::<Vec<_>>()
@@ -342,14 +335,11 @@ mod tests {
     fn dual() -> DisplayArrangement {
         DisplayArrangement {
             mode: ArrangeMode::ExtendRight,
-            outputs: vec![
-                DisplayOutput::new("eDP-1", 1920, 1080).with_scale(100),
-                {
-                    let mut o = DisplayOutput::new("HDMI-1", 2560, 1440);
-                    o.is_primary = false;
-                    o
-                },
-            ],
+            outputs: vec![DisplayOutput::new("eDP-1", 1920, 1080).with_scale(100), {
+                let mut o = DisplayOutput::new("HDMI-1", 2560, 1440);
+                o.is_primary = false;
+                o
+            }],
         }
     }
 
@@ -369,7 +359,10 @@ mod tests {
         assert_eq!(plan.placed[0].x, 0);
         assert_eq!(plan.placed[1].x, 1920);
         assert!(plan.logical_width >= 1920 + 2560);
-        assert!(plan.steps.iter().any(|s| matches!(s, DisplayApplyStep::SetPrimary { .. })));
+        assert!(plan
+            .steps
+            .iter()
+            .any(|s| matches!(s, DisplayApplyStep::SetPrimary { .. })));
     }
 
     #[test]

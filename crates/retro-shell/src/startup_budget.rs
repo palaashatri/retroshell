@@ -60,11 +60,7 @@ impl StartupBudget {
 
     /// Sum of all phase budgets.
     pub fn total_ms(&self) -> u64 {
-        self.session_env_ms
-            + self.compositor_ms
-            + self.shell_ms
-            + self.portals_ms
-            + self.ready_ms
+        self.session_env_ms + self.compositor_ms + self.shell_ms + self.portals_ms + self.ready_ms
     }
 }
 

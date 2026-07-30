@@ -255,7 +255,9 @@ pub fn inhibit_blocks_idle(cookie: &PortalInhibitCookie) -> bool {
 }
 
 /// Map portal inhibit → idle_policy reasons.
-pub fn inhibit_to_idle_reason(cookie: &PortalInhibitCookie) -> Option<crate::idle_policy::InhibitReason> {
+pub fn inhibit_to_idle_reason(
+    cookie: &PortalInhibitCookie,
+) -> Option<crate::idle_policy::InhibitReason> {
     if inhibit_blocks_idle(cookie) {
         Some(crate::idle_policy::InhibitReason::Media)
     } else {
@@ -349,7 +351,9 @@ mod tests {
         assert!(portal_blocks_idle());
         let state = active_idle_inhibit_state();
         assert!(state.is_inhibited());
-        assert!(state.reasons().contains(&crate::idle_policy::InhibitReason::Media));
+        assert!(state
+            .reasons()
+            .contains(&crate::idle_policy::InhibitReason::Media));
 
         // Logout-only flags do not block idle.
         let logout = handle_inhibit_and_register(&PortalInhibitRequest {

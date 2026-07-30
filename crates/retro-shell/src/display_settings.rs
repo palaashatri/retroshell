@@ -75,7 +75,8 @@ impl DisplayConfig {
     /// Load display settings from config file.
     pub fn load(config_path: &PathBuf) -> Self {
         if let Ok(content) = fs::read_to_string(config_path) {
-            if let Ok(config) = toml::from_str::<std::collections::HashMap<String, Self>>(&content) {
+            if let Ok(config) = toml::from_str::<std::collections::HashMap<String, Self>>(&content)
+            {
                 if let Some(display_config) = config.get("display") {
                     return display_config.clone();
                 }
@@ -117,8 +118,8 @@ impl DisplayConfig {
         let mode = ArrangeMode::parse(&self.arrange_mode).unwrap_or_default();
         let mut outs: Vec<DisplayOutput> = outputs.to_vec();
         if outs.is_empty() {
-            let mut primary = DisplayOutput::new("eDP-1", 1920, 1080)
-                .with_scale(self.scale_percent);
+            let mut primary =
+                DisplayOutput::new("eDP-1", 1920, 1080).with_scale(self.scale_percent);
             primary.is_primary = true;
             outs.push(primary);
         } else {
@@ -287,14 +288,8 @@ mod tests {
     #[test]
     fn settings_conf_round_trips_arrange_mode_and_scale() {
         // Settings app writes flat key=value; shell/Settings merge back into DisplayConfig.
-        let original = DisplayConfig::from_settings_fields(
-            true,
-            false,
-            "120hz",
-            "srgb",
-            "mirror",
-            200,
-        );
+        let original =
+            DisplayConfig::from_settings_fields(true, false, "120hz", "srgb", "mirror", 200);
         assert!(original.validate());
 
         let conf: String = original

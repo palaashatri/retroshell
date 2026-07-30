@@ -52,10 +52,7 @@ pub struct PackagingHealth {
 
 impl PackagingHealth {
     pub fn all_ok(&self) -> bool {
-        self.wayland_session_ok
-            && self.xsession_ok
-            && self.start_script_ok
-            && self.user_service_ok
+        self.wayland_session_ok && self.xsession_ok && self.start_script_ok && self.user_service_ok
     }
 
     pub fn score_points(&self) -> u8 {
@@ -192,7 +189,10 @@ pub fn check_greeter_session_readiness(layout: &SessionPackagingLayout) -> Greet
     let desktop_names_ok = desktop_names_present(&layout.wayland_session_desktop)
         && desktop_names_present(&layout.xsession_desktop);
     if !desktop_names_ok {
-        notes.push("DesktopNames=RetroShell required on both wayland-sessions and xsessions entries".into());
+        notes.push(
+            "DesktopNames=RetroShell required on both wayland-sessions and xsessions entries"
+                .into(),
+        );
     }
 
     let start_script_executable_bit = is_executable(&layout.start_script);
@@ -333,9 +333,7 @@ pub fn validate_session_desktop(content: &str) -> Result<(), Vec<String>> {
 
     match keys.get("Exec").map(String::as_str) {
         Some(exec) if exec.contains("start-retroshell") => {}
-        Some(exec) => errors.push(format!(
-            "Exec must contain start-retroshell (got '{exec}')"
-        )),
+        Some(exec) => errors.push(format!("Exec must contain start-retroshell (got '{exec}')")),
         None => errors.push("missing required key: Exec".to_string()),
     }
 
@@ -489,8 +487,8 @@ Type=Application
     #[test]
     fn packaging_retroshell_desktop_validates() {
         let path = repo_root().join("packaging/retroshell.desktop");
-        let content = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let content =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         let keys = parse_desktop_keys(&content);
         assert_eq!(keys.get("Name").map(String::as_str), Some("RetroShell"));
         assert!(
@@ -505,8 +503,8 @@ Type=Application
     #[test]
     fn packaging_retroshell_wayland_desktop_validates() {
         let path = repo_root().join("packaging/retroshell-wayland.desktop");
-        let content = fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let content =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         validate_session_desktop(&content)
             .expect("packaging/retroshell-wayland.desktop must validate");
     }
@@ -518,12 +516,9 @@ Type=Application
         let health = check_packaging_health(&layout);
         assert!(health.all_ok(), "layout incomplete: {health:?}");
 
-        for path in [
-            &layout.wayland_session_desktop,
-            &layout.xsession_desktop,
-        ] {
-            let content = fs::read_to_string(path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        for path in [&layout.wayland_session_desktop, &layout.xsession_desktop] {
+            let content =
+                fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
             validate_session_desktop(&content).unwrap_or_else(|errs| {
                 panic!("{} failed validate: {errs:?}", path.display());
             });

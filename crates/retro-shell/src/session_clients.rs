@@ -292,8 +292,14 @@ mod tests {
     #[test]
     fn binary_name_mapping_covers_first_party_suite() {
         assert_eq!(binary_name_for_bundle("com.retro.finder"), Some("finder"));
-        assert_eq!(binary_name_for_bundle("com.retro.terminal"), Some("terminal"));
-        assert_eq!(binary_name_for_bundle("com.retro.settings"), Some("settings"));
+        assert_eq!(
+            binary_name_for_bundle("com.retro.terminal"),
+            Some("terminal")
+        );
+        assert_eq!(
+            binary_name_for_bundle("com.retro.settings"),
+            Some("settings")
+        );
         assert_eq!(binary_name_for_bundle("unknown"), None);
     }
 
@@ -314,8 +320,12 @@ mod tests {
     fn binary_candidates_prefer_exe_dir_then_targets() {
         let c = binary_candidates("finder");
         assert!(c.iter().any(|p| p.ends_with("finder")));
-        assert!(c.iter().any(|p| p.to_string_lossy().contains("target/debug")));
-        assert!(c.iter().any(|p| p.to_string_lossy().contains("/usr/local/bin/")));
+        assert!(c
+            .iter()
+            .any(|p| p.to_string_lossy().contains("target/debug")));
+        assert!(c
+            .iter()
+            .any(|p| p.to_string_lossy().contains("/usr/local/bin/")));
     }
 
     #[test]

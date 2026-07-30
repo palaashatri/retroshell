@@ -85,7 +85,10 @@ pub fn probe_screencast_readiness(
     }
 
     let backend = if socket_present {
-        notes.push("PipeWire socket present — live stream still requires portal Start + node export".into());
+        notes.push(
+            "PipeWire socket present — live stream still requires portal Start + node export"
+                .into(),
+        );
         ScreencastBackend::PipeWire
     } else {
         notes.push("Falling back to portal protocol stubs".into());
@@ -119,9 +122,7 @@ pub fn probe_screencast_readiness_host() -> ScreencastReadiness {
 
 fn path_has_binary(name: &str) -> bool {
     std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| dir.join(name).is_file())
-        })
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
         .unwrap_or(false)
 }
 
@@ -171,11 +172,7 @@ pub struct PwListNodesPlan {
 
 pub fn plan_list_pipewire_nodes() -> PwListNodesPlan {
     PwListNodesPlan {
-        argv: vec![
-            "pw-cli".into(),
-            "ls".into(),
-            "Node".into(),
-        ],
+        argv: vec!["pw-cli".into(), "ls".into(), "Node".into()],
     }
 }
 

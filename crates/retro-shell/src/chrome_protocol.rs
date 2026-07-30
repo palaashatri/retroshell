@@ -55,12 +55,7 @@ pub struct ChromeSession {
 impl ChromeSession {
     /// Bootstrap mapped menu bar (top, full-width) and dock (bottom, full-width)
     /// as protocol surfaces — not window paint-rects.
-    pub fn bootstrap_default(
-        output_w: i32,
-        output_h: i32,
-        menu_h: i32,
-        dock_h: i32,
-    ) -> Self {
+    pub fn bootstrap_default(output_w: i32, output_h: i32, menu_h: i32, dock_h: i32) -> Self {
         let output_w = output_w.max(0);
         let output_h = output_h.max(0);
         let menu_h = menu_h.max(0);
@@ -319,7 +314,10 @@ mod tests {
             .copied()
             .expect("overlay rect");
         // top-right
-        assert_eq!(ov, (ChromeRole::NotificationOverlay, 1024 - 320, 0, 320, 120));
+        assert_eq!(
+            ov,
+            (ChromeRole::NotificationOverlay, 1024 - 320, 0, 320, 120)
+        );
     }
 
     #[test]
@@ -328,12 +326,14 @@ mod tests {
         assert_eq!(session.layout_rects().len(), 2);
 
         session.unmap(ChromeRole::MenuBar);
-        assert!(!session
-            .surfaces()
-            .iter()
-            .find(|s| s.role == ChromeRole::MenuBar)
-            .unwrap()
-            .mapped);
+        assert!(
+            !session
+                .surfaces()
+                .iter()
+                .find(|s| s.role == ChromeRole::MenuBar)
+                .unwrap()
+                .mapped
+        );
         assert_eq!(session.layout_rects().len(), 1);
         assert!(session
             .layout_rects()

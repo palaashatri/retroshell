@@ -218,6 +218,9 @@ high_contrast=1
     #[test]
     fn empty_conf_is_default() {
         assert_eq!(A11yPrefs::parse_from_conf(""), A11yPrefs::default());
-        assert_eq!(A11yPrefs::parse_from_conf("theme=grape\n"), A11yPrefs::default());
+        assert_eq!(
+            A11yPrefs::parse_from_conf("theme=grape\n"),
+            A11yPrefs::default()
+        );
     }
 }

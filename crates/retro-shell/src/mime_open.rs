@@ -278,10 +278,7 @@ pub fn seed_retroshell_defaults(registry: &mut MimeOpenRegistry) {
 }
 
 /// Build an open plan for `path` using the registry default handler.
-pub fn open_plan(
-    registry: &MimeOpenRegistry,
-    path: impl AsRef<Path>,
-) -> Result<OpenPlan, String> {
+pub fn open_plan(registry: &MimeOpenRegistry, path: impl AsRef<Path>) -> Result<OpenPlan, String> {
     let path = path.as_ref();
     let path_str = path.to_string_lossy();
     if path_str.is_empty() {
@@ -377,10 +374,7 @@ pub fn path_from_file_uri(uri: &str) -> Result<PathBuf, String> {
 }
 
 /// Pure open plan for a validated (or raw) `file://` URI using the registry.
-pub fn open_plan_for_file_uri(
-    registry: &MimeOpenRegistry,
-    uri: &str,
-) -> Result<OpenPlan, String> {
+pub fn open_plan_for_file_uri(registry: &MimeOpenRegistry, uri: &str) -> Result<OpenPlan, String> {
     let path = path_from_file_uri(uri)?;
     open_plan(registry, path)
 }

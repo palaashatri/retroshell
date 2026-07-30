@@ -49,8 +49,8 @@ pub fn load_bundle(dir: &Path) -> Result<AppBundle, BundleError> {
     let raw = std::fs::read_to_string(&manifest)
         .map_err(|e| BundleError::Read(manifest.clone(), e.to_string()))?;
 
-    let info: InfoToml = toml::from_str(&raw)
-        .map_err(|e| BundleError::Parse(manifest, e.to_string()))?;
+    let info: InfoToml =
+        toml::from_str(&raw).map_err(|e| BundleError::Parse(manifest, e.to_string()))?;
 
     Ok(AppBundle {
         bundle_id: info.bundle_id,

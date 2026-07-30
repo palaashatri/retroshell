@@ -15,9 +15,10 @@ pub mod foreign_toplevel;
 pub mod foreign_toplevel_client;
 pub mod i18n;
 pub mod idle_policy;
-pub mod layer_shell_client;
 pub mod keyboard_nav;
 pub mod launch_services;
+pub mod layer_desktop;
+pub mod layer_shell_client;
 pub mod menu_server;
 pub mod mime_open;
 pub mod network_connect;
@@ -67,7 +68,18 @@ pub use chrome_protocol::{
     ChromeFocusTarget, ChromeRole, ChromeSession, ProtocolChromeSurface,
 };
 pub use desktop_manager::DesktopManager;
+pub use display_arrange::{
+    apply_display_plan_env, arrange_mode_from_env_value, arrangement_bounds, normalize_arrangement,
+    place_outputs, plan_display_apply, ArrangeMode, DisplayApplyPlan, DisplayApplyStep,
+    DisplayArrangement, DisplayOutput, PlacedOutput,
+};
+pub use display_settings::DisplayConfig;
 pub use dock::Dock;
+pub use fdo_notifications::{
+    try_register_session_bus as try_register_fdo_notifications, NotificationDaemon,
+    NotificationPayload, NotificationServerState, NotifySendStyle, ServerInformation, Urgency,
+    FDO_NOTIFICATIONS_BUS_NAME, FDO_NOTIFICATIONS_INTERFACE, FDO_NOTIFICATIONS_PATH,
+};
 pub use foreign_toplevel::{
     apply_toplevel_force_quit, parse_toplevel_force_quit, ForeignToplevelEntry,
     ForeignToplevelRegistry, ToplevelForceQuit,
@@ -76,16 +88,25 @@ pub use foreign_toplevel_client::{
     apply_foreign_toplevel_list_event, apply_foreign_toplevel_list_events,
     try_sync_foreign_toplevels, ForeignToplevelListEvent,
 };
+pub use i18n::{
+    format_message, is_rtl_language, text_direction_for_locale, tr, LocaleId, LocalePrefs,
+    MessageCatalog, TextDirection,
+};
+pub use idle_policy::{
+    idle_phase, recommended_action, secs_until_next_phase, IdleConfig, IdleInhibitState, IdlePhase,
+    IdleRecommendedAction, InhibitReason,
+};
 pub use keyboard_nav::{
     apply_chrome_nav, is_dismissable_window_title, keyboard_nav_intent, KeyboardNavIntent,
 };
+pub use launch_services::LaunchServices;
 pub use layer_shell_client::{
     chrome_to_layer_shell_requests, layer_shell_bind_summary, try_map_layer_shell_chrome,
     LayerShellBindResult, LayerShellChromeRequest,
 };
-pub use launch_services::LaunchServices;
 pub use menu_server::{
-    battery_status_label, network_status_label, MenuServer, StatusItem, STATUS_REFRESH_INTERVAL_SECS,
+    battery_status_label, network_status_label, MenuServer, StatusItem,
+    STATUS_REFRESH_INTERVAL_SECS,
 };
 pub use mime_open::{
     first_party_binary_for_app_id, mime_from_path, open_plan, open_plan_for_file_uri,
@@ -97,34 +118,29 @@ pub use network_connect::{
     nm_connect_plan_validated, validate_nm_connect_request, NmConnectRequest,
 };
 pub use network_manager::{get_network_status, NetworkStatus};
-pub use fdo_notifications::{
-    try_register_session_bus as try_register_fdo_notifications, NotificationDaemon,
-    NotificationPayload, NotificationServerState, NotifySendStyle, ServerInformation, Urgency,
-    FDO_NOTIFICATIONS_BUS_NAME, FDO_NOTIFICATIONS_INTERFACE, FDO_NOTIFICATIONS_PATH,
-};
 pub use notification_center::{NotificationCenter, NotificationPriority};
-pub use portal::{
-    apply_screencast_readiness, create_screencast_session,
-    create_screencast_session_with_backend_note, handle_file_chooser_open, handle_file_chooser_save,
-    handle_open_uri, handle_portal_screenshot_request, plan_open_uri, portal_screenshot_filename,
-    portal_screenshot_uri_for, portal_screenshots_dir, read_all_portal_settings,
-    read_portal_setting, screencast_backend_note, screencast_backend_note_from_socket,
-    select_screencast_sources, start_screencast, start_screencast_with_readiness,
-    take_portal_style_screenshot, take_portal_style_screenshot_with,
-    validate_file_chooser_request, OpenUriAction, PortalFileChooserRequest,
-    PortalFileChooserResult, PortalScreencastRequest, PortalScreencastSession,
-    PortalScreenshotRequest, PortalScreenshotResult, PortalSettingsNamespace,
-    ScreencastStartOutcome, ScreencastStream,
-    PORTAL_BUS_NAME, PORTAL_FILECHOOSER_INTERFACE, PORTAL_OPENURI_INTERFACE, PORTAL_PATH,
-    PORTAL_SCREENCAST_INTERFACE, PORTAL_SCREENSHOT_INTERFACE, PORTAL_SETTINGS_INTERFACE,
-    SCREENCAST_DEFAULT_HEIGHT, SCREENCAST_DEFAULT_WIDTH, SCREENCAST_NOTE_PIPEWIRE_SOCKET,
-    SCREENCAST_NOTE_PORTAL_STUB, SCREENCAST_PLACEHOLDER_NODE_ID, SCREENCAST_SOURCE_TYPE_MONITOR,
-    SCREENCAST_SOURCE_TYPE_WINDOW,
-};
 pub use polkit_agent::{
     handle_polkit_auth, try_register_polkit_agent, validate_polkit_request, PolkitAgentState,
     PolkitAuthDecision, PolkitAuthRequest, POLKIT_AGENT_BUS_NAME, POLKIT_AGENT_INTERFACE,
     POLKIT_AGENT_PATH,
+};
+pub use portal::{
+    apply_screencast_readiness, create_screencast_session,
+    create_screencast_session_with_backend_note, handle_file_chooser_open,
+    handle_file_chooser_save, handle_open_uri, handle_portal_screenshot_request, plan_open_uri,
+    portal_screenshot_filename, portal_screenshot_uri_for, portal_screenshots_dir,
+    read_all_portal_settings, read_portal_setting, screencast_backend_note,
+    screencast_backend_note_from_socket, select_screencast_sources, start_screencast,
+    start_screencast_with_readiness, take_portal_style_screenshot,
+    take_portal_style_screenshot_with, validate_file_chooser_request, OpenUriAction,
+    PortalFileChooserRequest, PortalFileChooserResult, PortalScreencastRequest,
+    PortalScreencastSession, PortalScreenshotRequest, PortalScreenshotResult,
+    PortalSettingsNamespace, ScreencastStartOutcome, ScreencastStream, PORTAL_BUS_NAME,
+    PORTAL_FILECHOOSER_INTERFACE, PORTAL_OPENURI_INTERFACE, PORTAL_PATH,
+    PORTAL_SCREENCAST_INTERFACE, PORTAL_SCREENSHOT_INTERFACE, PORTAL_SETTINGS_INTERFACE,
+    SCREENCAST_DEFAULT_HEIGHT, SCREENCAST_DEFAULT_WIDTH, SCREENCAST_NOTE_PIPEWIRE_SOCKET,
+    SCREENCAST_NOTE_PORTAL_STUB, SCREENCAST_PLACEHOLDER_NODE_ID, SCREENCAST_SOURCE_TYPE_MONITOR,
+    SCREENCAST_SOURCE_TYPE_WINDOW,
 };
 pub use portal_dbus::try_register_portal_session_bus;
 pub use portal_extra::{
@@ -135,20 +151,6 @@ pub use portal_extra::{
     PortalSecretRequest, PortalSecretResult,
 };
 pub use power::{battery_info, BatteryInfo};
-pub use display_arrange::{
-    apply_display_plan_env, arrange_mode_from_env_value, arrangement_bounds, normalize_arrangement,
-    place_outputs, plan_display_apply, ArrangeMode, DisplayApplyPlan, DisplayApplyStep,
-    DisplayArrangement, DisplayOutput, PlacedOutput,
-};
-pub use display_settings::DisplayConfig;
-pub use i18n::{
-    format_message, is_rtl_language, text_direction_for_locale, tr, LocaleId, LocalePrefs,
-    MessageCatalog, TextDirection,
-};
-pub use idle_policy::{
-    idle_phase, recommended_action, secs_until_next_phase, IdleConfig, IdleInhibitState,
-    IdlePhase, IdleRecommendedAction, InhibitReason,
-};
 pub use screencast_pw::{
     can_claim_live_streams, default_pipewire_socket, plan_list_pipewire_nodes,
     probe_screencast_readiness, probe_screencast_readiness_host, source_ids_for_portal,
@@ -160,10 +162,6 @@ pub use session_actions::{
     plan_session_action, plan_session_action_with, requires_confirmation, shell_delta_for_plan,
     PowerBackend, SessionAction, SessionActionPlan, ShellSessionDelta, LOGIND_BUS,
     LOGIND_MANAGER_IFACE, LOGIND_PATH,
-};
-pub use window_rules::{
-    default_session_rules, evaluate_rules, field_matches, parse_rules_simple, rule_matches,
-    MatchField, MatchKind, WindowInfo, WindowMatch, WindowRule, WindowRuleActions,
 };
 pub use session_clients::{
     binary_name_for_bundle, parse_force_quit_entry, resolve_app_binary, spawn_app_client,
@@ -188,27 +186,29 @@ pub use startup_budget::{
 };
 pub use theme_manager::ThemeManager;
 pub use window_manager::WindowManager;
-pub use workspace_manager::{
-    WorkspaceManager, COMPOSITOR_WORKSPACE_COUNT, SHELL_DESKTOP_COUNT,
+pub use window_rules::{
+    default_session_rules, evaluate_rules, field_matches, parse_rules_simple, rule_matches,
+    MatchField, MatchKind, WindowInfo, WindowMatch, WindowRule, WindowRuleActions,
 };
+pub use workspace_manager::{WorkspaceManager, COMPOSITOR_WORKSPACE_COUNT, SHELL_DESKTOP_COUNT};
 
 use parking_lot::RwLock;
+use retro_kit::button::Button;
 use retro_kit::dispatch::{for_each_widget_mut, hit_test};
 use retro_kit::event::MouseButton;
 use retro_kit::icon_view::{IconItem, IconView};
-use retro_kit::PointerDispatcher;
-use retro_kit::button::Button;
-use retro_kit::list_view::ListView;
-use retro_kit::workspace_grid_view::WorkspaceGridView;
 use retro_kit::label::Label;
 use retro_kit::layout::LayoutView;
+use retro_kit::list_view::ListView;
 use retro_kit::menu::{Menu, MenuItemKind};
 use retro_kit::menu_bar::MenuBar;
 use retro_kit::text_field::TextField;
 use retro_kit::theme::ThemeContext;
 use retro_kit::window::Window;
+use retro_kit::workspace_grid_view::WorkspaceGridView;
+use retro_kit::PointerDispatcher;
 use retro_kit::{
-    Event, EventResult, Layout, LayoutConstraint, Point, Rect, Size, Widget, WidgetState, DockView,
+    DockView, Event, EventResult, Layout, LayoutConstraint, Point, Rect, Size, Widget, WidgetState,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -322,9 +322,7 @@ impl RetroShell {
         // Layer-shell bind deferred: gray placeholder buffers replace kit chrome when
         // layer_shell_bound is set. Kit paint owns menu bar + dock until real pixels ship.
         if std::env::var_os("RETROSHELL_LAYER_SHELL_CHROME").is_some() {
-            if let Some(summary) =
-                layer_shell_client::try_map_layer_shell_chrome(&desktop.chrome)
-            {
+            if let Some(summary) = layer_shell_client::try_map_layer_shell_chrome(&desktop.chrome) {
                 tracing::info!(
                     surfaces = ?summary.mapped_namespaces,
                     "shell mapped layer-shell chrome (opt-in)"
@@ -332,9 +330,7 @@ impl RetroShell {
                 desktop.layer_shell_bound = true;
             }
         } else {
-            tracing::debug!(
-                "layer-shell chrome bind skipped; kit menu bar + dock paint active"
-            );
+            tracing::debug!("layer-shell chrome bind skipped; kit menu bar + dock paint active");
         }
         if let Some(n) =
             foreign_toplevel_client::try_sync_foreign_toplevels(&mut desktop.foreign_toplevels)
@@ -346,6 +342,24 @@ impl RetroShell {
 
     pub fn run(&self) -> Result<()> {
         let (out_w, out_h) = session_output_size();
+
+        // Branch: if RETROSHELL_LAYER_SHELL_CHROME is set, use wlr-layer-shell background surface
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("RETROSHELL_LAYER_SHELL_CHROME").is_some() {
+            let content = Box::new(ShellDesktop::new(
+                self.menu_server.clone(),
+                self.launch_services.clone(),
+                self.window_manager.clone(),
+                self.notification_center.clone(),
+                self.workspace_manager.clone(),
+                self.dock.clone(),
+                self.session_manager.clone(),
+            ));
+            return crate::layer_desktop::run_layer_desktop(content, out_w as u32, out_h as u32)
+                .map_err(|e| ShellError::Window(format!("layer-shell desktop: {}", e)));
+        }
+
+        // Otherwise: use the default winit xdg-toplevel path
         let mut app = retro_sdk::Application::new("RetroShell", "com.retro.shell");
         app.set_initial_size(Size::new(out_w as f32, out_h as f32));
 
@@ -527,8 +541,7 @@ impl ShellDesktop {
         let menus = menu_server.read().menus.clone();
         let lock_screen_widget = build_lock_screen_window();
         let expected_lock_password = get_lock_password();
-        let mut lock_password_field = TextField::new()
-            .with_placeholder("Enter password");
+        let mut lock_password_field = TextField::new().with_placeholder("Enter password");
         lock_password_field.is_password = true;
         let mut shell = Self {
             state: WidgetState::new(),
@@ -679,12 +692,7 @@ impl ShellDesktop {
         match classify_a11y_invoke(invoke_id) {
             A11yDispatchTarget::ChromeMenuActivate => {
                 // Open the system/Retro menu (index 0). Prefer title "Retro" when present.
-                if let Some(idx) = self
-                    .menu_bar
-                    .menus
-                    .iter()
-                    .position(|m| m.title == "Retro")
-                {
+                if let Some(idx) = self.menu_bar.menus.iter().position(|m| m.title == "Retro") {
                     let _ = self.menu_bar.open_menu_at(idx);
                 } else {
                     let _ = self.menu_bar.open_first_menu();
@@ -813,8 +821,7 @@ impl ShellDesktop {
             .find(|s| s.role == ChromeRole::Dock && s.mapped)
             .map(|s| s.height as f64)
             .unwrap_or(64.0);
-        let (menu_height, dock_height) =
-            scaled_chrome_insets(scale, menu_height, dock_height);
+        let (menu_height, dock_height) = scaled_chrome_insets(scale, menu_height, dock_height);
         let menu_height = menu_height as f32;
         let dock_height = dock_height as f32;
         Rect::new(
@@ -1340,8 +1347,7 @@ impl ShellDesktop {
             .enumerate()
             .rev()
             .find(|(_, window)| {
-                window.workspace == active_workspace
-                    && hit_test(&window.window, point)
+                window.workspace == active_workspace && hit_test(&window.window, point)
             })
             .map(|(index, _)| index)
     }
@@ -1398,9 +1404,7 @@ impl ShellDesktop {
                     if button.take_clicked() {
                         clicked_buttons.push(button.label().to_string());
                     }
-                } else if let Some(grid) =
-                    widget.as_any_mut().downcast_mut::<WorkspaceGridView>()
-                {
+                } else if let Some(grid) = widget.as_any_mut().downcast_mut::<WorkspaceGridView>() {
                     if let Some(cell) = grid.take_activated() {
                         grid_cell = Some(cell);
                     }
@@ -1853,7 +1857,10 @@ impl ShellDesktop {
             self.open_shell_status_window(
                 "Network Connect",
                 [
-                    format!("SSID: {}", std::env::var("RETROSHELL_WIFI_SSID").unwrap_or_default()),
+                    format!(
+                        "SSID: {}",
+                        std::env::var("RETROSHELL_WIFI_SSID").unwrap_or_default()
+                    ),
                     summary.clone(),
                     "Best-effort nmcli spawn (association is asynchronous).".to_string(),
                 ],
@@ -1888,7 +1895,7 @@ impl ShellDesktop {
     /// Execute a session power/logout action via pure plan + shell side effects.
     fn handle_session_action(&mut self, action: session_actions::SessionAction) {
         use session_actions::{
-            confirm_prompt, describe_plan, plan_session_action, plan_requires_privileges,
+            confirm_prompt, describe_plan, plan_requires_privileges, plan_session_action,
             shell_delta_for_plan, SessionActionPlan,
         };
 
@@ -1966,7 +1973,10 @@ impl ShellDesktop {
             }
             SessionActionPlan::SystemCommand { argv } => {
                 tracing::info!(?argv, "session power action");
-                match std::process::Command::new(&argv[0]).args(&argv[1..]).spawn() {
+                match std::process::Command::new(&argv[0])
+                    .args(&argv[1..])
+                    .spawn()
+                {
                     Ok(_) => {
                         self.record_notification(
                             "com.retro.shell",
@@ -1979,7 +1989,12 @@ impl ShellDesktop {
                         self.record_notification(
                             "com.retro.shell",
                             "Session Action Failed",
-                            &format!("{} ({err})", describe_plan(&SessionActionPlan::SystemCommand { argv: argv.clone() })),
+                            &format!(
+                                "{} ({err})",
+                                describe_plan(&SessionActionPlan::SystemCommand {
+                                    argv: argv.clone()
+                                })
+                            ),
                             NotificationPriority::High,
                         );
                         self.open_shell_status_window(
@@ -1993,7 +2008,10 @@ impl ShellDesktop {
                     }
                 }
             }
-            SessionActionPlan::LogindMethod { method, interactive } => {
+            SessionActionPlan::LogindMethod {
+                method,
+                interactive,
+            } => {
                 self.open_shell_status_window(
                     "Session Action",
                     [
@@ -2097,7 +2115,10 @@ impl ShellDesktop {
         let Some(old_name) = self.selected_file_name(index) else {
             self.open_shell_status_window(
                 "Rename",
-                ["No file selected. Click a file icon to select it, then choose Rename.".to_string()],
+                [
+                    "No file selected. Click a file icon to select it, then choose Rename."
+                        .to_string(),
+                ],
             );
             return;
         };
@@ -2109,7 +2130,11 @@ impl ShellDesktop {
 
         match fs::rename(&old_path, &new_path) {
             Ok(()) => {
-                tracing::info!("Renamed '{}' -> '{}'", old_path.display(), new_path.display());
+                tracing::info!(
+                    "Renamed '{}' -> '{}'",
+                    old_path.display(),
+                    new_path.display()
+                );
                 self.refresh_active_folder_window();
                 self.open_shell_status_window(
                     "Rename",
@@ -2151,7 +2176,10 @@ impl ShellDesktop {
         let Some(file_name) = self.selected_file_name(index) else {
             self.open_shell_status_window(
                 "Move to Trash",
-                ["No file selected. Click a file icon to select it, then choose Move to Trash.".to_string()],
+                [
+                    "No file selected. Click a file icon to select it, then choose Move to Trash."
+                        .to_string(),
+                ],
             );
             return;
         };
@@ -2161,9 +2189,7 @@ impl ShellDesktop {
             tracing::error!("Could not create trash directory: {err}");
             self.open_shell_status_window(
                 "Move to Trash",
-                [
-                    format!("Could not create Trash directory: {err}"),
-                ],
+                [format!("Could not create Trash directory: {err}")],
             );
             return;
         }
@@ -2247,11 +2273,15 @@ impl ShellDesktop {
 
         let mut layout = Layout::vertical(12.0);
         layout.add(Box::new(Label::new("          RetroShell   ")));
-        layout.add(Box::new(Label::new("----------------------------------------")));
+        layout.add(Box::new(Label::new(
+            "----------------------------------------",
+        )));
         layout.add(Box::new(Label::new("    Classic Desktop Environment")));
         layout.add(Box::new(Label::new("    Built in Rust with wgpu")));
         layout.add(Box::new(Label::new("    Version 1.0.0 (Production)")));
-        layout.add(Box::new(Label::new("----------------------------------------")));
+        layout.add(Box::new(Label::new(
+            "----------------------------------------",
+        )));
         layout.add(Box::new(Label::new(format!("Hostname: {host}"))));
         layout.add(Box::new(Label::new(format!("Uptime: {uptime}"))));
         layout.add(Box::new(Label::new(mem_line)));
@@ -2820,10 +2850,7 @@ fn human_readable_size(bytes: u64) -> String {
 
 fn derive_rename_suggestion(name: &str) -> String {
     let path = std::path::Path::new(name);
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(name);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
     let ext = path.extension().and_then(|s| s.to_str());
 
     // If the stem already ends with " copy N", increment N.
@@ -2983,7 +3010,9 @@ impl Widget for ShellDesktop {
             size.width,
             size.height,
         ));
-        let _ = self.lock_screen_widget.layout(LayoutConstraint::tight(Size::new(size.width, size.height)));
+        let _ = self
+            .lock_screen_widget
+            .layout(LayoutConstraint::tight(Size::new(size.width, size.height)));
 
         if self.locked {
             return size;
@@ -3012,7 +3041,9 @@ impl Widget for ShellDesktop {
             size.width,
             64.0,
         ));
-        let _ = self.dock_view.layout(LayoutConstraint::tight(Size::new(size.width, 64.0)));
+        let _ = self
+            .dock_view
+            .layout(LayoutConstraint::tight(Size::new(size.width, 64.0)));
 
         self.layout_windows();
 
@@ -3076,13 +3107,19 @@ impl Widget for ShellDesktop {
         // When locked, handle password entry
         if self.locked {
             match event {
-                Event::KeyDown { key: retro_kit::event::KeyCode::Escape, .. } => {
+                Event::KeyDown {
+                    key: retro_kit::event::KeyCode::Escape,
+                    ..
+                } => {
                     // Escape key: clear the field and error
                     self.lock_password_field.set_text("");
                     self.lock_error_message = None;
                     return EventResult::Handled;
                 }
-                Event::KeyDown { key: retro_kit::event::KeyCode::Enter, .. } => {
+                Event::KeyDown {
+                    key: retro_kit::event::KeyCode::Enter,
+                    ..
+                } => {
                     // Enter key: attempt to unlock (never unlock on empty / wrong / non-Enter keys)
                     let entered_password = self.lock_password_field.text().to_string();
                     if let Some(ref expected) = self.expected_lock_password {
@@ -3100,7 +3137,11 @@ impl Widget for ShellDesktop {
                     }
                     return EventResult::Handled;
                 }
-                Event::Char { .. } | Event::KeyDown { key: retro_kit::event::KeyCode::Backspace, .. } => {
+                Event::Char { .. }
+                | Event::KeyDown {
+                    key: retro_kit::event::KeyCode::Backspace,
+                    ..
+                } => {
                     // Pass character/backspace events to the password field
                     self.lock_password_field.handle_event(event);
                     self.lock_error_message = None;
@@ -3335,7 +3376,9 @@ impl Widget for ShellDesktop {
 
     fn update(&mut self) {
         // Sync lock state from SessionManager
-        if self.session_manager.read().state == session_manager::SessionState::Locked && !self.locked {
+        if self.session_manager.read().state == session_manager::SessionState::Locked
+            && !self.locked
+        {
             self.locked = true;
             self.lock_password_field.widget_state_mut().focused = true;
         }
@@ -3352,12 +3395,7 @@ impl Widget for ShellDesktop {
             for reason in portal_extra::active_idle_inhibit_state().reasons() {
                 inhibit.add(*reason);
             }
-            let phase = idle_phase(
-                &self.idle_config,
-                idle_secs,
-                self.locked,
-                &inhibit,
-            );
+            let phase = idle_phase(&self.idle_config, idle_secs, self.locked, &inhibit);
             if recommended_action(phase, self.locked) == IdleRecommendedAction::Lock {
                 if self.expected_lock_password.is_some() {
                     tracing::info!(idle_secs, "idle policy: auto-lock");
@@ -3385,8 +3423,7 @@ impl Widget for ShellDesktop {
             layout.add(Box::new(Label::new(tr("lock.prompt", &locale.locale))));
 
             // Add a copy of the password field for display
-            let mut field = TextField::new()
-                .with_placeholder(tr("lock.prompt", &locale.locale));
+            let mut field = TextField::new().with_placeholder(tr("lock.prompt", &locale.locale));
             field.is_password = true;
             field.set_text(self.lock_password_field.text());
             layout.add(Box::new(field));
@@ -3400,7 +3437,8 @@ impl Widget for ShellDesktop {
                 layout.add(Box::new(Label::new(msg)));
             }
 
-            self.lock_screen_widget.set_content(Box::new(LayoutView::new(layout)));
+            self.lock_screen_widget
+                .set_content(Box::new(LayoutView::new(layout)));
         }
 
         self.menu_bar.menus = self.menu_server.read().menus.clone();
@@ -3418,7 +3456,8 @@ impl Widget for ShellDesktop {
                 label: item.label.clone(),
                 icon: item.icon.clone().unwrap_or_default(),
                 is_focused: item.state == crate::dock::AppState::Focused,
-                is_running: item.state == crate::dock::AppState::Running || item.state == crate::dock::AppState::Focused,
+                is_running: item.state == crate::dock::AppState::Running
+                    || item.state == crate::dock::AppState::Focused,
             });
         }
         self.dock_view.items = dock_view_items;
@@ -4048,7 +4087,9 @@ mod tests {
         assert_eq!(window_manager.read().active_window, Some(active.id));
         let lines = message_window_lines(active);
         assert!(lines[0].contains("RetroShell"));
-        assert!(lines.iter().any(|line| line.contains("Classic Desktop Environment")));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("Classic Desktop Environment")));
     }
 
     #[test]
@@ -4117,8 +4158,11 @@ mod tests {
         assert_eq!(active.window.title(), "Force Quit");
         assert_eq!(active.folder_path, None);
         assert_eq!(window_manager.read().active_window, Some(active.id));
-        
-        let layout_view = active.window.content.as_deref()
+
+        let layout_view = active
+            .window
+            .content
+            .as_deref()
             .and_then(|c| c.as_any().downcast_ref::<LayoutView>())
             .expect("uses layout view");
         if let Layout::Vertical { children, .. } = &layout_view.layout {
@@ -4127,7 +4171,10 @@ mod tests {
                 label.text,
                 "Shell windows, session clients, and compositor foreign-toplevels:"
             );
-            let list = children[1].as_any().downcast_ref::<ListView>().expect("list");
+            let list = children[1]
+                .as_any()
+                .downcast_ref::<ListView>()
+                .expect("list");
             assert!(list
                 .items
                 .iter()
@@ -4165,13 +4212,15 @@ mod tests {
     #[test]
     fn force_quit_apply_kills_registered_client_pid() {
         let (mut desktop, _) = test_desktop();
-        desktop.session_clients.register(session_clients::ExternalClient {
-            bundle_id: "com.retro.finder".into(),
-            binary_name: "finder".into(),
-            pid: 424_242,
-            child: None,
-            launched_at_unix: 1,
-        });
+        desktop
+            .session_clients
+            .register(session_clients::ExternalClient {
+                bundle_id: "com.retro.finder".into(),
+                binary_name: "finder".into(),
+                pid: 424_242,
+                child: None,
+                launched_at_unix: 1,
+            });
         assert_eq!(desktop.session_clients.len(), 1);
         assert!(desktop.apply_force_quit_entry("client: finder (pid 424242)"));
         assert_eq!(desktop.session_clients.len(), 0);
@@ -4632,7 +4681,10 @@ mod tests {
         assert!(!verify_lock_password("wrong", "correct_password"));
         assert!(!verify_lock_password("", "correct_password"));
         assert!(!verify_lock_password("correct_password", ""));
-        assert!(!verify_lock_password("Correct_password", "correct_password"));
+        assert!(!verify_lock_password(
+            "Correct_password",
+            "correct_password"
+        ));
     }
 
     #[test]
@@ -4738,11 +4790,7 @@ mod tests {
         let (mut desktop, _) = test_desktop();
         assert!(desktop.menu_bar.open_menu.is_none());
         assert!(
-            desktop
-                .menu_bar
-                .menus
-                .iter()
-                .any(|m| m.title == "Retro"),
+            desktop.menu_bar.menus.iter().any(|m| m.title == "Retro"),
             "precondition: system Retro menu present"
         );
 
@@ -4765,7 +4813,10 @@ mod tests {
     #[test]
     fn a11y_dispatch_chrome_dock_menu_opens_status_window() {
         let (mut desktop, _) = test_desktop();
-        assert!(!desktop.dock.read().items.is_empty(), "precondition: dock items");
+        assert!(
+            !desktop.dock.read().items.is_empty(),
+            "precondition: dock items"
+        );
 
         desktop.dispatch_a11y_invoke("chrome.dock.menu");
         assert!(
@@ -4790,10 +4841,7 @@ mod tests {
             .count();
         assert_eq!(count, count_after);
         assert_eq!(
-            desktop
-                .windows
-                .last()
-                .map(|w| w.window.title()),
+            desktop.windows.last().map(|w| w.window.title()),
             Some("Dock Menu")
         );
     }
@@ -4828,10 +4876,7 @@ mod tests {
             .count();
         assert_eq!(count, count_after);
         assert_eq!(
-            desktop
-                .windows
-                .last()
-                .map(|w| w.window.title()),
+            desktop.windows.last().map(|w| w.window.title()),
             Some("Desktop Menu")
         );
     }
@@ -4877,10 +4922,7 @@ mod tests {
             inhibited: false,
         };
         let base = IdleInhibitState::new();
-        assert_eq!(
-            idle_phase(&cfg, 10, false, &base),
-            IdlePhase::ShouldLock
-        );
+        assert_eq!(idle_phase(&cfg, 10, false, &base), IdlePhase::ShouldLock);
 
         let _ = handle_inhibit_and_register(&PortalInhibitRequest {
             app_id: "player".into(),
@@ -4942,8 +4984,8 @@ mod tests {
     fn status_refresh_on_update_and_volume_api() {
         let (mut desktop, _) = test_desktop();
         // Force elapsed so update() re-queries status items.
-        desktop.last_status_refresh =
-            std::time::Instant::now() - std::time::Duration::from_secs(STATUS_REFRESH_INTERVAL_SECS + 1);
+        desktop.last_status_refresh = std::time::Instant::now()
+            - std::time::Duration::from_secs(STATUS_REFRESH_INTERVAL_SECS + 1);
         desktop.update();
         let items = desktop.menu_server.read().status_items.clone();
         let ids: Vec<&str> = items.iter().map(|s| s.id.as_str()).collect();
@@ -4966,7 +5008,8 @@ mod tests {
             volume_pactl_set_plan(25),
             vec!["pactl", "set-sink-volume", "@DEFAULT_SINK@", "25%"]
         );
-        let plan = nm_connect_plan_validated(&NmConnectRequest::new("X").with_password("y")).unwrap();
+        let plan =
+            nm_connect_plan_validated(&NmConnectRequest::new("X").with_password("y")).unwrap();
         assert_eq!(plan[0], "nmcli");
         assert!(describe_nm_connect_plan(&plan).contains("<redacted>"));
         assert!(execute_nm_connect_plan(&[]).is_err());

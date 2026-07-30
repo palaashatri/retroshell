@@ -2864,6 +2864,7 @@ dependencies = [
  "anyhow",
  "calloop 0.13.0",
  "calloop-wayland-source",
+ "futures",
  "log",
  "parking_lot",
  "retro-bus",

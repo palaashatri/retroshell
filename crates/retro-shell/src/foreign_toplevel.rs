@@ -229,10 +229,7 @@ pub fn apply_toplevel_force_quit(
     target: &ToplevelForceQuit,
 ) -> bool {
     let removed = registry.remove_match(target);
-    let pid = removed
-        .as_ref()
-        .and_then(|e| e.pid)
-        .or(target.pid);
+    let pid = removed.as_ref().and_then(|e| e.pid).or(target.pid);
     if let Some(pid) = pid {
         let _ = kill_process(pid);
         return removed.is_some() || pid != 0;
@@ -333,13 +330,13 @@ mod tests {
 
     #[test]
     fn terminal_app_id_gets_workspace_from_rules() {
-        let entry = ForeignToplevelEntry::new(
-            "term-1",
-            "bash",
-            "org.retroshell.Terminal",
-            Some(99),
+        let entry =
+            ForeignToplevelEntry::new("term-1", "bash", "org.retroshell.Terminal", Some(99));
+        assert_eq!(
+            entry.workspace,
+            Some(1),
+            "default terminal rule → workspace 1"
         );
-        assert_eq!(entry.workspace, Some(1), "default terminal rule → workspace 1");
         // Shell clamps workspace to 0..7 when applying to ShellWindow.
         let clamped = (entry.workspace.unwrap() as usize).min(7);
         assert_eq!(clamped, 1);

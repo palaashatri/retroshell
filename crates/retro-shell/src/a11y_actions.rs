@@ -397,12 +397,7 @@ mod tests {
 
     #[test]
     fn resolve_chrome_path_primary() {
-        let p = resolve_pending_invoke(
-            "/org/a11y/atspi/accessible/2",
-            "Dock",
-            0,
-            "Focus",
-        );
+        let p = resolve_pending_invoke("/org/a11y/atspi/accessible/2", "Dock", 0, "Focus");
         assert!(p.valid);
         assert_eq!(p.invoke_id, "chrome.dock.activate");
         assert_eq!(

@@ -1,6 +1,4 @@
-use crate::a11y_prefs::{
-    apply_a11y_prefs_to_theme_name, A11yPrefs,
-};
+use crate::a11y_prefs::{apply_a11y_prefs_to_theme_name, A11yPrefs};
 use retro_kit::theme::{ThemeContext, ThemePalette, ThemeToken, ThemeValue};
 use retro_kit::Color;
 use std::collections::HashMap;
@@ -37,9 +35,9 @@ impl ThemeName {
             Self::Grape => [0.55, 0.28, 0.72, 1.0],
             Self::Blueberry => [0.15, 0.25, 0.62, 1.0],
             Self::Strawberry => [0.82, 0.23, 0.28, 1.0],
-            Self::Solarized => [0.15, 0.55, 0.82, 1.0],    // #268bd2
-            Self::Dracula => [0.74, 0.58, 0.98, 1.0],      // #bd93f9
-            Self::HighContrast => [1.0, 1.0, 0.0, 1.0],    // Yellow accent
+            Self::Solarized => [0.15, 0.55, 0.82, 1.0], // #268bd2
+            Self::Dracula => [0.74, 0.58, 0.98, 1.0],   // #bd93f9
+            Self::HighContrast => [1.0, 1.0, 0.0, 1.0], // Yellow accent
         }
     }
 
@@ -547,9 +545,7 @@ impl ThemeManager {
         let mut lines: Vec<String> = existing.lines().map(|l| l.to_string()).collect();
         let mut found = false;
         for line in &mut lines {
-            if line.trim_start().starts_with("theme=")
-                || line.trim_start().starts_with("theme =")
-            {
+            if line.trim_start().starts_with("theme=") || line.trim_start().starts_with("theme =") {
                 *line = format!("theme={}", self.theme_name.as_str());
                 found = true;
                 break;
@@ -615,7 +611,10 @@ mod tests {
         assert_eq!(ThemeName::parse("strawberry"), Some(ThemeName::Strawberry));
         assert_eq!(ThemeName::parse("solarized"), Some(ThemeName::Solarized));
         assert_eq!(ThemeName::parse("dracula"), Some(ThemeName::Dracula));
-        assert_eq!(ThemeName::parse("highcontrast"), Some(ThemeName::HighContrast));
+        assert_eq!(
+            ThemeName::parse("highcontrast"),
+            Some(ThemeName::HighContrast)
+        );
         assert_eq!(ThemeName::parse("invalid"), None);
     }
 

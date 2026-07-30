@@ -111,9 +111,7 @@ mod linux {
     use super::*;
     use std::os::unix::io::AsFd;
     use wayland_client::{
-        protocol::{
-            wl_buffer, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface,
-        },
+        protocol::{wl_buffer, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface},
         Connection, Dispatch, QueueHandle,
     };
     use wayland_protocols_wlr::layer_shell::v1::client::{
@@ -128,11 +126,12 @@ mod linux {
         configured: Vec<String>,
     }
 
-    pub fn map_chrome(requests: &[LayerShellChromeRequest]) -> Result<LayerShellBindResult, String> {
-        let display = std::env::var("WAYLAND_DISPLAY")
-            .map_err(|_| "WAYLAND_DISPLAY unset".to_string())?;
-        let conn = Connection::connect_to_env()
-            .map_err(|e| format!("wayland connect: {e}"))?;
+    pub fn map_chrome(
+        requests: &[LayerShellChromeRequest],
+    ) -> Result<LayerShellBindResult, String> {
+        let display =
+            std::env::var("WAYLAND_DISPLAY").map_err(|_| "WAYLAND_DISPLAY unset".to_string())?;
+        let conn = Connection::connect_to_env().map_err(|e| format!("wayland connect: {e}"))?;
         let mut event_queue = conn.new_event_queue();
         let qh = event_queue.handle();
         let display_obj = conn.display();
@@ -266,7 +265,8 @@ mod linux {
                 _ => Layer::Top,
             };
             let ns = format!("{}-buf", req.namespace);
-            let ls = layer_shell.get_layer_surface(&surface, None, layer, ns.clone(), qh, ns.clone());
+            let ls =
+                layer_shell.get_layer_surface(&surface, None, layer, ns.clone(), qh, ns.clone());
             let mut anchor = Anchor::Left | Anchor::Right;
             if req.anchor_top {
                 anchor |= Anchor::Top;

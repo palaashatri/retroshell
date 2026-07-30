@@ -157,8 +157,14 @@ impl MessageCatalog {
             ("status.battery", "Battery"),
             ("workspace.desktop_n", "Desktop {n}"),
             ("portal.inhibit.active", "Session idle inhibit active"),
-            ("portal.screencast.stub", "Screen share uses portal stubs (no live PipeWire stream)"),
-            ("portal.screencast.socket", "PipeWire socket present; streams still protocol stubs"),
+            (
+                "portal.screencast.stub",
+                "Screen share uses portal stubs (no live PipeWire stream)",
+            ),
+            (
+                "portal.screencast.socket",
+                "PipeWire socket present; streams still protocol stubs",
+            ),
         ];
         for (k, v) in en {
             self.insert(k, "en", v);
@@ -379,9 +385,6 @@ mod tests {
 
     #[test]
     fn format_workspace() {
-        assert_eq!(
-            format_message("Desktop {n}", Some(3), None),
-            "Desktop 3"
-        );
+        assert_eq!(format_message("Desktop {n}", Some(3), None), "Desktop 3");
     }
 }

@@ -148,12 +148,21 @@ mod tests {
 
     #[test]
     fn nm_connectivity_mapping() {
-        assert_eq!(ConnectivityState::from_nm_u32(0), ConnectivityState::Unknown);
+        assert_eq!(
+            ConnectivityState::from_nm_u32(0),
+            ConnectivityState::Unknown
+        );
         assert_eq!(ConnectivityState::from_nm_u32(1), ConnectivityState::None);
         assert_eq!(ConnectivityState::from_nm_u32(2), ConnectivityState::Portal);
-        assert_eq!(ConnectivityState::from_nm_u32(3), ConnectivityState::Limited);
+        assert_eq!(
+            ConnectivityState::from_nm_u32(3),
+            ConnectivityState::Limited
+        );
         assert_eq!(ConnectivityState::from_nm_u32(4), ConnectivityState::Full);
-        assert_eq!(ConnectivityState::from_nm_u32(99), ConnectivityState::Unknown);
+        assert_eq!(
+            ConnectivityState::from_nm_u32(99),
+            ConnectivityState::Unknown
+        );
     }
 
     #[test]

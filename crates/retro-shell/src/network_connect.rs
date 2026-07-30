@@ -198,9 +198,7 @@ mod tests {
         let req = NmConnectRequest::new("Home").with_password("s3cret");
         assert_eq!(
             nm_connect_plan(&req),
-            vec![
-                "nmcli", "dev", "wifi", "connect", "Home", "password", "s3cret"
-            ]
+            vec!["nmcli", "dev", "wifi", "connect", "Home", "password", "s3cret"]
         );
     }
 

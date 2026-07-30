@@ -140,9 +140,8 @@ mod linux {
         /// Settings.Read — pure map lookup; value as string variant.
         fn read(&self, namespace: &str, key: &str) -> zbus::fdo::Result<OwnedValue> {
             match read_portal_setting(namespace, key) {
-                Some(v) => OwnedValue::try_from(Value::from(v)).map_err(|e| {
-                    zbus::fdo::Error::Failed(format!("value conversion failed: {e}"))
-                }),
+                Some(v) => OwnedValue::try_from(Value::from(v))
+                    .map_err(|e| zbus::fdo::Error::Failed(format!("value conversion failed: {e}"))),
                 None => Err(zbus::fdo::Error::Failed(format!(
                     "setting not found: {namespace} / {key}"
                 ))),
@@ -380,8 +379,8 @@ mod linux {
             // Allow types/multiple updates before select if present.
             let types = option_u32(&options, "types");
             let multiple = option_bool(&options, "multiple");
-            let cursor_mode = option_u32(&options, "cursor_mode")
-                .or_else(|| option_u32(&options, "cursor-mode"));
+            let cursor_mode =
+                option_u32(&options, "cursor_mode").or_else(|| option_u32(&options, "cursor-mode"));
 
             let ok = with_screencast_sessions(|map| {
                 let Some(session) = map.get_mut(session_id) else {
@@ -441,10 +440,7 @@ mod linux {
                         .streams
                         .iter()
                         .map(|s| {
-                            format!(
-                                "{}:{}x{}:{}",
-                                s.node_id, s.width, s.height, s.source_type
-                            )
+                            format!("{}:{}x{}:{}", s.node_id, s.width, s.height, s.source_type)
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
@@ -483,7 +479,9 @@ mod linux {
             app_id: &str,
             _options: HashMap<String, OwnedValue>,
         ) -> (u32, HashMap<String, OwnedValue>) {
-            use crate::portal_extra::{handle_secret_retrieve, PortalSecretRequest, PortalSecretResult};
+            use crate::portal_extra::{
+                handle_secret_retrieve, PortalSecretRequest, PortalSecretResult,
+            };
             let req = PortalSecretRequest {
                 app_id: app_id.to_string(),
                 token: Vec::new(),
@@ -517,7 +515,9 @@ mod linux {
             _page_setup: HashMap<String, OwnedValue>,
             options: HashMap<String, OwnedValue>,
         ) -> (u32, HashMap<String, OwnedValue>) {
-            use crate::portal_extra::{handle_print_request, PortalPrintRequest, PortalPrintResult};
+            use crate::portal_extra::{
+                handle_print_request, PortalPrintRequest, PortalPrintResult,
+            };
             let document_uri = option_string_loose(&options, "document_uri")
                 .or_else(|| option_string_loose(&options, "uri"))
                 .unwrap_or_default();
@@ -653,9 +653,7 @@ mod linux {
             .build()?;
 
         if let Ok(mut guard) = REGISTRATION.lock() {
-            *guard = Some(PortalRegistration {
-                _connection: conn,
-            });
+            *guard = Some(PortalRegistration { _connection: conn });
         }
 
         Ok(())

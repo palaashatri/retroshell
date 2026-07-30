@@ -29,6 +29,7 @@ tracing-subscriber = { workspace = true }
 parking_lot = { workspace = true }
 uuid = { workspace = true }
 anyhow = "1"
+futures = { workspace = true }
 
 # NetworkManager / UPower D-Bus clients (Linux only; host tests use Unavailable fallbacks).
 # Wayland layer-shell + foreign-toplevel-list clients for protocol-backed chrome / task list.

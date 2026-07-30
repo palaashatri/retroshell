@@ -88,10 +88,7 @@ pub fn take_screenshot_to(path: &Path) -> Result<(), CaptureError> {
         if output.status.success() && path.exists() {
             return Ok(());
         }
-        tracing::debug!(
-            "import failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        tracing::debug!("import failed: {}", String::from_utf8_lossy(&output.stderr));
     }
 
     if command_exists("ffmpeg") {
@@ -133,10 +130,7 @@ pub fn take_screenshot_to(path: &Path) -> Result<(), CaptureError> {
             ));
         }
         if command_exists("convert") {
-            let conv = Command::new("convert")
-                .arg(&xwd_path)
-                .arg(path)
-                .output()?;
+            let conv = Command::new("convert").arg(&xwd_path).arg(path).output()?;
             let _ = std::fs::remove_file(&xwd_path);
             if conv.status.success() && path.exists() {
                 return Ok(());
@@ -151,9 +145,7 @@ pub fn take_screenshot_to(path: &Path) -> Result<(), CaptureError> {
 
 /// Start ffmpeg x11grab recording. Returns the output file path.
 pub fn start_recording() -> Result<PathBuf, CaptureError> {
-    let mut guard = RECORDING
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut guard = RECORDING.lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_some() {
         return Err(CaptureError::AlreadyRecording);
     }
@@ -200,9 +192,7 @@ pub fn start_recording() -> Result<PathBuf, CaptureError> {
 
 /// Stop the active recording, if any. Returns the file path when one was running.
 pub fn stop_recording() -> Result<PathBuf, CaptureError> {
-    let mut guard = RECORDING
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut guard = RECORDING.lock().unwrap_or_else(|e| e.into_inner());
     let Some(mut state) = guard.take() else {
         return Err(CaptureError::NotRecording);
     };
@@ -272,14 +262,8 @@ mod tests {
 
     #[test]
     fn filenames() {
-        assert_eq!(
-            screenshot_filename(123),
-            "RetroShell-Screenshot-123.png"
-        );
-        assert_eq!(
-            recording_filename(456),
-            "RetroShell-Recording-456.mp4"
-        );
+        assert_eq!(screenshot_filename(123), "RetroShell-Screenshot-123.png");
+        assert_eq!(recording_filename(456), "RetroShell-Recording-456.mp4");
     }
 
     #[test]

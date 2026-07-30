@@ -261,10 +261,7 @@ pub fn handle_file_chooser_open(
     if !req.multiple && selected_names.len() > 1 {
         return Err("multiple selection not allowed".into());
     }
-    let base = req
-        .current_folder
-        .clone()
-        .unwrap_or_else(|| "/tmp".into());
+    let base = req.current_folder.clone().unwrap_or_else(|| "/tmp".into());
     let uris: Vec<String> = selected_names
         .iter()
         .map(|name| {
@@ -295,10 +292,7 @@ pub fn handle_file_chooser_save(
         .clone()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "Untitled".into());
-    let base = req
-        .current_folder
-        .clone()
-        .unwrap_or_else(|| "/tmp".into());
+    let base = req.current_folder.clone().unwrap_or_else(|| "/tmp".into());
     let path = Path::new(&base).join(name);
     Ok(PortalFileChooserResult {
         uris: vec![portal_screenshot_uri_for(&path)],
@@ -424,7 +418,10 @@ pub fn create_screencast_session_with_backend_note(
     let source_type = default_source_type(req.types);
     PortalScreencastSession {
         session_id: format!("screencast-{n}"),
-        streams: vec![placeholder_stream(SCREENCAST_PLACEHOLDER_NODE_ID, source_type)],
+        streams: vec![placeholder_stream(
+            SCREENCAST_PLACEHOLDER_NODE_ID,
+            source_type,
+        )],
         types: req.types,
         multiple: req.multiple,
         cursor_mode: req.cursor_mode,
@@ -646,10 +643,7 @@ mod tests {
     #[test]
     fn read_portal_setting_appearance_color_scheme() {
         assert_eq!(
-            read_portal_setting(
-                PortalSettingsNamespace::Appearance.as_str(),
-                "color-scheme"
-            ),
+            read_portal_setting(PortalSettingsNamespace::Appearance.as_str(), "color-scheme"),
             Some("0".to_string())
         );
         assert_eq!(
@@ -823,11 +817,8 @@ mod tests {
         let stub = create_screencast_session(PortalScreencastRequest::default());
         assert_eq!(stub.backend_note, SCREENCAST_NOTE_PORTAL_STUB);
 
-        let ready = crate::screencast_pw::probe_screencast_readiness(
-            Some("/run/user/1000"),
-            true,
-            false,
-        );
+        let ready =
+            crate::screencast_pw::probe_screencast_readiness(Some("/run/user/1000"), true, false);
         let mut session = create_screencast_session_with_backend_note(
             PortalScreencastRequest::default(),
             screencast_backend_note(&ready),
@@ -847,10 +838,7 @@ mod tests {
     /// and an honest backend note forced via `create_screencast_session_with_backend_note`.
     #[test]
     fn screencast_create_start_note_on_real_pure_path() {
-        for forced in [
-            SCREENCAST_NOTE_PORTAL_STUB,
-            SCREENCAST_NOTE_PIPEWIRE_SOCKET,
-        ] {
+        for forced in [SCREENCAST_NOTE_PORTAL_STUB, SCREENCAST_NOTE_PIPEWIRE_SOCKET] {
             let mut session = create_screencast_session_with_backend_note(
                 PortalScreencastRequest::default(),
                 forced,
@@ -871,8 +859,7 @@ mod tests {
         }
 
         // Probe-driven Start (same pure path D-Bus uses).
-        let ready_stub =
-            crate::screencast_pw::probe_screencast_readiness(None, false, false);
+        let ready_stub = crate::screencast_pw::probe_screencast_readiness(None, false, false);
         let mut session = create_screencast_session(PortalScreencastRequest::default());
         let outcome = start_screencast_with_readiness(&mut session, &ready_stub).unwrap();
         assert!(!outcome.streams.is_empty());
@@ -883,11 +870,8 @@ mod tests {
         );
         assert_eq!(outcome.note, SCREENCAST_NOTE_PORTAL_STUB);
 
-        let ready_pw = crate::screencast_pw::probe_screencast_readiness(
-            Some("/run/user/1000"),
-            true,
-            false,
-        );
+        let ready_pw =
+            crate::screencast_pw::probe_screencast_readiness(Some("/run/user/1000"), true, false);
         let mut session = create_screencast_session(PortalScreencastRequest::default());
         let outcome = start_screencast_with_readiness(&mut session, &ready_pw).unwrap();
         assert!(!outcome.streams.is_empty());
@@ -903,8 +887,7 @@ mod tests {
         start_screencast(&mut blank).unwrap();
         assert!(!blank.streams.is_empty());
         assert!(
-            blank.backend_note.contains("portal_stub")
-                || blank.backend_note.contains("pipewire")
+            blank.backend_note.contains("portal_stub") || blank.backend_note.contains("pipewire")
         );
         assert_eq!(blank.backend_note, SCREENCAST_NOTE_PORTAL_STUB);
     }
@@ -944,4 +927,3 @@ mod tests {
         assert!(validate_file_chooser_request(&req).is_err());
     }
 }
-

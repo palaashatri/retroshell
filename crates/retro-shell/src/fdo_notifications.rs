@@ -201,12 +201,12 @@ impl NotificationServerState {
 
     /// FreeDesktop `Notify` — insert or replace; returns the notification id.
     pub fn notify(&mut self, payload: NotificationPayload) -> u32 {
-        let id = if payload.replaces_id != 0 && self.notifications.contains_key(&payload.replaces_id)
-        {
-            payload.replaces_id
-        } else {
-            self.allocate_id()
-        };
+        let id =
+            if payload.replaces_id != 0 && self.notifications.contains_key(&payload.replaces_id) {
+                payload.replaces_id
+            } else {
+                self.allocate_id()
+            };
         self.notifications.insert(id, payload);
         id
     }
@@ -485,9 +485,7 @@ pub fn try_register_session_bus(center: Arc<RwLock<NotificationCenter>>) -> bool
     #[cfg(not(target_os = "linux"))]
     {
         let _ = center;
-        tracing::debug!(
-            "FreeDesktop Notifications registration skipped (non-Linux host)"
-        );
+        tracing::debug!("FreeDesktop Notifications registration skipped (non-Linux host)");
         false
     }
 }
@@ -597,9 +595,7 @@ mod linux {
             .build()?;
 
         if let Ok(mut guard) = REGISTRATION.lock() {
-            *guard = Some(FdoRegistration {
-                _connection: conn,
-            });
+            *guard = Some(FdoRegistration { _connection: conn });
         }
 
         Ok(())
@@ -652,9 +648,7 @@ mod tests {
     #[test]
     fn notify_unknown_replaces_id_allocates_new() {
         let mut state = NotificationServerState::new();
-        let id = state.notify(
-            NotificationPayload::new("app", "X", "Y").with_replaces_id(99),
-        );
+        let id = state.notify(NotificationPayload::new("app", "X", "Y").with_replaces_id(99));
         assert_eq!(id, 1);
         assert!(state.get(99).is_none());
     }
@@ -752,8 +746,7 @@ mod tests {
         let center = Arc::new(RwLock::new(NotificationCenter::new()));
         let mut daemon = NotificationDaemon::with_notification_center(center.clone());
         let id = daemon.notify(
-            NotificationPayload::new("com.test", "Title", "Body")
-                .with_urgency(Urgency::Critical),
+            NotificationPayload::new("com.test", "Title", "Body").with_urgency(Urgency::Critical),
         );
         assert_eq!(id, 1);
         assert_eq!(center.read().visible().len(), 1);
@@ -772,9 +765,8 @@ mod tests {
         let center = Arc::new(RwLock::new(NotificationCenter::new()));
         let mut daemon = NotificationDaemon::with_notification_center(center.clone());
         let id = daemon.notify(NotificationPayload::new("app", "First", "A"));
-        let id2 = daemon.notify(
-            NotificationPayload::new("app", "Second", "B").with_replaces_id(id),
-        );
+        let id2 =
+            daemon.notify(NotificationPayload::new("app", "Second", "B").with_replaces_id(id));
         assert_eq!(id, id2);
         let center_guard = center.read();
         let visible = center_guard.visible();

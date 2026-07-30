@@ -17,7 +17,7 @@ use std::sync::{Mutex, OnceLock};
 
 use retro_kit::{
     at_spi_connection_available, atspi_object_path, serialize_event_for_dbus,
-    try_emit_atspi_dbus_event, AccessibleEvent, AccessibleEventKind, AccessibilityEventBus,
+    try_emit_atspi_dbus_event, AccessibilityEventBus, AccessibleEvent, AccessibleEventKind,
     SerializedAtspiEvent,
 };
 
@@ -123,10 +123,7 @@ pub fn drain_in_process_events() -> Vec<AccessibleEvent> {
 
 /// Number of pending in-process events.
 pub fn in_process_event_count() -> usize {
-    in_process_bus()
-        .lock()
-        .map(|bus| bus.len())
-        .unwrap_or(0)
+    in_process_bus().lock().map(|bus| bus.len()).unwrap_or(0)
 }
 
 #[cfg(test)]

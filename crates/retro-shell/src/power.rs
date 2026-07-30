@@ -200,7 +200,10 @@ mod tests {
 
     #[test]
     fn sysfs_status_parser() {
-        assert_eq!(parse_sysfs_status("Discharging\n"), BatteryState::Discharging);
+        assert_eq!(
+            parse_sysfs_status("Discharging\n"),
+            BatteryState::Discharging
+        );
         assert_eq!(parse_sysfs_status("Charging"), BatteryState::Charging);
         assert_eq!(parse_sysfs_status("Full"), BatteryState::FullyCharged);
         assert!(parse_sysfs_status("Discharging").is_on_battery());
