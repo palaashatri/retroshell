@@ -1,26 +1,69 @@
 //! wlr-layer-shell background surface driver for RetroShell.
 //!
-//! Renders the desktop as a real root-level BACKGROUND layer surface (fullscreen)
+//! Renders the desktop as a real root-level layer surface (fullscreen)
 //! via `zwlr_layer_shell_v1` instead of a winit xdg-toplevel. Gated behind
 //! `RETROSHELL_LAYER_SHELL_CHROME` environment variable.
+//!
+//! Phase 2b uses `Layer::Top` so the surface receives pointer/keyboard focus
+//! under our compositor. Phase 3 will split menu→Top exclusive, dock→Bottom,
+//! wallpaper→Background.
 //!
 //! Linux only; unavailable on macOS/Windows.
 
 #![cfg(target_os = "linux")]
 
 use anyhow::anyhow;
-use retro_kit::Widget;
+use retro_kit::event::{KeyCode, MouseButton};
+use retro_kit::{Event, Widget};
 use retro_sdk::{RawSurfaceRenderer, UiRuntime};
 use std::ffi::c_void;
-use std::os::unix::io::AsFd;
+use std::time::{SystemTime, UNIX_EPOCH};
 use wayland_client::{
-    protocol::{wl_compositor, wl_pointer, wl_registry, wl_seat, wl_shm, wl_surface},
+    protocol::{
+        wl_compositor, wl_keyboard, wl_pointer, wl_registry, wl_seat, wl_shm, wl_surface,
+    },
     Connection, Dispatch, Proxy, QueueHandle, WEnum,
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{self, Layer, ZwlrLayerShellV1},
     zwlr_layer_surface_v1::{self, Anchor, ZwlrLayerSurfaceV1},
 };
+
+/// Linux BTN_* codes from `<linux/input-event-codes.h>`.
+fn mouse_button_from_linux(code: u32) -> Option<MouseButton> {
+    match code {
+        0x110 => Some(MouseButton::Left),
+        0x111 => Some(MouseButton::Right),
+        0x112 => Some(MouseButton::Middle),
+        _ => None,
+    }
+}
+
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
+}
+
+/// Map a subset of Linux KEY_* codes to kit KeyCode (enough for shell shortcuts).
+fn keycode_from_linux(code: u32) -> Option<KeyCode> {
+    Some(match code {
+        1 => KeyCode::Escape,
+        14 => KeyCode::Backspace,
+        15 => KeyCode::Tab,
+        28 => KeyCode::Enter,
+        57 => KeyCode::Space,
+        105 => KeyCode::ArrowLeft,
+        106 => KeyCode::ArrowRight,
+        103 => KeyCode::ArrowUp,
+        108 => KeyCode::ArrowDown,
+        102 => KeyCode::Home,
+        107 => KeyCode::End,
+        111 => KeyCode::Delete,
+        _ => return None,
+    })
+}
 
 /// Main entry point: run the layer-shell desktop with the given content widget.
 pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> anyhow::Result<()> {
@@ -38,11 +81,13 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         seat: None,
         wl_surface: None,
         wl_pointer: None,
+        wl_keyboard: None,
         layer_surface: None,
         configured_size: None,
         runtime: None,
         renderer: None,
         running: true,
+        last_pointer: (0.0, 0.0),
     };
 
     // Roundtrip to collect globals
@@ -66,11 +111,12 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
     // Create wl_surface
     let surface = compositor.create_surface(&qh, ());
 
-    // Create layer surface as BACKGROUND, anchored on all edges, exclusive_zone = -1
+    // Create layer surface as Top (interactive) for Phase 2b — receives pointer.
+    // Phase 3 splits menu→Top exclusive, dock→Bottom exclusive, wallpaper→Background.
     let layer_surface = layer_shell.get_layer_surface(
         &surface,
         None,
-        Layer::Background,
+        Layer::Top,
         "retroshell-desktop".into(),
         &qh,
         (),
@@ -153,6 +199,7 @@ struct LayerDesktopState {
     seat: Option<wayland_client::protocol::wl_seat::WlSeat>,
     wl_surface: Option<wayland_client::protocol::wl_surface::WlSurface>,
     wl_pointer: Option<wayland_client::protocol::wl_pointer::WlPointer>,
+    wl_keyboard: Option<wl_keyboard::WlKeyboard>,
     layer_surface: Option<ZwlrLayerSurfaceV1>,
     /// Configured (w, h) from the layer surface Configure event
     configured_size: Option<(u32, u32)>,
@@ -162,6 +209,8 @@ struct LayerDesktopState {
     renderer: Option<RawSurfaceRenderer>,
     /// Keep running until false
     running: bool,
+    /// Last pointer position in surface coordinates (from Motion/Enter).
+    last_pointer: (f64, f64),
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for LayerDesktopState {
@@ -253,6 +302,11 @@ impl Dispatch<wayland_client::protocol::wl_seat::WlSeat, ()> for LayerDesktopSta
                 {
                     state.wl_pointer = Some(seat.get_pointer(qh, ()));
                 }
+                if caps.contains(wayland_client::protocol::wl_seat::Capability::Keyboard)
+                    && state.wl_keyboard.is_none()
+                {
+                    state.wl_keyboard = Some(seat.get_keyboard(qh, ()));
+                }
             }
         }
     }
@@ -267,11 +321,102 @@ impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for LayerDesk
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        // Rendering-first: pointer events are accepted but not yet routed into
-        // the UiRuntime. `surface_x/surface_y` (Motion) and `button`/`state`
-        // (Button) will be wired to runtime.pointer_moved/pointer_button in a
-        // follow-up (Phase 2b-iii, input). For now this keeps the seat alive.
-        let _ = (state, event);
+        match event {
+            wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                state.last_pointer = (surface_x, surface_y);
+                if let Some(runtime) = state.runtime.as_mut() {
+                    runtime.pointer_moved(surface_x as f32, surface_y as f32);
+                }
+            }
+            wl_pointer::Event::Button {
+                button,
+                state: btn_state,
+                ..
+            } => {
+                let Some(mouse) = mouse_button_from_linux(button) else {
+                    return;
+                };
+                let pressed = matches!(
+                    btn_state,
+                    WEnum::Value(wl_pointer::ButtonState::Pressed)
+                );
+                let (px, py) = state.last_pointer;
+                if let Some(runtime) = state.runtime.as_mut() {
+                    runtime.pointer_moved(px as f32, py as f32);
+                    let _ = runtime.pointer_button(mouse, pressed, now_ms());
+                }
+            }
+            wl_pointer::Event::Enter {
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                state.last_pointer = (surface_x, surface_y);
+                if let Some(runtime) = state.runtime.as_mut() {
+                    runtime.pointer_moved(surface_x as f32, surface_y as f32);
+                    runtime.set_focus(true);
+                }
+            }
+            wl_pointer::Event::Leave { .. } => {
+                if let Some(runtime) = state.runtime.as_mut() {
+                    runtime.set_focus(false);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for LayerDesktopState {
+    fn event(
+        state: &mut Self,
+        _: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(runtime) = state.runtime.as_mut() else {
+            return;
+        };
+        match event {
+            wl_keyboard::Event::Key {
+                key,
+                state: key_state,
+                ..
+            } => {
+                let Some(code) = keycode_from_linux(key) else {
+                    return;
+                };
+                let pressed = matches!(
+                    key_state,
+                    WEnum::Value(wl_keyboard::KeyState::Pressed)
+                );
+                let ev = if pressed {
+                    Event::KeyDown {
+                        key: code,
+                        modifiers: retro_kit::event::Modifiers::NONE,
+                    }
+                } else {
+                    Event::KeyUp {
+                        key: code,
+                        modifiers: retro_kit::event::Modifiers::NONE,
+                    }
+                };
+                runtime.key(ev);
+            }
+            wl_keyboard::Event::Enter { .. } => {
+                runtime.set_focus(true);
+            }
+            wl_keyboard::Event::Leave { .. } => {
+                runtime.set_focus(false);
+            }
+            _ => {}
+        }
     }
 }
 

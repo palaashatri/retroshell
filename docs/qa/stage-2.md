@@ -51,19 +51,25 @@ is no in-window menu bar.
 
 ## Remaining (blocks DoD)
 
-- **Root-level chrome via layer-shell** — see
-  [../tasks/stage-2b-layer-shell-chrome.md](../tasks/stage-2b-layer-shell-chrome.md).
-  Until it lands, the desktop under the DRM compositor is not fullscreen and the
-  chrome is not a real root surface.
+- **Phase 3 exclusive chrome** (menu Top / dock Bottom / wallpaper Background) —
+  see [../tasks/stage-2b-layer-shell-chrome.md](../tasks/stage-2b-layer-shell-chrome.md).
+  Phase 2b single Top layer is proven on VBox under `retro-compositor`.
 - **Re-QA lock / unbypass / `Super+O`** on the reworked build (prior screenshots
   deleted; functional paths compile and the compositor spawns clients, but must be
   re-evidenced, not assumed).
 
-## QA environment (current)
+## Env B progress (Windows + VirtualBox, 2026-07-30)
 
-- VM: UTM `Ubuntu` aarch64 @ 192.168.64.15 (user `ubuntu`). `/dev/dri/card0` KMS ok.
-- Run DRM headless over SSH: user in `video`,`render`,`input` groups;
-  `LIBSEAT_BACKEND=seatd`; `LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe`
-  (virtio hardware GL fails for wgpu clients; llvmpipe works).
-- Screenshots: compositor SIGUSR1 readback is blocked (this GLES context rejects
-  `glReadPixels` for all formats). Working method: **Xvfb + `import -window root`**.
+| Item | Status | Evidence |
+|---|---|---|
+| Layer desktop under `retro-compositor` | PASS | `docs/screenshots/qa-layer-desktop-vbox.png` — fullscreen menu/dock/desktop |
+| Pointer → layer surface → UI action | PASS | `docs/screenshots/qa-layer-input-click.png` — Finder menu open after click |
+| Skip gray `layer_shell_client` PoC when env set | PASS | compositor log: only `retroshell-desktop` layer |
+
+Orchestration: `packaging/vm/_stage2b-start.sh` + `RETROSHELL_LAYER_SHELL_CHROME=1`.
+Note: ydotool absolute coords on this guest appear ~2× compositor logical coords.
+
+## QA environments
+
+- **Env A:** UTM `Ubuntu` aarch64 (Claude session) — sway+grim / Xvfb screenshots.
+- **Env B:** VirtualBox `retroshell-arch` x86_64 — `VBoxManage screenshotpng`.

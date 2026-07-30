@@ -119,23 +119,17 @@ RawSurfaceRenderer · `441b6a6` scope · `aea7014` fonts/menu/audit. **Not pushe
 origin yet.**
 
 ## 6. NEXT STEPS (priority order)
-1. **Verify under our OWN compositor.** The layer desktop is proven under *sway*,
-   not `retro-compositor`. Run `retro-compositor` with `RETROSHELL_LAYER_SHELL_CHROME=1`
-   and confirm it composites the background layer surface. On Env B just
-   `VBoxManage screenshotpng` it. If it doesn't show, the DRM
-   `session_drm.rs::collect_render_elements` likely omits layer surfaces — the
-   nested `main.rs` render_frame handles them; port that logic.
-2. **Wire input (Phase 2b-iii).** `layer_desktop.rs` accepts wl_pointer but does
-   not route it (see the `let _ = (state, event)` in the WlPointer Dispatch). Route
-   Motion→`runtime.pointer_moved`, Button→`runtime.pointer_button`, add wl_keyboard
-   (xkb)→`runtime.key`. Model on `crates/retro-shell/src/bin/retro-lock.rs`.
+1. **DONE (Env B / VBox):** layer desktop under `retro-compositor` with
+   `RETROSHELL_LAYER_SHELL_CHROME=1` — see `docs/screenshots/qa-layer-desktop-vbox.png`
+   and `qa-layer-input-click.png` (menu opens on click). Compositor now hit-tests
+   layer surfaces; smithay focus Point is surface **origin**, not pointer-local.
+2. **Polish pointer/keyboard (2b-iii remaining):** keyboard is only a KEY_* subset
+   (no xkb yet); prefer sctk SeatHandler like `retro-lock` for full keysyms.
 3. **Phase 3: exclusive chrome.** Split menu bar → `top` layer (exclusive=menu_h)
    and dock → `bottom` layer (exclusive=dock_h); wallpaper+icons stay on background.
-   Then DELETE the throwaway `crates/retro-shell/src/layer_shell_client.rs` (gray
-   placeholder PoC, still called from `startup()` ~line 598 — remove that call) and
+   Then DELETE the throwaway `crates/retro-shell/src/layer_shell_client.rs` and
    un-stub `chrome_protocol.rs::should_paint_kit_chrome`.
-4. **Polish:** menu-bar item spacing is tight; clock/live content only updates on
-   wayland events (blocking_dispatch) — add a frame-callback/timer for liveness.
+4. **Polish:** menu-bar item spacing; clock/live content via frame-callback/timer.
 5. **Re-QA Stage 2 functional claims** (lock unbypass, `Super+O`) on the reworked
    build; update `docs/qa/stage-2.md` with real evidence.
 

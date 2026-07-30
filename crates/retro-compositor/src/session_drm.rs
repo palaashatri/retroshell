@@ -247,16 +247,18 @@ fn collect_render_elements(
         ));
     }
 
-    // Layer-shell chrome (menu bar, dock) sits above ordinary windows.
+    // Layer order: Overlay/Top above windows; Bottom/Background below (macOS/GNOME/KDE).
     for layer in state.layer_surfaces.iter().rev() {
-        elements.extend(render_elements_from_surface_tree(
-            renderer,
-            layer.surface.wl_surface(),
-            (0, 0),
-            1.0,
-            1.0,
-            Kind::Unspecified,
-        ));
+        if matches!(layer.layer, Layer::Overlay | Layer::Top) {
+            elements.extend(render_elements_from_surface_tree(
+                renderer,
+                layer.surface.wl_surface(),
+                (0, 0),
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            ));
+        }
     }
 
     // Windows: last mapped is topmost, so iterate in reverse for front-to-back.
@@ -274,6 +276,19 @@ fn collect_render_elements(
             1.0,
             Kind::Unspecified,
         ));
+    }
+
+    for layer in state.layer_surfaces.iter().rev() {
+        if matches!(layer.layer, Layer::Bottom | Layer::Background) {
+            elements.extend(render_elements_from_surface_tree(
+                renderer,
+                layer.surface.wl_surface(),
+                (0, 0),
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            ));
+        }
     }
 
     elements
@@ -1042,7 +1057,6 @@ struct MappedWindow {
 
 struct MappedLayer {
     surface: LayerSurface,
-    #[allow(dead_code)]
     layer: Layer,
     #[allow(dead_code)]
     namespace: String,
@@ -1314,10 +1328,16 @@ impl DrmSessionState {
                     match self.window_at(pos) {
                         Some(idx) => self.focus_window_at_index(idx),
                         None => {
-                            // Click on the desktop clears keyboard focus.
-                            self.focus_surface(None);
+                            if let Some((surf, _)) = self.surface_under(pos) {
+                                self.focus_surface(Some(surf));
+                            } else {
+                                self.focus_surface(None);
+                            }
                         }
                     }
+                    // Retarget pointer so the focused surface gets Enter/Motion
+                    // at the true click coordinates before the button event.
+                    self.forward_pointer_motion(time);
                 }
 
                 if let Some(ptr) = self.seat.get_pointer() {
@@ -1337,6 +1357,36 @@ impl DrmSessionState {
         }
     }
 
+    /// Hit-test: Overlay/Top layers → windows → Bottom/Background layers.
+    ///
+    /// The Point in the returned pair is the **surface origin in the same
+    /// coordinate space as `MotionEvent.location`** (smithay sends
+    /// `location - origin` to the client as surface-local coords).
+    fn surface_under(
+        &self,
+        pos: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        for layer in self.layer_surfaces.iter().rev() {
+            if matches!(layer.layer, Layer::Overlay | Layer::Top) {
+                // Fullscreen layer surfaces are placed at the output origin.
+                return Some((layer.surface.wl_surface().clone(), Point::from((0.0, 0.0))));
+            }
+        }
+        if let Some(idx) = self.window_at(pos) {
+            let w = &self.windows[idx];
+            return Some((
+                w.toplevel.wl_surface().clone(),
+                Point::from((w.position.x as f64, w.position.y as f64)),
+            ));
+        }
+        for layer in self.layer_surfaces.iter().rev() {
+            if matches!(layer.layer, Layer::Bottom | Layer::Background) {
+                return Some((layer.surface.wl_surface().clone(), Point::from((0.0, 0.0))));
+            }
+        }
+        None
+    }
+
     /// Send the current pointer location to the seat, retargeting focus to
     /// whatever surface is under it.
     fn forward_pointer_motion(&mut self, time: u32) {
@@ -1344,14 +1394,10 @@ impl DrmSessionState {
 
         let pos = self.pointer_location;
         let focus = if self.locked {
-            self.active_lock_surface().map(|surf| (surf, Point::from((0.0, 0.0))))
+            self.active_lock_surface()
+                .map(|surf| (surf, Point::from((0.0, 0.0))))
         } else {
-            self.window_at(pos).map(|idx| {
-                let w = &self.windows[idx];
-                let local =
-                    Point::from((pos.x - w.position.x as f64, pos.y - w.position.y as f64));
-                (w.toplevel.wl_surface().clone(), local)
-            })
+            self.surface_under(pos)
         };
         let serial = self.next_serial();
         if let Some(ptr) = self.seat.get_pointer() {

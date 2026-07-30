@@ -319,16 +319,14 @@ impl RetroShell {
     ///
     /// Call after `WAYLAND_DISPLAY` is set (compositor/labwc running). Non-fatal.
     pub(crate) fn attach_wayland_session_protocols(desktop: &mut ShellDesktop) {
-        // Layer-shell bind deferred: gray placeholder buffers replace kit chrome when
-        // layer_shell_bound is set. Kit paint owns menu bar + dock until real pixels ship.
+        // When RETROSHELL_LAYER_SHELL_CHROME is set, `layer_desktop` owns the real
+        // BACKGROUND surface (menu/dock/wallpaper). Do NOT also bind the throwaway
+        // gray `layer_shell_client` PoC — it races Top layers over the desktop.
         if std::env::var_os("RETROSHELL_LAYER_SHELL_CHROME").is_some() {
-            if let Some(summary) = layer_shell_client::try_map_layer_shell_chrome(&desktop.chrome) {
-                tracing::info!(
-                    surfaces = ?summary.mapped_namespaces,
-                    "shell mapped layer-shell chrome (opt-in)"
-                );
-                desktop.layer_shell_bound = true;
-            }
+            tracing::debug!(
+                "skipping layer_shell_client PoC; layer_desktop owns chrome surfaces"
+            );
+            desktop.layer_shell_bound = true;
         } else {
             tracing::debug!("layer-shell chrome bind skipped; kit menu bar + dock paint active");
         }
