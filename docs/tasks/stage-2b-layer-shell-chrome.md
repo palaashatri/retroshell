@@ -36,11 +36,26 @@ smithay-client-toolkit (sctk, already a dep) for surface creation + input:
   layer, anchors, exclusive_zone, size), the configure loop, a wgpu surface built
   from raw handles, and a per-frame render callback + input event stream. Unit of
   reuse for all chrome surfaces.
-- **Phase 2 — shell uses one full-output BACKGROUND layer:** retro-shell maps a
+- **Phase 2a — DONE (committed `1bd616c`):** `retro_sdk::RawSurfaceRenderer`
+  (+ pub `Canvas`) wraps `WgpuPresenter::new_raw` so retro-shell can render onto a
+  surface it created. Compiles on the VM.
+- **Phase 2b — shell uses one full-output BACKGROUND layer.** retro-shell maps a
   single background layer surface (anchor all 4 edges, exclusive_zone -1) and
-  renders the full `ShellDesktop` (wallpaper + icons + menu bar + dock) into it.
-  This fixes fullscreen AND makes the chrome a real root surface. Apps
-  (xdg-toplevels) stack above it. **This is the milestone deliverable.**
+  renders the full `ShellDesktop` into it via `RawSurfaceRenderer`. **This is the
+  milestone deliverable** but it is a real refactor, not just "add a loop":
+  - `ShellDesktop` is driven entirely by retro-sdk's **winit `AppHandler`**
+    (`Application::run`), which owns event translation, dirty-tracking, scale, and
+    the presenter render loop. There is no reusable "render this Window + dispatch
+    input" core today.
+  - There are two widget layers: retro-kit `Widget::draw(&self, &ThemeContext)`
+    and the retro-sdk Canvas draw path (`draw_window`/`draw_desktop_backdrop`).
+  - **Plan:** extract the AppHandler render+input core in retro-sdk into a
+    backend-agnostic unit (input event enum in → `render(|canvas| ...)` out), then
+    add an sctk-driven driver in retro-shell that (1) creates the layer surface +
+    configure/ack, (2) builds `RawSurfaceRenderer` from the raw handles, (3) feeds
+    wl_pointer/wl_keyboard into the core, (4) renders on frame callbacks. Gate the
+    whole path behind `RETROSHELL_LAYER_SHELL_CHROME` so the winit default is
+    untouched until the layer path is proven by a VM screenshot.
 - **Phase 3 — split exclusive chrome:** menu bar → `top` layer (exclusive=menu_h),
   dock → `bottom` layer (exclusive=dock_h), background keeps wallpaper+icons. Now
   maximized apps respect reserved zones and can't cover the menu/dock. Un-stub
