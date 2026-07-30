@@ -1312,7 +1312,18 @@ impl ShellDesktop {
     fn launch_external_app(&mut self, bundle_id: &str) {
         // Reap exited clients first so the registry reflects the live multi-client set.
         let _ = self.session_clients.reap();
-        match session_clients::spawn_app_client(bundle_id) {
+        let scanned = self
+            .launch_services
+            .read()
+            .bundle_for_id(bundle_id)
+            .cloned();
+        let spawn_result = match scanned.as_ref() {
+            Some(bundle) if session_clients::bundle_entrypoint_exists(bundle) => {
+                session_clients::spawn_app_client_for_bundle(bundle)
+            }
+            _ => session_clients::spawn_app_client(bundle_id),
+        };
+        match spawn_result {
             Ok(client) => {
                 let pid = client.pid;
                 let binary_name = client.binary_name.clone();
@@ -1962,6 +1973,23 @@ impl ShellDesktop {
                 self.last_status_refresh = std::time::Instant::now();
             }
         }
+    }
+
+    /// If the App Store left `~/Applications/.retroshell-rescan`, rescan `.app` bundles.
+    fn maybe_rescan_applications(&mut self) {
+        let home = match std::env::var("HOME") {
+            Ok(h) if !h.is_empty() => h,
+            _ => return,
+        };
+        let marker = PathBuf::from(&home)
+            .join("Applications")
+            .join(".retroshell-rescan");
+        if !marker.is_file() {
+            return;
+        }
+        let _ = std::fs::remove_file(&marker);
+        self.launch_services.write().scan_applications();
+        tracing::info!("rescanned Applications after App Store install marker");
     }
 
     /// Execute a session power/logout action via pure plan + shell side effects.
@@ -3467,6 +3495,9 @@ impl Widget for ShellDesktop {
     }
 
     fn update(&mut self) {
+        // App Store install marker → rescan ~/Applications/*.app (Stage 3).
+        self.maybe_rescan_applications();
+
         // Sync lock state from SessionManager
         if self.session_manager.read().state == session_manager::SessionState::Locked
             && !self.locked

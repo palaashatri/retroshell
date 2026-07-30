@@ -61,7 +61,10 @@ smithay-client-toolkit (sctk, already a dep) for surface creation + input:
   `should_paint_kit_chrome(bound) → !bound`. Gray live-bind PoC removed
   (`try_map_layer_shell_chrome` is a noop; pure request helpers remain).
   Screenshots: `qa-phase3-exclusive-chrome.png`, `qa-phase3-menu-click.png`.
-  Known polish: open menu dropdowns clip to the 24px Top strip.
+  Menu dropdowns paint on Overlay (`retroshell-menu-popup`); evidence
+  `qa-phase3-menu-dropdown.png`.
+- **Polish (Env B):** menu title gaps + live clock (1s idle wake). Screenshots:
+  `qa-polish-menu-spacing.png`, `qa-polish-live-clock.png`.
 
 ## QA (this environment)
 - VM: UTM `Ubuntu` (aarch64), 192.168.64.15, user ubuntu. `/dev/dri/card0` KMS ok.

@@ -51,9 +51,15 @@ is no in-window menu bar.
 
 ## Remaining (blocks DoD)
 
-- Menu-bar item spacing / live clock polish (frame-callback or timer).
 - Full sctk `KeyboardHandler` (like `retro-lock`) would replace the KEY_*/xkb-mask
-  map in `layer_desktop` for layout-correct text input.
+  map in `layer_desktop` for layout-correct text input — optional polish, not DoD.
+
+## Polish (2026-07-30, Env B)
+
+| Item | Status | Evidence |
+|---|---|---|
+| Menu-bar item spacing (inter-item gap) | DONE | `docs/screenshots/qa-polish-menu-spacing.png` |
+| Live menu clock (1s idle wake + minute dirty) | DONE | `qa-polish-menu-spacing.png` → `qa-polish-live-clock.png` (5:32→5:33 PM while idle) |
 
 ## Env B progress (Windows + VirtualBox, 2026-07-30)
 

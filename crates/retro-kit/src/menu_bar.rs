@@ -169,13 +169,22 @@ impl Widget for MenuBar {
             size.height,
         ));
 
+        // Classic Mac–style spacing: padding inside each title hit target, plus
+        // a clear gap between adjacent menu titles so they don't read as one word.
+        const LEADING: f32 = 8.0;
+        const TITLE_PAD: f32 = 18.0; // horizontal padding inside each title rect
+        const ITEM_GAP: f32 = 8.0;
+        const CHAR_W: f32 = 7.0;
+
         self.menu_rects.clear();
-        let mut x = self.rect().x + 8.0;
-        for menu in &self.menus {
-            let width = menu.title.len() as f32 * 7.0 + 18.0;
+        let mut x = self.rect().x + LEADING;
+        for (i, menu) in self.menus.iter().enumerate() {
+            // Apple / first menu needs room for the icon before the title text.
+            let icon_extra = if i == 0 { 14.0 } else { 0.0 };
+            let width = menu.title.len() as f32 * CHAR_W + TITLE_PAD + icon_extra;
             self.menu_rects
                 .push(Rect::new(x, self.rect().y, width, size.height));
-            x += width;
+            x += width + ITEM_GAP;
         }
 
         size

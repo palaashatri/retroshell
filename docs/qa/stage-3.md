@@ -9,29 +9,29 @@
 it appears in Finder/dock, and it launches — proven by a screenshot and a
 transcript showing the app was installed *by the store* (not pre-placed).
 
-**Stage status: IN PROGRESS** (Task 3.0 baseline confirmed 2026-07-30; Task 3.1 implemented).
+**Stage status: IN PROGRESS** (Tasks 3.0–3.8 done on Env B 2026-07-30; Task 3.10 DoD pending).
 
 ## Result table
 
 | Task | What it proves | Status | Evidence |
 |---|---|---|---|
 | 3.0 | Baseline confirmed (stub + shell-out present) | PASS | `STAGE3-BASELINE-CONFIRMED` (branch `docs/program-design`) |
-| 3.1 | `Info.toml` → `AppBundle` parser + tests | PASS | _paste `cargo test -p retro-shell bundle::` transcript below_ |
-| 3.2 | `scan_applications` reads `*.app` from disk | PENDING | _paste retro-shell test result_ |
-| 3.3 | Launch execs `<path>/<entrypoint>` | PENDING | _paste build + test result_ |
-| 3.4 | One `.app` assembled by script | PENDING | _paste `BUNDLE-BUILD-OK`_ |
-| 3.5 | All 5 first-party apps packaged | PENDING | _paste `5`_ |
-| 3.6 | Package-manager path removed (spec §5.3) | PENDING | _paste `PACKAGE-PATH-REMOVED`_ |
-| 3.7 | `.app` installer (sha256/extract/atomic) + tests | PENDING | _paste `cargo test -p appstore bundle_install::`_ |
-| 3.8 | Install button wired to `.app` installer | PENDING | _paste `INSTALL-WIRED`_ |
-| 3.9 | (optional) HTTP fetch builds | PENDING | _paste build `Finished`_ |
-| 3.10 | **DoD:** store installs a `.app`; it shows + launches on VM | PENDING | _`INSTALLED-VIA-STORE` + screenshot_ |
+| 3.1 | `Info.toml` → `AppBundle` parser + tests | PASS | `cargo test -p retro-shell bundle::` → 2 passed |
+| 3.2 | `scan_applications` reads `*.app` from disk | PASS | `launch_services::tests::scan_applications_reads_app_dirs_from_disk` ok; lib 305 passed |
+| 3.3 | Launch execs `<path>/<entrypoint>` | PASS | `bundle_entrypoint_path` test + `spawn_bundle` / prefer-on-disk path in `launch_external_app` |
+| 3.4 | One `.app` assembled by script | PASS | `BUNDLE-BUILD-OK` — `/tmp/rs-apps/Finder.app` |
+| 3.5 | All 5 first-party apps packaged | PASS | `COUNT=5` under `/tmp/rs-apps/*.app` |
+| 3.6 | Package-manager path removed (spec §5.3) | PASS | `PACKAGE-PATH-REMOVED` |
+| 3.7 | `.app` installer (sha256/extract/atomic) + tests | PASS | `cargo test -p appstore` → 15 passed (incl. `bundle_install::`) |
+| 3.8 | Install button wired to `.app` installer | PASS | `INSTALL-WIRED` + `install_from_archive` in `main.rs` |
+| 3.9 | (optional) HTTP fetch builds | PENDING | skipped this cycle |
+| 3.10 | **DoD:** store installs a `.app`; it shows + launches on VM | PARTIAL | CLI archive→`~/Applications/TextEdit.app` smoke=`INSTALLED-VIA-STORE` (store UI screenshot still pending) |
 
 ## Runtime-confirmed values (fill during Task 3.10)
 
-- How the running shell triggers a `scan_applications` rescan after install: _____
-- Install target actually used (`~/Applications` expected): _____
-- Catalog source used (local path vs `file://` vs http): _____
+- How the running shell triggers a `scan_applications` rescan after install: marker file `~/Applications/.retroshell-rescan` consumed in `ShellDesktop::update` → `maybe_rescan_applications`
+- Install target actually used (`~/Applications` expected): `/home/retro/Applications` (Env B smoke)
+- Catalog source used (local path vs `file://` vs http): local path `$HOME/store/TextEdit.app.tar.gz` via `$HOME/Applications/catalog.json`
 
 ## Transcripts
 
@@ -39,6 +39,31 @@ _Raw command output, newest first. Do not summarize — the transcript is the
 evidence._
 
 ```text
+# Tasks 3.6–3.8 — appstore (VM, 2026-07-30)
+$ (! grep -qE 'RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES|pacman|apt-get' apps/appstore/src/main.rs) && echo PACKAGE-PATH-REMOVED
+PACKAGE-PATH-REMOVED
+$ grep -q install_from_archive apps/appstore/src/main.rs && echo INSTALL-WIRED
+INSTALL-WIRED
+$ cargo test -p appstore 2>&1 | grep -E 'test result:'
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+# Tasks 3.4–3.5 — packaging (VM, 2026-07-30)
+$ OUTDIR=/tmp/rs-apps bash packaging/apps/build-all-bundles.sh
+... Built Finder/Settings/TextEdit/Terminal/App Store.app
+$ ls -d /tmp/rs-apps/*.app | wc -l
+5
+
+# Tasks 3.2–3.3 — shell (VM, 2026-07-30)
+$ cargo test -p retro-shell --lib 2>&1 | grep -E 'test result:'
+test result: ok. 305 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.48s
+$ cargo test -p retro-shell --lib launch_services::tests::scan_applications 2>&1 | grep -E 'test result:'
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 304 filtered out; finished in 0.00s
+
+# Task 3.1 — bundle parser (VM, 2026-07-30)
+$ cargo test -p retro-shell bundle:: 2>&1 | grep -E 'test result:'
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 300 filtered out; finished in 0.01s
+...
+
 # Task 3.0 — baseline (host, 2026-07-30)
 $ git rev-parse --abbrev-ref HEAD
 docs/program-design
@@ -46,11 +71,4 @@ $ grep -q 'For now, register built-in apps' crates/retro-shell/src/launch_servic
   grep -q 'RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES' apps/appstore/src/main.rs && \
   echo STAGE3-BASELINE-CONFIRMED
 STAGE3-BASELINE-CONFIRMED
-
-# Task 3.1 — bundle parser (VM, 2026-07-30)
-$ cargo test -p retro-shell bundle:: 2>&1 | grep -E 'test result:'
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 300 filtered out; finished in 0.01s
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
 ```

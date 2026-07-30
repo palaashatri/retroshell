@@ -380,10 +380,11 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
     paint_all(&mut state, &mut runtime)?;
     state.runtime = Some(runtime);
 
+    // Wake at least once a second so the menu clock / dock tick without input.
+    // `blocking_dispatch` alone stalls until the next Wayland event.
+    const IDLE_WAKE_MS: i32 = 1000;
     while state.running {
-        event_queue
-            .blocking_dispatch(&mut state)
-            .map_err(|e| anyhow!("dispatch: {}", e))?;
+        dispatch_with_timeout(&conn, &mut event_queue, &mut state, IDLE_WAKE_MS)?;
 
         if let Some(mut runtime) = state.runtime.take() {
             runtime.tick();
@@ -394,6 +395,52 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         }
     }
 
+    Ok(())
+}
+
+/// Dispatch pending Wayland events, waiting up to `timeout_ms` for new ones.
+fn dispatch_with_timeout(
+    conn: &Connection,
+    event_queue: &mut wayland_client::EventQueue<LayerDesktopState>,
+    state: &mut LayerDesktopState,
+    timeout_ms: i32,
+) -> anyhow::Result<()> {
+    use std::os::fd::{AsFd, AsRawFd};
+
+    event_queue
+        .dispatch_pending(state)
+        .map_err(|e| anyhow!("dispatch_pending: {}", e))?;
+    conn.flush().map_err(|e| anyhow!("flush: {}", e))?;
+
+    if let Some(guard) = event_queue.prepare_read() {
+        #[repr(C)]
+        struct PollFd {
+            fd: i32,
+            events: i16,
+            revents: i16,
+        }
+        extern "C" {
+            fn poll(fds: *mut PollFd, nfds: u64, timeout: i32) -> i32;
+        }
+        const POLLIN: i16 = 0x0001;
+
+        let mut pfd = PollFd {
+            fd: conn.as_fd().as_raw_fd(),
+            events: POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { poll(&mut pfd, 1, timeout_ms) };
+        if ready > 0 {
+            let _ = guard.read();
+        } else {
+            // Timeout or error: cancel the prepared read without consuming.
+            drop(guard);
+        }
+    }
+
+    event_queue
+        .dispatch_pending(state)
+        .map_err(|e| anyhow!("dispatch_pending after poll: {}", e))?;
     Ok(())
 }
 

@@ -789,6 +789,8 @@ pub struct UiRuntime {
     cursor_position: Point,
     last_click: Option<(MouseButton, Point, u128)>,
     dirty: bool,
+    /// Last wall-clock minute painted; used so idle drivers wake the menu clock.
+    last_clock_minute: Option<u64>,
 }
 
 impl UiRuntime {
@@ -815,6 +817,7 @@ impl UiRuntime {
             cursor_position: Point::ZERO,
             last_click: None,
             dirty: true,
+            last_clock_minute: None,
         };
 
         rt.layout_window(width_px, height_px);
@@ -838,6 +841,8 @@ impl UiRuntime {
     /// `update()` so dynamic content (dock items, notifications, etc.) is
     /// rebuilt — mirrors the winit `AppHandler::about_to_wait` logic. A driver
     /// must call this each event-loop iteration or the dock never populates.
+    /// Also dirties when the wall-clock minute changes so the menu clock advances
+    /// even when the driver only wakes on a timer (no pointer/keyboard events).
     pub fn tick(&mut self) {
         let (dark, accent) = load_theme_preference();
         if dark != self.dark_mode || accent != self.accent_color {
@@ -847,6 +852,15 @@ impl UiRuntime {
         }
         if let Some(ref mut win) = self.window {
             win.update();
+            self.dirty = true;
+        }
+        let minute = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            / 60;
+        if self.last_clock_minute != Some(minute) {
+            self.last_clock_minute = Some(minute);
             self.dirty = true;
         }
     }
@@ -2190,9 +2204,7 @@ fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
         }
     }
 
-    let battery = battery_status_string();
-    let clock = current_time_string();
-    let right_label = format!("{}{}", battery, clock);
+    let right_label = menu_status_label();
     canvas.text(
         &right_label,
         rect.x + rect.width - right_label.len() as f32 * 7.0 - 72.0,
@@ -2267,9 +2279,7 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
         }
     }
 
-    let battery = battery_status_string();
-    let clock = current_time_string();
-    let right_label = format!("{}{}", battery, clock);
+    let right_label = menu_status_label();
     canvas.text(
         &right_label,
         rect.x + rect.width - right_label.len() as f32 * 7.0 - 72.0,
@@ -2511,6 +2521,17 @@ fn current_time_string() -> String {
     format_clock_from_seconds(duration.as_secs())
 }
 
+/// Battery + clock for the menu bar right edge, with a single separating space.
+fn menu_status_label() -> String {
+    let battery = battery_status_string();
+    let clock = current_time_string();
+    if battery.is_empty() {
+        clock
+    } else {
+        format!("{} {}", battery.trim_end(), clock)
+    }
+}
+
 /// Returns a compact battery indicator like "[87%]" or "[87% CHG]" when a
 /// battery is present, or an empty string on desktops/VMs without one.
 fn battery_status_string() -> String {
@@ -2528,9 +2549,9 @@ fn battery_status_string() -> String {
         .map(|s| !s.trim().eq_ignore_ascii_case("Discharging"))
         .unwrap_or(false);
     if charging {
-        format!("[{}% CHG] ", pct)
+        format!("[{}% CHG]", pct)
     } else {
-        format!("[{}%] ", pct)
+        format!("[{}%]", pct)
     }
 }
 

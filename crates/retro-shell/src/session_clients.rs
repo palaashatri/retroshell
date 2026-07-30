@@ -223,6 +223,66 @@ pub fn build_app_command(path: &std::path::Path) -> Command {
     command
 }
 
+/// Absolute path to the bundle entrypoint binary (`path` + `entrypoint`).
+pub fn bundle_entrypoint_path(bundle: &crate::launch_services::AppBundle) -> std::path::PathBuf {
+    std::path::Path::new(&bundle.path).join(&bundle.entrypoint)
+}
+
+/// True when `<bundle.path>/<entrypoint>` exists on disk as a file.
+pub fn bundle_entrypoint_exists(bundle: &crate::launch_services::AppBundle) -> bool {
+    bundle_entrypoint_path(bundle).is_file()
+}
+
+/// Spawn the on-disk `.app` entrypoint as a Wayland client process.
+pub fn spawn_bundle(
+    bundle: &crate::launch_services::AppBundle,
+) -> std::io::Result<std::process::Child> {
+    let path = bundle_entrypoint_path(bundle);
+    build_app_command(&path).spawn()
+}
+
+fn external_client_from_child(
+    bundle_id: &str,
+    binary_name: String,
+    child: Child,
+) -> ExternalClient {
+    let pid = child.id();
+    let launched_at_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    ExternalClient {
+        bundle_id: bundle_id.to_string(),
+        binary_name,
+        pid,
+        child: Some(child),
+        launched_at_unix,
+    }
+}
+
+/// Spawn from a scanned [`AppBundle`] when its entrypoint exists; otherwise fall
+/// back to the first-party binary-name table (dev builds without installed `.app`s).
+pub fn spawn_app_client_for_bundle(
+    bundle: &crate::launch_services::AppBundle,
+) -> Result<ExternalClient, String> {
+    if bundle_entrypoint_exists(bundle) {
+        let path = bundle_entrypoint_path(bundle);
+        let binary_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("app")
+            .to_string();
+        let child = spawn_bundle(bundle)
+            .map_err(|err| format!("Failed to spawn '{}': {err}", path.display()))?;
+        return Ok(external_client_from_child(
+            &bundle.bundle_id,
+            binary_name,
+            child,
+        ));
+    }
+    spawn_app_client(&bundle.bundle_id)
+}
+
 /// Spawn an app client process and return an [`ExternalClient`] on success.
 pub fn spawn_app_client(bundle_id: &str) -> Result<ExternalClient, String> {
     let binary = binary_name_for_bundle(bundle_id)
@@ -233,18 +293,7 @@ pub fn spawn_app_client(bundle_id: &str) -> Result<ExternalClient, String> {
     let child = command
         .spawn()
         .map_err(|err| format!("Failed to spawn '{}': {err}", path.display()))?;
-    let pid = child.id();
-    let launched_at_unix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    Ok(ExternalClient {
-        bundle_id: bundle_id.to_string(),
-        binary_name: binary,
-        pid,
-        child: Some(child),
-        launched_at_unix,
-    })
+    Ok(external_client_from_child(bundle_id, binary, child))
 }
 
 /// Spawn a handler process for a MIME [`crate::mime_open::OpenPlan`].
@@ -301,6 +350,24 @@ mod tests {
             Some("settings")
         );
         assert_eq!(binary_name_for_bundle("unknown"), None);
+    }
+
+    #[test]
+    fn bundle_entrypoint_path_joins_path_and_entrypoint() {
+        let bundle = crate::launch_services::AppBundle {
+            bundle_id: "com.retro.foo".into(),
+            name: "Foo".into(),
+            version: "0.1.0".into(),
+            path: "/Applications/Foo.app".into(),
+            entrypoint: "bin/foo".into(),
+            supported_types: vec![],
+            permissions: vec![],
+        };
+        assert_eq!(
+            bundle_entrypoint_path(&bundle),
+            std::path::PathBuf::from("/Applications/Foo.app/bin/foo")
+        );
+        assert!(!bundle_entrypoint_exists(&bundle));
     }
 
     #[test]

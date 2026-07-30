@@ -1,4 +1,4 @@
-use retro_kit::button::Button;
+﻿use retro_kit::button::Button;
 use retro_kit::event::{KeyCode, Modifiers};
 use retro_kit::label::Label;
 use retro_kit::list_view::ListView;
@@ -10,24 +10,24 @@ use retro_kit::{
     PointerDispatcher, Rect, Size, ThemeContext, Widget, WidgetState,
 };
 use retro_sdk::{build_menu, Application};
-use std::process::Command;
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::path::PathBuf;
 
-// Featured packages shown when no search is active
-const FEATURED_PACKAGES: &[&str] = &[
-    "curl", "git", "vim", "htop", "neofetch", "python3", "nodejs", "ffmpeg",
-];
+mod bundle_install;
+
+use bundle_install::{install_from_archive, parse_catalog, CatalogEntry};
+
+// Featured apps shown when no search is active (catalog stub until Task 3.8).
+const FEATURED_APPS: &[&str] = &["Finder", "TextEdit", "Settings", "Terminal"];
 
 // Category definitions: (display name, search keywords)
 const CATEGORIES: &[(&str, &[&str])] = &[
     ("ALL", &[]),
-    ("SYSTEM", &["util", "system", "admin", "cron", "syslog"]),
-    ("DEVELOPMENT", &["dev", "lib", "build", "gcc", "clang", "python", "rust", "go"]),
-    ("GAMES", &["game", "doom", "quake", "supertux", "mame"]),
-    ("MEDIA", &["media", "audio", "video", "ffmpeg", "vlc", "mpv", "sox"]),
-    ("OFFICE", &["office", "document", "pdf", "libreoffice", "writer"]),
-    ("NETWORK", &["network", "net", "ssh", "ftp", "curl", "wget", "nmap"]),
+    ("SYSTEM", &["settings", "system"]),
+    ("DEVELOPMENT", &["terminal", "dev"]),
+    ("GAMES", &["game"]),
+    ("MEDIA", &["media", "audio", "video"]),
+    ("OFFICE", &["text", "edit", "document"]),
+    ("NETWORK", &["network", "finder"]),
 ];
 
 fn main() {
@@ -84,210 +84,146 @@ fn main() {
     app.set_menus(vec![store_menu, edit_menu, window_menu, help_menu]);
 
     let mut window = Window::new("App Store");
-    window.set_content(Box::new(AppStoreView::new(PackageBackend::detect())));
+    window.set_content(Box::new(AppStoreView::new()));
     app.set_main_window(window);
     app.run();
 }
 
-// ── Package manager detection ────────────────────────────────────────────────
+// ── Catalog stub (Task 3.6 — catalog wired in Task 3.8) ─────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PackageManager {
-    Apt,
-    Dnf,
-    Pacman,
-    Pkg,
-    Apk,
-    Zypper,
-    Brew,
+#[derive(Debug, Clone)]
+struct CatalogStore {
+    entries: Vec<CatalogEntry>,
+    source: String,
 }
 
-impl PackageManager {
-    fn display_name(self) -> &'static str {
-        match self {
-            Self::Apt => "APT",
-            Self::Dnf => "DNF",
-            Self::Pacman => "PACMAN",
-            Self::Pkg => "PKG",
-            Self::Apk => "APK",
-            Self::Zypper => "ZYPPER",
-            Self::Brew => "BREW",
-        }
-    }
-
-    fn search_command(self, query: &str) -> (&'static str, Vec<String>) {
-        match self {
-            Self::Apt => ("apt-cache", vec!["search".into(), query.into()]),
-            Self::Dnf => ("dnf", vec!["search".into(), query.into()]),
-            Self::Pacman => ("pacman", vec!["-Ss".into(), query.into()]),
-            Self::Pkg => ("pkg", vec!["search".into(), query.into()]),
-            Self::Apk => ("apk", vec!["search".into(), query.into()]),
-            Self::Zypper => ("zypper", vec!["search".into(), query.into()]),
-            Self::Brew => ("brew", vec!["search".into(), query.into()]),
-        }
-    }
-
-    fn installed_query_command(self, package: &str) -> (&'static str, Vec<String>) {
-        match self {
-            Self::Apt => (
-                "dpkg-query",
-                vec!["-W".into(), "-f=${Status}".into(), package.into()],
-            ),
-            Self::Dnf => ("rpm", vec!["-q".into(), package.into()]),
-            Self::Pacman => ("pacman", vec!["-Q".into(), package.into()]),
-            Self::Pkg => ("pkg", vec!["info".into(), package.into()]),
-            Self::Apk => ("apk", vec!["info".into(), "-e".into(), package.into()]),
-            Self::Zypper => (
-                "zypper",
-                vec![
-                    "--non-interactive".into(),
-                    "se".into(),
-                    "-i".into(),
-                    "-x".into(),
-                    package.into(),
-                ],
-            ),
-            Self::Brew => (
-                "brew",
-                vec!["list".into(), "--versions".into(), package.into()],
-            ),
-        }
-    }
-
-    fn transaction_command(self, action: PackageAction, package: &str) -> Vec<String> {
-        match (self, action) {
-            (Self::Apt, PackageAction::Install) => {
-                vec!["sudo", "apt-get", "install", "-y", package]
-            }
-            (Self::Apt, PackageAction::Remove) => {
-                vec!["sudo", "apt-get", "remove", "-y", package]
-            }
-            (Self::Apt, PackageAction::Update) => {
-                vec![
-                    "sudo",
-                    "apt-get",
-                    "install",
-                    "--only-upgrade",
-                    "-y",
-                    package,
-                ]
-            }
-            (Self::Dnf, PackageAction::Install) => vec!["sudo", "dnf", "install", "-y", package],
-            (Self::Dnf, PackageAction::Remove) => vec!["sudo", "dnf", "remove", "-y", package],
-            (Self::Dnf, PackageAction::Update) => vec!["sudo", "dnf", "upgrade", "-y", package],
-            (Self::Pacman, PackageAction::Install) => {
-                vec!["sudo", "pacman", "-S", "--noconfirm", package]
-            }
-            (Self::Pacman, PackageAction::Remove) => {
-                vec!["sudo", "pacman", "-R", "--noconfirm", package]
-            }
-            (Self::Pacman, PackageAction::Update) => {
-                vec!["sudo", "pacman", "-Syu", "--noconfirm", package]
-            }
-            (Self::Pkg, PackageAction::Install) => vec!["sudo", "pkg", "install", "-y", package],
-            (Self::Pkg, PackageAction::Remove) => vec!["sudo", "pkg", "delete", "-y", package],
-            (Self::Pkg, PackageAction::Update) => vec!["sudo", "pkg", "upgrade", "-y", package],
-            (Self::Apk, PackageAction::Install) => vec!["sudo", "apk", "add", package],
-            (Self::Apk, PackageAction::Remove) => vec!["sudo", "apk", "del", package],
-            (Self::Apk, PackageAction::Update) => vec!["sudo", "apk", "upgrade", package],
-            (Self::Zypper, PackageAction::Install) => {
-                vec!["sudo", "zypper", "install", "-y", package]
-            }
-            (Self::Zypper, PackageAction::Remove) => {
-                vec!["sudo", "zypper", "remove", "-y", package]
-            }
-            (Self::Zypper, PackageAction::Update) => {
-                vec!["sudo", "zypper", "update", "-y", package]
-            }
-            (Self::Brew, PackageAction::Install) => vec!["brew", "install", package],
-            (Self::Brew, PackageAction::Remove) => vec!["brew", "uninstall", package],
-            (Self::Brew, PackageAction::Update) => vec!["brew", "upgrade", package],
-        }
-        .into_iter()
-        .map(str::to_string)
-        .collect()
-    }
-
-    /// Query version + description for a package from the system package manager.
-    fn package_details(self, package: &str) -> PackageDetails {
-        let mut details = PackageDetails {
-            name: package.to_string(),
-            version: String::new(),
-            description: String::new(),
-            state: PackageInstallState::Unknown,
+impl CatalogStore {
+    fn load() -> Self {
+        let path = catalog_path();
+        let source = path.display().to_string();
+        let entries = match std::fs::read(&path) {
+            Ok(bytes) => parse_catalog(&bytes).unwrap_or_default(),
+            Err(_) => Vec::new(),
         };
-
-        // Version via dpkg-s / rpm -qi / pacman -Qi etc.
-        match self {
-            Self::Apt => {
-                if let Ok(out) = Command::new("dpkg").args(["-s", package]).output() {
-                    let text = String::from_utf8_lossy(&out.stdout);
-                    for line in text.lines() {
-                        if let Some(v) = line.strip_prefix("Version: ") {
-                            details.version = v.trim().to_string();
-                        }
-                        if let Some(d) = line.strip_prefix("Description: ") {
-                            details.description = d.trim().to_string();
-                        }
-                    }
-                }
-                // Supplement description from apt-cache show if empty
-                if details.description.is_empty() {
-                    if let Ok(out) = Command::new("apt-cache").args(["show", package]).output() {
-                        let text = String::from_utf8_lossy(&out.stdout);
-                        for line in text.lines() {
-                            if let Some(v) = line.strip_prefix("Version: ") {
-                                if details.version.is_empty() {
-                                    details.version = v.trim().to_string();
-                                }
-                            }
-                            if let Some(d) = line.strip_prefix("Description: ") {
-                                if details.description.is_empty() {
-                                    details.description = d.trim().to_string();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Self::Brew => {
-                if let Ok(out) = Command::new("brew").args(["info", "--json=v1", package]).output() {
-                    let text = String::from_utf8_lossy(&out.stdout);
-                    // Simple substring scan — avoids a JSON dep
-                    if let Some(start) = text.find("\"versions\"") {
-                        if let Some(stable_start) = text[start..].find("\"stable\":\"") {
-                            let after = &text[start + stable_start + 10..];
-                            if let Some(end) = after.find('"') {
-                                details.version = after[..end].to_string();
-                            }
-                        }
-                    }
-                    if let Some(start) = text.find("\"desc\":\"") {
-                        let after = &text[start + 8..];
-                        if let Some(end) = after.find('"') {
-                            details.description = after[..end].to_string();
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        details.state = package_state_for_manager(self, package);
-        details
+        Self { entries, source }
     }
+
+    fn status_text(&self) -> String {
+        format!(
+            "CATALOG - {} ({} apps)",
+            self.source,
+            self.entries.len()
+        )
+    }
+
+    fn list_lines(&self) -> Vec<String> {
+        if self.entries.is_empty() {
+            return featured_list();
+        }
+        self.entries
+            .iter()
+            .map(|e| format!("[AVAILABLE] {} - {}", e.name, e.version))
+            .collect()
+    }
+
+    fn search(&self, query: &str) -> Result<Vec<String>, String> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Err("SEARCH NEEDS QUERY".to_string());
+        }
+        let q = query.to_ascii_lowercase();
+        let results: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|e| {
+                e.name.to_ascii_lowercase().contains(&q)
+                    || e.bundle_id.to_ascii_lowercase().contains(&q)
+            })
+            .map(|e| format!("[AVAILABLE] {} - {}", e.name, e.version))
+            .collect();
+        if results.is_empty() {
+            // Fall back to static featured names for empty/missing catalogs.
+            let fallback: Vec<String> = FEATURED_APPS
+                .iter()
+                .filter(|app| app.to_ascii_lowercase().contains(&q))
+                .map(|app| format!("[AVAILABLE] {}", app))
+                .collect();
+            if fallback.is_empty() {
+                Ok(vec![format!("NO RESULTS FOR {}", query.to_ascii_uppercase())])
+            } else {
+                Ok(fallback)
+            }
+        } else {
+            Ok(results)
+        }
+    }
+
+    fn entry_for_name(&self, name: &str) -> Option<&CatalogEntry> {
+        self.entries
+            .iter()
+            .find(|e| e.name.eq_ignore_ascii_case(name))
+    }
+
+    fn app_details(&self, name: &str) -> AppDetails {
+        if let Some(entry) = self.entry_for_name(name) {
+            return AppDetails {
+                name: entry.name.clone(),
+                version: entry.version.clone(),
+                description: format!("bundle_id={} url={}", entry.bundle_id, entry.url),
+                state: AppInstallState::Available,
+            };
+        }
+        AppDetails {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            description: "RetroShell application bundle.".to_string(),
+            state: AppInstallState::Available,
+        }
+    }
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn default_install_dir() -> PathBuf {
+    home_dir().join("Applications")
+}
+
+fn catalog_path() -> PathBuf {
+    if let Ok(path) = std::env::var("RETROSHELL_APPSTORE_CATALOG") {
+        return PathBuf::from(path);
+    }
+    default_install_dir().join("catalog.json")
+}
+
+fn resolve_archive_url(url: &str) -> PathBuf {
+    if let Some(rest) = url.strip_prefix("file://") {
+        PathBuf::from(rest)
+    } else {
+        PathBuf::from(url)
+    }
+}
+
+/// Best-effort rescan signal for the shell (Task 3.10 confirms runtime pickup).
+fn request_shell_rescan() {
+    let dir = default_install_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(dir.join(".retroshell-rescan"), b"1\n");
 }
 
 // ── Domain types ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PackageAction {
+enum StoreAction {
     Install,
     Remove,
     Update,
 }
 
-impl PackageAction {
+impl StoreAction {
     fn label(self) -> &'static str {
         match self {
             Self::Install => "INSTALL",
@@ -298,13 +234,13 @@ impl PackageAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PackageInstallState {
+enum AppInstallState {
     Installed,
     Available,
     Unknown,
 }
 
-impl PackageInstallState {
+impl AppInstallState {
     fn label(self) -> &'static str {
         match self {
             Self::Installed => "INSTALLED",
@@ -314,369 +250,20 @@ impl PackageInstallState {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct PackageDetails {
+#[derive(Debug, Clone)]
+struct AppDetails {
     name: String,
     version: String,
     description: String,
-    state: PackageInstallState,
+    state: AppInstallState,
 }
 
-impl Default for PackageInstallState {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TransactionPlan {
-    action: PackageAction,
-    package: String,
-    command: Vec<String>,
-}
-
-impl TransactionPlan {
-    fn command_line(&self) -> String {
-        self.command.join(" ")
-    }
-
-    fn log_lines(&self) -> Vec<String> {
-        vec![
-            "TRANSACTION PLAN".to_string(),
-            format!("ACTION - {}", self.action.label()),
-            format!("PACKAGE - {}", self.package),
-            format!("COMMAND - {}", self.command_line()),
-            "CONFIRM requires RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES=1".to_string(),
-        ]
-    }
-}
-
-/// Background install job state shared between the worker thread and the UI.
-#[derive(Debug, Default)]
-struct InstallJob {
-    running: bool,
-    progress: f32,       // 0.0 – 100.0
-    message: String,
-    finished: bool,
-    success: bool,
-    output: String,
-}
-
-// ── PackageBackend ────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-struct PackageBackend {
-    manager: Option<PackageManager>,
-}
-
-impl PackageBackend {
-    fn detect() -> Self {
-        let manager = [
-            ("apt-cache", PackageManager::Apt),
-            ("dnf", PackageManager::Dnf),
-            ("pacman", PackageManager::Pacman),
-            ("pkg", PackageManager::Pkg),
-            ("apk", PackageManager::Apk),
-            ("zypper", PackageManager::Zypper),
-            ("brew", PackageManager::Brew),
-        ]
-        .into_iter()
-        .find_map(|(binary, manager)| command_exists(binary).then_some(manager));
-
-        Self { manager }
-    }
-
-    /// Run a real package search limited to 20 results, tagged [installed]/[available].
-    fn search(&self, query: &str) -> Result<Vec<String>, String> {
-        let Some(manager) = self.manager else {
-            return Err("NO PACKAGE MANAGER FOUND".to_string());
-        };
-        let query = query.trim();
-        if query.is_empty() {
-            return Err("SEARCH NEEDS QUERY".to_string());
-        }
-
-        let (binary, args) = manager.search_command(query);
-
-        // Primary search
-        let primary = Command::new(binary).args(&args).output();
-
-        let text = match primary {
-            Ok(out) if out.status.success() => {
-                String::from_utf8_lossy(&out.stdout).to_string()
-            }
-            Ok(out) => {
-                // apt-cache may return non-zero with useful stderr
-                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                if !stderr.trim().is_empty() {
-                    // Try dpkg fallback for apt
-                    if manager == PackageManager::Apt {
-                        match dpkg_grep_search(query) {
-                            Ok(t) if !t.trim().is_empty() => t,
-                            _ => stderr,
-                        }
-                    } else {
-                        stderr
-                    }
-                } else {
-                    String::new()
-                }
-            }
-            Err(_) if manager == PackageManager::Apt => {
-                // apt-cache not available, fall back to dpkg
-                dpkg_grep_search(query).unwrap_or_default()
-            }
-            Err(err) => return Err(format!("SEARCH FAILED: {err}")),
-        };
-
-        let results = annotate_search_results(manager, parse_search_results(&text, 20));
-        if results.is_empty() {
-            Ok(vec![format!(
-                "NO RESULTS FOR {}",
-                query.to_ascii_uppercase()
-            )])
-        } else {
-            Ok(results)
-        }
-    }
-
-    fn plan_transaction(
-        &self,
-        action: PackageAction,
-        package: &str,
-    ) -> Result<TransactionPlan, String> {
-        let Some(manager) = self.manager else {
-            return Err("NO PACKAGE MANAGER FOUND".to_string());
-        };
-        let package = package.trim();
-        if package.is_empty() {
-            return Err("TRANSACTION NEEDS PACKAGE".to_string());
-        }
-
-        Ok(TransactionPlan {
-            action,
-            package: package.to_string(),
-            command: manager.transaction_command(action, package),
-        })
-    }
-
-    fn execute_transaction(&self, plan: &TransactionPlan) -> Result<String, String> {
-        if !package_changes_allowed() {
-            return Err(
-                "CONFIRM BLOCKED - SET RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES=1".to_string(),
-            );
-        }
-
-        let Some((binary, args)) = plan.command.split_first() else {
-            return Err("TRANSACTION HAS NO COMMAND".to_string());
-        };
-        let output = Command::new(binary)
-            .args(args)
-            .output()
-            .map_err(|err| format!("TRANSACTION FAILED {err}"))?;
-
-        let text = if output.status.success() {
-            String::from_utf8_lossy(&output.stdout).to_string()
-        } else {
-            String::from_utf8_lossy(&output.stderr).to_string()
-        };
-
-        if output.status.success() {
-            Ok(text)
-        } else {
-            Err(if text.trim().is_empty() {
-                "TRANSACTION FAILED".to_string()
-            } else {
-                text
-            })
-        }
-    }
-
-    /// Start an install in a background thread; returns an Arc<Mutex<InstallJob>> handle.
-    fn install_async(&self, package: &str) -> Result<Arc<Mutex<InstallJob>>, String> {
-        let Some(manager) = self.manager else {
-            return Err("NO PACKAGE MANAGER FOUND".to_string());
-        };
-
-        // Same package-change gate execute_transaction enforces. Without it the
-        // INSTALL button runs `sudo <pm> install -y` on the very first click.
-        if !package_changes_allowed() {
-            return Err(
-                "INSTALL BLOCKED - SET RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES=1".to_string(),
-            );
-        }
-
-        // Check sudo availability
-        if !sudo_available() && manager != PackageManager::Brew {
-            return Err("REQUIRES ROOT - sudo not found".to_string());
-        }
-
-        let command = manager.transaction_command(PackageAction::Install, package);
-        let job = Arc::new(Mutex::new(InstallJob {
-            running: true,
-            message: format!("Installing {}...", package),
-            ..Default::default()
-        }));
-        let job_clone = Arc::clone(&job);
-
-        thread::spawn(move || {
-            {
-                let mut j = job_clone.lock().unwrap();
-                j.progress = 10.0;
-                j.message = "Starting package manager...".to_string();
-            }
-
-            if let Some((binary, args)) = command.split_first() {
-                let result = Command::new(binary).args(args).output();
-
-                let mut j = job_clone.lock().unwrap();
-                j.running = false;
-                j.finished = true;
-                j.progress = 100.0;
-
-                match result {
-                    Ok(out) if out.status.success() => {
-                        j.success = true;
-                        j.output = String::from_utf8_lossy(&out.stdout).to_string();
-                        j.message = "Install complete!".to_string();
-                    }
-                    Ok(out) => {
-                        j.success = false;
-                        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                        j.output = stderr.clone();
-                        j.message = if stderr.trim().is_empty() {
-                            "Install FAILED".to_string()
-                        } else {
-                            stderr.lines().next().unwrap_or("Install FAILED").to_string()
-                        };
-                    }
-                    Err(err) => {
-                        j.success = false;
-                        j.message = format!("FAILED: {err}");
-                    }
-                }
-            } else {
-                let mut j = job_clone.lock().unwrap();
-                j.running = false;
-                j.finished = true;
-                j.success = false;
-                j.message = "No command".to_string();
-            }
-        });
-
-        Ok(job)
-    }
-
-    fn package_details(&self, package: &str) -> Option<PackageDetails> {
-        self.manager.map(|m| m.package_details(package))
-    }
-
-    fn status_text(&self) -> String {
-        match self.manager {
-            Some(manager) => format!("BACKEND - {}", manager.display_name()),
-            None => "BACKEND - NONE".to_string(),
-        }
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn command_exists(binary: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| dir.join(binary).is_file())
-}
-
-fn sudo_available() -> bool {
-    command_exists("sudo")
-}
-
-/// Opt-in gate for anything that mutates system packages. Every install/
-/// remove/update path must consult this before spawning a package manager.
-fn package_changes_allowed() -> bool {
-    std::env::var("RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES")
-        .ok()
-        .as_deref()
-        == Some("1")
-}
-
-/// Fallback search using `dpkg -l | grep <query>` (works when apt-cache is absent).
-fn dpkg_grep_search(query: &str) -> Result<String, String> {
-    let dpkg = Command::new("dpkg")
-        .args(["-l"])
-        .output()
-        .map_err(|e| e.to_string())?;
-    let full = String::from_utf8_lossy(&dpkg.stdout);
-    let q = query.to_ascii_lowercase();
-    let filtered: String = full
-        .lines()
-        .filter(|line| line.to_ascii_lowercase().contains(&q))
-        .map(|line| {
-            // dpkg -l lines: "ii  pkgname  version  arch  description"
-            let parts: Vec<&str> = line.splitn(5, ' ').filter(|s| !s.is_empty()).collect();
-            if parts.len() >= 5 {
-                format!("{} - {}", parts[1], parts[4])
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    Ok(filtered)
-}
-
-fn parse_search_results(output: &str, limit: usize) -> Vec<String> {
-    output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .take(limit)
-        .map(|line| {
-            let mut text = line.replace('\t', " ");
-            text.truncate(96);
-            text
-        })
-        .collect()
-}
-
-fn annotate_search_results(manager: PackageManager, results: Vec<String>) -> Vec<String> {
-    results
-        .into_iter()
-        .map(|line| {
-            let state = package_name_from_result(&line)
-                .map(|package| package_state_for_manager(manager, &package))
-                .unwrap_or(PackageInstallState::Unknown);
-            format!("[{}] {}", state.label(), line)
-        })
-        .collect()
-}
-
-fn package_state_for_manager(manager: PackageManager, package: &str) -> PackageInstallState {
-    let (binary, args) = manager.installed_query_command(package);
-    let Ok(output) = Command::new(binary).args(args).output() else {
-        return PackageInstallState::Unknown;
-    };
-
-    if !output.status.success() {
-        return PackageInstallState::Available;
-    }
-
-    if manager == PackageManager::Apt {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if stdout.contains("install ok installed") {
-            PackageInstallState::Installed
-        } else {
-            PackageInstallState::Available
-        }
-    } else {
-        PackageInstallState::Installed
-    }
-}
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn package_name_from_result(result: &str) -> Option<String> {
     let result = result
-        .strip_prefix("[INSTALLED] ")
+        .strip_prefix("[FEATURED] ")
+        .or_else(|| result.strip_prefix("[INSTALLED] "))
         .or_else(|| result.strip_prefix("[AVAILABLE] "))
         .or_else(|| result.strip_prefix("[UNKNOWN] "))
         .unwrap_or(result);
@@ -693,7 +280,6 @@ fn package_name_from_result(result: &str) -> Option<String> {
     }
 }
 
-/// Filter featured/search results by category keyword list.
 fn filter_by_category(items: &[String], keywords: &[&str]) -> Vec<String> {
     if keywords.is_empty() {
         return items.to_vec();
@@ -708,24 +294,14 @@ fn filter_by_category(items: &[String], keywords: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// Return the display lines for the featured list.
-fn featured_list(backend: &PackageBackend) -> Vec<String> {
-    let Some(manager) = backend.manager else {
-        return FEATURED_PACKAGES
-            .iter()
-            .map(|&p| format!("[FEATURED] {p}"))
-            .collect();
-    };
-    FEATURED_PACKAGES
+fn featured_list() -> Vec<String> {
+    FEATURED_APPS
         .iter()
-        .map(|&pkg| {
-            let state = package_state_for_manager(manager, pkg);
-            format!("[{}] {}", state.label(), pkg)
-        })
+        .map(|app| format!("[FEATURED] {}", app))
         .collect()
 }
 
-// ── UI View ───────────────────────────────────────────────────────────────────
+// â”€â”€ UI View â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 struct AppStoreView {
     state: WidgetState,
@@ -751,22 +327,19 @@ struct AppStoreView {
     progress_bar: ProgressBar,
     progress_label: Label,
     status: Label,
-    backend: PackageBackend,
-    pending_transaction: Option<TransactionPlan>,
+    backend: CatalogStore,
     /// Currently selected category index (matches CATEGORIES slice).
     category_index: usize,
     /// Whether we are in "featured" mode (empty search query).
     featured_mode: bool,
     /// All results before category filter applied (for re-filtering on category change).
     all_results: Vec<String>,
-    /// Background install job handle.
-    install_job: Option<Arc<Mutex<InstallJob>>>,
     focus: FocusManager,
     pointer: PointerDispatcher,
 }
 
 impl AppStoreView {
-    fn new(backend: PackageBackend) -> Self {
+    fn new() -> Self {
         let mut query = TextField::new();
         query.set_text("");
 
@@ -775,6 +348,8 @@ impl AppStoreView {
             category_list.add_item(*name);
         }
         category_list.selected_index = Some(0);
+
+        let backend = CatalogStore::load();
 
         let mut view = Self {
             state: WidgetState::new(),
@@ -797,11 +372,9 @@ impl AppStoreView {
             progress_label: Label::new(""),
             status: Label::new("READY"),
             backend,
-            pending_transaction: None,
             category_index: 0,
             featured_mode: true,
             all_results: vec![],
-            install_job: None,
             focus: FocusManager::new(),
             pointer: PointerDispatcher::new(),
         };
@@ -820,10 +393,9 @@ impl AppStoreView {
     /// Load featured packages when search query is empty.
     fn load_featured(&mut self) {
         self.featured_mode = true;
-        self.all_results = featured_list(&self.backend);
+        self.all_results = self.backend.list_lines();
         self.apply_category_filter();
-        self.pending_transaction = None;
-        self.status.text = format!("FEATURED - {} PACKAGES", self.results.items.len());
+        self.status.text = format!("FEATURED - {} APPS", self.results.items.len());
         self.clear_detail();
     }
 
@@ -838,7 +410,6 @@ impl AppStoreView {
             Ok(results) => {
                 self.all_results = results;
                 self.apply_category_filter();
-                self.pending_transaction = None;
                 self.status.text = format!("{} RESULTS", self.results.items.len());
                 self.clear_detail();
                 true
@@ -847,7 +418,6 @@ impl AppStoreView {
                 self.all_results = vec![];
                 self.results.items = vec![err.clone()];
                 self.results.selected_index = None;
-                self.pending_transaction = None;
                 self.status.text = err;
                 self.clear_detail();
                 false
@@ -864,7 +434,7 @@ impl AppStoreView {
     }
 
     fn refresh_backend(&mut self) -> bool {
-        self.backend = PackageBackend::detect();
+        self.backend = CatalogStore::load();
         self.backend_label.text = self.backend.status_text();
         if self.featured_mode {
             self.load_featured();
@@ -887,27 +457,13 @@ impl AppStoreView {
 
     /// Populate the detail panel for the given package name.
     fn show_package_detail(&mut self, package: &str) {
-        if let Some(details) = self.backend.package_details(package) {
-            self.detail_name.text = format!("PKG: {}", details.name.to_ascii_uppercase());
-            self.detail_version.text = if details.version.is_empty() {
-                "VERSION: N/A".to_string()
-            } else {
-                format!("VERSION: {}", details.version)
-            };
-            self.detail_description.text = if details.description.is_empty() {
-                "No description available.".to_string()
-            } else {
-                let mut d = details.description.clone();
-                d.truncate(120);
-                d
-            };
-            self.detail_state.text = format!("STATUS: {}", details.state.label());
-        } else {
-            self.detail_name.text = format!("PKG: {}", package.to_ascii_uppercase());
-            self.detail_version.text = "VERSION: N/A".to_string();
-            self.detail_description.text = String::new();
-            self.detail_state.text = "STATUS: UNKNOWN".to_string();
-        }
+        let details = self.backend.app_details(package);
+        self.detail_name.text = format!("APP: {}", details.name.to_ascii_uppercase());
+        self.detail_version.text = format!("VERSION: {}", details.version);
+        let mut d = details.description.clone();
+        d.truncate(120);
+        self.detail_description.text = d;
+        self.detail_state.text = format!("STATUS: {}", details.state.label());
     }
 
     fn clear_detail(&mut self) {
@@ -917,97 +473,53 @@ impl AppStoreView {
         self.detail_state.text = String::new();
     }
 
-    fn plan_transaction(&mut self, action: PackageAction) -> bool {
+    fn plan_transaction(&mut self, action: StoreAction) -> bool {
         let Some(package) = self.selected_package() else {
-            self.status.text = "SELECT OR SEARCH FOR A PACKAGE".to_string();
+            self.status.text = "SELECT OR SEARCH FOR AN APP".to_string();
             return false;
         };
-
-        match self.backend.plan_transaction(action, &package) {
-            Ok(plan) => {
-                self.status.text = format!("{} READY - {}", action.label(), package);
-                self.results.items = plan.log_lines();
-                self.results.selected_index = None;
-                self.pending_transaction = Some(plan);
-                true
-            }
-            Err(err) => {
-                self.status.text = err.clone();
-                self.results.items = vec![err];
-                self.results.selected_index = None;
-                self.pending_transaction = None;
-                false
-            }
-        }
+        // rewired in Task 3.8
+        self.status.text = format!("{} REWIRE PENDING - {}", action.label(), package);
+        false
     }
 
     fn confirm_transaction(&mut self) -> bool {
-        let Some(plan) = self.pending_transaction.clone() else {
-            self.status.text = "NO TRANSACTION TO CONFIRM".to_string();
-            return false;
-        };
-
-        match self.backend.execute_transaction(&plan) {
-            Ok(output) => {
-                self.status.text = format!("{} COMPLETE - {}", plan.action.label(), plan.package);
-                self.results.items = parse_search_results(&output, 20);
-                if self.results.items.is_empty() {
-                    self.results.items = vec!["TRANSACTION COMPLETE".to_string()];
-                }
-                self.pending_transaction = None;
-                true
-            }
-            Err(err) => {
-                self.status.text = err.clone();
-                self.results.items = plan.log_lines();
-                self.results.items.push(format!("STATUS - {err}"));
-                false
-            }
-        }
+        // rewired in Task 3.8
+        self.status.text = "CONFIRM REWIRE PENDING".to_string();
+        false
     }
 
-    /// Trigger a background install for the currently selected package.
     fn start_install_async(&mut self) {
         let Some(package) = self.selected_package() else {
-            self.status.text = "SELECT A PACKAGE FIRST".to_string();
+            self.status.text = "SELECT AN APP FIRST".to_string();
+            return;
+        };
+        let Some(entry) = self.backend.entry_for_name(&package).cloned() else {
+            self.status.text = format!("NO CATALOG ENTRY FOR {package}");
+            self.progress_label.text = self.status.text.clone();
             return;
         };
 
-        match self.backend.install_async(&package) {
-            Ok(job) => {
-                self.install_job = Some(job);
-                self.progress_bar.indeterminate = true;
-                self.progress_bar.value = 0.0;
-                self.progress_label.text = format!("Installing {}...", package);
-                self.status.text = format!("INSTALLING {} IN BACKGROUND", package);
+        let archive = resolve_archive_url(&entry.url);
+        let install_dir = default_install_dir();
+        self.progress_bar.indeterminate = true;
+        self.progress_label.text = format!("Installing {}...", entry.name);
+        self.status.text = format!("INSTALLING {}", entry.name);
+
+        match install_from_archive(&archive, &entry.sha256, &install_dir) {
+            Ok(path) => {
+                self.progress_bar.indeterminate = false;
+                self.progress_bar.value = 1.0;
+                request_shell_rescan();
+                self.status.text = format!("INSTALLED {}", path.display());
+                self.progress_label.text = self.status.text.clone();
+                self.refresh_backend();
             }
             Err(err) => {
-                self.status.text = err.clone();
-                self.progress_label.text = err;
+                self.progress_bar.indeterminate = false;
+                self.status.text = format!("INSTALL FAILED: {err:?}");
+                self.progress_label.text = self.status.text.clone();
             }
-        }
-    }
-
-    /// Poll the background install job (called from update()).
-    fn poll_install_job(&mut self) {
-        let Some(job) = &self.install_job else {
-            return;
-        };
-        let job = Arc::clone(job);
-        let Ok(j) = job.lock() else { return };
-
-        self.progress_bar.value = j.progress;
-        self.progress_label.text = j.message.clone();
-
-        if j.finished {
-            self.progress_bar.indeterminate = false;
-            if j.success {
-                self.status.text = "INSTALL COMPLETE".to_string();
-            } else {
-                self.status.text = format!("INSTALL FAILED: {}", j.message);
-            }
-            drop(j);
-            self.install_job = None;
         }
     }
 
@@ -1023,16 +535,15 @@ impl AppStoreView {
             return true;
         }
         if self.install_button.take_clicked() {
-            // Use background async install with progress
             self.start_install_async();
             return true;
         }
         if self.remove_button.take_clicked() {
-            self.plan_transaction(PackageAction::Remove);
+            self.plan_transaction(StoreAction::Remove);
             return true;
         }
         if self.update_button.take_clicked() {
-            self.plan_transaction(PackageAction::Update);
+            self.plan_transaction(StoreAction::Update);
             return true;
         }
         if self.confirm_button.take_clicked() {
@@ -1059,7 +570,6 @@ impl AppStoreView {
                 }
             }
         } else if pressed == self.results.id() {
-            self.pending_transaction = None;
             if let Some(package) = self.selected_package() {
                 self.status.text = format!("SELECTED - {}", package);
                 self.show_package_detail(&package);
@@ -1335,8 +845,6 @@ impl Widget for AppStoreView {
     }
 
     fn update(&mut self) {
-        self.poll_install_job();
-
         self.heading.update();
         self.backend_label.update();
         self.query.update();
@@ -1416,7 +924,7 @@ impl Widget for AppStoreView {
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[cfg(test)]
 mod tests {
@@ -1444,7 +952,7 @@ mod tests {
 
     #[test]
     fn appstore_search_button_click_dispatches_search() {
-        let mut view = AppStoreView::new(PackageBackend { manager: None });
+        let mut view = AppStoreView::new();
         view.layout(LayoutConstraint::tight(Size::new(900.0, 640.0)));
         view.query.set_text("zzz");
 
@@ -1453,23 +961,24 @@ mod tests {
 
         assert!(matches!(result, EventResult::Handled));
         assert!(
-            view.status.text.contains("NO PACKAGE MANAGER"),
-            "search ran and reported the missing backend: {}",
-            view.status.text
+            view.results.items.iter().any(|line| line.contains("NO RESULTS"))
+                || view.status.text.contains("0 RESULTS"),
+            "search ran with no matches: status={} results={:?}",
+            view.status.text,
+            view.results.items
         );
     }
 
     #[test]
-    fn appstore_results_click_selects_package_and_fills_detail() {
-        let mut view = AppStoreView::new(PackageBackend { manager: None });
+    fn appstore_results_click_selects_app_and_fills_detail() {
+        let mut view = AppStoreView::new();
         view.layout(LayoutConstraint::tight(Size::new(900.0, 640.0)));
         view.results.items = vec![
-            "curl - transfer tool".to_string(),
-            "vim - editor".to_string(),
+            "[AVAILABLE] Finder".to_string(),
+            "[AVAILABLE] TextEdit".to_string(),
         ];
         view.results.selected_index = None;
 
-        // Second row: rows are 18px with a 3px inset.
         let rect = view.results.rect();
         let point = Point::new(rect.x + 10.0, rect.y + 3.0 + 18.0 + 9.0);
         let down = view.handle_event(&Event::MouseDown {
@@ -1480,13 +989,13 @@ mod tests {
 
         assert!(matches!(down, EventResult::Handled));
         assert_eq!(view.results.selected_index, Some(1));
-        assert!(view.status.text.contains("SELECTED - vim"), "{}", view.status.text);
-        assert!(view.detail_name.text.contains("VIM"));
+        assert!(view.status.text.contains("SELECTED - TextEdit"), "{}", view.status.text);
+        assert!(view.detail_name.text.contains("TEXTEDIT"));
     }
 
     #[test]
     fn appstore_query_click_focuses_field_and_typing_lands_there() {
-        let mut view = AppStoreView::new(PackageBackend { manager: None });
+        let mut view = AppStoreView::new();
         view.layout(LayoutConstraint::tight(Size::new(900.0, 640.0)));
 
         let rect = view.query.rect();
@@ -1504,57 +1013,30 @@ mod tests {
     }
 
     #[test]
-    fn parses_package_search_results_with_limit() {
-        let output = "doom - game\n\nfreedoom - data files\nchocolate-doom - port\n";
-        let results = parse_search_results(output, 2);
-        assert_eq!(results, vec!["doom - game", "freedoom - data files"]);
+    fn catalog_store_search_filters_fallback_featured_apps() {
+        let backend = CatalogStore {
+            entries: vec![],
+            source: "empty".into(),
+        };
+        let results = backend.search("text").expect("search ok");
+        assert_eq!(results, vec!["[AVAILABLE] TextEdit".to_string()]);
     }
 
     #[test]
-    fn package_manager_builds_search_command() {
-        let (binary, args) = PackageManager::Apt.search_command("doom");
-        assert_eq!(binary, "apt-cache");
-        assert_eq!(args, vec!["search", "doom"]);
+    fn appstore_search_reports_featured_on_startup() {
+        let view = AppStoreView::new();
+        assert!(view.status.text.contains("FEATURED"));
     }
 
     #[test]
-    fn package_manager_builds_installed_query_command() {
-        let (binary, args) = PackageManager::Apt.installed_query_command("doom");
-        assert_eq!(binary, "dpkg-query");
-        assert_eq!(args, vec!["-W", "-f=${Status}", "doom"]);
-
-        let (binary, args) = PackageManager::Pacman.installed_query_command("doom");
-        assert_eq!(binary, "pacman");
-        assert_eq!(args, vec!["-Q", "doom"]);
-    }
-
-    #[test]
-    fn appstore_search_reports_missing_backend() {
-        let view = AppStoreView::new(PackageBackend { manager: None });
-        assert!(view.status.text.contains("FEATURED") || view.status.text.contains("NO PACKAGE MANAGER"));
-    }
-
-    #[test]
-    fn package_manager_builds_transaction_commands() {
+    fn package_name_extracts_common_result_formats() {
         assert_eq!(
-            PackageManager::Apt.transaction_command(PackageAction::Install, "doom"),
-            vec!["sudo", "apt-get", "install", "-y", "doom"]
+            package_name_from_result("[FEATURED] Finder").as_deref(),
+            Some("Finder")
         );
         assert_eq!(
-            PackageManager::Brew.transaction_command(PackageAction::Remove, "doom"),
-            vec!["brew", "uninstall", "doom"]
-        );
-    }
-
-    #[test]
-    fn package_name_extracts_common_search_result_formats() {
-        assert_eq!(
-            package_name_from_result("community/chocolate-doom 3.0 game port").as_deref(),
-            Some("chocolate-doom")
-        );
-        assert_eq!(
-            package_name_from_result("freedoom - data files").as_deref(),
-            Some("freedoom")
+            package_name_from_result("[AVAILABLE] TextEdit").as_deref(),
+            Some("TextEdit")
         );
         assert_eq!(
             package_name_from_result("[INSTALLED] doom - game").as_deref(),
@@ -1563,45 +1045,32 @@ mod tests {
     }
 
     #[test]
-    fn annotate_search_results_adds_package_state_prefix() {
-        let results = annotate_search_results(
-            PackageManager::Apt,
-            vec!["definitely-not-installed-retroshell-test-package - demo".to_string()],
-        );
-        assert_eq!(results.len(), 1);
-        assert!(results[0].starts_with("[AVAILABLE] ") || results[0].starts_with("[UNKNOWN] "));
-        assert!(results[0].contains("definitely-not-installed-retroshell-test-package"));
-    }
-
-    #[test]
-    fn appstore_install_button_stages_transaction_plan() {
-        let mut view = AppStoreView::new(PackageBackend {
-            manager: Some(PackageManager::Apt),
-        });
-        view.results.items = vec!["chocolate-doom - game port".to_string()];
+    fn appstore_install_requires_catalog_entry() {
+        let mut view = AppStoreView::new();
+        view.layout(LayoutConstraint::tight(Size::new(900.0, 640.0)));
+        view.results.items = vec!["[AVAILABLE] TextEdit".to_string()];
         view.results.selected_index = Some(0);
-        // plan_transaction still works for remove/update staging
-        assert!(view.plan_transaction(PackageAction::Remove));
-        let plan = view.pending_transaction.as_ref().expect("transaction plan");
-        assert_eq!(plan.package, "chocolate-doom");
-        assert_eq!(plan.action, PackageAction::Remove);
-        assert!(view.results.items[0].contains("TRANSACTION PLAN"));
-        assert!(view.status.text.contains("REMOVE READY"));
+
+        let point = rect_center(view.install_button.rect());
+        click(&mut view, point);
+        assert!(
+            view.status.text.contains("NO CATALOG ENTRY")
+                || view.status.text.contains("INSTALL FAILED")
+                || view.status.text.contains("INSTALLED"),
+            "{}",
+            view.status.text
+        );
     }
 
     #[test]
-    fn appstore_confirm_is_blocked_without_explicit_env() {
-        std::env::remove_var("RETROSHELL_APPSTORE_ALLOW_PACKAGE_CHANGES");
-        let mut view = AppStoreView::new(PackageBackend {
-            manager: Some(PackageManager::Brew),
-        });
-        view.pending_transaction = Some(TransactionPlan {
-            action: PackageAction::Install,
-            package: "doom".to_string(),
-            command: vec!["brew".to_string(), "install".to_string(), "doom".to_string()],
-        });
+    fn appstore_remove_and_confirm_remain_stubbed() {
+        let mut view = AppStoreView::new();
+        view.results.items = vec!["[AVAILABLE] TextEdit".to_string()];
+        view.results.selected_index = Some(0);
+        assert!(!view.plan_transaction(StoreAction::Remove));
+        assert!(view.status.text.contains("REMOVE REWIRE PENDING"));
         assert!(!view.confirm_transaction());
-        assert!(view.status.text.contains("CONFIRM BLOCKED"));
+        assert!(view.status.text.contains("CONFIRM REWIRE PENDING"));
     }
 
     #[test]
@@ -1624,26 +1093,22 @@ mod tests {
     }
 
     #[test]
-    fn featured_list_returns_expected_count_without_manager() {
-        let backend = PackageBackend { manager: None };
-        let items = featured_list(&backend);
-        assert_eq!(items.len(), FEATURED_PACKAGES.len());
+    fn featured_list_returns_expected_count() {
+        let items = featured_list();
+        assert_eq!(items.len(), FEATURED_APPS.len());
         assert!(items[0].contains("[FEATURED]"));
     }
 
     #[test]
     fn category_index_switches_apply_filter() {
-        let mut view = AppStoreView::new(PackageBackend { manager: None });
+        let mut view = AppStoreView::new();
         view.all_results = vec![
-            "[FEATURED] curl".to_string(),
-            "[FEATURED] vim".to_string(),
-            "[FEATURED] wget".to_string(),
+            "[FEATURED] Finder".to_string(),
+            "[FEATURED] TextEdit".to_string(),
+            "[FEATURED] Terminal".to_string(),
         ];
-        // Switch to NETWORK category (index 6, keywords include "curl", "wget")
         view.category_index = 6;
         view.apply_category_filter();
-        // With keywords ["network","net","ssh","ftp","curl","wget","nmap"]
-        // "curl" and "wget" match
         assert!(view.results.items.len() >= 1);
     }
 }

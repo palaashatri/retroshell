@@ -133,8 +133,13 @@ origin yet.**
    restores desktop).
 4. **DONE (menu Overlay):** open dropdowns paint on `retroshell-menu-popup` Overlay
    (exact size + margins); evidence `qa-phase3-menu-dropdown.png`.
-5. **Polish remaining:** menu-bar item spacing; clock/live content via
-   frame-callback/timer; full sctk KeyboardHandler optional.
+5. **DONE (polish):** menu-bar inter-item gap; live clock via 1s `poll` timeout;
+   evidence `qa-polish-menu-spacing.png`, `qa-polish-live-clock.png`.
+6. **IN PROGRESS (Stage 3 `.app` bundles):** Tasks 3.0–3.8 done on Env B —
+   disk scan, launch entrypoint, packaging scripts (5 apps), package-manager path
+   removed, sha256 installer + install button wired, shell rescan via
+   `~/Applications/.retroshell-rescan`. Next: Task 3.10 VM DoD (store install →
+   Finder/dock → launch + screenshots). Optional 3.9 HTTP fetch skipped.
 
 ## 7. Gotchas
 - Some docs (e.g. `docs/qa/stage-2.md`) had **CRLF** line endings from the Windows
