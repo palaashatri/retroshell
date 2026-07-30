@@ -33,6 +33,7 @@ const DOCK_H: u32 = 64;
 enum ChromeSurfaceKind {
     Background,
     Menu,
+    MenuPopup,
     Dock,
 }
 
@@ -224,6 +225,7 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         last_pointer: (0.0, 0.0),
         pointer_kind: ChromeSurfaceKind::Background,
         modifiers: retro_kit::event::Modifiers::NONE,
+        popup_origin: (0.0, 0.0),
     };
 
     event_queue
@@ -287,6 +289,23 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
     dock_layer.set_size(width, DOCK_H);
     dock_wl.commit();
 
+    // Overlay popup — sized/moved when a menu is open (1×1 placeholder when closed).
+    let popup_wl = compositor.create_surface(&qh, ChromeSurfaceKind::MenuPopup);
+    let popup_layer = layer_shell.get_layer_surface(
+        &popup_wl,
+        None,
+        Layer::Overlay,
+        "retroshell-menu-popup".into(),
+        &qh,
+        ChromeSurfaceKind::MenuPopup,
+    );
+    popup_layer.set_anchor(Anchor::Top | Anchor::Left);
+    popup_layer.set_exclusive_zone(0);
+    popup_layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+    popup_layer.set_margin(0, 0, 0, 0);
+    popup_layer.set_size(1, 1);
+    popup_wl.commit();
+
     state.surfaces = vec![
         LayerSurf {
             kind: ChromeSurfaceKind::Background,
@@ -309,9 +328,16 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
             configured: None,
             renderer: None,
         },
+        LayerSurf {
+            kind: ChromeSurfaceKind::MenuPopup,
+            wl: popup_wl,
+            layer: popup_layer,
+            configured: None,
+            renderer: None,
+        },
     ];
 
-    // Wait until all three surfaces have a configure.
+    // Wait until all chrome surfaces have a configure.
     for _ in 0..32 {
         event_queue
             .roundtrip(&mut state)
@@ -331,6 +357,7 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
             ChromeSurfaceKind::Background => (width, height),
             ChromeSurfaceKind::Menu => (width, MENU_H),
             ChromeSurfaceKind::Dock => (width, DOCK_H),
+            ChromeSurfaceKind::MenuPopup => (1, 1),
         });
         let surface_ptr = surf.wl.id().as_ptr() as *mut c_void;
         let renderer = futures::executor::block_on(unsafe {
@@ -375,9 +402,36 @@ fn paint_all(state: &mut LayerDesktopState, runtime: &mut UiRuntime) -> anyhow::
     let menu_h = MENU_H as f32;
     let dock_h = DOCK_H as f32;
 
+    // Sync Overlay popup size/margins before painting (may need a configure).
+    let dropdown = runtime.with_root_content_mut(|w| {
+        w.as_any_mut()
+            .downcast_mut::<ShellDesktop>()
+            .and_then(|d| d.open_menu_dropdown_geo())
+    })
+    .flatten();
+    if let Some(surf) = state
+        .surfaces
+        .iter_mut()
+        .find(|s| s.kind == ChromeSurfaceKind::MenuPopup)
+    {
+        let (x, y, w, h) = dropdown.unwrap_or((0, 0, 1, 1));
+        state.popup_origin = (x as f32, y as f32);
+        let (cw, ch) = surf.configured.unwrap_or((1, 1));
+        if cw != w || ch != h {
+            surf.layer.set_margin(y, 0, 0, x);
+            surf.layer.set_size(w, h);
+            surf.wl.commit();
+            // Configure arrives on the next dispatch; skip popup paint this frame.
+        } else if let Some(renderer) = surf.renderer.as_mut() {
+            renderer.resize(w, h);
+        }
+    }
+
     // Background
     runtime.with_root_content_mut(|w| {
         if let Some(desktop) = w.as_any_mut().downcast_mut::<ShellDesktop>() {
+            desktop.set_menu_popup_origin(false);
+            desktop.set_suppress_dropdown_paint(true);
             desktop.set_paint_filter(ShellPaintFilter::Background);
         }
     });
@@ -394,9 +448,11 @@ fn paint_all(state: &mut LayerDesktopState, runtime: &mut UiRuntime) -> anyhow::
         }
     }
 
-    // Menu strip
+    // Menu strip (titles only — dropdown is on Overlay)
     runtime.with_root_content_mut(|w| {
         if let Some(desktop) = w.as_any_mut().downcast_mut::<ShellDesktop>() {
+            desktop.set_menu_popup_origin(false);
+            desktop.set_suppress_dropdown_paint(true);
             desktop.prepare_menu_strip_layout(out_w, menu_h);
             desktop.set_paint_filter(ShellPaintFilter::MenuBar);
         }
@@ -414,9 +470,44 @@ fn paint_all(state: &mut LayerDesktopState, runtime: &mut UiRuntime) -> anyhow::
         }
     }
 
+    // Menu dropdown Overlay (only when open and configured)
+    if dropdown.is_some() {
+        let ready = state
+            .surfaces
+            .iter()
+            .find(|s| s.kind == ChromeSurfaceKind::MenuPopup)
+            .and_then(|s| s.configured)
+            .map(|(w, h)| w > 1 || h > 1)
+            .unwrap_or(false);
+        if ready {
+            runtime.with_root_content_mut(|w| {
+                if let Some(desktop) = w.as_any_mut().downcast_mut::<ShellDesktop>() {
+                    desktop.set_suppress_dropdown_paint(false);
+                    desktop.set_menu_popup_origin(true);
+                    desktop.prepare_menu_strip_layout(out_w, menu_h);
+                    desktop.set_paint_filter(ShellPaintFilter::MenuPopup);
+                }
+            });
+            if let Some(surf) = state
+                .surfaces
+                .iter_mut()
+                .find(|s| s.kind == ChromeSurfaceKind::MenuPopup)
+            {
+                if let Some(renderer) = surf.renderer.as_mut() {
+                    runtime
+                        .paint_ex(renderer, false, false)
+                        .map_err(|e| anyhow!("menu popup paint: {}", e))?;
+                    surf.wl.commit();
+                }
+            }
+        }
+    }
+
     // Dock strip
     runtime.with_root_content_mut(|w| {
         if let Some(desktop) = w.as_any_mut().downcast_mut::<ShellDesktop>() {
+            desktop.set_menu_popup_origin(false);
+            desktop.set_suppress_dropdown_paint(false);
             desktop.prepare_dock_strip_layout(out_w, dock_h);
             desktop.set_paint_filter(ShellPaintFilter::Dock);
         }
@@ -437,6 +528,8 @@ fn paint_all(state: &mut LayerDesktopState, runtime: &mut UiRuntime) -> anyhow::
     // Restore full desktop layout so menu/dock hit-testing uses output coords.
     runtime.with_root_content_mut(|w| {
         if let Some(desktop) = w.as_any_mut().downcast_mut::<ShellDesktop>() {
+            desktop.set_menu_popup_origin(false);
+            desktop.set_suppress_dropdown_paint(false);
             desktop.set_paint_filter(ShellPaintFilter::Background);
         }
     });
@@ -450,10 +543,14 @@ fn map_pointer_to_desktop(
     surface_x: f64,
     surface_y: f64,
     output_h: u32,
+    popup_origin: (f32, f32),
 ) -> (f32, f32) {
     match kind {
         ChromeSurfaceKind::Background | ChromeSurfaceKind::Menu => {
             (surface_x as f32, surface_y as f32)
+        }
+        ChromeSurfaceKind::MenuPopup => {
+            (popup_origin.0 + surface_x as f32, popup_origin.1 + surface_y as f32)
         }
         ChromeSurfaceKind::Dock => {
             let y = (output_h.saturating_sub(DOCK_H) as f64) + surface_y;
@@ -478,6 +575,8 @@ struct LayerDesktopState {
     pointer_kind: ChromeSurfaceKind,
     /// Current keyboard modifiers from wl_keyboard::Modifiers (xkb mask).
     modifiers: retro_kit::event::Modifiers,
+    /// Output-local origin of the menu Overlay popup surface.
+    popup_origin: (f32, f32),
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for LayerDesktopState {
@@ -602,6 +701,7 @@ impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for LayerDesk
                     surface_x,
                     surface_y,
                     state.output_h,
+                    state.popup_origin,
                 );
                 if let Some(runtime) = state.runtime.as_mut() {
                     runtime.pointer_moved(dx, dy);
@@ -620,8 +720,13 @@ impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for LayerDesk
                     WEnum::Value(wl_pointer::ButtonState::Pressed)
                 );
                 let (px, py) = state.last_pointer;
-                let (dx, dy) =
-                    map_pointer_to_desktop(state.pointer_kind, px, py, state.output_h);
+                let (dx, dy) = map_pointer_to_desktop(
+                    state.pointer_kind,
+                    px,
+                    py,
+                    state.output_h,
+                    state.popup_origin,
+                );
                 if let Some(runtime) = state.runtime.as_mut() {
                     runtime.pointer_moved(dx, dy);
                     let _ = runtime.pointer_button(mouse, pressed, now_ms());
@@ -645,6 +750,7 @@ impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for LayerDesk
                     surface_x,
                     surface_y,
                     state.output_h,
+                    state.popup_origin,
                 );
                 if let Some(runtime) = state.runtime.as_mut() {
                     runtime.pointer_moved(dx, dy);
@@ -757,7 +863,10 @@ impl Dispatch<ZwlrLayerSurfaceV1, ChromeSurfaceKind> for LayerDesktopState {
         } = event
         {
             let w = if width == 0 {
-                state.output_w
+                match kind {
+                    ChromeSurfaceKind::MenuPopup => 1,
+                    _ => state.output_w,
+                }
             } else {
                 width
             };
@@ -766,6 +875,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, ChromeSurfaceKind> for LayerDesktopState {
                     ChromeSurfaceKind::Menu => MENU_H,
                     ChromeSurfaceKind::Dock => DOCK_H,
                     ChromeSurfaceKind::Background => state.output_h,
+                    ChromeSurfaceKind::MenuPopup => 1,
                 }
             } else {
                 height

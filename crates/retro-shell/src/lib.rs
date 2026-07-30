@@ -457,6 +457,8 @@ pub(crate) enum ShellPaintFilter {
     Background,
     /// Menu bar only (Top exclusive surface).
     MenuBar,
+    /// Open menu dropdown only (Overlay surface, origin-local).
+    MenuPopup,
     /// Dock only (Bottom exclusive surface).
     Dock,
 }
@@ -483,6 +485,39 @@ impl ShellDesktop {
         let _ = self
             .menu_bar
             .layout(LayoutConstraint::tight(Size::new(width, menu_h)));
+    }
+
+    /// Pixel height the Top menu layer must cover: bar only, or bar + open dropdown.
+    pub(crate) fn menu_layer_height_px(&self) -> u32 {
+        const BAR: u32 = 24;
+        let Some(idx) = self.menu_bar.open_menu else {
+            return BAR;
+        };
+        let Some(dropdown) = self.menu_bar.dropdown_rect(idx) else {
+            return BAR;
+        };
+        let bottom = (dropdown.y + dropdown.height).ceil().max(0.0) as u32;
+        bottom.max(BAR)
+    }
+
+    /// Open dropdown geometry in output pixels: `(x, y, w, h)`, if a menu is open.
+    pub(crate) fn open_menu_dropdown_geo(&self) -> Option<(i32, i32, u32, u32)> {
+        let idx = self.menu_bar.open_menu?;
+        let dd = self.menu_bar.dropdown_rect(idx)?;
+        Some((
+            dd.x.floor() as i32,
+            dd.y.floor() as i32,
+            dd.width.ceil().max(1.0) as u32,
+            dd.height.ceil().max(1.0) as u32,
+        ))
+    }
+
+    pub(crate) fn set_menu_popup_origin(&mut self, enabled: bool) {
+        self.menu_bar.layer_popup_origin = enabled;
+    }
+
+    pub(crate) fn set_suppress_dropdown_paint(&mut self, enabled: bool) {
+        self.menu_bar.suppress_dropdown_paint = enabled;
     }
 }
 
@@ -3093,6 +3128,10 @@ impl Widget for ShellDesktop {
                 self.menu_bar.draw(theme);
                 return;
             }
+            ShellPaintFilter::MenuPopup => {
+                self.menu_bar.draw(theme);
+                return;
+            }
             ShellPaintFilter::Dock => {
                 self.dock_view.draw(theme);
                 return;
@@ -3562,7 +3601,9 @@ impl Widget for ShellDesktop {
             return vec![&self.lock_screen_widget as &dyn Widget];
         }
         match self.paint_filter {
-            ShellPaintFilter::MenuBar => return vec![&self.menu_bar as &dyn Widget],
+            ShellPaintFilter::MenuBar | ShellPaintFilter::MenuPopup => {
+                return vec![&self.menu_bar as &dyn Widget];
+            }
             ShellPaintFilter::Dock => return vec![&self.dock_view as &dyn Widget],
             ShellPaintFilter::Background | ShellPaintFilter::All => {}
         }
@@ -3596,7 +3637,9 @@ impl Widget for ShellDesktop {
             return vec![&mut self.lock_screen_widget as &mut dyn Widget];
         }
         match self.paint_filter {
-            ShellPaintFilter::MenuBar => return vec![&mut self.menu_bar as &mut dyn Widget],
+            ShellPaintFilter::MenuBar | ShellPaintFilter::MenuPopup => {
+                return vec![&mut self.menu_bar as &mut dyn Widget];
+            }
             ShellPaintFilter::Dock => return vec![&mut self.dock_view as &mut dyn Widget],
             ShellPaintFilter::Background | ShellPaintFilter::All => {}
         }

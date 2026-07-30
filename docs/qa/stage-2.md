@@ -51,8 +51,7 @@ is no in-window menu bar.
 
 ## Remaining (blocks DoD)
 
-- Menu dropdown overlays currently clip to the 24px Top surface — needs Overlay
-  surface or expand-on-open (polish).
+- Menu-bar item spacing / live clock polish (frame-callback or timer).
 - Full sctk `KeyboardHandler` (like `retro-lock`) would replace the KEY_*/xkb-mask
   map in `layer_desktop` for layout-correct text input.
 
@@ -62,8 +61,9 @@ is no in-window menu bar.
 |---|---|---|
 | Layer desktop under `retro-compositor` | PASS | `docs/screenshots/qa-layer-desktop-vbox.png` |
 | Pointer → layer surface → UI action | PASS | `docs/screenshots/qa-layer-input-click.png` |
-| Phase 3 exclusive Top/Bottom/Background | PASS | `docs/screenshots/qa-phase3-exclusive-chrome.png` — menu Top, dock Bottom, no dual menu; compositor log: `retroshell-menu` Top, `retroshell-dock` Bottom, `retroshell-desktop` Background |
-| Top menu receives pointer | PASS | `docs/screenshots/qa-phase3-menu-click.png` — View menu highlighted |
+| Phase 3 exclusive Top/Bottom/Background | PASS | `docs/screenshots/qa-phase3-exclusive-chrome.png` |
+| Top menu receives pointer | PASS | `docs/screenshots/qa-phase3-menu-click.png` |
+| Open menu dropdown (Overlay, unclipped) | PASS | `docs/screenshots/qa-phase3-menu-dropdown.png` — View menu fully visible; log `retroshell-menu-popup` Overlay |
 | Gray PoC removed; kit chrome gated | PASS | `should_paint_kit_chrome(bound)=!bound`; `try_map_layer_shell_chrome` noop |
 | `Super+O` opens Finder | PASS | `docs/screenshots/stage2-reqa-superO-finder.png` — peer Finder window; STATUS `FINDER_AFTER_SUPER_O=YES` |
 | Lock via `Super+L` (`retro-lock`) | PASS | `docs/screenshots/stage2-reqa-locked.png` — password prompt; STATUS `LOCK_CLIENT=YES` |

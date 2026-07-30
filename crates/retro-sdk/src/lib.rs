@@ -2204,6 +2204,13 @@ fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
 }
 
 fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar) {
+    if menu_bar.layer_popup_origin {
+        if let Some(menu_index) = menu_bar.open_menu {
+            draw_open_menu_at_origin(canvas, menu_bar, menu_index);
+        }
+        return;
+    }
+
     canvas.rect(rect, ui(rgb(238, 238, 238), rgb(28, 30, 32)));
     canvas.rect(
         Rect::new(rect.x, rect.y, rect.width, 1.0),
@@ -2273,7 +2280,9 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
     draw_status_glyph(canvas, rect.x + rect.width - 22.0, rect.y + 7.0);
 
     if let Some(menu_index) = menu_bar.open_menu {
-        draw_open_menu(canvas, menu_bar, menu_index);
+        if !menu_bar.suppress_dropdown_paint {
+            draw_open_menu(canvas, menu_bar, menu_index);
+        }
     }
 }
 
@@ -2300,10 +2309,36 @@ fn draw_apple_icon(canvas: &mut Canvas<'_>, x: f32, y: f32, active: bool) {
 }
 
 fn draw_open_menu(canvas: &mut Canvas<'_>, menu_bar: &MenuBar, menu_index: usize) {
-    let Some(menu) = menu_bar.menus.get(menu_index) else {
+    let Some(dropdown) = menu_bar.dropdown_rect(menu_index) else {
         return;
     };
+    draw_open_menu_box(canvas, menu_bar, menu_index, dropdown, 0.0, 0.0);
+}
+
+/// Draw the open dropdown with its top-left at (0,0) for an Overlay layer surface.
+fn draw_open_menu_at_origin(canvas: &mut Canvas<'_>, menu_bar: &MenuBar, menu_index: usize) {
     let Some(dropdown) = menu_bar.dropdown_rect(menu_index) else {
+        return;
+    };
+    draw_open_menu_box(
+        canvas,
+        menu_bar,
+        menu_index,
+        Rect::new(0.0, 0.0, dropdown.width, dropdown.height),
+        -dropdown.x,
+        -dropdown.y,
+    );
+}
+
+fn draw_open_menu_box(
+    canvas: &mut Canvas<'_>,
+    menu_bar: &MenuBar,
+    menu_index: usize,
+    dropdown: Rect,
+    item_dx: f32,
+    item_dy: f32,
+) {
+    let Some(menu) = menu_bar.menus.get(menu_index) else {
         return;
     };
 
@@ -2342,9 +2377,11 @@ fn draw_open_menu(canvas: &mut Canvas<'_>, menu_bar: &MenuBar, menu_index: usize
     );
 
     for (item_index, item) in menu.items.iter().enumerate() {
-        let Some(item_rect) = menu_bar.item_rect(menu_index, item_index) else {
+        let Some(mut item_rect) = menu_bar.item_rect(menu_index, item_index) else {
             continue;
         };
+        item_rect.x += item_dx;
+        item_rect.y += item_dy;
         if matches!(item.kind, MenuItemKind::Separator) {
             canvas.rect(
                 Rect::new(

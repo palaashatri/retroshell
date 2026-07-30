@@ -15,6 +15,10 @@ pub struct MenuBar {
     pub hovered_item: Option<usize>,
     pub last_action: Option<String>,
     menu_rects: Vec<Rect>,
+    /// When true, SDK paint draws only the open dropdown at (0,0) for an Overlay layer.
+    pub layer_popup_origin: bool,
+    /// When true, skip drawing the dropdown on the bar (Overlay owns it).
+    pub suppress_dropdown_paint: bool,
 }
 
 impl MenuBar {
@@ -27,6 +31,8 @@ impl MenuBar {
             hovered_item: None,
             last_action: None,
             menu_rects: vec![],
+            layer_popup_origin: false,
+            suppress_dropdown_paint: false,
         }
     }
 

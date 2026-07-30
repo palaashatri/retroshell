@@ -130,10 +130,11 @@ origin yet.**
    and emits `Char` for lock typing; compositor Super+O/L already xkb-backed.
    Re-QA under layer chrome: `stage2-reqa-*.png` + STATUS
    (`FINDER_AFTER_SUPER_O=YES`, `LOCK_CLIENT=YES`, `FINDER_WHILE_LOCKED=1`, unlock
-   restores desktop). Known: open menu dropdowns still clip to the 24px Top strip;
-   full sctk KeyboardHandler remains nicer than the KEY_*/xkb-mask map.
-4. **Polish:** menu-bar item spacing; clock/live content via frame-callback/timer;
-   Overlay surface for open menus.
+   restores desktop).
+4. **DONE (menu Overlay):** open dropdowns paint on `retroshell-menu-popup` Overlay
+   (exact size + margins); evidence `qa-phase3-menu-dropdown.png`.
+5. **Polish remaining:** menu-bar item spacing; clock/live content via
+   frame-callback/timer; full sctk KeyboardHandler optional.
 
 ## 7. Gotchas
 - Some docs (e.g. `docs/qa/stage-2.md`) had **CRLF** line endings from the Windows

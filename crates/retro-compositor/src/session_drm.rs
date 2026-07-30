@@ -74,7 +74,7 @@ use smithay::wayland::selection::primary_selection::{
 };
 use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
 use smithay::wayland::shell::wlr_layer::{
-    Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState,
+    Layer, LayerSurface, LayerSurfaceCachedState, WlrLayerShellHandler, WlrLayerShellState,
 };
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
@@ -1069,14 +1069,27 @@ fn layer_geometry_for(
     layer: Layer,
     output: (i32, i32),
     size: (i32, i32),
+    margin_top: i32,
+    margin_left: i32,
 ) -> Rectangle<i32, Logical> {
     let (ow, oh) = output;
     let (w, h) = (size.0.clamp(1, ow.max(1)), size.1.clamp(1, oh.max(1)));
     let bottom = matches!(layer, Layer::Bottom)
         || namespace.contains("dock")
         || namespace.ends_with("-dock");
-    let y = if bottom { (oh - h).max(0) } else { 0 };
-    Rectangle::from_loc_and_size((0, y), (w, h))
+    let y = if bottom {
+        (oh - h).max(0)
+    } else if namespace.contains("menu-popup") {
+        margin_top.max(0)
+    } else {
+        margin_top.max(0)
+    };
+    let x = if namespace.contains("menu-popup") {
+        margin_left.max(0)
+    } else {
+        0
+    };
+    Rectangle::from_loc_and_size((x, y), (w, h))
 }
 
 fn layer_geo_contains(geo: &Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> bool {
@@ -1093,6 +1106,7 @@ fn layer_configure_size(namespace: &str, output: (i32, i32)) -> (i32, i32) {
     match namespace {
         "retroshell-menu" | "menu-bar" => (ow, 24),
         "retroshell-dock" | "dock" => (ow, 64),
+        "retroshell-menu-popup" => (1, 1),
         _ => (ow, oh),
     }
 }
@@ -1517,16 +1531,46 @@ impl CompositorHandler for DrmSessionState {
                 break;
             }
         }
-        // Refresh layer strip geometry from the configured size after buffer commit.
+        // Refresh layer geometry from client-requested size/margins after commit.
         for layer in self.layer_surfaces.iter_mut() {
             if layer.surface.wl_surface() == surface {
-                let st = layer.surface.current_state();
                 let (ow, oh) = self.output_size;
-                let (w, h) = st
+                let (req_w, req_h, margin_top, margin_left) =
+                    with_states(surface, |states| {
+                        let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                        let cur = *cached.current();
+                        (cur.size.w, cur.size.h, cur.margin.top, cur.margin.left)
+                    });
+                let (default_w, default_h) = layer_configure_size(&layer.namespace, (ow, oh));
+                let w = if req_w > 0 {
+                    req_w.min(ow).max(1)
+                } else {
+                    default_w
+                };
+                let h = if req_h > 0 {
+                    req_h.min(oh).max(1)
+                } else {
+                    default_h
+                };
+                let cur = layer.surface.current_state();
+                let needs_configure = cur
                     .size
-                    .map(|s| (s.w.max(1), s.h.max(1)))
-                    .unwrap_or_else(|| layer_configure_size(&layer.namespace, (ow, oh)));
-                layer.geo = layer_geometry_for(&layer.namespace, layer.layer, (ow, oh), (w, h));
+                    .map(|s| s.w != w || s.h != h)
+                    .unwrap_or(true);
+                if needs_configure {
+                    layer.surface.with_pending_state(|state| {
+                        state.size = Some(Size::from((w, h)));
+                    });
+                    layer.surface.send_configure();
+                }
+                layer.geo = layer_geometry_for(
+                    &layer.namespace,
+                    layer.layer,
+                    (ow, oh),
+                    (w, h),
+                    margin_top,
+                    margin_left,
+                );
                 break;
             }
         }
@@ -1835,7 +1879,7 @@ impl WlrLayerShellHandler for DrmSessionState {
             state.size = Some(Size::from((w, h)));
         });
         surface.send_configure();
-        let geo = layer_geometry_for(&namespace, layer, (ow, oh), (w, h));
+        let geo = layer_geometry_for(&namespace, layer, (ow, oh), (w, h), 0, 0);
         self.layer_surfaces.push(MappedLayer {
             surface,
             layer,
