@@ -776,6 +776,194 @@ impl RawSurfaceRenderer {
     }
 }
 
+/// Backend-agnostic UI runtime: owns a Window's widget tree, lays it out,
+/// paints it via a RawSurfaceRenderer, and accepts neutral input events.
+/// Mirrors the logic of the winit `AppHandler` without any winit dependency,
+/// so a wlr-layer-shell driver (retro-shell) can drive the same UI.
+pub struct UiRuntime {
+    window: Option<Window>,
+    scale: f32,
+    dark_mode: bool,
+    accent_color: [f32; 4],
+    modifiers: Modifiers,
+    cursor_position: Point,
+    last_click: Option<(MouseButton, Point, u128)>,
+    dirty: bool,
+}
+
+impl UiRuntime {
+    /// Create a new UI runtime with the given widget tree, sized in physical pixels.
+    /// The widget is wrapped in a Window and laid out at the logical size (px / scale).
+    pub fn new(
+        content: Box<dyn retro_kit::Widget>,
+        width_px: u32,
+        height_px: u32,
+        scale: f32,
+    ) -> Self {
+        let mut window = Window::new("RetroShell Layer");
+        window.set_content(content);
+
+        let mut rt = Self {
+            window: Some(window),
+            scale: scale.max(1.0),
+            dark_mode: false,
+            accent_color: theme_accents::CLASSIC,
+            modifiers: Modifiers::NONE,
+            cursor_position: Point::ZERO,
+            last_click: None,
+            dirty: true,
+        };
+
+        rt.layout_window(width_px, height_px);
+        rt
+    }
+
+    /// Resize and re-layout the widget tree at the new physical pixel dimensions.
+    pub fn resize(&mut self, width_px: u32, height_px: u32, scale: f32) {
+        self.scale = scale.max(1.0);
+        self.layout_window(width_px, height_px);
+    }
+
+    /// Update the dark mode and accent color theme.
+    pub fn set_theme(&mut self, dark_mode: bool, accent_color: [f32; 4]) {
+        self.dark_mode = dark_mode;
+        self.accent_color = accent_color;
+        self.dirty = true;
+    }
+
+    /// Update the current modifier key state.
+    pub fn set_modifiers(&mut self, modifiers: Modifiers) {
+        self.modifiers = modifiers;
+    }
+
+    /// Handle pointer movement at logical coordinates.
+    pub fn pointer_moved(&mut self, x: f32, y: f32) {
+        self.cursor_position = Point::new(x, y);
+        let _ = self.dispatch(retro_kit::Event::MouseMove {
+            point: self.cursor_position,
+            modifiers: self.modifiers,
+        });
+    }
+
+    /// Handle pointer button press/release at logical coordinates.
+    /// Implements double-click detection: if the same button is pressed within
+    /// 400ms and within 4 logical units (distance squared <= 16.0), emits DoubleClick;
+    /// otherwise MouseDown on press, MouseUp on release.
+    pub fn pointer_button(
+        &mut self,
+        button: MouseButton,
+        pressed: bool,
+        time_ms: u128,
+    ) -> retro_kit::EventResult {
+        if pressed {
+            let is_double_click = self
+                .last_click
+                .as_ref()
+                .map(|(last_button, last_point, last_time)| {
+                    *last_button == button
+                        && time_ms.saturating_sub(*last_time) <= 400
+                        && distance_squared(*last_point, self.cursor_position) <= 16.0
+                })
+                .unwrap_or(false);
+            self.last_click = Some((button, self.cursor_position, time_ms));
+            if is_double_click {
+                self.dispatch(retro_kit::Event::DoubleClick {
+                    button,
+                    point: self.cursor_position,
+                    modifiers: self.modifiers,
+                })
+            } else {
+                self.dispatch(retro_kit::Event::MouseDown {
+                    button,
+                    point: self.cursor_position,
+                    modifiers: self.modifiers,
+                })
+            }
+        } else {
+            self.dispatch(retro_kit::Event::MouseUp {
+                button,
+                point: self.cursor_position,
+                modifiers: self.modifiers,
+            })
+        }
+    }
+
+    /// Handle mouse wheel scroll.
+    pub fn wheel(&mut self, delta_x: f32, delta_y: f32) {
+        let _ = self.dispatch(retro_kit::Event::Scroll {
+            delta: Point::new(delta_x, delta_y),
+            modifiers: self.modifiers,
+        });
+    }
+
+    /// Handle a keyboard event (caller builds the neutral Event).
+    pub fn key(&mut self, event: retro_kit::Event) {
+        let _ = self.dispatch(event);
+    }
+
+    /// Set window focus state.
+    pub fn set_focus(&mut self, focused: bool) {
+        if focused {
+            let _ = self.dispatch(retro_kit::Event::FocusIn);
+        } else {
+            let _ = self.dispatch(retro_kit::Event::FocusOut);
+        }
+    }
+
+    /// Check if a redraw is needed.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Layout (if needed), paint the widget tree and desktop backdrop through the renderer.
+    /// Clears the dirty flag on success.
+    pub fn paint(&mut self, renderer: &mut RawSurfaceRenderer) -> Result<(), String> {
+        // Re-layout before drawing, mirroring AppHandler::paint.
+        if let Some(ref mut win) = self.window {
+            let size = Size::new(win.rect().width, win.rect().height);
+            if size.width > 0.0 && size.height > 0.0 {
+                win.layout(LayoutConstraint::tight(size));
+            }
+        }
+        let Some(window) = &self.window else {
+            return Ok(());
+        };
+        apply_theme(self.dark_mode, self.accent_color);
+        let scale = self.scale;
+        renderer.render(|canvas| {
+            canvas.width /= scale;
+            canvas.height /= scale;
+            draw_desktop_backdrop(canvas);
+            draw_window(canvas, window);
+        })?;
+        self.dirty = false;
+        Ok(())
+    }
+
+    /// Dispatch an event to the window and mark as dirty on any result.
+    fn dispatch(&mut self, event: retro_kit::Event) -> retro_kit::EventResult {
+        let result = if let Some(ref mut win) = self.window {
+            win.handle_event(&event)
+        } else {
+            retro_kit::EventResult::Ignored
+        };
+        self.dirty = true;
+        result
+    }
+
+    /// Re-layout the window at the new physical pixel dimensions.
+    fn layout_window(&mut self, width_px: u32, height_px: u32) {
+        if let Some(ref mut win) = self.window {
+            let logical_width = (width_px as f32 / self.scale).max(1.0);
+            let logical_height = (height_px as f32 / self.scale).max(1.0);
+            let size = Size::new(logical_width, logical_height);
+            win.set_rect(Rect::new(0.0, 0.0, size.width, size.height));
+            win.layout(LayoutConstraint::tight(size));
+            self.dirty = true;
+        }
+    }
+}
+
 impl WgpuPresenter {
     async fn new(window: Arc<winit::window::Window>) -> Result<Self, String> {
         let size = window.inner_size();
