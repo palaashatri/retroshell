@@ -730,7 +730,9 @@ pub fn run_drm_session() -> Result<()> {
     println!("WAYLAND_DISPLAY={socket_name}");
     if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
         let _ = std::fs::write(Path::new(&runtime).join("wayland-display"), &socket_name);
+        let _ = std::fs::write(Path::new(&runtime).join("slopos-client-wayland-display"), &socket_name);
     }
+    std::env::set_var("SLOPOS_CLIENT_WAYLAND_DISPLAY", &socket_name);
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
 
     loop_handle

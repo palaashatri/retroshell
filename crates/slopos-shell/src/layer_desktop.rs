@@ -382,9 +382,10 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
 
     // Wake at least once a second so the menu clock / dock tick without input.
     // `blocking_dispatch` alone stalls until the next Wayland event.
-    const IDLE_WAKE_MS: i32 = 1000;
     while state.running {
-        dispatch_with_timeout(&conn, &mut event_queue, &mut state, IDLE_WAKE_MS)?;
+        event_queue
+            .blocking_dispatch(&mut state)
+            .map_err(|e| anyhow!("wayland dispatch: {}", e))?;
 
         if let Some(mut runtime) = state.runtime.take() {
             runtime.tick();

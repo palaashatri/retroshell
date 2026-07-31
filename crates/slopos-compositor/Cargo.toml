@@ -15,6 +15,7 @@ tracing-subscriber = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 smithay = { version = "0.7", default-features = false, features = [
     "backend_x11",
+    "backend_winit",
     # Session DRM/KMS path (bare metal / seat). Docker may not exercise this;
     # code still ships and is selected when /dev/dri + DRI3 policy say so.
     "backend_drm",

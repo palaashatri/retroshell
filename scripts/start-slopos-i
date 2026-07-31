@@ -124,9 +124,16 @@ start_labwc() {
 start_slopos_compositor() {
   local comp_bin
   comp_bin="$(resolve_bin slopos-compositor)" || {
-    echo "start-slopos-i: slopos-compositor not on PATH"
-    return 1
+    die "slopos-compositor binary not found on PATH or target/{release,debug}"
   }
+
+  # Preserve host Wayland display for nested backend
+  if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    export SLOPOS_HOST_WAYLAND_DISPLAY="$WAYLAND_DISPLAY"
+    echo "start-slopos-i: host Wayland display preserved: SLOPOS_HOST_WAYLAND_DISPLAY=$SLOPOS_HOST_WAYLAND_DISPLAY"
+  fi
+
+  rm -f "$XDG_RUNTIME_DIR/slopos-client-wayland-display"
 
   : >"$COMPOSITOR_LOG"
   echo "start-slopos-i: launching slopos-compositor ($comp_bin)"
@@ -134,97 +141,44 @@ start_slopos_compositor() {
   "$comp_bin" >>"$COMPOSITOR_LOG" 2>&1 &
   COMPOSITOR_PID=$!
 
-  local i
-  for i in $(seq 1 "$WAIT_SECS"); do
+  # Poll for client socket readiness file
+  local _try
+  local client_socket=""
+  for _try in $(seq 1 40); do
     if ! kill -0 "$COMPOSITOR_PID" 2>/dev/null; then
-      echo "start-slopos-i: slopos-compositor died during startup wait (${i}s)"
-      echo "start-slopos-i: common cause under nested X / Docker-on-mac: missing DRI3 / GPU accel"
+      echo "start-slopos-i: slopos-compositor died during startup wait"
       echo "start-slopos-i: --- slopos-compositor log (tail) ---"
       tail -40 "$COMPOSITOR_LOG" 2>/dev/null || true
-      COMPOSITOR_PID=""
-      return 1
+      die "slopos-compositor startup failed (refusing silent fallback under COMPOSITOR SOVEREIGNTY)"
     fi
-    sleep 1
-  done
 
-  if ! kill -0 "$COMPOSITOR_PID" 2>/dev/null; then
-    echo "start-slopos-i: slopos-compositor not running after ${WAIT_SECS}s"
-    tail -40 "$COMPOSITOR_LOG" 2>/dev/null || true
-    COMPOSITOR_PID=""
-    return 1
-  fi
-
-  # Allow socket file to appear
-  local _try
-  for _try in $(seq 1 20); do
-    if [ -f /tmp/runtime-root/wayland-display ] || [ -f "$XDG_RUNTIME_DIR/wayland-display" ]; then
-      break
-    fi
-    # Also break early if a wayland socket already exists
-    if compgen -G "$XDG_RUNTIME_DIR/wayland-*" >/dev/null 2>&1; then
-      break
+    if [ -f "$XDG_RUNTIME_DIR/slopos-client-wayland-display" ]; then
+      client_socket="$(tr -d '[:space:]' <"$XDG_RUNTIME_DIR/slopos-client-wayland-display" || true)"
+      if [ -n "$client_socket" ]; then
+        break
+      fi
     fi
     sleep 0.25
   done
 
-  export WAYLAND_DISPLAY
-  WAYLAND_DISPLAY="$(pick_wayland_display)"
-  echo "start-slopos-i: slopos-compositor running (pid $COMPOSITOR_PID), WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
+  if [ -z "$client_socket" ]; then
+    die "slopos-compositor did not produce client socket file after wait period"
+  fi
+
+  export SLOPOS_CLIENT_WAYLAND_DISPLAY="$client_socket"
+  export WAYLAND_DISPLAY="$client_socket"
+  echo "start-slopos-i: slopos-compositor running (pid $COMPOSITOR_PID), SLOPOS_CLIENT_WAYLAND_DISPLAY=$SLOPOS_CLIENT_WAYLAND_DISPLAY"
   return 0
 }
 
-# --- choose compositor -------------------------------------------------------
+# --- launch session -------------------------------------------------------
 
-choice="${SLOPOS_COMPOSITOR:-}"
-if [ -n "${SLOPOS_FORCE_LABWC:-}" ]; then
-  echo "start-slopos-i: compositor selection: forced labwc (SLOPOS_FORCE_LABWC set)"
-  choice="labwc"
-elif [ -n "$choice" ]; then
-  echo "start-slopos-i: compositor selection: explicit SLOPOS_COMPOSITOR=$choice"
-else
-  echo "start-slopos-i: compositor selection: default (prefer slopos-compositor, honest labwc fallback)"
-fi
-
-case "${choice}" in
-  labwc)
-    start_labwc
-    SELECTED_COMPOSITOR="labwc"
-    ;;
-  slopos-compositor)
-    if ! start_slopos_compositor; then
-      die "SLOPOS_COMPOSITOR=slopos-compositor requested but compositor failed to start (no silent fallback)"
-    fi
-    SELECTED_COMPOSITOR="slopos-compositor"
-    ;;
-  "")
-    # Default: prefer slopos-compositor when present and not forced off
-    if resolve_bin slopos-compositor >/dev/null 2>&1; then
-      echo "start-slopos-i: slopos-compositor found on PATH; attempting preferred session compositor"
-      if ! start_slopos_compositor; then
-        echo "start-slopos-i: preferred compositor failed — falling back to labwc (not claiming slopos-compositor is live)"
-        echo "start-slopos-i: common causes: missing DRI3, nested X without GPU, or early crash (see log above)"
-        start_labwc
-        SELECTED_COMPOSITOR="labwc (fallback)"
-      else
-        SELECTED_COMPOSITOR="slopos-compositor"
-      fi
-    else
-      echo "start-slopos-i: slopos-compositor not found on PATH or target/{release,debug}; using labwc"
-      start_labwc
-      SELECTED_COMPOSITOR="labwc (no slopos-compositor binary)"
-    fi
-    ;;
-  *)
-    die "unknown SLOPOS_COMPOSITOR='$choice' (use labwc or slopos-compositor)"
-    ;;
-esac
-
-echo "start-slopos-i: active compositor path: ${SELECTED_COMPOSITOR:-unknown}"
+echo "start-slopos-i: launching slopos-compositor session (COMPOSITOR SOVEREIGNTY mode)"
+start_slopos_compositor
+SELECTED_COMPOSITOR="slopos-compositor"
 
 SHELL_BIN="$(resolve_bin slopos-shell)" || die "slopos-shell not found on PATH or in target/{release,debug}"
-echo "start-slopos-i: exec slopos-shell ($SHELL_BIN) on WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-unset}"
-# Unset DISPLAY for pure Wayland clients when a Wayland socket is live, unless caller keeps it.
-# Nested labwc under X still needs DISPLAY for the compositor process (already running).
+echo "start-slopos-i: exec slopos-shell ($SHELL_BIN) on WAYLAND_DISPLAY=${WAYLAND_DISPLAY}"
 if [ -n "${WAYLAND_DISPLAY:-}" ] && [ "${SLOPOS_KEEP_DISPLAY:-}" != "1" ]; then
   exec env -u DISPLAY "$SHELL_BIN" "$@"
 else

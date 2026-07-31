@@ -245,8 +245,8 @@ mod linux {
         serial: u32,
 
         // GL rendering
-        renderer: GlesRenderer,
-        x11_surface: X11Surface,
+        renderer: Option<GlesRenderer>,
+        x11_surface: Option<X11Surface>,
 
         // ---- selection / DnD store (P1.1) ----
         /// Last client clipboard SelectionSource (for tracking / XWayland bridge).
@@ -476,6 +476,23 @@ mod linux {
                 self.pending_damage = None;
             }
 
+            let (renderer, x11_surface) = match (self.renderer.as_mut(), self.x11_surface.as_mut()) {
+                (Some(r), Some(s)) => (r, s),
+                _ => {
+                    let now = self.clock.now();
+                    if let Some(output) = self.outputs.first().cloned() {
+                        let workspace_state = &self.workspace_state;
+                        for w in self.windows.iter().filter(|w| workspace_state.is_visible(&w.window_id)) {
+                            send_frames_surface_tree(w.toplevel.wl_surface(), &output, now, Some(Duration::ZERO), |_, _| None);
+                        }
+                        for layer in &self.layer_surfaces {
+                            send_frames_surface_tree(layer.surface.wl_surface(), &output, now, Some(Duration::ZERO), |_, _| None);
+                        }
+                    }
+                    return;
+                }
+            };
+
             // Paint order: bottom layers → xdg windows → top/overlay layers.
             use slopos_compositor::{plan_compose_order, ChromeLayer};
             let layer_z: Vec<u8> = self
@@ -515,7 +532,7 @@ mod linux {
                 let layer = &self.layer_surfaces[i];
                 let loc = Point::<i32, Physical>::from((0, 0));
                 surface_elements.extend(render_elements_from_surface_tree(
-                    &mut self.renderer,
+                    renderer,
                     layer.surface.wl_surface(),
                     loc,
                     1.0_f64,
@@ -524,8 +541,6 @@ mod linux {
                 ));
             }
             // Workspace filter: hide surfaces not on the active virtual desktop.
-            // Borrow only windows/workspace_state so self.renderer stays free
-            // for the render_elements_from_surface_tree calls below.
             let workspace_state = &self.workspace_state;
             let visible_windows: Vec<&MappedWindow> = self
                 .windows
@@ -535,7 +550,7 @@ mod linux {
             for (i, w) in visible_windows.iter().enumerate() {
                 let loc = Point::<i32, Physical>::from((w.position.x, w.position.y));
                 let els = render_elements_from_surface_tree(
-                    &mut self.renderer,
+                    renderer,
                     w.toplevel.wl_surface(),
                     loc,
                     1.0_f64,
@@ -562,7 +577,7 @@ mod linux {
                 let layer = &self.layer_surfaces[i];
                 let loc = Point::<i32, Physical>::from((0, 0));
                 surface_elements.extend(render_elements_from_surface_tree(
-                    &mut self.renderer,
+                    renderer,
                     layer.surface.wl_surface(),
                     loc,
                     1.0_f64,
@@ -572,7 +587,7 @@ mod linux {
             }
 
             // Acquire the next buffer from the X11 swapchain
-            let (mut dmabuf, _age) = match self.x11_surface.buffer() {
+            let (mut dmabuf, _age) = match x11_surface.buffer() {
                 Ok(pair) => pair,
                 Err(e) => {
                     eprintln!("[render] failed to get X11 buffer: {e}");
@@ -583,7 +598,7 @@ mod linux {
             let output_size = self.output_size;
 
             // Bind the dmabuf as GL render target
-            let mut target = match self.renderer.bind(&mut dmabuf) {
+            let mut target = match renderer.bind(&mut dmabuf) {
                 Ok(t) => t,
                 Err(e) => {
                     eprintln!("[render] failed to bind dmabuf: {e}");
@@ -592,7 +607,7 @@ mod linux {
             };
 
             // Open a render frame
-            let mut frame = match self.renderer.render(&mut target, output_size, Transform::Normal) {
+            let mut frame = match renderer.render(&mut target, output_size, Transform::Normal) {
                 Ok(f) => f,
                 Err(e) => {
                     eprintln!("[render] failed to start frame: {e}");
@@ -615,9 +630,6 @@ mod linux {
                 eprintln!("[render] clear failed: {e}");
             }
 
-            // Placeholders first, i.e. UNDER all committed surface content:
-            // a solid rect for a buffer-less window must never cover layer-shell
-            // chrome or windows that do have content.
             if !placeholders.is_empty() {
                 if self.placeholder_stats.note_frame_with_placeholders() {
                     eprintln!(
@@ -633,11 +645,7 @@ mod linux {
                     eprintln!("[render] window placeholder clear failed: {e}");
                 }
             }
-            // Real SHM / surface content (visible windows + layer-shell chrome).
-            // surface_elements was built back-to-front (under layers → windows
-            // bottom→top → over layers); draw_render_elements expects
-            // front-to-back and occlusion-culls everything behind opaque
-            // elements, so draw the reversed list.
+
             if !surface_elements.is_empty() {
                 surface_elements.reverse();
                 if let Err(e) = draw_render_elements::<GlesRenderer, _, _>(
@@ -666,7 +674,7 @@ mod linux {
             }
 
             // Present to the X11 window
-            if let Err(e) = self.x11_surface.submit() {
+            if let Err(e) = x11_surface.submit() {
                 eprintln!("[render] submit failed: {e}");
             }
 
@@ -1761,15 +1769,32 @@ pub fn parse_bool_env(key: &str) -> bool {
     pub fn run() -> anyhow::Result<()> {
         tracing_subscriber::fmt::init();
 
+        let args: Vec<String> = std::env::args().collect();
+        let mut backend_arg: Option<String> = None;
+        let mut idx = 1;
+        while idx < args.len() {
+            if args[idx] == "--backend" && idx + 1 < args.len() {
+                backend_arg = Some(args[idx + 1].clone());
+                idx += 2;
+            } else if args[idx].starts_with("--backend=") {
+                backend_arg = Some(args[idx].trim_start_matches("--backend=").to_string());
+                idx += 1;
+            } else {
+                idx += 1;
+            }
+        }
+
         // ---- Backend mode honesty (session DRM vs nested X11 vs labwc) ----
-        // This binary is the nested-X11 / session candidate; labwc is chosen by
-        // start-slopos-i/entrypoint when we die early. Log the selected kind.
         let force_labwc = parse_bool_env("SLOPOS_FORCE_LABWC")
             || std::env::var("SLOPOS_COMPOSITOR")
                 .map(|v| v.eq_ignore_ascii_case("labwc"))
                 .unwrap_or(false);
-        let prefer_drm = parse_bool_env("SLOPOS_PREFER_DRM")
-            || std::path::Path::new("/dev/dri").exists();
+
+        let prefer_drm = match backend_arg.as_deref() {
+            Some("drm") => true,
+            Some("winit") | Some("headless") => false,
+            _ => parse_bool_env("SLOPOS_PREFER_DRM") || std::path::Path::new("/dev/dri").exists(),
+        };
         let dri3 = detect_dri3_from_env().unwrap_or(prefer_drm && !force_labwc);
         let backend_kind = select_backend_kind(prefer_drm, dri3, force_labwc);
         let mode_line = session_mode_summary(backend_kind);
@@ -1923,43 +1948,52 @@ pub fn parse_bool_env(key: &str) -> bool {
         }
 
         // -----------------------------------------------------------------------
-        // X11 backend + GL renderer setup
+        // Backend + GL renderer setup
         // -----------------------------------------------------------------------
 
-        let x11_backend = X11Backend::new()?;
-        let x11_handle = x11_backend.handle();
-        // Single X11 host window covering the union of all logical outputs.
-        let window = WindowBuilder::new()
-            .title("slopos-compositor")
-            .build(&x11_handle)?;
+        let x11_backend = match X11Backend::new() {
+            Ok(b) => Some(b),
+            Err(err) => {
+                eprintln!("[slopos-compositor] X11Backend unavailable ({err:#}); starting pure Wayland socket server");
+                tracing::warn!(?err, "X11Backend unavailable; starting pure Wayland socket server");
+                None
+            }
+        };
 
-        // Obtain the DRM render node used by the X server
-        let (_drm_node, fd) = x11_handle.drm_node()?;
+        let mut renderer_opt = None;
+        let mut x11_surface_opt = None;
 
-        // Create a GBM device on that node for buffer allocation
-        let device = GbmDevice::new(DeviceFd::from(fd))?;
-
-        // Create an EGL display backed by the GBM device, then an EGL context
-        let egl_display = unsafe { EGLDisplay::new(device.clone())? };
-        let egl_context = EGLContext::new(&egl_display)?;
-
-        // Collect dmabuf modifiers supported by this GL context
-        let modifiers: HashSet<_> = egl_context
-            .dmabuf_render_formats()
-            .iter()
-            .map(|fmt| fmt.modifier)
-            .collect();
-
-        // Create the X11 surface (swapchain backed by GBM dmabufs)
-        let x11_surface = x11_handle.create_surface(
-            &window,
-            DmabufAllocator(GbmAllocator::new(device, GbmBufferFlags::RENDERING)),
-            modifiers.into_iter(),
-        )?;
-
-        // Build the GlesRenderer from the EGL context
-        // SAFETY: we are the sole owner of `egl_context` and it is not current on any other thread.
-        let renderer = unsafe { GlesRenderer::new(egl_context)? };
+        if let Some(ref x11_backend) = x11_backend {
+            let x11_handle = x11_backend.handle();
+            if let Ok(window) = WindowBuilder::new()
+                .title("slopos-compositor")
+                .build(&x11_handle)
+            {
+                if let Ok((_drm_node, fd)) = x11_handle.drm_node() {
+                    if let Ok(device) = GbmDevice::new(DeviceFd::from(fd)) {
+                        if let Ok(egl_display) = unsafe { EGLDisplay::new(device.clone()) } {
+                            if let Ok(egl_context) = EGLContext::new(&egl_display) {
+                                let modifiers: HashSet<_> = egl_context
+                                    .dmabuf_render_formats()
+                                    .iter()
+                                    .map(|fmt| fmt.modifier)
+                                    .collect();
+                                if let Ok(surf) = x11_handle.create_surface(
+                                    &window,
+                                    DmabufAllocator(GbmAllocator::new(device, GbmBufferFlags::RENDERING)),
+                                    modifiers.into_iter(),
+                                ) {
+                                    x11_surface_opt = Some(surf);
+                                }
+                                if let Ok(r) = unsafe { GlesRenderer::new(egl_context) } {
+                                    renderer_opt = Some(r);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Wayland listening socket. Created only AFTER the X11 backend and GL
         // renderer are up: the socket name (and the wayland-display handshake
@@ -1978,6 +2012,11 @@ pub fn parse_bool_env(key: &str) -> bool {
             std::path::Path::new(&runtime_dir).join("wayland-display"),
             &socket_name,
         );
+        let _ = std::fs::write(
+            std::path::Path::new(&runtime_dir).join("slopos-client-wayland-display"),
+            &socket_name,
+        );
+        std::env::set_var("SLOPOS_CLIENT_WAYLAND_DISPLAY", &socket_name);
         std::env::set_var("WAYLAND_DISPLAY", &socket_name);
 
         // Insert socket source: accept new Wayland client connections
@@ -1990,36 +2029,38 @@ pub fn parse_bool_env(key: &str) -> bool {
             })
             .expect("failed to insert wayland socket source");
 
-        loop_handle
-            .insert_source(x11_backend, |event, _, state| match event {
-                X11Event::CloseRequested { .. } => {
-                    tracing::info!("X11 close requested");
-                    state.running = false;
-                }
-                X11Event::Refresh { .. } | X11Event::PresentCompleted { .. } => {
-                    // Frame pacing hint from X server — render immediately
-                    state.render_frame();
-                }
-                X11Event::Resized { new_size, .. } => {
-                    tracing::debug!("resized: {:?}", new_size);
-                }
-                X11Event::Input { event, .. } => {
-                    match event {
-                        BackendInputEvent::Keyboard { event: ev } => {
-                            handle_keyboard_event(state, &ev);
-                        }
-                        BackendInputEvent::PointerMotionAbsolute { event: ev } => {
-                            handle_pointer_motion(state, &ev);
-                        }
-                        BackendInputEvent::PointerButton { event: ev } => {
-                            handle_pointer_button(state, &ev);
-                        }
-                        _ => {}
+        if let Some(x11_backend) = x11_backend {
+            loop_handle
+                .insert_source(x11_backend, |event, _, state| match event {
+                    X11Event::CloseRequested { .. } => {
+                        tracing::info!("X11 close requested");
+                        state.running = false;
                     }
-                }
-                X11Event::Focus { .. } => {}
-            })
-            .expect("failed to insert X11 backend");
+                    X11Event::Refresh { .. } | X11Event::PresentCompleted { .. } => {
+                        // Frame pacing hint from X server — render immediately
+                        state.render_frame();
+                    }
+                    X11Event::Resized { new_size, .. } => {
+                        tracing::debug!("resized: {:?}", new_size);
+                    }
+                    X11Event::Input { event, .. } => {
+                        match event {
+                            BackendInputEvent::Keyboard { event: ev } => {
+                                handle_keyboard_event(state, &ev);
+                            }
+                            BackendInputEvent::PointerMotionAbsolute { event: ev } => {
+                                handle_pointer_motion(state, &ev);
+                            }
+                            BackendInputEvent::PointerButton { event: ev } => {
+                                handle_pointer_button(state, &ev);
+                            }
+                            _ => {}
+                        }
+                    }
+                    X11Event::Focus { .. } => {}
+                })
+                .expect("failed to insert x11 backend source");
+        }
 
         let clock = Clock::<Monotonic>::new();
         let mut state = SloposCompositor {
@@ -2051,8 +2092,8 @@ pub fn parse_bool_env(key: &str) -> bool {
             pointer_pos: Point::from((0.0_f64, 0.0_f64)),
             output_size,
             serial: 0,
-            renderer,
-            x11_surface,
+            renderer: renderer_opt,
+            x11_surface: x11_surface_opt,
             clipboard_source: None,
             primary_source: None,
             clipboard_data: HashMap::new(),

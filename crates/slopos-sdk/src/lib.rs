@@ -682,7 +682,6 @@ impl Application {
                 }
                 if let Some(ref mut win) = self.window {
                     win.update();
-                    self.dirty = true;
                 }
                 if self.dirty {
                     if let Some(window) = &self.platform_window {
@@ -979,7 +978,6 @@ impl UiRuntime {
         }
         if let Some(ref mut win) = self.window {
             win.update();
-            self.dirty = true;
         }
         let minute = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
