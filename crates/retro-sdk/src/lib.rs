@@ -1916,39 +1916,37 @@ fn draw_dialog(canvas: &mut Canvas<'_>, rect: Rect, dialog: &Dialog) {
 
     // Title bar area
     let titlebar_rect = Rect::new(rect.x, rect.y, rect.width, 32.0);
-    let titlebar_bg = ui(rgb(218, 218, 214), rgb(54, 56, 58));
+    let titlebar_bg = if render_dark_mode() {
+        [0.21, 0.22, 0.23, 1.0]
+    } else {
+        [0.85, 0.85, 0.84, 1.0]
+    };
     canvas.rect(titlebar_rect, titlebar_bg);
 
     // Title bar highlight (raised bevel top edge)
     canvas.rect(
         Rect::new(rect.x + 1.0, rect.y + 1.0, rect.width - 2.0, 1.0),
-        ui(rgb(255, 255, 255), rgb(72, 74, 76)),
+        theme_color("edge_light"),
     );
 
     // Title text centered in title bar
     let title = &dialog.title;
     let title_w = title.len() as f32 * 7.0;
     let title_x = rect.x + (rect.width - title_w) * 0.5;
-    canvas.text(
-        title,
-        title_x,
-        rect.y + 10.0,
-        ui(rgb(20, 20, 20), rgb(236, 236, 232)),
-    );
+    canvas.text(title, title_x, rect.y + 10.0, theme_color("text"));
 
     // Horizontal separator below title
     canvas.rect(
         Rect::new(rect.x, rect.y + 32.0, rect.width, 1.0),
-        ui(rgb(145, 145, 140), rgb(80, 82, 84)),
+        if render_dark_mode() {
+            [0.31, 0.32, 0.33, 1.0]
+        } else {
+            [0.57, 0.57, 0.55, 1.0]
+        },
     );
 
     // Message text
-    canvas.text(
-        &dialog.message,
-        rect.x + 12.0,
-        rect.y + 42.0,
-        ui(rgb(24, 24, 24), rgb(220, 220, 216)),
-    );
+    canvas.text(&dialog.message, rect.x + 12.0, rect.y + 42.0, theme_color("text"));
 
     // Draw buttons right-aligned at the bottom
     let btn_h = 24.0;
@@ -1959,14 +1957,14 @@ fn draw_dialog(canvas: &mut Canvas<'_>, rect: Rect, dialog: &Dialog) {
         let btn_w = (label.len() as f32 * 7.0 + 20.0).max(72.0);
         btn_x -= btn_w;
         let btn_rect = Rect::new(btn_x, btn_y, btn_w, btn_h);
-        let btn_bg = ui(rgb(222, 222, 218), rgb(58, 60, 64));
+        let btn_bg = theme_color("button_bg");
         canvas.rect(btn_rect, btn_bg);
         draw_beveled_rect(canvas, btn_rect, btn_bg, true);
         canvas.text(
             label,
             btn_rect.x + (btn_w - label.len() as f32 * 7.0) * 0.5,
             btn_rect.y + 6.0,
-            ui(rgb(20, 20, 20), rgb(236, 236, 232)),
+            theme_color("text"),
         );
         btn_x -= 8.0;
     }
@@ -1974,18 +1972,13 @@ fn draw_dialog(canvas: &mut Canvas<'_>, rect: Rect, dialog: &Dialog) {
 
 fn draw_popup_button(canvas: &mut Canvas<'_>, rect: Rect, pb: &PopupButton) {
     // Background with beveled raised look
-    let bg = ui(rgb(222, 222, 218), rgb(58, 60, 64));
+    let bg = theme_color("button_bg");
     canvas.rect(rect, bg);
     draw_beveled_rect(canvas, rect, bg, true);
 
     // Selected title text, left-aligned with some padding
     let label = pb.selected_title().unwrap_or("");
-    canvas.text(
-        label,
-        rect.x + 8.0,
-        rect.y + (rect.height - 12.0) * 0.5,
-        ui(rgb(20, 20, 20), rgb(236, 236, 232)),
-    );
+    canvas.text(label, rect.x + 8.0, rect.y + (rect.height - 12.0) * 0.5, theme_color("text"));
 
     // Down-arrow indicator on the right side
     // Draw a small triangle using three thin horizontal rects
@@ -2039,8 +2032,13 @@ fn draw_popup_button(canvas: &mut Canvas<'_>, rect: Rect, pb: &PopupButton) {
 }
 
 fn draw_progress_bar(canvas: &mut Canvas<'_>, rect: Rect, pb: &ProgressBar) {
-    canvas.rect(rect, ui(rgb(236, 236, 232), rgb(24, 26, 28)));
-    canvas.stroke(rect, ui(rgb(145, 145, 140), rgb(92, 94, 96)));
+    let pb_bg = if render_dark_mode() {
+        [0.09, 0.10, 0.11, 1.0]
+    } else {
+        [0.93, 0.93, 0.91, 1.0]
+    };
+    canvas.rect(rect, pb_bg);
+    canvas.stroke(rect, theme_color("border"));
     let ratio = if pb.max > 0.0 { pb.value / pb.max } else { 0.0 };
     let fill_width = (rect.width - 4.0) * ratio.clamp(0.0, 1.0);
     if fill_width > 0.0 {
@@ -2061,16 +2059,28 @@ fn draw_workspace_grid_view(canvas: &mut Canvas<'_>, _rect: Rect, grid: &Workspa
         let cell_y = cell_r.y;
 
         let bg_color = if i == grid.active_index {
-            ui(rgb(204, 221, 240), rgb(48, 70, 96))
+            if render_dark_mode() {
+                [0.19, 0.27, 0.38, 1.0]
+            } else {
+                [0.80, 0.87, 0.94, 1.0]
+            }
         } else {
-            ui(rgb(240, 240, 236), rgb(38, 40, 42))
+            if render_dark_mode() {
+                [0.15, 0.15, 0.16, 1.0]
+            } else {
+                [0.94, 0.94, 0.92, 1.0]
+            }
         };
         canvas.rect(cell_r, bg_color);
 
         let border_color = if i == grid.active_index {
-            ui(rgb(10, 80, 160), rgb(140, 180, 240))
+            if render_dark_mode() {
+                [0.55, 0.71, 0.94, 1.0]
+            } else {
+                [0.04, 0.31, 0.63, 1.0]
+            }
         } else {
-            ui(rgb(140, 140, 135), rgb(80, 82, 84))
+            theme_color("border")
         };
 
         canvas.stroke(cell_r, border_color);
@@ -2091,15 +2101,20 @@ fn draw_workspace_grid_view(canvas: &mut Canvas<'_>, _rect: Rect, grid: &Workspa
             .get(i)
             .cloned()
             .unwrap_or_else(|| format!("Desktop {}", i + 1));
+        let text_color = if i == grid.active_index {
+            if render_dark_mode() {
+                [0.90, 0.94, 1.0, 1.0]
+            } else {
+                [0.04, 0.16, 0.31, 1.0]
+            }
+        } else {
+            theme_color("text")
+        };
         canvas.text(
             &label,
             cell_x + (cell_w - label.len() as f32 * 7.0) * 0.5,
             cell_y + (cell_h - 12.0) * 0.5 + 2.0,
-            if i == grid.active_index {
-                ui(rgb(10, 40, 80), rgb(230, 240, 255))
-            } else {
-                ui(rgb(40, 40, 40), rgb(200, 200, 200))
-            },
+            text_color,
         );
     }
 }
@@ -2109,7 +2124,7 @@ fn draw_tab_view(canvas: &mut Canvas<'_>, rect: Rect, tv: &TabView) {
     let divider_y = rect.y + header_height - 1.0;
     canvas.rect(
         Rect::new(rect.x, divider_y, rect.width, 1.0),
-        ui(rgb(150, 150, 145), rgb(96, 98, 100)),
+        theme_color("border"),
     );
     let mut current_x = rect.x + 8.0;
     for (i, tab) in tv.tabs.iter().enumerate() {
@@ -2117,16 +2132,12 @@ fn draw_tab_view(canvas: &mut Canvas<'_>, rect: Rect, tv: &TabView) {
         let tab_rect = Rect::new(current_x, rect.y + 4.0, tab_width, 25.0);
         let is_selected = tv.selected_tab_index == i;
         if is_selected {
-            canvas.rect(tab_rect, ui(rgb(236, 235, 229), rgb(48, 50, 52)));
-            draw_beveled_rect(
-                canvas,
-                tab_rect,
-                ui(rgb(238, 238, 232), rgb(52, 54, 56)),
-                true,
-            );
+            let tab_bg = theme_color("button_bg");
+            canvas.rect(tab_rect, tab_bg);
+            draw_beveled_rect(canvas, tab_rect, tab_bg, true);
             canvas.rect(
                 Rect::new(tab_rect.x + 1.0, divider_y, tab_rect.width - 2.0, 1.0),
-                ui(rgb(238, 238, 232), rgb(52, 54, 56)),
+                tab_bg,
             );
             // Accent underline on selected tab
             canvas.rect(
@@ -2134,20 +2145,24 @@ fn draw_tab_view(canvas: &mut Canvas<'_>, rect: Rect, tv: &TabView) {
                 render_accent(),
             );
         } else {
-            let inactive_bg = ui(rgb(210, 210, 204), rgb(32, 34, 36));
+            let inactive_bg = if render_dark_mode() {
+                [0.12, 0.12, 0.13, 1.0]
+            } else {
+                [0.82, 0.82, 0.80, 1.0]
+            };
             canvas.rect(tab_rect, inactive_bg);
             draw_beveled_rect(canvas, tab_rect, inactive_bg, false);
         }
-        canvas.text(
-            &tab.title,
-            tab_rect.x + 12.0,
-            tab_rect.y + 8.0,
-            if is_selected {
-                ui(rgb(24, 24, 24), rgb(240, 240, 235))
+        let text_color = if is_selected {
+            theme_color("text")
+        } else {
+            if render_dark_mode() {
+                [0.55, 0.55, 0.53, 1.0]
             } else {
-                ui(rgb(100, 100, 95), rgb(140, 140, 135))
-            },
-        );
+                [0.39, 0.39, 0.37, 1.0]
+            }
+        };
+        canvas.text(&tab.title, tab_rect.x + 12.0, tab_rect.y + 8.0, text_color);
         current_x += tab_width + 4.0;
     }
     if let Some(content) = tv.selected_content() {
