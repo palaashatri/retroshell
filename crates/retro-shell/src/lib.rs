@@ -3042,7 +3042,12 @@ fn folder_items_for_path(path: &PathBuf) -> Vec<IconItem> {
             if name.starts_with('.') {
                 return None;
             }
-            let is_dir = entry.file_type().ok().is_some_and(|kind| kind.is_dir());
+            let is_dir = entry
+                .path()
+                .metadata()
+                .map(|m| m.is_dir())
+                .or_else(|_| entry.file_type().map(|k| k.is_dir()))
+                .unwrap_or(false);
             Some((name, is_dir))
         })
         .collect::<Vec<_>>();

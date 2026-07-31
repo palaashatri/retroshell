@@ -1,8 +1,8 @@
-# HANDOFF — continue RetroShell (updated 2026-07-30)
+# HANDOFF — continue RetroShell (updated 2026-07-31)
 
-> You are a fresh coding agent taking over mid-effort. Read this top to bottom,
-> then `docs/PROGRAM.md` (honesty contract) and
-> `docs/tasks/stage-2b-layer-shell-chrome.md` (the active workstream).
+> You are a fresh coding agent taking over mid-effort. Read **[README.md](README.md)**
+> first (doc map), then [PROGRAM.md](PROGRAM.md) (honesty + stages) and [UI.md](UI.md)
+> (visual SoT). Ops details for VMs are below.
 > **Honesty contract governs everything:** a task/stage is done only when its
 > acceptance command passes on the real VM, evidenced by a transcript or
 > screenshot — never by reading code or self-scoring. Do not mark anything

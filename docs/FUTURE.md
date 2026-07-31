@@ -1,13 +1,14 @@
 # FUTURE — RetroShell backlog & standing design constraints
 
-> Backlog items are **not yet started** and are out of scope for the current
-> stages (0–4). They are recorded here so they are not lost. Do not mark any of
+> Backlog items are **not yet started** (or not stage-gated) and must not displace
+> current stage / UI SoT work. Recorded so they are not lost. Do not mark any of
 > these done without QA evidence per the honesty contract in [PROGRAM.md](PROGRAM.md).
+> UI visual language lives in **[UI.md](UI.md)** — not here.
 
 ## Standing design constraint (applies to ALL UI work, now and future)
 
-When designing or changing any UI, follow these human-interface guidelines. Where
-they conflict, prefer the classic-Mac / helloSystem spirit of the project:
+When designing or changing any UI, follow [UI.md](UI.md) references plus these HIG
+links. Where they conflict, prefer the classic-Mac / helloSystem spirit:
 
 - Apple macOS HIG — https://developer.apple.com/design/human-interface-guidelines/designing-for-macos
 - helloSystem UX guidelines — https://hellosystem.github.io/docs/developer/ux-guidelines.html
@@ -18,17 +19,15 @@ Core implications already relevant to current work:
 - **Root-level dock** owned by the shell session, not by any app.
 - Consistent control metrics, spacing, and focus behavior across apps (via `retro-kit`).
 
-## Feature backlog (requested 2026-07-30)
+## Feature backlog
 
-1. **Spotlight-like global search** — system-wide launcher/search (apps, files,
-   settings), invoked by a global shortcut; overlay surface owned by the shell.
-2. **Multiple themes** — beyond the existing `themes/` (graphite, platinum,
-   high-contrast, oled-graphite): a user-selectable theme system with a settings UI.
-3. **Animated desktop backgrounds** — wallpapers from GIF / video (and possibly
-   live/shader) sources, in addition to static images. Ties into the
-   desktop/wallpaper surface (see the layer-shell chrome rework).
+1. **Spotlight polish** — richer file search, icons in results (MVP already paints; see `qa/v0.2.0/`).
+2. **Theme picker UX** — Settings UI for live theme swap (preference file already works).
+3. **Animated desktop backgrounds** — GIF / video wallpapers (details formerly in `archive/ANIMATED-BACKGROUNDS.md`).
+4. **Chicago/Geneva-class bitmap fonts** — replace block glyph painter for kit typography.
+5. **Full System7Components control port** — checkbox, radio, slider, alert assets.
 
 ## Notes / dependencies
-- (1) and (3) both want the shell to own real root-level surfaces (Spotlight = an
-  overlay layer surface; animated wallpaper = the background layer surface), so
-  they are cleaner to build **after** the layer-shell chrome rework lands.
+
+- Overlay / wallpaper features need shell-owned layer surfaces (already partly landed
+  via layer-shell chrome). Keep HDR/VRR compositor paths intact while iterating UI.

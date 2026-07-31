@@ -1,15 +1,17 @@
 # RetroShell — Program Index
 
+> **Doc map:** [README.md](README.md) is the entry point. UI SoT is [UI.md](UI.md).
+
 RetroShell is a classic-Mac-styled Linux desktop environment and distribution,
 written in Rust, in the spirit of [helloSystem](https://hellosystem.github.io/docs/).
-This file is the living index for building it. The full rationale is in the
-design spec: [docs/specs/2026-07-30-retroshell-de-program-design.md](specs/2026-07-30-retroshell-de-program-design.md).
+This file is the living **program** index (stages + honesty). The full rationale is in
+[specs/2026-07-30-retroshell-de-program-design.md](specs/2026-07-30-retroshell-de-program-design.md).
 
 ## The honesty contract (read this first)
 
 This project previously carried an "~85/100 daily-driver" score for a compositor
 that had never built cleanly, never dispatched a client, and never painted a
-window (see [docs/QA_REPORT_2026-07-26.md](QA_REPORT_2026-07-26.md)). We do not
+window (see [archive/QA_REPORT_2026-07-26.md](archive/QA_REPORT_2026-07-26.md)). We do not
 repeat that. The single governing rule:
 
 > **A task is "done" only when its acceptance command passes.
@@ -21,8 +23,19 @@ Every doc here obeys three rules:
 1. **No unverified claims.** If it hasn't been run, it says "unverified."
 2. **Evidence or it didn't happen.** QA results are transcripts/screenshots.
 3. **No fabricated work.** We never write a task to "fix" something already fixed.
-   (Example: QA defects C/D/#3 were already fixed by commit `868b9c5`; Stage 1
-   verifies runtime behavior instead — see the spec §2.1.)
+
+## Current focus (honest)
+
+| Track | Status | Evidence |
+|-------|--------|----------|
+| Stages 0–3 | VERIFIED on VM | `qa/stage-*.md` |
+| Stage 4 distribution | CODE-COMPLETE; VM install/ISO **unverified** | `qa/stage-4.md` |
+| Spotlight | Visible + keyboard on UTM | `qa/v0.2.0/` |
+| UI polish vs System 7 kits | **Far from done** | `qa/ui-polish/` + [UI.md](UI.md) |
+| Defect J (clicks) | Verified on Env B Stage 2; not re-proven on UTM | `qa/stage-2.md` |
+| Defect H (retro-bus) | Still broken | code |
+
+Do **not** treat archived “theme complete” / “roadmap” markdown as current status.
 
 ## Who executes these docs
 

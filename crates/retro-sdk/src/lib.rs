@@ -60,13 +60,54 @@ const COLOR_EDGE_LIGHT: [f32; 4] = S7_BG;
 const COLOR_EDGE_DARK: [f32; 4] = S7_GRAY500;
 
 // Graphite / dark mode
-const COLOR_DARK_BG: [f32; 4] = [0.18, 0.18, 0.19, 1.0];
-const COLOR_DARK_BUTTON_BG: [f32; 4] = [0.28, 0.28, 0.30, 1.0];
-const COLOR_DARK_BUTTON_HOVER: [f32; 4] = [0.36, 0.36, 0.40, 1.0];
-const COLOR_DARK_BORDER: [f32; 4] = [0.05, 0.05, 0.05, 1.0];
-const COLOR_DARK_TEXT: [f32; 4] = [0.95, 0.95, 0.95, 1.0];
-const COLOR_DARK_EDGE_LIGHT: [f32; 4] = [0.45, 0.45, 0.48, 1.0];
+const COLOR_DARK_BG: [f32; 4] = [0.14, 0.14, 0.15, 1.0];
+const COLOR_DARK_BUTTON_BG: [f32; 4] = [0.22, 0.22, 0.24, 1.0];
+const COLOR_DARK_BUTTON_HOVER: [f32; 4] = [0.30, 0.30, 0.34, 1.0];
+const COLOR_DARK_BORDER: [f32; 4] = [0.02, 0.02, 0.02, 1.0];
+const COLOR_DARK_TEXT: [f32; 4] = [0.92, 0.92, 0.93, 1.0];
+const COLOR_DARK_EDGE_LIGHT: [f32; 4] = [0.42, 0.42, 0.45, 1.0];
 const COLOR_DARK_EDGE_DARK: [f32; 4] = [0.02, 0.02, 0.02, 1.0];
+const COLOR_DARK_MENU: [f32; 4] = [0.18, 0.18, 0.19, 1.0];
+
+fn theme_face() -> [f32; 4] {
+    if render_dark_mode() {
+        COLOR_DARK_BUTTON_BG
+    } else {
+        S7_GRAY100
+    }
+}
+
+fn theme_menu() -> [f32; 4] {
+    if render_dark_mode() {
+        COLOR_DARK_MENU
+    } else {
+        S7_BG
+    }
+}
+
+fn theme_paper() -> [f32; 4] {
+    if render_dark_mode() {
+        COLOR_DARK_BG
+    } else {
+        S7_BG
+    }
+}
+
+fn theme_ink() -> [f32; 4] {
+    if render_dark_mode() {
+        COLOR_DARK_TEXT
+    } else {
+        S7_FG
+    }
+}
+
+fn theme_muted() -> [f32; 4] {
+    if render_dark_mode() {
+        COLOR_DARK_EDGE_LIGHT
+    } else {
+        S7_GRAY400
+    }
+}
 
 fn set_render_dark_mode(is_dark: bool) {
     RENDER_DARK_MODE.store(is_dark, Ordering::Relaxed);
@@ -1534,11 +1575,14 @@ fn draw_desktop_backdrop(canvas: &mut Canvas<'_>) {
         }
     }
 
-    // Menu bar area: slightly lighter top 24px with a 1px separator below it.
+    // Menu bar area under layer chrome is painted by the menu surface; for winit
+    // fallback keep a subtle strip matching theme.
     if !render_dark_mode() {
-        canvas.rect(Rect::new(0.0, 0.0, canvas.width, 24.0), rgb(180, 180, 176));
-        // 1px separator line between menu bar and desktop content
-        canvas.rect(Rect::new(0.0, 24.0, canvas.width, 1.0), rgb(100, 100, 96));
+        canvas.rect(Rect::new(0.0, 0.0, canvas.width, 24.0), rgb(239, 239, 239));
+        canvas.rect(Rect::new(0.0, 24.0, canvas.width, 1.0), S7_FG);
+    } else {
+        canvas.rect(Rect::new(0.0, 0.0, canvas.width, 24.0), COLOR_DARK_MENU);
+        canvas.rect(Rect::new(0.0, 24.0, canvas.width, 1.0), COLOR_DARK_EDGE_LIGHT);
     }
 }
 
@@ -2250,11 +2294,7 @@ fn draw_dock_view(canvas: &mut Canvas<'_>, _rect: Rect, dock: &DockView) {
     // `handle_event` hit-tests, so paint and input cannot drift.
     let dock_rect = dock.strip_rect();
 
-    let bg_color = if render_dark_mode() {
-        [0.11, 0.11, 0.12, 1.0]
-    } else {
-        S7_GRAY100
-    };
+    let bg_color = theme_face();
     canvas.rect(dock_rect, bg_color);
     draw_beveled_rect(canvas, dock_rect, bg_color, true);
     draw_system7_3d_border(canvas, dock_rect);
@@ -2270,7 +2310,7 @@ fn draw_dock_view(canvas: &mut Canvas<'_>, _rect: Rect, dock: &DockView) {
                 item_rect.height + 4.0,
             );
             let focus_color = if render_dark_mode() {
-                [0.24, 0.31, 0.47, 1.0]
+                S7_LAVENDER300
             } else {
                 S7_LAVENDER100
             };
@@ -2278,11 +2318,7 @@ fn draw_dock_view(canvas: &mut Canvas<'_>, _rect: Rect, dock: &DockView) {
             draw_beveled_rect(canvas, highlight_rect, focus_color, false);
         }
 
-        let icon_bg = if render_dark_mode() {
-            [0.17, 0.18, 0.20, 1.0]
-        } else {
-            S7_BG
-        };
+        let icon_bg = theme_paper();
         canvas.rect(item_rect, icon_bg);
         draw_beveled_rect(canvas, item_rect, icon_bg, true);
 
@@ -2298,11 +2334,7 @@ fn draw_dock_view(canvas: &mut Canvas<'_>, _rect: Rect, dock: &DockView) {
                     4.0,
                     4.0,
                 ),
-                if render_dark_mode() {
-                    [0.78, 0.78, 0.77, 1.0]
-                } else {
-                    S7_FG
-                },
+                theme_ink(),
             );
         }
     }
@@ -2394,20 +2426,12 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
         return;
     }
 
-    // System 7 menu bar: white face, 1px black bottom rule
-    let menu_bar_bg = if render_dark_mode() {
-        [0.11, 0.11, 0.12, 1.0]
-    } else {
-        S7_BG
-    };
+    // System 7 menu bar: graphite/platinum face + ink bottom rule
+    let menu_bar_bg = theme_menu();
     canvas.rect(rect, menu_bar_bg);
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
-        if render_dark_mode() {
-            COLOR_DARK_BORDER
-        } else {
-            S7_FG
-        },
+        theme_ink(),
     );
 
     for (index, menu) in menu_bar.menus.iter().enumerate() {
@@ -2416,9 +2440,9 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
         };
         let active = menu_bar.open_menu == Some(index) || menu_bar.hovered_menu == Some(index);
         if active {
-            // Classic inverted selection (black) — System 7 style
+            // Classic inverted selection — System 7 style
             let highlight_color = if render_dark_mode() {
-                [0.31, 0.33, 0.38, 1.0]
+                S7_LAVENDER300
             } else {
                 S7_FG
             };
@@ -2441,7 +2465,7 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
                 if active {
                     [1.0, 1.0, 1.0, 1.0]
                 } else {
-                    theme_color("text")
+                    theme_ink()
                 },
             );
         } else {
@@ -2452,7 +2476,7 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
                 if active {
                     [1.0, 1.0, 1.0, 1.0]
                 } else {
-                    theme_color("text")
+                    theme_ink()
                 },
             );
         }
@@ -2463,7 +2487,7 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
         &right_label,
         rect.x + rect.width - right_label.len() as f32 * 7.0 - 72.0,
         rect.y + 8.0,
-        theme_color("text"),
+        theme_ink(),
     );
     draw_status_glyph(canvas, rect.x + rect.width - 42.0, rect.y + 7.0);
     draw_status_glyph(canvas, rect.x + rect.width - 22.0, rect.y + 7.0);
@@ -2974,12 +2998,7 @@ fn draw_icon_view(canvas: &mut Canvas<'_>, icon_view: &IconView) {
     if is_desktop {
         canvas.with_clip(rect, draw_desktop_backdrop);
     } else {
-        let icon_view_bg = if render_dark_mode() {
-            [0.15, 0.15, 0.15, 1.0]
-        } else {
-            S7_BG
-        };
-        canvas.rect(rect, icon_view_bg);
+        canvas.rect(rect, theme_paper());
     }
     for item in &icon_view.items {
         let display_label = truncate_label(&item.label, 12);
@@ -2994,19 +3013,21 @@ fn draw_icon_view(canvas: &mut Canvas<'_>, icon_view: &IconView) {
         }
         draw_desktop_icon(canvas, item);
         let label_y = item.rect.y + icon_view.icon_size + 6.0;
-        let label_color = if item.selected {
-            [1.0, 1.0, 1.0, 1.0]
-        } else if render_dark_mode() {
-            [0.9, 0.9, 0.9, 1.0]
+        let text_w = display_label.len() as f32 * 6.0;
+        let label_x = item.rect.x + (item.rect.width - text_w) * 0.5;
+        if item.selected {
+            let plate = Rect::new(label_x - 3.0, label_y - 2.0, text_w + 6.0, 14.0);
+            canvas.rect(plate, render_accent());
+            canvas.text(&display_label, label_x, label_y, [1.0, 1.0, 1.0, 1.0]);
+        } else if is_desktop {
+            // Desktop dither needs a nameplate; window interiors do not.
+            let plate = Rect::new(label_x - 3.0, label_y - 2.0, text_w + 6.0, 14.0);
+            canvas.rect(plate, theme_menu());
+            canvas.stroke(plate, theme_muted());
+            canvas.text(&display_label, label_x, label_y, theme_ink());
         } else {
-            [0.08, 0.08, 0.08, 1.0]
-        };
-        canvas.text(
-            &display_label,
-            item.rect.x + (item.rect.width - display_label.len() as f32 * 6.0) * 0.5,
-            label_y,
-            label_color,
-        );
+            canvas.text(&display_label, label_x, label_y, theme_ink());
+        }
     }
 }
 
@@ -3117,38 +3138,34 @@ fn draw_labeled_icon(canvas: &mut Canvas<'_>, label: &str, x: f32, y: f32) {
     }
 }
 
-fn draw_document_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    // Page body
-    draw_beveled_rect(
-        canvas,
-        Rect::new(x + 8.0, y + 4.0, 28.0, 36.0),
-        rgb(255, 255, 252),
-        true,
-    );
-    // Page content lines (blue left margin line, gray text lines)
-    canvas.rect(Rect::new(x + 13.0, y + 12.0, 1.0, 20.0), rgb(140, 140, 220));
-    canvas.rect(Rect::new(x + 16.0, y + 15.0, 14.0, 1.0), rgb(160, 160, 155));
-    canvas.rect(Rect::new(x + 16.0, y + 21.0, 16.0, 1.0), rgb(160, 160, 155));
-    canvas.rect(Rect::new(x + 16.0, y + 27.0, 12.0, 1.0), rgb(160, 160, 155));
-
-    // Top right folded corner
-    canvas.rect(Rect::new(x + 29.0, y + 4.0, 7.0, 7.0), rgb(210, 210, 205));
-    canvas.rect(Rect::new(x + 29.0, y + 11.0, 8.0, 1.0), rgb(130, 130, 125));
-    canvas.rect(Rect::new(x + 28.0, y + 4.0, 1.0, 8.0), rgb(130, 130, 125));
-}
-
 fn draw_drive_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    // Disk casing
+    // Disk casing — theme-aware Graphite/Platinum
     draw_beveled_rect(
         canvas,
         Rect::new(x, y + 8.0, 44.0, 28.0),
-        rgb(210, 210, 205),
+        theme_face(),
         true,
     );
     // Disc slot
-    canvas.rect(Rect::new(x + 6.0, y + 14.0, 32.0, 3.0), rgb(50, 50, 50));
+    canvas.rect(Rect::new(x + 6.0, y + 14.0, 32.0, 3.0), theme_ink());
     // LED Dot
     canvas.rect(Rect::new(x + 34.0, y + 26.0, 4.0, 4.0), rgb(80, 220, 80));
+}
+
+fn draw_document_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x + 8.0, y + 4.0, 28.0, 36.0),
+        theme_paper(),
+        true,
+    );
+    canvas.rect(Rect::new(x + 13.0, y + 12.0, 1.0, 20.0), S7_LAVENDER300);
+    canvas.rect(Rect::new(x + 16.0, y + 15.0, 14.0, 1.0), theme_muted());
+    canvas.rect(Rect::new(x + 16.0, y + 21.0, 16.0, 1.0), theme_muted());
+    canvas.rect(Rect::new(x + 16.0, y + 27.0, 12.0, 1.0), theme_muted());
+    canvas.rect(Rect::new(x + 29.0, y + 4.0, 7.0, 7.0), theme_face());
+    canvas.rect(Rect::new(x + 29.0, y + 11.0, 8.0, 1.0), theme_muted());
+    canvas.rect(Rect::new(x + 28.0, y + 4.0, 1.0, 8.0), theme_muted());
 }
 
 fn draw_folder_icon(canvas: &mut Canvas<'_>, x: f32, y: f32, color: [f32; 4]) {
@@ -3166,80 +3183,89 @@ fn draw_app_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
     draw_generic_app_icon(canvas, x + 6.0, y + 6.0);
 }
 
-/// Generic app (fallback) — simple stamped rectangle, not the old blue "A" monitor.
+/// Generic app (fallback) — stamped rectangle, theme-aware.
 fn draw_generic_app_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(canvas, Rect::new(x, y, 32.0, 32.0), S7_GRAY200, true);
-    canvas.rect(Rect::new(x + 6.0, y + 8.0, 20.0, 3.0), S7_GRAY500);
-    canvas.rect(Rect::new(x + 6.0, y + 14.0, 16.0, 3.0), S7_GRAY400);
-    canvas.rect(Rect::new(x + 6.0, y + 20.0, 12.0, 3.0), S7_GRAY400);
+    draw_beveled_rect(canvas, Rect::new(x, y, 32.0, 32.0), theme_face(), true);
+    canvas.rect(Rect::new(x + 6.0, y + 8.0, 20.0, 3.0), theme_muted());
+    canvas.rect(Rect::new(x + 6.0, y + 14.0, 16.0, 3.0), theme_muted());
+    canvas.rect(Rect::new(x + 6.0, y + 20.0, 12.0, 3.0), theme_muted());
 }
 
 /// Face/window finder metaphor — not Apple logo.
 fn draw_finder_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(canvas, Rect::new(x, y, 32.0, 32.0), S7_GRAY100, true);
-    // Window chrome strip
-    canvas.rect(Rect::new(x + 4.0, y + 4.0, 24.0, 6.0), S7_GRAY300);
-    canvas.rect(Rect::new(x + 6.0, y + 5.0, 4.0, 4.0), S7_BG);
-    // Content panes
-    canvas.rect(Rect::new(x + 4.0, y + 12.0, 10.0, 14.0), S7_LAVENDER100);
-    canvas.rect(Rect::new(x + 16.0, y + 12.0, 12.0, 14.0), S7_BG);
-    canvas.stroke(Rect::new(x + 4.0, y + 12.0, 24.0, 14.0), S7_FG);
+    draw_beveled_rect(canvas, Rect::new(x, y, 32.0, 32.0), theme_face(), true);
+    canvas.rect(Rect::new(x + 4.0, y + 4.0, 24.0, 6.0), theme_muted());
+    canvas.rect(Rect::new(x + 6.0, y + 5.0, 4.0, 4.0), theme_paper());
+    let pane = if render_dark_mode() {
+        [0.35, 0.35, 0.45, 1.0]
+    } else {
+        S7_LAVENDER100
+    };
+    canvas.rect(Rect::new(x + 4.0, y + 12.0, 10.0, 14.0), pane);
+    canvas.rect(Rect::new(x + 16.0, y + 12.0, 12.0, 14.0), theme_paper());
+    canvas.stroke(Rect::new(x + 4.0, y + 12.0, 24.0, 14.0), theme_ink());
 }
 
 fn draw_settings_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(canvas, Rect::new(x, y, 32.0, 32.0), S7_GRAY100, true);
-    // Gear approximation: ring + hub + teeth
-    canvas.rect(Rect::new(x + 10.0, y + 6.0, 12.0, 4.0), S7_GRAY400);
-    canvas.rect(Rect::new(x + 10.0, y + 22.0, 12.0, 4.0), S7_GRAY400);
-    canvas.rect(Rect::new(x + 6.0, y + 10.0, 4.0, 12.0), S7_GRAY400);
-    canvas.rect(Rect::new(x + 22.0, y + 10.0, 4.0, 12.0), S7_GRAY400);
-    canvas.rect(Rect::new(x + 11.0, y + 11.0, 10.0, 10.0), S7_GRAY300);
-    canvas.rect(Rect::new(x + 14.0, y + 14.0, 4.0, 4.0), S7_BG);
+    draw_beveled_rect(canvas, Rect::new(x, y, 32.0, 32.0), theme_face(), true);
+    canvas.rect(Rect::new(x + 10.0, y + 6.0, 12.0, 4.0), theme_muted());
+    canvas.rect(Rect::new(x + 10.0, y + 22.0, 12.0, 4.0), theme_muted());
+    canvas.rect(Rect::new(x + 6.0, y + 10.0, 4.0, 12.0), theme_muted());
+    canvas.rect(Rect::new(x + 22.0, y + 10.0, 4.0, 12.0), theme_muted());
+    canvas.rect(Rect::new(x + 11.0, y + 11.0, 10.0, 10.0), theme_muted());
+    canvas.rect(Rect::new(x + 14.0, y + 14.0, 4.0, 4.0), theme_paper());
 }
 
 fn draw_terminal_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(canvas, Rect::new(x, y, 32.0, 32.0), rgb(40, 44, 48), true);
-    // Prompt caret + cursor line
+    let screen = if render_dark_mode() {
+        [0.08, 0.10, 0.10, 1.0]
+    } else {
+        rgb(40, 44, 48)
+    };
+    draw_beveled_rect(canvas, Rect::new(x, y, 32.0, 32.0), screen, true);
     canvas.rect(Rect::new(x + 6.0, y + 10.0, 8.0, 2.0), rgb(80, 220, 120));
     canvas.rect(Rect::new(x + 6.0, y + 14.0, 2.0, 8.0), rgb(80, 220, 120));
-    canvas.rect(Rect::new(x + 10.0, y + 20.0, 14.0, 2.0), rgb(180, 180, 180));
+    canvas.rect(Rect::new(x + 10.0, y + 20.0, 14.0, 2.0), theme_muted());
 }
 
 fn draw_textedit_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(canvas, Rect::new(x + 4.0, y + 2.0, 24.0, 28.0), S7_BG, true);
-    canvas.rect(Rect::new(x + 20.0, y + 2.0, 8.0, 8.0), S7_GRAY200);
-    canvas.rect(Rect::new(x + 8.0, y + 12.0, 16.0, 2.0), S7_FG);
-    canvas.rect(Rect::new(x + 8.0, y + 17.0, 14.0, 2.0), S7_GRAY400);
-    canvas.rect(Rect::new(x + 8.0, y + 22.0, 12.0, 2.0), S7_GRAY400);
+    draw_beveled_rect(canvas, Rect::new(x + 4.0, y + 2.0, 24.0, 28.0), theme_paper(), true);
+    canvas.rect(Rect::new(x + 20.0, y + 2.0, 8.0, 8.0), theme_face());
+    canvas.rect(Rect::new(x + 8.0, y + 12.0, 16.0, 2.0), theme_ink());
+    canvas.rect(Rect::new(x + 8.0, y + 17.0, 14.0, 2.0), theme_muted());
+    canvas.rect(Rect::new(x + 8.0, y + 22.0, 12.0, 2.0), theme_muted());
 }
 
 fn draw_store_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(canvas, Rect::new(x, y, 32.0, 32.0), S7_LAVENDER100, true);
-    // Bag shape
-    canvas.rect(Rect::new(x + 8.0, y + 12.0, 16.0, 14.0), S7_BG);
-    canvas.stroke(Rect::new(x + 8.0, y + 12.0, 16.0, 14.0), S7_FG);
-    canvas.rect(Rect::new(x + 12.0, y + 8.0, 8.0, 6.0), S7_GRAY300);
+    let bag_bg = if render_dark_mode() {
+        [0.30, 0.30, 0.40, 1.0]
+    } else {
+        S7_LAVENDER100
+    };
+    draw_beveled_rect(canvas, Rect::new(x, y, 32.0, 32.0), bag_bg, true);
+    canvas.rect(Rect::new(x + 8.0, y + 12.0, 16.0, 14.0), theme_paper());
+    canvas.stroke(Rect::new(x + 8.0, y + 12.0, 16.0, 14.0), theme_ink());
+    canvas.rect(Rect::new(x + 12.0, y + 8.0, 8.0, 6.0), theme_muted());
     canvas.rect(Rect::new(x + 14.0, y + 16.0, 4.0, 6.0), S7_LAVENDER300);
 }
 
 fn draw_applications_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    // Grid of mini app tiles
-    draw_beveled_rect(canvas, Rect::new(x, y, 32.0, 32.0), S7_GRAY100, true);
-    let tile = S7_GRAY300;
+    draw_beveled_rect(canvas, Rect::new(x, y, 32.0, 32.0), theme_face(), true);
+    let tile = theme_muted();
     for (dx, dy) in [(5.0, 5.0), (17.0, 5.0), (5.0, 17.0), (17.0, 17.0)] {
         canvas.rect(Rect::new(x + dx, y + dy, 10.0, 10.0), tile);
-        canvas.rect(Rect::new(x + dx + 2.0, y + dy + 2.0, 6.0, 2.0), S7_BG);
+        canvas.rect(Rect::new(x + dx + 2.0, y + dy + 2.0, 6.0, 2.0), theme_paper());
     }
 }
 
 fn draw_trash_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    let lid_color = S7_GRAY200;
-    let body_color = S7_GRAY300;
-    let shadow_color = S7_GRAY500;
+    let lid_color = theme_face();
+    let body_color = theme_muted();
+    let shadow_color = theme_ink();
 
     // Handle
     canvas.rect(Rect::new(x + 18.0, y + 2.0, 8.0, 3.0), lid_color);
-    canvas.rect(Rect::new(x + 19.0, y + 1.0, 6.0, 1.0), S7_BG);
+    canvas.rect(Rect::new(x + 19.0, y + 1.0, 6.0, 1.0), theme_paper());
 
     // Lid rim
     draw_beveled_rect(
@@ -3262,7 +3288,7 @@ fn draw_trash_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
         canvas.rect(Rect::new(x + offset, y + 14.0, 1.0, 26.0), shadow_color);
         canvas.rect(
             Rect::new(x + offset + 1.0, y + 14.0, 1.0, 26.0),
-            S7_GRAY100,
+            theme_face(),
         );
     }
 }
