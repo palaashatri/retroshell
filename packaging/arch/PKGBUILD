@@ -1,0 +1,77 @@
+# Maintainer: RetroShell Contributors
+pkgname=retroshell
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="RetroShell: a classic-Mac-styled Linux desktop environment in Rust"
+arch=('x86_64' 'aarch64')
+url="https://github.com/retroshell/retroshell"
+license=('MIT')
+depends=(
+  wayland
+  wayland-protocols
+  libxkbcommon
+  libinput
+  seatd
+  libdrm
+  mesa
+  vulkan-icd-loader
+  vulkan-swrast
+  vulkan-tools
+  libdisplay-info
+  pixman
+  dbus
+  at-spi2-core
+  fontconfig
+  freetype2
+  ttf-dejavu
+  ttf-liberation
+  pipewire
+  pipewire-pulse
+  wireplumber
+  polkit
+  xorg-xwayland
+  labwc
+  foot
+  wl-clipboard
+)
+makedepends=(
+  cargo
+  pkgconf
+  rust
+)
+optdepends=(
+  'greetd: for session greeter'
+  'tuigreet: TUI greeter for greetd'
+)
+provides=('retroshell')
+conflicts=('retroshell')
+
+source=("$pkgname-$pkgver.tar.gz::https://github.com/retroshell/retroshell/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$srcdir/$pkgname-$pkgver"
+  cargo build --release --workspace --locked
+}
+
+package() {
+  cd "$srcdir/$pkgname-$pkgver"
+
+  # Install binaries
+  install -Dm755 target/release/retro-compositor "$pkgdir/usr/bin/retro-compositor"
+  install -Dm755 target/release/retro-shell "$pkgdir/usr/bin/retro-shell"
+  install -Dm755 target/release/finder "$pkgdir/usr/bin/finder"
+  install -Dm755 target/release/settings "$pkgdir/usr/bin/settings"
+  install -Dm755 target/release/textedit "$pkgdir/usr/bin/textedit"
+  install -Dm755 target/release/terminal "$pkgdir/usr/bin/terminal"
+  install -Dm755 target/release/appstore "$pkgdir/usr/bin/appstore"
+  install -Dm755 scripts/start-retroshell "$pkgdir/usr/bin/start-retroshell"
+
+  # Install session files
+  install -Dm644 packaging/retroshell.desktop "$pkgdir/usr/share/xsessions/retroshell.desktop"
+  install -Dm644 packaging/retroshell-wayland.desktop "$pkgdir/usr/share/wayland-sessions/retroshell.desktop"
+  install -Dm644 packaging/retroshell.service "$pkgdir/usr/lib/systemd/user/retroshell.service"
+
+  # Install documentation
+  install -Dm644 docs/PROGRAM.md "$pkgdir/usr/share/doc/$pkgname/PROGRAM.md"
+}
