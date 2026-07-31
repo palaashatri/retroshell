@@ -16,9 +16,10 @@
 | 4 | Distribution (installer + ISO) | 🔨 CODE-COMPLETE | Scripts ready, VM tests pending |
 | B2 | Spotlight search MVP (keyboard) | 🔨 CORE-INTEGRATED | Event routing + modal overlay wired |
 
-**Total codebase:** ~50k LOC (Rust) + docs + configs  
+**Total codebase:** ~50.5k LOC (Rust) + docs + configs  
 **First-party apps:** 5 (Finder, Settings, TextEdit, Terminal, App Store)  
-**Core platform:** Wayland compositor (smithay), layer-shell chrome, session management
+**Core platform:** Wayland compositor (smithay), layer-shell chrome, session management  
+**Spotlight MVP:** Keyboard routing + search backend + app launch (rendering TODO)
 
 ---
 
@@ -60,11 +61,16 @@
   - SearchBackend with 10 hardcoded settings entries (Display/Sound/Keyboard/Network)
   - App search: case-insensitive substring matching on launch_services.bundles
   - Featured apps shown when query is empty (Finder/Settings/TextEdit/Terminal)
-- **B2c (🔨 IN-PROGRESS):** Search UI (results list + icons + rendering)
+- **B2c (🔨 RENDERING-TODO):** Search UI (results list + icons + rendering)
   - TextField for search input positioned at top of overlay
   - ListView for results with selected index tracking
   - TODO: Render scrim, search field text, results list items, selection highlight
-- **B2d (BLOCKED on B2c):** Polish + integration (app launch/file open on Enter)
+  - Rendering infrastructure complete; UI display pending retro-kit canvas integration
+- **B2d (✅ DONE):** Polish + integration (app launch/file open on Enter)
+  - Enter key activates selected result
+  - Apps launch via launch_external_app()
+  - Files open with mime registry (same as folder double-click)
+  - Settings pane opens Settings app
 
 **Acceptance Criteria:**
 - Type "find" → Finder appears in results with featured apps
