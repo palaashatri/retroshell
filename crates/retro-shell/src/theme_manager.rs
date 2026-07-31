@@ -118,55 +118,64 @@ impl ThemeManager {
 
     fn load_platinum(&mut self) {
         let mut tokens = HashMap::new();
-        // Window background: softer white with depth
+        // Classic Macintosh Platinum theme - authentic 1990s Mac OS style
+        // Base: silver/platinum UI (light gray ~0.95 for surfaces)
+        // Accent: classic Mac blue (#0000FF desaturated to ~0.42, 0.55, 1.0)
+        // Shadows: dark edges for 3D beveled effect
+        // Highlights: light edges for depth perception
+
+        // Window background: classic platinum silver
         tokens.insert(
             ThemeToken::WindowBackground,
-            ThemeValue::new(Color::new(0.96, 0.96, 0.98, 1.0))
+            ThemeValue::new(Color::new(0.94, 0.94, 0.94, 1.0))
                 .with_dark(Color::new(0.12, 0.12, 0.14, 1.0)),
         );
-        // Window border: subtle shadow for depth
+        // Window border: dark shadow (bottom/right) for beveled effect
+        // Classic Mac uses black or very dark gray
         tokens.insert(
             ThemeToken::WindowBorder,
-            ThemeValue::new(Color::new(0.7, 0.7, 0.75, 1.0))
+            ThemeValue::new(Color::new(0.5, 0.5, 0.5, 1.0))
                 .with_dark(Color::new(0.2, 0.2, 0.22, 1.0)),
         );
-        // Window title: contrast text
+        // Window title: black text on platinum background
         tokens.insert(
             ThemeToken::WindowTitle,
             ThemeValue::new(Color::new(0.0, 0.0, 0.0, 1.0))
                 .with_dark(Color::new(0.95, 0.95, 0.95, 1.0)),
         );
-        // Menu background: slightly off-white
+        // Menu background: platinum silver, slightly lighter
         tokens.insert(
             ThemeToken::MenuBackground,
-            ThemeValue::new(Color::new(0.98, 0.98, 0.99, 1.0))
+            ThemeValue::new(Color::new(0.95, 0.95, 0.95, 1.0))
                 .with_dark(Color::new(0.11, 0.11, 0.13, 1.0)),
         );
-        // Menu highlight: vibrant blue (improved from dull blue)
+        // Menu highlight: classic Mac blue (desaturated, from UI Kit)
+        // Authentic classic blue: RGB ~100/150/220 (normalized: ~0.39, 0.59, 0.86)
         tokens.insert(
             ThemeToken::MenuHighlight,
-            ThemeValue::new(Color::new(0.2, 0.42, 0.88, 1.0)),
+            ThemeValue::new(Color::new(0.39, 0.59, 0.86, 1.0)),
         );
         tokens.insert(
             ThemeToken::MenuText,
             ThemeValue::new(Color::new(0.0, 0.0, 0.0, 1.0))
                 .with_dark(Color::new(0.95, 0.95, 0.95, 1.0)),
         );
-        // Button background: lighter, more refined
+        // Button background: platinum silver (raised button appearance)
         tokens.insert(
             ThemeToken::ButtonBackground,
-            ThemeValue::new(Color::new(0.91, 0.91, 0.93, 1.0))
+            ThemeValue::new(Color::new(0.93, 0.93, 0.93, 1.0))
                 .with_dark(Color::new(0.18, 0.18, 0.2, 1.0)),
         );
-        // Button highlight: same vibrant blue
+        // Button highlight: classic Mac blue for active state
         tokens.insert(
             ThemeToken::ButtonHighlight,
-            ThemeValue::new(Color::new(0.2, 0.42, 0.88, 1.0)),
+            ThemeValue::new(Color::new(0.39, 0.59, 0.86, 1.0)),
         );
-        // Button shadow: more pronounced for depth
+        // Button shadow: dark edges for beveled 3D effect
+        // Light edge highlight (for raised effect)
         tokens.insert(
             ThemeToken::ButtonShadow,
-            ThemeValue::new(Color::new(0.7, 0.7, 0.75, 1.0))
+            ThemeValue::new(Color::new(0.4, 0.4, 0.4, 1.0))
                 .with_dark(Color::new(0.08, 0.08, 0.1, 1.0)),
         );
         tokens.insert(
@@ -184,131 +193,132 @@ impl ThemeManager {
             ThemeValue::new(Color::new(0.35, 0.35, 0.35, 1.0))
                 .with_dark(Color::new(0.65, 0.65, 0.65, 1.0)),
         );
-        // Selection: same vibrant blue
+        // Selection: classic Mac blue selection highlight
         tokens.insert(
             ThemeToken::SelectionBackground,
-            ThemeValue::new(Color::new(0.2, 0.42, 0.88, 1.0)),
+            ThemeValue::new(Color::new(0.39, 0.59, 0.86, 1.0)),
         );
         tokens.insert(
             ThemeToken::SelectionText,
             ThemeValue::new(Color::new(1.0, 1.0, 1.0, 1.0)),
         );
-        // Desktop background: warmer, more visually interesting
-        // Light: slightly warmed light purple/blue
-        // Dark: deep space blue
+        // Desktop background: classic gray desktop
+        // Original Mac had medium gray; RetroShell variant is slightly warmer
         tokens.insert(
             ThemeToken::DesktopBackground,
-            ThemeValue::new(Color::new(0.35, 0.35, 0.55, 1.0))
+            ThemeValue::new(Color::new(0.5, 0.5, 0.5, 1.0))
                 .with_dark(Color::new(0.06, 0.06, 0.12, 1.0)),
         );
-        // Dock: more translucent, better visual separation
+        // Dock: translucent silver (macOS Yosemite-era inspiration, but classic style)
         tokens.insert(
             ThemeToken::DockBackground,
-            ThemeValue::new(Color::new(0.88, 0.88, 0.91, 0.85))
+            ThemeValue::new(Color::new(0.88, 0.88, 0.88, 0.85))
                 .with_dark(Color::new(0.09, 0.09, 0.11, 0.92)),
         );
-        // Scrollbar: refined gray with better contrast
+        // Scrollbar: gray with proper beveled appearance
         tokens.insert(
             ThemeToken::ScrollBar,
-            ThemeValue::new(Color::new(0.65, 0.65, 0.7, 1.0))
+            ThemeValue::new(Color::new(0.7, 0.7, 0.7, 1.0))
                 .with_dark(Color::new(0.35, 0.35, 0.38, 1.0)),
         );
         // Scrollbar hover: darker for interaction feedback
         tokens.insert(
             ThemeToken::ScrollBarHover,
-            ThemeValue::new(Color::new(0.5, 0.5, 0.55, 1.0))
+            ThemeValue::new(Color::new(0.55, 0.55, 0.55, 1.0))
                 .with_dark(Color::new(0.45, 0.45, 0.48, 1.0)),
         );
-        // Separator: subtle, refined
+        // Separator: classic Mac horizontal lines
         tokens.insert(
             ThemeToken::Separator,
-            ThemeValue::new(Color::new(0.8, 0.8, 0.83, 1.0))
+            ThemeValue::new(Color::new(0.6, 0.6, 0.6, 1.0))
                 .with_dark(Color::new(0.25, 0.25, 0.27, 1.0)),
         );
-        // Focus ring: vibrant blue
+        // Focus ring: classic Mac blue
         tokens.insert(
             ThemeToken::FocusRing,
-            ThemeValue::new(Color::new(0.2, 0.42, 0.88, 1.0)),
+            ThemeValue::new(Color::new(0.39, 0.59, 0.86, 1.0)),
         );
-        // Toolbar background: subtle, clean
+        // Toolbar background: platinum silver
         tokens.insert(
             ThemeToken::ToolbarBackground,
-            ThemeValue::new(Color::new(0.93, 0.93, 0.95, 1.0))
+            ThemeValue::new(Color::new(0.92, 0.92, 0.92, 1.0))
                 .with_dark(Color::new(0.12, 0.12, 0.14, 1.0)),
         );
-        // Toolbar border: matches window border
+        // Toolbar border: dark edges
         tokens.insert(
             ThemeToken::ToolbarBorder,
-            ThemeValue::new(Color::new(0.7, 0.7, 0.75, 1.0))
+            ThemeValue::new(Color::new(0.5, 0.5, 0.5, 1.0))
                 .with_dark(Color::new(0.2, 0.2, 0.22, 1.0)),
         );
-        // Dialog background: same as window
+        // Dialog background: platinum silver (same as window)
         tokens.insert(
             ThemeToken::DialogBackground,
-            ThemeValue::new(Color::new(0.96, 0.96, 0.98, 1.0))
+            ThemeValue::new(Color::new(0.94, 0.94, 0.94, 1.0))
                 .with_dark(Color::new(0.12, 0.12, 0.14, 1.0)),
         );
-        // Dialog border: subtle
+        // Dialog border: dark shadow edges
         tokens.insert(
             ThemeToken::DialogBorder,
-            ThemeValue::new(Color::new(0.7, 0.7, 0.75, 1.0))
+            ThemeValue::new(Color::new(0.5, 0.5, 0.5, 1.0))
                 .with_dark(Color::new(0.2, 0.2, 0.22, 1.0)),
         );
-        // Progress bar: vibrant blue gradient
+        // Progress bar: classic Mac blue fill
         tokens.insert(
             ThemeToken::ProgressBarFill,
-            ThemeValue::new(Color::new(0.2, 0.42, 0.88, 1.0)),
+            ThemeValue::new(Color::new(0.39, 0.59, 0.86, 1.0)),
         );
+        // Progress bar track: lighter platinum
         tokens.insert(
             ThemeToken::ProgressBarTrack,
-            ThemeValue::new(Color::new(0.9, 0.9, 0.92, 1.0))
+            ThemeValue::new(Color::new(0.88, 0.88, 0.88, 1.0))
                 .with_dark(Color::new(0.15, 0.15, 0.17, 1.0)),
         );
-        // Slider: blue accent
+        // Slider track: silver gray
         tokens.insert(
             ThemeToken::SliderTrack,
-            ThemeValue::new(Color::new(0.88, 0.88, 0.9, 1.0))
+            ThemeValue::new(Color::new(0.85, 0.85, 0.85, 1.0))
                 .with_dark(Color::new(0.18, 0.18, 0.2, 1.0)),
         );
+        // Slider thumb: classic blue
         tokens.insert(
             ThemeToken::SliderThumb,
-            ThemeValue::new(Color::new(0.2, 0.42, 0.88, 1.0)),
+            ThemeValue::new(Color::new(0.39, 0.59, 0.86, 1.0)),
         );
-        // Status bar: clean light gray
+        // Status bar: platinum silver
         tokens.insert(
             ThemeToken::StatusBarBackground,
-            ThemeValue::new(Color::new(0.93, 0.93, 0.95, 1.0))
+            ThemeValue::new(Color::new(0.92, 0.92, 0.92, 1.0))
                 .with_dark(Color::new(0.12, 0.12, 0.14, 1.0)),
         );
-        // Icon background: subtle, can be highlighted
+        // Icon background: subtle platinum (semi-transparent for hover states)
         tokens.insert(
             ThemeToken::IconBackground,
-            ThemeValue::new(Color::new(0.91, 0.91, 0.93, 0.5))
+            ThemeValue::new(Color::new(0.93, 0.93, 0.93, 0.5))
                 .with_dark(Color::new(0.18, 0.18, 0.2, 0.5)),
         );
-        // Dock highlight: accent color
+        // Dock highlight: classic blue when app is active
         tokens.insert(
             ThemeToken::DockHighlight,
-            ThemeValue::new(Color::new(0.2, 0.42, 0.88, 1.0)),
+            ThemeValue::new(Color::new(0.39, 0.59, 0.86, 1.0)),
         );
-        // Notification styling
+        // Notification styling: platinum with dark borders
         tokens.insert(
             ThemeToken::NotificationBackground,
-            ThemeValue::new(Color::new(0.96, 0.96, 0.98, 1.0))
+            ThemeValue::new(Color::new(0.94, 0.94, 0.94, 1.0))
                 .with_dark(Color::new(0.12, 0.12, 0.14, 1.0)),
         );
         tokens.insert(
             ThemeToken::NotificationBorder,
-            ThemeValue::new(Color::new(0.7, 0.7, 0.75, 1.0))
+            ThemeValue::new(Color::new(0.5, 0.5, 0.5, 1.0))
                 .with_dark(Color::new(0.2, 0.2, 0.22, 1.0)),
         );
-        // Disabled text: lighter gray
+        // Disabled text: light gray (classic Mac disabled appearance)
         tokens.insert(
             ThemeToken::DisabledText,
-            ThemeValue::new(Color::new(0.6, 0.6, 0.6, 1.0))
+            ThemeValue::new(Color::new(0.65, 0.65, 0.65, 1.0))
                 .with_dark(Color::new(0.5, 0.5, 0.5, 1.0)),
         );
-        // Links: colored for visibility
+        // Links: classic blue underlined (color alone)
         tokens.insert(
             ThemeToken::LinkText,
             ThemeValue::new(Color::new(0.1, 0.3, 0.8, 1.0))
@@ -327,54 +337,65 @@ impl ThemeManager {
 
     fn load_graphite(&mut self) {
         let mut tokens = HashMap::new();
-        // Graphite: refined grayscale with teal accent instead of blue
+        // Graphite: Classic Macintosh dark theme (introduced in Mac OS 8.5)
+        // Uses graphite/dark gray UI with lighter accent colors for contrast
+        // Same structure as Platinum but with inverted grayscale
+
+        // Graphite window background: dark gray (classic graphite)
         tokens.insert(
             ThemeToken::WindowBackground,
-            ThemeValue::new(Color::new(0.93, 0.93, 0.93, 1.0))
+            ThemeValue::new(Color::new(0.65, 0.65, 0.65, 1.0))
                 .with_dark(Color::new(0.13, 0.13, 0.15, 1.0)),
         );
+        // Graphite window border: darker for beveled effect
         tokens.insert(
             ThemeToken::WindowBorder,
-            ThemeValue::new(Color::new(0.45, 0.45, 0.45, 1.0))
+            ThemeValue::new(Color::new(0.35, 0.35, 0.35, 1.0))
                 .with_dark(Color::new(0.22, 0.22, 0.24, 1.0)),
         );
         tokens.insert(
             ThemeToken::WindowTitle,
-            ThemeValue::new(Color::new(0.0, 0.0, 0.0, 1.0))
+            ThemeValue::new(Color::new(1.0, 1.0, 1.0, 1.0))
                 .with_dark(Color::new(0.95, 0.95, 0.95, 1.0)),
         );
+        // Graphite menu: slightly lighter gray than window
         tokens.insert(
             ThemeToken::MenuBackground,
-            ThemeValue::new(Color::new(0.96, 0.96, 0.96, 1.0))
+            ThemeValue::new(Color::new(0.68, 0.68, 0.68, 1.0))
                 .with_dark(Color::new(0.11, 0.11, 0.13, 1.0)),
         );
-        // Graphite accent: teal/cyan
+        // Graphite accent: lighter teal/cyan (better contrast on dark)
+        // Classic graphite used lighter accent colors
         tokens.insert(
             ThemeToken::MenuHighlight,
-            ThemeValue::new(Color::new(0.2, 0.45, 0.5, 1.0))
+            ThemeValue::new(Color::new(0.4, 0.7, 0.75, 1.0))
                 .with_dark(Color::new(0.3, 0.6, 0.65, 1.0)),
         );
+        // Graphite button: dark gray (raised appearance on dark background)
         tokens.insert(
             ThemeToken::ButtonBackground,
-            ThemeValue::new(Color::new(0.85, 0.85, 0.85, 1.0))
+            ThemeValue::new(Color::new(0.62, 0.62, 0.62, 1.0))
                 .with_dark(Color::new(0.18, 0.18, 0.2, 1.0)),
         );
+        // Graphite button highlight: light cyan/teal
         tokens.insert(
             ThemeToken::ButtonHighlight,
-            ThemeValue::new(Color::new(0.2, 0.45, 0.5, 1.0))
+            ThemeValue::new(Color::new(0.4, 0.7, 0.75, 1.0))
                 .with_dark(Color::new(0.3, 0.6, 0.65, 1.0)),
         );
+        // Graphite selection: light teal
         tokens.insert(
             ThemeToken::SelectionBackground,
-            ThemeValue::new(Color::new(0.2, 0.45, 0.5, 1.0))
+            ThemeValue::new(Color::new(0.4, 0.7, 0.75, 1.0))
                 .with_dark(Color::new(0.3, 0.6, 0.65, 1.0)),
         );
+        // Graphite desktop: dark gray
         tokens.insert(
             ThemeToken::DesktopBackground,
-            ThemeValue::new(Color::new(0.15, 0.15, 0.15, 1.0))
+            ThemeValue::new(Color::new(0.25, 0.25, 0.25, 1.0))
                 .with_dark(Color::new(0.04, 0.04, 0.06, 1.0)),
         );
-        // Copy remaining from platinum with teal accent adjustments
+        // Copy remaining from platinum with graphite-specific adjustments
         for (k, v) in &self.themes.get("platinum").unwrap().tokens {
             // Skip the ones we've already set
             if !matches!(
