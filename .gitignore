@@ -1,14 +1,8 @@
 target/
 target-docker/
-.serena/
 .DS_Store
 *.swp
 *.swo
-*~
-*.mp4
-*.png
-!docs/screenshots/*.png
-docs/superpowers/
 
 # VM QA access key (generated locally by packaging/vm tooling)
 packaging/vm/qa_key
