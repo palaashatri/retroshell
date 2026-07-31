@@ -1149,6 +1149,30 @@ impl ShellDesktop {
         self.menu_bar.menus = self.menu_server.read().menus.clone();
     }
 
+    /// Activate a Spotlight search result (app, file, or setting).
+    fn activate_spotlight_result(&mut self, result: &spotlight::SearchResult) {
+        match result {
+            spotlight::SearchResult::App(app) => {
+                self.launch_external_app(&app.bundle_id);
+            }
+            spotlight::SearchResult::File { path, .. } => {
+                if let Ok(plan) = open_plan_for_file_uri(
+                    &self.mime_registry,
+                    &format!("file://{}", path.display()),
+                ) {
+                    if self.mime_open_spawn {
+                        let _ = spawn_argv(&plan);
+                    } else {
+                        self.last_mime_open = Some(plan);
+                    }
+                }
+            }
+            spotlight::SearchResult::Setting { .. } => {
+                self.launch_external_app("com.retro.settings");
+            }
+        }
+    }
+
     fn refresh_menu_manifests(&mut self) {
         let Some(dir) = retro_sdk::menu_manifest_dir() else {
             return;
@@ -3321,6 +3345,17 @@ impl Widget for ShellDesktop {
             let mut spotlight = self.spotlight_ui.borrow_mut();
             if spotlight.is_visible() {
                 if let Event::KeyDown { key, modifiers } = event {
+                    // Check for Enter to activate selected result
+                    if *key == retro_kit::event::KeyCode::Enter {
+                        if let Some(selected) = spotlight.selected_result() {
+                            let selected_clone = selected.clone();
+                            drop(spotlight);
+                            // Handle activation outside the borrow
+                            self.activate_spotlight_result(&selected_clone);
+                            return EventResult::Handled;
+                        }
+                    }
+
                     let result = spotlight.handle_overlay_key(*key, modifiers);
                     if matches!(result, EventResult::Handled) {
                         // Update search results if a character was typed or search changed
