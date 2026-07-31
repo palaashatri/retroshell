@@ -14,6 +14,7 @@
 | 2 | Session, input, lock screen | ✅ VERIFIED | lock/unlock, Super+O, button click |
 | 3 | `.app` bundles + app store | ✅ VERIFIED | Store installs TextEdit.app |
 | 4 | Distribution (installer + ISO) | 🔨 CODE-COMPLETE | Scripts ready, VM tests pending |
+| B2 | Spotlight search MVP (keyboard) | 🔨 CORE-INTEGRATED | Event routing + modal overlay wired |
 
 **Total codebase:** ~50k LOC (Rust) + docs + configs  
 **First-party apps:** 5 (Finder, Settings, TextEdit, Terminal, App Store)  
@@ -50,15 +51,27 @@
 **Architecture:** Shell-owned overlay surface + search backend + UI
 
 **Stages:**
-- **B2a (2-3 days):** Overlay surface + keyboard shortcuts (Super+Space)
-- **B2b (2-3 days):** Search backend (apps + files + settings)
-- **B2c (2-3 days):** Search UI (results list + icons + styling)
-- **B2d (1 day):** Polish + integration
+- **B2a (✅ DONE):** Overlay surface + keyboard shortcuts (Super+Space)
+  - SpotlightUI module with search backend (spotlight.rs) + UI state (spotlight_ui.rs)
+  - Modal overlay intercepts all events when visible
+  - Super+Space toggles visibility; real-time search on character input
+  - All 311 shell tests pass; event routing verified
+- **B2b (✅ DONE):** Search backend (apps + files + settings)
+  - SearchBackend with 10 hardcoded settings entries (Display/Sound/Keyboard/Network)
+  - App search: case-insensitive substring matching on launch_services.bundles
+  - Featured apps shown when query is empty (Finder/Settings/TextEdit/Terminal)
+- **B2c (🔨 IN-PROGRESS):** Search UI (results list + icons + rendering)
+  - TextField for search input positioned at top of overlay
+  - ListView for results with selected index tracking
+  - TODO: Render scrim, search field text, results list items, selection highlight
+- **B2d (BLOCKED on B2c):** Polish + integration (app launch/file open on Enter)
 
-**Acceptance:**
-- Type "find" → Finder appears in results
-- Press Enter → Finder launches
-- Type "doc" → files matching ~/*/doc* appear
+**Acceptance Criteria:**
+- Type "find" → Finder appears in results with featured apps
+- Press Down → selection moves to next result
+- Press Enter → (TODO: launch app or open file)
+- Type "settings" → Settings app appears
+- Press Escape → overlay hides, focus returns to desktop
 
 ### B3: Fix known defects blocking other work
 Priority: **Defect J (toolkit interaction — buttons/scrolling inert)**
