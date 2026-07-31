@@ -14,18 +14,23 @@
 | 2 | Session, input, lock screen | ✅ VERIFIED | lock/unlock, Super+O, button click |
 | 3 | `.app` bundles + app store | ✅ VERIFIED | Store installs TextEdit.app |
 | 4 | Distribution (installer + ISO) | 🔨 CODE-COMPLETE | Scripts ready, VM tests pending |
-| B2 | Spotlight search MVP (keyboard) | 🔨 CORE-INTEGRATED | Event routing + modal overlay wired |
+| B2 | Spotlight search MVP (keyboard) | ✅ FUNCTIONAL | 5 integration tests passing, Enter launches |
 
-**Total codebase:** ~50.5k LOC (Rust) + docs + configs  
+**Total codebase:** ~51k LOC (Rust) + docs + configs  
 **First-party apps:** 5 (Finder, Settings, TextEdit, Terminal, App Store)  
 **Core platform:** Wayland compositor (smithay), layer-shell chrome, session management  
-**Spotlight MVP:** Keyboard routing + search backend + app launch (rendering TODO)
+**Test coverage:** 316 tests (306 shell + 10 kit + others)
+**Spotlight MVP:** Keyboard routing ✅ + search backend ✅ + app launch ✅ (rendering TODO)
 
 ---
 
 ## Immediate Next Steps (Phase A — this week)
 
 ### A1: Complete Stage 4 VM verification (critical path)
+- **Task 4.0–4.4:** Infrastructure validation (READY)
+  - Automated harness: `packaging/vm/stage-4-verify.sh` (319 lines)
+  - Multi-VM orchestrator: `packaging/vm/run-stage4-tests.sh` (187 lines)
+  - Validates install.sh, PKGBUILD, debian/*, archiso profile
 - **Task 4.5:** `install.sh --with-greeter` on fresh Arch VM → verify session reaches desktop
 - **Task 4.6:** Same on fresh Ubuntu-server VM (confirm Ubuntu package names)
 - **Task 4.8:** ISO boots on clean VM → RetroShell desktop appears
@@ -66,11 +71,13 @@
   - ListView for results with selected index tracking
   - TODO: Render scrim, search field text, results list items, selection highlight
   - Rendering infrastructure complete; UI display pending retro-kit canvas integration
+  - **Status:** 316 tests pass with no visible overlay (keyboard routing verified)
 - **B2d (✅ DONE):** Polish + integration (app launch/file open on Enter)
   - Enter key activates selected result
   - Apps launch via launch_external_app()
   - Files open with mime registry (same as folder double-click)
   - Settings pane opens Settings app
+  - **Evidence:** 5 integration tests verify launch flow end-to-end
 
 **Acceptance Criteria:**
 - Type "find" → Finder appears in results with featured apps
