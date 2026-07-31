@@ -149,6 +149,21 @@ impl SpotlightUI {
     pub fn overlay_rect(&self) -> Rect {
         Rect::new(100.0, 100.0, 1080.0, 600.0) // stub: should be calculated from screen size
     }
+
+    /// Get the current search query string.
+    pub fn query(&self) -> &str {
+        self.spotlight.query()
+    }
+
+    /// Get the current search results.
+    pub fn results(&self) -> &[SearchResult] {
+        &self.current_results
+    }
+
+    /// Get the index of the selected result.
+    pub fn selected_index(&self) -> usize {
+        self.selected_index
+    }
 }
 
 impl Default for SpotlightUI {
