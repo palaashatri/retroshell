@@ -1589,60 +1589,67 @@ fn draw_window(canvas: &mut Canvas<'_>, window: &Window) {
 }
 
 fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str, is_active: bool) {
-    let titlebar_bg = ui(rgb(224, 224, 218), rgb(46, 48, 52));
+    let titlebar_bg = if render_dark_mode() {
+        [0.18, 0.19, 0.20, 1.0]
+    } else {
+        [0.88, 0.88, 0.85, 1.0]
+    };
     canvas.rect(rect, titlebar_bg);
     draw_beveled_rect(canvas, rect, titlebar_bg, true);
 
     if is_active {
+        let pattern_dark = if render_dark_mode() {
+            [0.44, 0.45, 0.47, 1.0]
+        } else {
+            [0.44, 0.44, 0.42, 1.0]
+        };
+        let pattern_light = if render_dark_mode() {
+            [0.09, 0.09, 0.10, 1.0]
+        } else {
+            [0.96, 0.96, 0.95, 1.0]
+        };
         for y in (rect.y as i32 + 4..rect.y as i32 + rect.height as i32 - 4).step_by(3) {
             canvas.rect(
                 Rect::new(rect.x + 26.0, y as f32, rect.width - 52.0, 1.0),
-                ui(rgb(112, 112, 108), rgb(112, 116, 120)),
+                pattern_dark,
             );
             canvas.rect(
                 Rect::new(rect.x + 26.0, y as f32 + 1.0, rect.width - 52.0, 1.0),
-                ui(rgb(246, 246, 242), rgb(22, 24, 26)),
+                pattern_light,
             );
         }
 
+        let ctrl_box_bg = theme_color("button_bg");
+        let ctrl_box_stroke = if render_dark_mode() {
+            [0.66, 0.67, 0.68, 1.0]
+        } else {
+            [0.24, 0.24, 0.23, 1.0]
+        };
+        let ctrl_box_highlight = theme_color("edge_light");
+
         let close_box = Rect::new(rect.x + 8.0, rect.y + 7.0, 11.0, 11.0);
-        canvas.rect(close_box, ui(rgb(238, 238, 232), rgb(58, 60, 64)));
-        canvas.stroke(close_box, ui(rgb(60, 60, 58), rgb(168, 170, 174)));
+        canvas.rect(close_box, ctrl_box_bg);
+        canvas.stroke(close_box, ctrl_box_stroke);
         canvas.rect(
-            Rect::new(
-                close_box.x + 2.0,
-                close_box.y + 2.0,
-                close_box.width - 4.0,
-                1.0,
-            ),
-            ui(rgb(255, 255, 255), rgb(92, 94, 98)),
+            Rect::new(close_box.x + 2.0, close_box.y + 2.0, close_box.width - 4.0, 1.0),
+            ctrl_box_highlight,
         );
 
         // Minimize box (classic Mac OS style dash)
         let minimize_box = Rect::new(rect.x + 22.0, rect.y + 7.0, 11.0, 11.0);
-        canvas.rect(minimize_box, ui(rgb(238, 238, 232), rgb(58, 60, 64)));
-        canvas.stroke(minimize_box, ui(rgb(60, 60, 58), rgb(168, 170, 174)));
+        canvas.rect(minimize_box, ctrl_box_bg);
+        canvas.stroke(minimize_box, ctrl_box_stroke);
         canvas.rect(
-            Rect::new(
-                minimize_box.x + 2.0,
-                minimize_box.y + 5.0,
-                minimize_box.width - 4.0,
-                1.0,
-            ),
-            ui(rgb(255, 255, 255), rgb(92, 94, 98)),
+            Rect::new(minimize_box.x + 2.0, minimize_box.y + 5.0, minimize_box.width - 4.0, 1.0),
+            ctrl_box_highlight,
         );
 
         let zoom_box = Rect::new(rect.x + rect.width - 19.0, rect.y + 7.0, 11.0, 11.0);
-        canvas.rect(zoom_box, ui(rgb(238, 238, 232), rgb(58, 60, 64)));
-        canvas.stroke(zoom_box, ui(rgb(60, 60, 58), rgb(168, 170, 174)));
+        canvas.rect(zoom_box, ctrl_box_bg);
+        canvas.stroke(zoom_box, ctrl_box_stroke);
         canvas.rect(
-            Rect::new(
-                zoom_box.x + 2.0,
-                zoom_box.y + 2.0,
-                zoom_box.width - 4.0,
-                1.0,
-            ),
-            ui(rgb(255, 255, 255), rgb(92, 94, 98)),
+            Rect::new(zoom_box.x + 2.0, zoom_box.y + 2.0, zoom_box.width - 4.0, 1.0),
+            ctrl_box_highlight,
         );
     }
 
@@ -1656,15 +1663,19 @@ fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str, is_ac
     canvas.rect(title_rect, titlebar_bg);
 
     let text_color = if is_active {
-        ui(rgb(24, 24, 24), rgb(235, 235, 232))
+        theme_color("text")
     } else {
-        ui(rgb(140, 140, 140), rgb(110, 112, 115))
+        if render_dark_mode() {
+            [0.43, 0.44, 0.45, 1.0]
+        } else {
+            [0.55, 0.55, 0.55, 1.0]
+        }
     };
     canvas.text(title, title_rect.x + 9.0, rect.y + 8.0, text_color);
 
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
-        ui(rgb(92, 92, 88), rgb(14, 16, 18)),
+        theme_color("edge_dark"),
     );
 }
 
@@ -1675,17 +1686,28 @@ fn draw_resize_grow_box(canvas: &mut Canvas<'_>, window_rect: Rect) {
         15.0,
         15.0,
     );
-    canvas.rect(box_rect, ui(rgb(232, 232, 226), rgb(50, 52, 54)));
-    canvas.stroke(box_rect, ui(rgb(132, 132, 126), rgb(148, 150, 152)));
+    let box_bg = theme_color("button_bg");
+    let box_stroke = if render_dark_mode() {
+        [0.58, 0.58, 0.59, 1.0]
+    } else {
+        [0.52, 0.52, 0.49, 1.0]
+    };
+    canvas.rect(box_rect, box_bg);
+    canvas.stroke(box_rect, box_stroke);
 
+    let glyph_color = if render_dark_mode() {
+        [0.71, 0.71, 0.72, 1.0]
+    } else {
+        [0.32, 0.32, 0.31, 1.0]
+    };
     for offset in [4.0, 8.0, 12.0] {
         canvas.rect(
             Rect::new(box_rect.x + offset, box_rect.y + 13.0, 1.0, 1.0),
-            ui(rgb(82, 82, 78), rgb(180, 182, 184)),
+            glyph_color,
         );
         canvas.rect(
             Rect::new(box_rect.x + 13.0, box_rect.y + offset, 1.0, 1.0),
-            ui(rgb(82, 82, 78), rgb(180, 182, 184)),
+            glyph_color,
         );
         canvas.rect(
             Rect::new(box_rect.x + offset, box_rect.y + offset, 1.0, 1.0),
@@ -1706,12 +1728,7 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
     }
 
     if let Some(label) = widget.as_any().downcast_ref::<Label>() {
-        canvas.text(
-            &label.text,
-            rect.x + 2.0,
-            rect.y + 5.0,
-            ui(rgb(24, 24, 24), rgb(226, 226, 222)),
-        );
+        canvas.text(&label.text, rect.x + 2.0, rect.y + 5.0, theme_color("text"));
     } else if let Some(button) = widget.as_any().downcast_ref::<Button>() {
         if rect.height <= 24.0 {
             canvas.text(
@@ -1721,7 +1738,7 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
                 ui(rgb(8, 8, 8), rgb(232, 232, 228)),
             );
             if button.widget_state().focused {
-                canvas.stroke(rect, ui(rgb(64, 108, 186), rgb(146, 176, 226)));
+                canvas.stroke(rect, COLOR_FOCUS_RING);
             }
             return;
         }
@@ -2473,12 +2490,12 @@ fn draw_open_menu_box(
         ),
         rgba(0, 0, 0, 0.24),
     );
-    draw_beveled_rect(
-        canvas,
-        dropdown,
-        ui(rgb(244, 244, 238), rgb(42, 44, 48)),
-        true,
-    );
+    let menu_bg = if render_dark_mode() {
+        [0.16, 0.17, 0.18, 1.0]
+    } else {
+        [0.96, 0.96, 0.93, 1.0]
+    };
+    draw_beveled_rect(canvas, dropdown, menu_bg, true);
     canvas.rect(
         Rect::new(
             dropdown.x + 4.0,
@@ -2486,7 +2503,7 @@ fn draw_open_menu_box(
             dropdown.width - 8.0,
             1.0,
         ),
-        ui(rgb(255, 255, 255), rgb(66, 68, 72)),
+        theme_color("edge_light"),
     );
     canvas.rect(
         Rect::new(
@@ -2495,7 +2512,7 @@ fn draw_open_menu_box(
             1.0,
             dropdown.height - 8.0,
         ),
-        ui(rgb(255, 255, 255), rgb(66, 68, 72)),
+        theme_color("edge_light"),
     );
 
     for (item_index, item) in menu.items.iter().enumerate() {
@@ -2505,6 +2522,16 @@ fn draw_open_menu_box(
         item_rect.x += item_dx;
         item_rect.y += item_dy;
         if matches!(item.kind, MenuItemKind::Separator) {
+            let sep_dark = if render_dark_mode() {
+                [0.45, 0.46, 0.47, 1.0]
+            } else {
+                [0.47, 0.47, 0.45, 1.0]
+            };
+            let sep_light = if render_dark_mode() {
+                [0.11, 0.12, 0.12, 1.0]
+            } else {
+                [1.0, 1.0, 1.0, 1.0]
+            };
             canvas.rect(
                 Rect::new(
                     item_rect.x + 12.0,
@@ -2512,7 +2539,7 @@ fn draw_open_menu_box(
                     item_rect.width - 24.0,
                     1.0,
                 ),
-                ui(rgb(120, 120, 116), rgb(116, 118, 122)),
+                sep_dark,
             );
             canvas.rect(
                 Rect::new(
@@ -2521,21 +2548,30 @@ fn draw_open_menu_box(
                     item_rect.width - 24.0,
                     1.0,
                 ),
-                ui(rgb(255, 255, 255), rgb(28, 30, 32)),
+                sep_light,
             );
             continue;
         }
 
         let hovered = menu_bar.hovered_item == Some(item_index);
         if hovered && item.enabled {
-            canvas.rect(item_rect, ui(rgb(22, 22, 22), rgb(82, 90, 104)));
+            let highlight_color = if render_dark_mode() {
+                [0.32, 0.35, 0.41, 1.0]
+            } else {
+                [0.09, 0.09, 0.09, 1.0]
+            };
+            canvas.rect(item_rect, highlight_color);
         }
         let text_color = if !item.enabled {
-            ui(rgb(132, 132, 128), rgb(116, 118, 120))
+            if render_dark_mode() {
+                [0.45, 0.46, 0.47, 1.0]
+            } else {
+                [0.52, 0.52, 0.50, 1.0]
+            }
         } else if hovered {
-            rgb(255, 255, 255)
+            [1.0, 1.0, 1.0, 1.0]
         } else {
-            ui(rgb(8, 8, 8), rgb(232, 232, 228))
+            theme_color("text")
         };
         match item.kind {
             MenuItemKind::Checkbox if item.checked => {
