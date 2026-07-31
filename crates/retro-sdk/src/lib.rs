@@ -1743,8 +1743,14 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
             canvas.stroke(rect, COLOR_FOCUS_RING);
         }
     } else if let Some(text_field) = widget.as_any().downcast_ref::<TextField>() {
-        canvas.rect(rect, ui(rgb(255, 255, 252), rgb(18, 20, 22)));
-        canvas.stroke(rect, ui(rgb(115, 115, 110), rgb(120, 124, 128)));
+        // Text field uses theme-aware colors
+        let tf_bg = if render_dark_mode() {
+            [0.12, 0.12, 0.12, 1.0]
+        } else {
+            [0.99, 0.99, 0.98, 1.0]
+        };
+        canvas.rect(rect, tf_bg);
+        canvas.stroke(rect, theme_color("border"));
         let text = if text_field.text().is_empty() {
             &text_field.placeholder
         } else {
@@ -1754,7 +1760,7 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
             text,
             rect.x + 6.0,
             rect.y + 8.0,
-            ui(rgb(25, 25, 25), rgb(232, 232, 228)),
+            if render_dark_mode() { COLOR_DARK_TEXT } else { COLOR_TEXT_PRIMARY },
         );
     } else if let Some(slider) = widget.as_any().downcast_ref::<Slider>() {
         let track = Rect::new(
@@ -1763,8 +1769,13 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
             rect.width - 18.0,
             6.0,
         );
-        canvas.rect(track, ui(rgb(196, 196, 190), rgb(30, 32, 34)));
-        canvas.stroke(track, ui(rgb(104, 104, 98), rgb(112, 114, 116)));
+        let track_bg = if render_dark_mode() {
+            [0.12, 0.12, 0.13, 1.0]
+        } else {
+            [0.77, 0.77, 0.75, 1.0]
+        };
+        canvas.rect(track, track_bg);
+        canvas.stroke(track, theme_color("border"));
         let filled = Rect::new(
             track.x + 1.0,
             track.y + 1.0,
@@ -1775,9 +1786,9 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
         let thumb_x = track.x + track.width * slider.normalized_value() - 5.0;
         let thumb = Rect::new(thumb_x, rect.y + 3.0, 10.0, rect.height - 6.0);
         let thumb_bg = if slider.dragging {
-            ui(rgb(236, 240, 246), rgb(78, 84, 92))
+            theme_color("button_hover")
         } else {
-            ui(rgb(226, 226, 220), rgb(58, 60, 64))
+            theme_color("button_bg")
         };
         canvas.rect(thumb, thumb_bg);
         draw_beveled_rect(canvas, thumb, thumb_bg, true);
@@ -1794,10 +1805,15 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
         if rect.y <= 1.0 && rect.width > 500.0 {
             draw_menu_bar(canvas, rect, toolbar);
         } else {
-            canvas.rect(rect, ui(rgb(218, 218, 214), rgb(42, 44, 46)));
+            let toolbar_bg = if render_dark_mode() {
+                [0.16, 0.16, 0.18, 1.0]
+            } else {
+                [0.85, 0.85, 0.84, 1.0]
+            };
+            canvas.rect(rect, toolbar_bg);
             canvas.rect(
                 Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
-                ui(rgb(145, 145, 140), rgb(92, 94, 96)),
+                theme_color("border"),
             );
             for child in toolbar.children() {
                 draw_widget(canvas, child);
@@ -1805,8 +1821,13 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
         }
         return;
     } else if let Some(scroll) = widget.as_any().downcast_ref::<ScrollView>() {
-        canvas.rect(rect, ui(rgb(248, 248, 244), rgb(28, 30, 32)));
-        canvas.stroke(rect, ui(rgb(160, 160, 154), rgb(92, 94, 96)));
+        let scroll_bg = if render_dark_mode() {
+            [0.11, 0.11, 0.12, 1.0]
+        } else {
+            [0.97, 0.97, 0.96, 1.0]
+        };
+        canvas.rect(rect, scroll_bg);
+        canvas.stroke(rect, theme_color("border"));
         canvas.with_clip(rect, |canvas| {
             for child in scroll.children() {
                 draw_widget(canvas, child);
@@ -2143,7 +2164,11 @@ fn draw_dock_view(canvas: &mut Canvas<'_>, _rect: Rect, dock: &DockView) {
     // `handle_event` hit-tests, so paint and input cannot drift.
     let dock_rect = dock.strip_rect();
 
-    let bg_color = ui(rgb(230, 230, 226), rgb(28, 30, 32));
+    let bg_color = if render_dark_mode() {
+        [0.11, 0.11, 0.12, 1.0]
+    } else {
+        [0.90, 0.90, 0.89, 1.0]
+    };
     canvas.rect(dock_rect, bg_color);
     draw_beveled_rect(canvas, dock_rect, bg_color, true);
 
@@ -2157,16 +2182,20 @@ fn draw_dock_view(canvas: &mut Canvas<'_>, _rect: Rect, dock: &DockView) {
                 item_rect.width + 4.0,
                 item_rect.height + 4.0,
             );
-            canvas.rect(highlight_rect, ui(rgb(180, 200, 240), rgb(60, 80, 120)));
-            draw_beveled_rect(
-                canvas,
-                highlight_rect,
-                ui(rgb(180, 200, 240), rgb(60, 80, 120)),
-                false,
-            );
+            let focus_color = if render_dark_mode() {
+                [0.24, 0.31, 0.47, 1.0]
+            } else {
+                [0.71, 0.78, 0.94, 1.0]
+            };
+            canvas.rect(highlight_rect, focus_color);
+            draw_beveled_rect(canvas, highlight_rect, focus_color, false);
         }
 
-        let icon_bg = ui(rgb(250, 250, 246), rgb(44, 46, 50));
+        let icon_bg = if render_dark_mode() {
+            [0.17, 0.18, 0.20, 1.0]
+        } else {
+            [0.98, 0.98, 0.96, 1.0]
+        };
         canvas.rect(item_rect, icon_bg);
         draw_beveled_rect(canvas, item_rect, icon_bg, true);
 
@@ -2231,18 +2260,23 @@ fn draw_menu_overlays(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
 }
 
 fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
-    canvas.rect(rect, ui(rgb(238, 238, 238), rgb(28, 30, 32)));
+    let menu_bar_bg = if render_dark_mode() {
+        [0.11, 0.11, 0.12, 1.0]
+    } else {
+        [0.93, 0.93, 0.93, 1.0]
+    };
+    canvas.rect(rect, menu_bar_bg);
     canvas.rect(
         Rect::new(rect.x, rect.y, rect.width, 1.0),
-        ui(rgb(255, 255, 255), rgb(58, 60, 62)),
+        theme_color("edge_light"),
     );
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 2.0, rect.width, 1.0),
-        ui(rgb(95, 95, 95), rgb(92, 94, 96)),
+        if render_dark_mode() { [0.4, 0.4, 0.4, 1.0] } else { [0.37, 0.37, 0.37, 1.0] },
     );
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
-        ui(rgb(35, 35, 35), rgb(8, 10, 12)),
+        theme_color("edge_dark"),
     );
 
     let mut x = rect.x + 10.0;
@@ -2252,7 +2286,7 @@ fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
     for child in toolbar.children() {
         if let Some(button) = child.as_any().downcast_ref::<Button>() {
             let label = button.label();
-            canvas.text(label, x, rect.y + 8.0, ui(rgb(8, 8, 8), rgb(232, 232, 228)));
+            canvas.text(label, x, rect.y + 8.0, theme_color("text"));
             x += label.len() as f32 * 8.0 + 18.0;
         }
     }
@@ -2262,7 +2296,7 @@ fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
         &right_label,
         rect.x + rect.width - right_label.len() as f32 * 7.0 - 72.0,
         rect.y + 8.0,
-        ui(rgb(8, 8, 8), rgb(232, 232, 228)),
+        theme_color("text"),
     );
     draw_status_glyph(canvas, rect.x + rect.width - 42.0, rect.y + 7.0);
     draw_status_glyph(canvas, rect.x + rect.width - 22.0, rect.y + 7.0);
@@ -2276,18 +2310,23 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
         return;
     }
 
-    canvas.rect(rect, ui(rgb(238, 238, 238), rgb(28, 30, 32)));
+    let menu_bar_bg = if render_dark_mode() {
+        [0.11, 0.11, 0.12, 1.0]
+    } else {
+        [0.93, 0.93, 0.93, 1.0]
+    };
+    canvas.rect(rect, menu_bar_bg);
     canvas.rect(
         Rect::new(rect.x, rect.y, rect.width, 1.0),
-        ui(rgb(255, 255, 255), rgb(58, 60, 62)),
+        theme_color("edge_light"),
     );
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 2.0, rect.width, 1.0),
-        ui(rgb(95, 95, 95), rgb(92, 94, 96)),
+        if render_dark_mode() { [0.4, 0.4, 0.4, 1.0] } else { [0.37, 0.37, 0.37, 1.0] },
     );
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
-        ui(rgb(35, 35, 35), rgb(8, 10, 12)),
+        theme_color("edge_dark"),
     );
 
     for (index, menu) in menu_bar.menus.iter().enumerate() {
@@ -2296,6 +2335,11 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
         };
         let active = menu_bar.open_menu == Some(index) || menu_bar.hovered_menu == Some(index);
         if active {
+            let highlight_color = if render_dark_mode() {
+                [0.31, 0.33, 0.38, 1.0]
+            } else {
+                [0.09, 0.09, 0.09, 1.0]
+            };
             canvas.rect(
                 Rect::new(
                     menu_rect.x + 1.0,
@@ -2303,7 +2347,7 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
                     menu_rect.width - 2.0,
                     20.0,
                 ),
-                ui(rgb(24, 24, 24), rgb(78, 86, 98)),
+                highlight_color,
             );
         }
         if index == 0 {
@@ -2669,8 +2713,13 @@ fn draw_beveled_rect(canvas: &mut Canvas<'_>, rect: Rect, fill: [f32; 4], raised
 }
 
 fn draw_tree(canvas: &mut Canvas<'_>, rect: Rect, tree: &TreeView) {
-    canvas.rect(rect, ui(rgb(222, 226, 230), rgb(30, 33, 36)));
-    canvas.stroke(rect, ui(rgb(145, 150, 154), rgb(92, 96, 100)));
+    let tree_bg = if render_dark_mode() {
+        [0.12, 0.13, 0.14, 1.0]
+    } else {
+        [0.87, 0.89, 0.90, 1.0]
+    };
+    canvas.rect(rect, tree_bg);
+    canvas.stroke(rect, theme_color("border"));
     let mut y = rect.y + 8.0;
     for (index, node) in tree.roots.iter().enumerate() {
         draw_tree_node(
@@ -2698,9 +2747,14 @@ fn draw_tree_node(
         .as_ref()
         .is_some_and(|selected| selected == path);
     if selected {
+        let selection_color = if render_dark_mode() {
+            [0.32, 0.38, 0.49, 1.0]
+        } else {
+            [0.25, 0.43, 0.67, 1.0]
+        };
         canvas.rect(
             Rect::new(x - 4.0, *y - 3.0, 170.0, 16.0),
-            ui(rgb(64, 111, 171), rgb(82, 98, 126)),
+            selection_color,
         );
     }
     canvas.text(
@@ -2708,9 +2762,9 @@ fn draw_tree_node(
         x + depth as f32 * 12.0,
         *y,
         if selected {
-            rgb(255, 255, 255)
+            [1.0, 1.0, 1.0, 1.0]
         } else {
-            ui(rgb(30, 30, 30), rgb(226, 226, 222))
+            theme_color("text")
         },
     );
     *y += 18.0;
@@ -2764,7 +2818,12 @@ fn draw_icon_view(canvas: &mut Canvas<'_>, icon_view: &IconView) {
     if is_desktop {
         canvas.with_clip(rect, draw_desktop_backdrop);
     } else {
-        canvas.rect(rect, rgb(248, 248, 244));
+        let icon_view_bg = if render_dark_mode() {
+            [0.15, 0.15, 0.15, 1.0]
+        } else {
+            [0.97, 0.97, 0.96, 1.0]
+        };
+        canvas.rect(rect, icon_view_bg);
     }
     for item in &icon_view.items {
         let display_label = truncate_label(&item.label, 12);
@@ -2779,15 +2838,18 @@ fn draw_icon_view(canvas: &mut Canvas<'_>, icon_view: &IconView) {
         }
         draw_desktop_icon(canvas, item);
         let label_y = item.rect.y + icon_view.icon_size + 6.0;
+        let label_color = if item.selected {
+            [1.0, 1.0, 1.0, 1.0]
+        } else if render_dark_mode() {
+            [0.9, 0.9, 0.9, 1.0]
+        } else {
+            [0.08, 0.08, 0.08, 1.0]
+        };
         canvas.text(
             &display_label,
             item.rect.x + (item.rect.width - display_label.len() as f32 * 6.0) * 0.5,
             label_y,
-            if item.selected {
-                rgb(255, 255, 255)
-            } else {
-                rgb(20, 20, 20)
-            },
+            label_color,
         );
     }
 }
@@ -2975,14 +3037,24 @@ fn draw_trash_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
 }
 
 fn draw_list(canvas: &mut Canvas<'_>, rect: Rect, list: &ListView) {
-    canvas.rect(rect, ui(rgb(255, 255, 252), rgb(24, 26, 28)));
-    canvas.stroke(rect, ui(rgb(150, 150, 144), rgb(92, 94, 96)));
+    let list_bg = if render_dark_mode() {
+        [0.09, 0.10, 0.11, 1.0]
+    } else {
+        [1.0, 1.0, 0.99, 1.0]
+    };
+    canvas.rect(rect, list_bg);
+    canvas.stroke(rect, theme_color("border"));
     for (index, item) in list.items.iter().enumerate() {
         let y = rect.y + 6.0 + index as f32 * 18.0;
         if list.selected_index == Some(index) {
+            let selection_color = if render_dark_mode() {
+                [0.32, 0.38, 0.49, 1.0]
+            } else {
+                [0.25, 0.43, 0.67, 1.0]
+            };
             canvas.rect(
                 Rect::new(rect.x + 3.0, y - 3.0, rect.width - 6.0, 16.0),
-                ui(rgb(64, 111, 171), rgb(82, 98, 126)),
+                selection_color,
             );
         }
         canvas.text(
@@ -2990,9 +3062,9 @@ fn draw_list(canvas: &mut Canvas<'_>, rect: Rect, list: &ListView) {
             rect.x + 8.0,
             y,
             if list.selected_index == Some(index) {
-                rgb(255, 255, 255)
+                [1.0, 1.0, 1.0, 1.0]
             } else {
-                ui(rgb(25, 25, 25), rgb(230, 230, 226))
+                theme_color("text")
             },
         );
     }
