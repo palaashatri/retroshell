@@ -1,8 +1,13 @@
 # RetroShell — Classic Macintosh UI Design System
 
 **Last Updated:** 2026-07-31  
-**Status:** ✅ Implemented & Tested (316/316 tests passing)  
-**Source:** Classic Macintosh UI Kit Community (Figma)
+**Status:** 🔄 In progress vs kit parity (System7Components + Figma)  
+**Canon references:** [`UI-REFERENCES.md`](UI-REFERENCES.md)  
+**Source kits:** Classic Macintosh UI Kit (Figma) + [System7Components](https://github.com/Calculable/System7Components)
+
+> Prior “✅ Implemented & Tested” claims oversold token wiring. Visual parity with the
+> System 7 kits is an active paint rewrite in `retro-sdk`, evidenced only by
+> `docs/qa/ui-polish/` screenshots.
 
 ---
 
@@ -10,7 +15,7 @@
 
 RetroShell's UI design follows the **authentic Classic Macintosh aesthetic** from the 1990s, inspired by Mac OS 7 through Mac OS 8.5. The theme system uses proper 3D beveled styling, platinum silver UI, and classic Mac blue accents to create a genuinely retro desktop environment.
 
-This is **NOT** flat modern design with retro colors — it's authentic beveled 3D UI with proper depth perception, shadows, and highlights that characterized the era.
+This is **NOT** flat modern design with retro colors — it's authentic beveled 3D UI with proper depth perception, shadows, and highlights that characterized the era. Implementation must track [`UI-REFERENCES.md`](UI-REFERENCES.md) (no Apple trademarks; preserve HDR/VRR roadmap).
 
 ---
 
@@ -18,16 +23,20 @@ This is **NOT** flat modern design with retro colors — it's authentic beveled 
 
 ### Color Palette
 
-#### Platinum Theme (Light Mode)
+#### Platinum Theme (Light Mode) — System7Components-aligned
 
 | Element | Color Value | Hex | Purpose |
 |---------|-------------|-----|---------|
-| **UI Base** | RGB(240, 240, 240) | #F0F0F0 | Window backgrounds, buttons, menus |
-| **Desktop** | RGB(127, 127, 127) | #7F7F7F | Desktop wallpaper background |
-| **Dark Edge** | RGB(127, 127, 127) | #7F7F7F | Beveled shadow (bottom/right) |
-| **Text** | RGB(0, 0, 0) | #000000 | Primary text color |
-| **Accent** | RGB(100, 150, 220) | #6496DC | Selection highlight, focus ring, active states |
-| **Light Edge** | RGB(255, 255, 255) | #FFFFFF | Beveled highlight (top/left, implicit) |
+| **UI Base / Gray100** | RGB(239, 239, 239) | #EFEFEF | Window chrome, button face |
+| **Background** | RGB(255, 255, 255) | #FFFFFF | Content / primary button fill |
+| **Gray200** | RGB(218, 218, 218) | #DADADA | Mid bevel |
+| **Gray300** | RGB(165, 165, 165) | #A5A5A5 | Dark bevel / inactive text |
+| **Gray400** | RGB(134, 134, 134) | #868686 | Title bar grips |
+| **Gray500** | RGB(102, 102, 102) | #666666 | Outer bevel dark |
+| **Desktop** | RGB(127, 127, 127) | #7F7F7F | Desktop wallpaper base |
+| **Foreground** | RGB(0, 0, 0) | #000000 | Primary text / outer border |
+| **Accent** | RGB(100, 150, 220) | #6496DC | Selection highlight, focus ring |
+| **Lavender100** | RGB(218, 218, 252) | #DADAFC | Focused titlebar inset rail |
 
 #### Graphite Theme (Dark Mode)
 
