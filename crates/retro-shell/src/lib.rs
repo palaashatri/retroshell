@@ -3245,10 +3245,8 @@ impl Widget for ShellDesktop {
             if spotlight.is_visible() {
                 // Layout the overlay in the center of the screen
                 spotlight.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-                // Render: semi-opaque background + search field + results list
-                // TODO: Render search field text input
-                // TODO: Render results list with result items and selection highlight
-                // TODO: Render semi-opaque scrim behind overlay
+                // Draw: semi-opaque background + search field + results list
+                spotlight.draw_overlay(theme, 1280.0, 800.0);
             }
         }
     }

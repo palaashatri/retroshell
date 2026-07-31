@@ -7,7 +7,7 @@ use crate::spotlight::{SearchResult, Spotlight};
 use retro_kit::event::{KeyCode, Modifiers};
 use retro_kit::list_view::ListView;
 use retro_kit::text_field::TextField;
-use retro_kit::{EventResult, Rect, Widget};
+use retro_kit::{EventResult, Rect, ThemeContext, Widget};
 
 /// Spotlight search UI state — owns the spotlight logic + UI widgets.
 pub struct SpotlightUI {
@@ -163,6 +163,22 @@ impl SpotlightUI {
     /// Get the index of the selected result.
     pub fn selected_index(&self) -> usize {
         self.selected_index
+    }
+
+    /// Render the overlay visually (scrim + search field + results).
+    /// This is called from ShellDesktop::draw() when Spotlight is visible.
+    pub fn draw_overlay(&self, theme: &ThemeContext, screen_w: f32, screen_h: f32) {
+        // This is a placeholder implementation.
+        // In a real implementation, we would render:
+        // 1. Semi-transparent scrim background
+        // 2. Search field with typed text
+        // 3. Results list with app icons and names
+        // 4. Selection highlight on current item
+        //
+        // For now, the infrastructure is in place (search_field, results_list widgets)
+        // and they can be drawn via the widget system.
+        //
+        // TODO: Wire up canvas rendering when canvas access is available in draw()
     }
 }
 
