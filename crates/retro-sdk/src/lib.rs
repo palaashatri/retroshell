@@ -1451,9 +1451,14 @@ impl<'a> Canvas<'a> {
 }
 
 fn draw_desktop_backdrop(canvas: &mut Canvas<'_>) {
+    let backdrop_base = if render_dark_mode() {
+        [0.10, 0.11, 0.11, 1.0]
+    } else {
+        [0.60, 0.60, 0.58, 1.0]
+    };
     canvas.rect(
         Rect::new(0.0, 0.0, canvas.width, canvas.height),
-        ui(rgb(152, 152, 148), rgb(26, 28, 30)),
+        backdrop_base,
     );
     let width = canvas.width as usize;
     let height = canvas.height as usize;
@@ -1711,7 +1716,11 @@ fn draw_resize_grow_box(canvas: &mut Canvas<'_>, window_rect: Rect) {
         );
         canvas.rect(
             Rect::new(box_rect.x + offset, box_rect.y + offset, 1.0, 1.0),
-            ui(rgb(164, 164, 158), rgb(84, 86, 88)),
+            if render_dark_mode() {
+                [0.33, 0.33, 0.34, 1.0]
+            } else {
+                [0.64, 0.64, 0.62, 1.0]
+            },
         );
     }
 }
@@ -1735,7 +1744,7 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
                 button.label(),
                 rect.x + 8.0,
                 rect.y + 7.0,
-                ui(rgb(8, 8, 8), rgb(232, 232, 228)),
+                theme_color("text"),
             );
             if button.widget_state().focused {
                 canvas.stroke(rect, COLOR_FOCUS_RING);
@@ -1852,7 +1861,12 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
         });
         return;
     } else if widget.as_any().is::<SplitView>() {
-        canvas.rect(rect, ui(rgb(230, 230, 225), rgb(34, 36, 38)));
+        let split_bg = if render_dark_mode() {
+            [0.13, 0.14, 0.14, 1.0]
+        } else {
+            [0.90, 0.90, 0.88, 1.0]
+        };
+        canvas.rect(rect, split_bg);
         if let Some(split) = widget.as_any().downcast_ref::<SplitView>() {
             let divider = match split.direction {
                 retro_kit::split_view::SplitDirection::Horizontal => Rect::new(
@@ -1868,26 +1882,31 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
                     split.divider_size,
                 ),
             };
-            canvas.rect(divider, ui(rgb(180, 180, 176), rgb(70, 72, 74)));
-            canvas.stroke(divider, ui(rgb(110, 110, 106), rgb(112, 114, 116)));
+            let divider_bg = if render_dark_mode() {
+                [0.27, 0.28, 0.29, 1.0]
+            } else {
+                [0.71, 0.71, 0.69, 1.0]
+            };
+            canvas.rect(divider, divider_bg);
+            canvas.stroke(divider, theme_color("border"));
         }
     } else if let Some(grid) = widget.as_any().downcast_ref::<MonospaceView>() {
         draw_monospace_view(canvas, rect, grid);
         return;
     } else if let Some(status) = widget.as_any().downcast_ref::<StatusBar>() {
-        canvas.rect(rect, ui(rgb(220, 220, 216), rgb(36, 38, 40)));
+        let status_bg = if render_dark_mode() {
+            [0.14, 0.15, 0.15, 1.0]
+        } else {
+            [0.86, 0.86, 0.85, 1.0]
+        };
+        canvas.rect(rect, status_bg);
         canvas.rect(
             Rect::new(rect.x, rect.y, rect.width, 1.0),
-            ui(rgb(150, 150, 145), rgb(96, 98, 100)),
+            theme_color("border"),
         );
         let mut x = rect.x + 8.0;
         for item in &status.items {
-            canvas.text(
-                &item.text,
-                x,
-                rect.y + 8.0,
-                ui(rgb(35, 35, 35), rgb(228, 228, 224)),
-            );
+            canvas.text(&item.text, x, rect.y + 8.0, theme_color("text"));
             x += item.width.max(item.text.len() as f32 * 7.0 + 12.0);
         }
     } else if let Some(dialog) = widget.as_any().downcast_ref::<Dialog>() {
@@ -2001,7 +2020,11 @@ fn draw_popup_button(canvas: &mut Canvas<'_>, rect: Rect, pb: &PopupButton) {
     // Draw a small triangle using three thin horizontal rects
     let arrow_x = rect.x + rect.width - 14.0;
     let arrow_y = rect.y + rect.height * 0.5 - 2.0;
-    let arrow_color = ui(rgb(60, 60, 58), rgb(180, 180, 176));
+    let arrow_color = if render_dark_mode() {
+        [0.71, 0.71, 0.69, 1.0]
+    } else {
+        [0.24, 0.24, 0.23, 1.0]
+    };
     canvas.rect(Rect::new(arrow_x, arrow_y, 7.0, 1.0), arrow_color);
     canvas.rect(
         Rect::new(arrow_x + 1.0, arrow_y + 1.0, 5.0, 1.0),
@@ -2024,10 +2047,11 @@ fn draw_popup_button(canvas: &mut Canvas<'_>, rect: Rect, pb: &PopupButton) {
             1.0,
             rect.height - 4.0,
         ),
-        ui(rgb(145, 145, 140), rgb(90, 92, 94)),
+        theme_color("border"),
     );
 
     // Shadow line at bottom-right for depth
+    let shadow_color = theme_color("edge_dark");
     canvas.rect(
         Rect::new(
             rect.x + 1.0,
@@ -2035,7 +2059,7 @@ fn draw_popup_button(canvas: &mut Canvas<'_>, rect: Rect, pb: &PopupButton) {
             rect.width - 1.0,
             1.0,
         ),
-        ui(rgb(100, 100, 96), rgb(30, 32, 34)),
+        shadow_color,
     );
     canvas.rect(
         Rect::new(
@@ -2044,7 +2068,7 @@ fn draw_popup_button(canvas: &mut Canvas<'_>, rect: Rect, pb: &PopupButton) {
             1.0,
             rect.height - 1.0,
         ),
-        ui(rgb(100, 100, 96), rgb(30, 32, 34)),
+        shadow_color,
     );
 }
 
@@ -2250,7 +2274,11 @@ fn draw_dock_view(canvas: &mut Canvas<'_>, _rect: Rect, dock: &DockView) {
                     4.0,
                     4.0,
                 ),
-                ui(rgb(60, 60, 55), rgb(200, 200, 195)),
+                if render_dark_mode() {
+                    [0.78, 0.78, 0.77, 1.0]
+                } else {
+                    [0.24, 0.24, 0.21, 1.0]
+                },
             );
         }
     }
@@ -2389,9 +2417,9 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
                 menu_rect.x + 18.0,
                 menu_rect.y + 8.0,
                 if active {
-                    rgb(255, 255, 255)
+                    [1.0, 1.0, 1.0, 1.0]
                 } else {
-                    ui(rgb(8, 8, 8), rgb(232, 232, 228))
+                    theme_color("text")
                 },
             );
         } else {
@@ -2400,9 +2428,9 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
                 menu_rect.x + 8.0,
                 menu_rect.y + 8.0,
                 if active {
-                    rgb(255, 255, 255)
+                    [1.0, 1.0, 1.0, 1.0]
                 } else {
-                    ui(rgb(8, 8, 8), rgb(232, 232, 228))
+                    theme_color("text")
                 },
             );
         }
@@ -2413,7 +2441,7 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
         &right_label,
         rect.x + rect.width - right_label.len() as f32 * 7.0 - 72.0,
         rect.y + 8.0,
-        ui(rgb(8, 8, 8), rgb(232, 232, 228)),
+        theme_color("text"),
     );
     draw_status_glyph(canvas, rect.x + rect.width - 42.0, rect.y + 7.0);
     draw_status_glyph(canvas, rect.x + rect.width - 22.0, rect.y + 7.0);
@@ -2427,9 +2455,9 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
 
 fn draw_apple_icon(canvas: &mut Canvas<'_>, x: f32, y: f32, active: bool) {
     let color = if active {
-        rgb(255, 255, 255)
+        [1.0, 1.0, 1.0, 1.0]
     } else {
-        ui(rgb(22, 22, 22), rgb(232, 232, 228))
+        theme_color("text")
     };
     canvas.rect(Rect::new(x + 1.0, y + 1.0, 5.0, 5.0), color);
     canvas.rect(Rect::new(x + 1.0, y + 2.0, 1.0, 3.0), color);
@@ -2440,9 +2468,9 @@ fn draw_apple_icon(canvas: &mut Canvas<'_>, x: f32, y: f32, active: bool) {
     canvas.rect(
         Rect::new(x + 2.0, y + 6.0, 3.0, 1.0),
         if active {
-            rgb(22, 22, 22)
+            [0.09, 0.09, 0.09, 1.0]
         } else {
-            ui(rgb(238, 238, 238), rgb(28, 30, 32))
+            theme_color("window_bg")
         },
     );
 }
