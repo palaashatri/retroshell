@@ -43,14 +43,15 @@ See [docs/tasks/README.md](tasks/README.md) for the task format and status legen
 | 0 | Arch VM with real KMS + SSH bridge (VBox/x86 active, UTM/arm64 dormant); Linux CI (exists) | **VERIFIED** (2026-07-30, Windows+VBox: `card0`/`vmwgfx` + `STAGE0-DOD-PASS`) | [HANDOFF.md](HANDOFF.md) · [tasks/stage-0-vm-foundation.md](tasks/stage-0-vm-foundation.md) · [qa/stage-0.md](qa/stage-0.md) |
 | 1 | Prove the live path: one app window painting on the VM (verify-first) | **VERIFIED** DoD (a) (2026-07-30: Finder on `retro-compositor` DRM/`vmwgfx`) | [tasks/stage-1-prove-live-path.md](tasks/stage-1-prove-live-path.md) · [qa/stage-1.md](qa/stage-1.md) · [screenshots/stage1-finder.png](screenshots/stage1-finder.png) |
 | 2 | Real session: input routing, working shortcuts, `ext-session-lock-v1`, clickable toolkit | **VERIFIED** (2026-07-30: lock/unlock, `Super+O`→Finder, button click on DRM) | [tasks/stage-2-real-session.md](tasks/stage-2-real-session.md) · [qa/stage-2.md](qa/stage-2.md) |
-| 3 | Self-contained `.app` bundles + app store that installs them | Planned, unverified | [tasks/stage-3-app-bundles.md](tasks/stage-3-app-bundles.md) · [qa/stage-3.md](qa/stage-3.md) |
+| 3 | Self-contained `.app` bundles + app store that installs them | **VERIFIED** (2026-07-31: store installs TextEdit.app, shell discovers it) | [tasks/stage-3-app-bundles.md](tasks/stage-3-app-bundles.md) · [qa/stage-3.md](qa/stage-3.md) |
 | 4 | Distribution: layer onto Arch/Ubuntu (primary) + bootable ISO (secondary) | Planned, unverified | [tasks/stage-4-distribution.md](tasks/stage-4-distribution.md) · [qa/stage-4.md](qa/stage-4.md) |
 
 Atomic task docs for Stages 2–4 were authored 2026-07-30, after Stage 1 verified
-on the VM. **Stage 2** is verified on the VBox DRM path (2026-07-30). **Stages 3–4**
-are grounded in the design spec (§4–§5) + verbatim code anchors; each opens with a
-re-ground/verify task. Stage 3–4 tasks are **UNVERIFIED** until their acceptance
-passes and the transcript lands in the QA doc.
+on the VM. **Stage 2** is verified on the VBox DRM path (2026-07-30). **Stage 3**
+is verified on the UTM aarch64 path (2026-07-31). **Stage 4** is grounded in the
+design spec (§4) + verbatim code anchors; opens with a re-ground/verify task.
+Stage 4 tasks are **UNVERIFIED** until their acceptance passes and the transcript
+lands in the QA doc.
 
 ## Definition of done, per stage
 
