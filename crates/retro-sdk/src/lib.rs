@@ -34,6 +34,28 @@ use wgpu::util::DeviceExt;
 static RENDER_DARK_MODE: AtomicBool = AtomicBool::new(false);
 static RENDER_ACCENT_COLOR: Mutex<[f32; 4]> = Mutex::new([0.36, 0.54, 0.85, 1.0]); // default Mac OS 7 blue
 
+// System 7 Classic color palette (light mode) - normalized RGB [0-1]
+const COLOR_PLATINUM_BG: [f32; 4] = [0.94, 0.94, 0.94, 1.0]; // platinum silver
+const COLOR_BUTTON_BG: [f32; 4] = [0.93, 0.93, 0.93, 1.0]; // button face
+const COLOR_BUTTON_HOVER: [f32; 4] = [0.88, 0.92, 0.96, 1.0]; // button highlight
+const COLOR_WINDOW_BORDER: [f32; 4] = [0.5, 0.5, 0.5, 1.0]; // dark edge shadow
+const COLOR_TEXT_PRIMARY: [f32; 4] = [0.0, 0.0, 0.0, 1.0]; // black text
+const COLOR_TEXT_SECONDARY: [f32; 4] = [0.35, 0.35, 0.35, 1.0]; // gray text
+const COLOR_SELECTION_BG: [f32; 4] = [0.39, 0.59, 0.86, 1.0]; // classic Mac blue
+const COLOR_SELECTION_TEXT: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // white on selection
+const COLOR_FOCUS_RING: [f32; 4] = [0.39, 0.59, 0.86, 1.0]; // blue focus ring
+const COLOR_EDGE_LIGHT: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // white beveled edge
+const COLOR_EDGE_DARK: [f32; 4] = [0.4, 0.4, 0.4, 1.0]; // dark beveled edge
+
+// System 7 Dark mode adjustments
+const COLOR_DARK_BG: [f32; 4] = [0.2, 0.2, 0.2, 1.0]; // dark background
+const COLOR_DARK_BUTTON_BG: [f32; 4] = [0.3, 0.3, 0.3, 1.0]; // dark button
+const COLOR_DARK_BUTTON_HOVER: [f32; 4] = [0.4, 0.4, 0.45, 1.0]; // dark button hover
+const COLOR_DARK_BORDER: [f32; 4] = [0.1, 0.1, 0.1, 1.0]; // very dark edge
+const COLOR_DARK_TEXT: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // white text
+const COLOR_DARK_EDGE_LIGHT: [f32; 4] = [0.4, 0.4, 0.4, 1.0]; // light edge on dark
+const COLOR_DARK_EDGE_DARK: [f32; 4] = [0.05, 0.05, 0.05, 1.0]; // very dark edge
+
 fn set_render_dark_mode(is_dark: bool) {
     RENDER_DARK_MODE.store(is_dark, Ordering::Relaxed);
 }
@@ -48,6 +70,34 @@ fn set_render_accent(color: [f32; 4]) {
 
 fn render_accent() -> [f32; 4] {
     *RENDER_ACCENT_COLOR.lock()
+}
+
+/// Get a color value based on current theme (light/dark mode).
+/// Maps semantic color names to System 7 palette values.
+fn theme_color(color_name: &str) -> [f32; 4] {
+    if render_dark_mode() {
+        match color_name {
+            "window_bg" => COLOR_DARK_BG,
+            "button_bg" => COLOR_DARK_BUTTON_BG,
+            "button_hover" => COLOR_DARK_BUTTON_HOVER,
+            "border" => COLOR_DARK_BORDER,
+            "text" => COLOR_DARK_TEXT,
+            "edge_light" => COLOR_DARK_EDGE_LIGHT,
+            "edge_dark" => COLOR_DARK_EDGE_DARK,
+            _ => [0.5, 0.5, 0.5, 1.0], // fallback gray
+        }
+    } else {
+        match color_name {
+            "window_bg" => COLOR_PLATINUM_BG,
+            "button_bg" => COLOR_BUTTON_BG,
+            "button_hover" => COLOR_BUTTON_HOVER,
+            "border" => COLOR_WINDOW_BORDER,
+            "text" => COLOR_TEXT_PRIMARY,
+            "edge_light" => COLOR_EDGE_LIGHT,
+            "edge_dark" => COLOR_EDGE_DARK,
+            _ => [0.5, 0.5, 0.5, 1.0], // fallback gray
+        }
+    }
 }
 
 /// Apply both dark mode flag and accent color together (used when theme changes).
@@ -1510,8 +1560,10 @@ fn draw_window(canvas: &mut Canvas<'_>, window: &Window) {
         }
     }
 
-    canvas.rect(rect, ui(rgb(236, 235, 229), rgb(32, 34, 36)));
-    draw_beveled_rect(canvas, rect, ui(rgb(238, 238, 232), rgb(38, 40, 42)), true);
+    // Use theme-aware window background
+    let window_bg = theme_color("window_bg");
+    canvas.rect(rect, window_bg);
+    draw_beveled_rect(canvas, rect, window_bg, true);
 
     let titlebar = Rect::new(rect.x, rect.y, rect.width, 24.0);
     draw_classic_titlebar(canvas, titlebar, window.title(), window.is_active);
@@ -1673,10 +1725,11 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
             }
             return;
         }
+        // Use theme-aware colors for beveled button
         let bg = if button.widget_state().hovered {
-            ui(rgb(226, 235, 246), rgb(70, 76, 84))
+            theme_color("button_hover")
         } else {
-            ui(rgb(222, 222, 218), rgb(58, 60, 64))
+            theme_color("button_bg")
         };
         canvas.rect(rect, bg);
         draw_beveled_rect(canvas, rect, bg, true);
@@ -1684,10 +1737,10 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
             button.label(),
             rect.x + 12.0,
             rect.y + 9.0,
-            ui(rgb(20, 20, 20), rgb(236, 236, 232)),
+            if render_dark_mode() { COLOR_DARK_TEXT } else { COLOR_TEXT_PRIMARY },
         );
         if button.widget_state().focused {
-            canvas.stroke(rect, ui(rgb(64, 108, 186), rgb(146, 176, 226)));
+            canvas.stroke(rect, COLOR_FOCUS_RING);
         }
     } else if let Some(text_field) = widget.as_any().downcast_ref::<TextField>() {
         canvas.rect(rect, ui(rgb(255, 255, 252), rgb(18, 20, 22)));
@@ -1835,10 +1888,10 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
 }
 
 fn draw_dialog(canvas: &mut Canvas<'_>, rect: Rect, dialog: &Dialog) {
-    // Background and outer border
-    let bg = ui(rgb(236, 236, 232), rgb(42, 44, 46));
+    // Background and outer border - use theme colors
+    let bg = theme_color("window_bg");
     canvas.rect(rect, bg);
-    canvas.stroke(rect, ui(rgb(100, 100, 96), rgb(80, 82, 84)));
+    canvas.stroke(rect, theme_color("border"));
 
     // Title bar area
     let titlebar_rect = Rect::new(rect.x, rect.y, rect.width, 32.0);
