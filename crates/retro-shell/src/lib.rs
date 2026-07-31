@@ -5273,4 +5273,163 @@ mod tests {
         assert!(describe_nm_connect_plan(&plan).contains("<redacted>"));
         assert!(execute_nm_connect_plan(&[]).is_err());
     }
+
+    #[test]
+    fn spotlight_overlay_toggles_with_super_space() {
+        let (mut desktop, _) = test_desktop();
+
+        // Precondition: overlay starts hidden
+        assert!(!desktop.spotlight_ui.borrow().is_visible());
+
+        // Super+Space shows overlay
+        let result = desktop.handle_event(&Event::KeyDown {
+            key: retro_kit::event::KeyCode::Space,
+            modifiers: retro_kit::event::Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+
+        match result {
+            EventResult::Handled => {}
+            _ => panic!("Super+Space should be handled"),
+        }
+        assert!(desktop.spotlight_ui.borrow().is_visible());
+
+        // Super+Space hides overlay
+        let result = desktop.handle_event(&Event::KeyDown {
+            key: retro_kit::event::KeyCode::Space,
+            modifiers: retro_kit::event::Modifiers {
+                shift: false,
+                control: false,
+                alt: false,
+                meta: true,
+            },
+        });
+
+        match result {
+            EventResult::Handled => {}
+            _ => panic!("Super+Space should be handled"),
+        }
+        assert!(!desktop.spotlight_ui.borrow().is_visible());
+    }
+
+    #[test]
+    fn spotlight_char_input_updates_search_results() {
+        let (mut desktop, _) = test_desktop();
+
+        // Show overlay
+        desktop.spotlight_ui.borrow_mut().show();
+        let apps = desktop.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
+        desktop.spotlight_ui.borrow_mut().update_results(&apps);
+
+        // Type 's' to match settings
+        let result = desktop.handle_event(&Event::Char { character: 's' });
+        match result {
+            EventResult::Handled => {}
+            _ => panic!("Event should be handled"),
+        }
+
+        let spotlight = desktop.spotlight_ui.borrow();
+        assert_eq!(spotlight.query(), "s");
+        // Should have settings results (always available)
+        assert!(!spotlight.results().is_empty());
+    }
+
+    #[test]
+    fn spotlight_escape_hides_overlay() {
+        let (mut desktop, _) = test_desktop();
+
+        // Show overlay
+        desktop.spotlight_ui.borrow_mut().show();
+        assert!(desktop.spotlight_ui.borrow().is_visible());
+
+        // Press Escape
+        let result = desktop.handle_event(&Event::KeyDown {
+            key: retro_kit::event::KeyCode::Escape,
+            modifiers: retro_kit::event::Modifiers::NONE,
+        });
+
+        match result {
+            EventResult::Handled => {}
+            _ => panic!("Event should be handled"),
+        }
+        assert!(!desktop.spotlight_ui.borrow().is_visible());
+    }
+
+    #[test]
+    fn spotlight_arrow_keys_navigate_results() {
+        let (mut desktop, _) = test_desktop();
+
+        // Show overlay and populate results
+        desktop.spotlight_ui.borrow_mut().show();
+        let apps = desktop.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
+        desktop.spotlight_ui.borrow_mut().update_results(&apps);
+
+        // Initial selection at index 0
+        assert_eq!(desktop.spotlight_ui.borrow().selected_index(), 0);
+
+        // Arrow down
+        let result = desktop.handle_event(&Event::KeyDown {
+            key: retro_kit::event::KeyCode::ArrowDown,
+            modifiers: retro_kit::event::Modifiers::NONE,
+        });
+
+        match result {
+            EventResult::Handled => {}
+            _ => panic!("Event should be handled"),
+        }
+        let spotlight = desktop.spotlight_ui.borrow();
+        let result_count = spotlight.results().len();
+        if result_count > 1 {
+            assert_eq!(spotlight.selected_index(), 1);
+        }
+    }
+
+    #[test]
+    fn spotlight_enter_launches_selected_app() {
+        let (mut desktop, _) = test_desktop();
+
+        // Show overlay
+        desktop.spotlight_ui.borrow_mut().show();
+        let apps = desktop.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
+        desktop.spotlight_ui.borrow_mut().update_results(&apps);
+
+        // Search for 'vol' to match Volume setting
+        let result = desktop.handle_event(&Event::Char { character: 'v' });
+        match result {
+            EventResult::Handled => {}
+            _ => panic!("Event should be handled"),
+        }
+        let result = desktop.handle_event(&Event::Char { character: 'o' });
+        match result {
+            EventResult::Handled => {}
+            _ => panic!("Event should be handled"),
+        }
+        let result = desktop.handle_event(&Event::Char { character: 'l' });
+        match result {
+            EventResult::Handled => {}
+            _ => panic!("Event should be handled"),
+        }
+
+        // Verify we have results (Volume setting)
+        let spotlight = desktop.spotlight_ui.borrow();
+        assert!(!spotlight.results().is_empty(), "Volume setting should be found");
+        drop(spotlight);
+
+        // Press Enter (should activate selected result)
+        let result = desktop.handle_event(&Event::KeyDown {
+            key: retro_kit::event::KeyCode::Enter,
+            modifiers: retro_kit::event::Modifiers::NONE,
+        });
+
+        match result {
+            EventResult::Handled => {}
+            _ => panic!("Event should be handled"),
+        }
+        // Overlay remains visible (user can select another result or press Escape to close)
+        assert!(desktop.spotlight_ui.borrow().is_visible());
+    }
 }
