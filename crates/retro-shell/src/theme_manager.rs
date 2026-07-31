@@ -118,99 +118,201 @@ impl ThemeManager {
 
     fn load_platinum(&mut self) {
         let mut tokens = HashMap::new();
+        // Window background: softer white with depth
         tokens.insert(
             ThemeToken::WindowBackground,
-            ThemeValue::new(Color::new(0.95, 0.95, 0.95, 1.0))
-                .with_dark(Color::new(0.15, 0.15, 0.15, 1.0)),
+            ThemeValue::new(Color::new(0.96, 0.96, 0.98, 1.0))
+                .with_dark(Color::new(0.12, 0.12, 0.14, 1.0)),
         );
+        // Window border: subtle shadow for depth
         tokens.insert(
             ThemeToken::WindowBorder,
-            ThemeValue::new(Color::new(0.5, 0.5, 0.5, 1.0))
-                .with_dark(Color::new(0.3, 0.3, 0.3, 1.0)),
+            ThemeValue::new(Color::new(0.7, 0.7, 0.75, 1.0))
+                .with_dark(Color::new(0.2, 0.2, 0.22, 1.0)),
         );
+        // Window title: contrast text
         tokens.insert(
             ThemeToken::WindowTitle,
             ThemeValue::new(Color::new(0.0, 0.0, 0.0, 1.0))
-                .with_dark(Color::new(1.0, 1.0, 1.0, 1.0)),
+                .with_dark(Color::new(0.95, 0.95, 0.95, 1.0)),
         );
+        // Menu background: slightly off-white
         tokens.insert(
             ThemeToken::MenuBackground,
-            ThemeValue::new(Color::new(0.98, 0.98, 0.98, 1.0))
-                .with_dark(Color::new(0.12, 0.12, 0.12, 1.0)),
+            ThemeValue::new(Color::new(0.98, 0.98, 0.99, 1.0))
+                .with_dark(Color::new(0.11, 0.11, 0.13, 1.0)),
         );
+        // Menu highlight: vibrant blue (improved from dull blue)
         tokens.insert(
             ThemeToken::MenuHighlight,
-            ThemeValue::new(Color::new(0.22, 0.44, 0.85, 1.0)),
+            ThemeValue::new(Color::new(0.2, 0.42, 0.88, 1.0)),
         );
         tokens.insert(
             ThemeToken::MenuText,
             ThemeValue::new(Color::new(0.0, 0.0, 0.0, 1.0))
-                .with_dark(Color::new(1.0, 1.0, 1.0, 1.0)),
+                .with_dark(Color::new(0.95, 0.95, 0.95, 1.0)),
         );
+        // Button background: lighter, more refined
         tokens.insert(
             ThemeToken::ButtonBackground,
-            ThemeValue::new(Color::new(0.88, 0.88, 0.88, 1.0))
-                .with_dark(Color::new(0.2, 0.2, 0.2, 1.0)),
+            ThemeValue::new(Color::new(0.91, 0.91, 0.93, 1.0))
+                .with_dark(Color::new(0.18, 0.18, 0.2, 1.0)),
         );
+        // Button highlight: same vibrant blue
         tokens.insert(
             ThemeToken::ButtonHighlight,
-            ThemeValue::new(Color::new(0.22, 0.44, 0.85, 1.0)),
+            ThemeValue::new(Color::new(0.2, 0.42, 0.88, 1.0)),
         );
+        // Button shadow: more pronounced for depth
         tokens.insert(
             ThemeToken::ButtonShadow,
-            ThemeValue::new(Color::new(0.6, 0.6, 0.6, 1.0)),
+            ThemeValue::new(Color::new(0.7, 0.7, 0.75, 1.0))
+                .with_dark(Color::new(0.08, 0.08, 0.1, 1.0)),
         );
         tokens.insert(
             ThemeToken::ButtonText,
             ThemeValue::new(Color::new(0.0, 0.0, 0.0, 1.0))
-                .with_dark(Color::new(1.0, 1.0, 1.0, 1.0)),
+                .with_dark(Color::new(0.95, 0.95, 0.95, 1.0)),
         );
         tokens.insert(
             ThemeToken::TextPrimary,
             ThemeValue::new(Color::new(0.0, 0.0, 0.0, 1.0))
-                .with_dark(Color::new(1.0, 1.0, 1.0, 1.0)),
+                .with_dark(Color::new(0.95, 0.95, 0.95, 1.0)),
         );
         tokens.insert(
             ThemeToken::TextSecondary,
-            ThemeValue::new(Color::new(0.4, 0.4, 0.4, 1.0))
-                .with_dark(Color::new(0.7, 0.7, 0.7, 1.0)),
+            ThemeValue::new(Color::new(0.35, 0.35, 0.35, 1.0))
+                .with_dark(Color::new(0.65, 0.65, 0.65, 1.0)),
         );
+        // Selection: same vibrant blue
         tokens.insert(
             ThemeToken::SelectionBackground,
-            ThemeValue::new(Color::new(0.22, 0.44, 0.85, 1.0)),
+            ThemeValue::new(Color::new(0.2, 0.42, 0.88, 1.0)),
         );
         tokens.insert(
             ThemeToken::SelectionText,
             ThemeValue::new(Color::new(1.0, 1.0, 1.0, 1.0)),
         );
+        // Desktop background: warmer, more visually interesting
+        // Light: slightly warmed light purple/blue
+        // Dark: deep space blue
         tokens.insert(
             ThemeToken::DesktopBackground,
-            ThemeValue::new(Color::new(0.25, 0.25, 0.45, 1.0))
-                .with_dark(Color::new(0.08, 0.08, 0.15, 1.0)),
+            ThemeValue::new(Color::new(0.35, 0.35, 0.55, 1.0))
+                .with_dark(Color::new(0.06, 0.06, 0.12, 1.0)),
         );
+        // Dock: more translucent, better visual separation
         tokens.insert(
             ThemeToken::DockBackground,
-            ThemeValue::new(Color::new(0.85, 0.85, 0.87, 0.8))
-                .with_dark(Color::new(0.1, 0.1, 0.12, 0.9)),
+            ThemeValue::new(Color::new(0.88, 0.88, 0.91, 0.85))
+                .with_dark(Color::new(0.09, 0.09, 0.11, 0.92)),
         );
+        // Scrollbar: refined gray with better contrast
         tokens.insert(
             ThemeToken::ScrollBar,
-            ThemeValue::new(Color::new(0.6, 0.6, 0.6, 1.0))
-                .with_dark(Color::new(0.4, 0.4, 0.4, 1.0)),
+            ThemeValue::new(Color::new(0.65, 0.65, 0.7, 1.0))
+                .with_dark(Color::new(0.35, 0.35, 0.38, 1.0)),
         );
+        // Scrollbar hover: darker for interaction feedback
+        tokens.insert(
+            ThemeToken::ScrollBarHover,
+            ThemeValue::new(Color::new(0.5, 0.5, 0.55, 1.0))
+                .with_dark(Color::new(0.45, 0.45, 0.48, 1.0)),
+        );
+        // Separator: subtle, refined
         tokens.insert(
             ThemeToken::Separator,
-            ThemeValue::new(Color::new(0.75, 0.75, 0.75, 1.0))
-                .with_dark(Color::new(0.3, 0.3, 0.3, 1.0)),
+            ThemeValue::new(Color::new(0.8, 0.8, 0.83, 1.0))
+                .with_dark(Color::new(0.25, 0.25, 0.27, 1.0)),
         );
+        // Focus ring: vibrant blue
         tokens.insert(
             ThemeToken::FocusRing,
-            ThemeValue::new(Color::new(0.22, 0.44, 0.85, 1.0)),
+            ThemeValue::new(Color::new(0.2, 0.42, 0.88, 1.0)),
         );
+        // Toolbar background: subtle, clean
         tokens.insert(
             ThemeToken::ToolbarBackground,
-            ThemeValue::new(Color::new(0.92, 0.92, 0.93, 1.0))
-                .with_dark(Color::new(0.13, 0.13, 0.14, 1.0)),
+            ThemeValue::new(Color::new(0.93, 0.93, 0.95, 1.0))
+                .with_dark(Color::new(0.12, 0.12, 0.14, 1.0)),
+        );
+        // Toolbar border: matches window border
+        tokens.insert(
+            ThemeToken::ToolbarBorder,
+            ThemeValue::new(Color::new(0.7, 0.7, 0.75, 1.0))
+                .with_dark(Color::new(0.2, 0.2, 0.22, 1.0)),
+        );
+        // Dialog background: same as window
+        tokens.insert(
+            ThemeToken::DialogBackground,
+            ThemeValue::new(Color::new(0.96, 0.96, 0.98, 1.0))
+                .with_dark(Color::new(0.12, 0.12, 0.14, 1.0)),
+        );
+        // Dialog border: subtle
+        tokens.insert(
+            ThemeToken::DialogBorder,
+            ThemeValue::new(Color::new(0.7, 0.7, 0.75, 1.0))
+                .with_dark(Color::new(0.2, 0.2, 0.22, 1.0)),
+        );
+        // Progress bar: vibrant blue gradient
+        tokens.insert(
+            ThemeToken::ProgressBarFill,
+            ThemeValue::new(Color::new(0.2, 0.42, 0.88, 1.0)),
+        );
+        tokens.insert(
+            ThemeToken::ProgressBarTrack,
+            ThemeValue::new(Color::new(0.9, 0.9, 0.92, 1.0))
+                .with_dark(Color::new(0.15, 0.15, 0.17, 1.0)),
+        );
+        // Slider: blue accent
+        tokens.insert(
+            ThemeToken::SliderTrack,
+            ThemeValue::new(Color::new(0.88, 0.88, 0.9, 1.0))
+                .with_dark(Color::new(0.18, 0.18, 0.2, 1.0)),
+        );
+        tokens.insert(
+            ThemeToken::SliderThumb,
+            ThemeValue::new(Color::new(0.2, 0.42, 0.88, 1.0)),
+        );
+        // Status bar: clean light gray
+        tokens.insert(
+            ThemeToken::StatusBarBackground,
+            ThemeValue::new(Color::new(0.93, 0.93, 0.95, 1.0))
+                .with_dark(Color::new(0.12, 0.12, 0.14, 1.0)),
+        );
+        // Icon background: subtle, can be highlighted
+        tokens.insert(
+            ThemeToken::IconBackground,
+            ThemeValue::new(Color::new(0.91, 0.91, 0.93, 0.5))
+                .with_dark(Color::new(0.18, 0.18, 0.2, 0.5)),
+        );
+        // Dock highlight: accent color
+        tokens.insert(
+            ThemeToken::DockHighlight,
+            ThemeValue::new(Color::new(0.2, 0.42, 0.88, 1.0)),
+        );
+        // Notification styling
+        tokens.insert(
+            ThemeToken::NotificationBackground,
+            ThemeValue::new(Color::new(0.96, 0.96, 0.98, 1.0))
+                .with_dark(Color::new(0.12, 0.12, 0.14, 1.0)),
+        );
+        tokens.insert(
+            ThemeToken::NotificationBorder,
+            ThemeValue::new(Color::new(0.7, 0.7, 0.75, 1.0))
+                .with_dark(Color::new(0.2, 0.2, 0.22, 1.0)),
+        );
+        // Disabled text: lighter gray
+        tokens.insert(
+            ThemeToken::DisabledText,
+            ThemeValue::new(Color::new(0.6, 0.6, 0.6, 1.0))
+                .with_dark(Color::new(0.5, 0.5, 0.5, 1.0)),
+        );
+        // Links: colored for visibility
+        tokens.insert(
+            ThemeToken::LinkText,
+            ThemeValue::new(Color::new(0.1, 0.3, 0.8, 1.0))
+                .with_dark(Color::new(0.5, 0.7, 1.0, 1.0)),
         );
 
         self.themes.insert(
@@ -225,51 +327,70 @@ impl ThemeManager {
 
     fn load_graphite(&mut self) {
         let mut tokens = HashMap::new();
+        // Graphite: refined grayscale with teal accent instead of blue
         tokens.insert(
             ThemeToken::WindowBackground,
             ThemeValue::new(Color::new(0.93, 0.93, 0.93, 1.0))
-                .with_dark(Color::new(0.12, 0.12, 0.12, 1.0)),
+                .with_dark(Color::new(0.13, 0.13, 0.15, 1.0)),
         );
         tokens.insert(
             ThemeToken::WindowBorder,
-            ThemeValue::new(Color::new(0.4, 0.4, 0.4, 1.0))
-                .with_dark(Color::new(0.25, 0.25, 0.25, 1.0)),
+            ThemeValue::new(Color::new(0.45, 0.45, 0.45, 1.0))
+                .with_dark(Color::new(0.22, 0.22, 0.24, 1.0)),
         );
         tokens.insert(
             ThemeToken::WindowTitle,
             ThemeValue::new(Color::new(0.0, 0.0, 0.0, 1.0))
-                .with_dark(Color::new(1.0, 1.0, 1.0, 1.0)),
+                .with_dark(Color::new(0.95, 0.95, 0.95, 1.0)),
         );
         tokens.insert(
             ThemeToken::MenuBackground,
             ThemeValue::new(Color::new(0.96, 0.96, 0.96, 1.0))
-                .with_dark(Color::new(0.1, 0.1, 0.1, 1.0)),
+                .with_dark(Color::new(0.11, 0.11, 0.13, 1.0)),
         );
+        // Graphite accent: teal/cyan
         tokens.insert(
             ThemeToken::MenuHighlight,
-            ThemeValue::new(Color::new(0.4, 0.4, 0.4, 1.0)),
+            ThemeValue::new(Color::new(0.2, 0.45, 0.5, 1.0))
+                .with_dark(Color::new(0.3, 0.6, 0.65, 1.0)),
         );
         tokens.insert(
             ThemeToken::ButtonBackground,
             ThemeValue::new(Color::new(0.85, 0.85, 0.85, 1.0))
-                .with_dark(Color::new(0.18, 0.18, 0.18, 1.0)),
+                .with_dark(Color::new(0.18, 0.18, 0.2, 1.0)),
         );
         tokens.insert(
             ThemeToken::ButtonHighlight,
-            ThemeValue::new(Color::new(0.4, 0.4, 0.4, 1.0)),
+            ThemeValue::new(Color::new(0.2, 0.45, 0.5, 1.0))
+                .with_dark(Color::new(0.3, 0.6, 0.65, 1.0)),
         );
         tokens.insert(
             ThemeToken::SelectionBackground,
-            ThemeValue::new(Color::new(0.4, 0.4, 0.4, 1.0)),
+            ThemeValue::new(Color::new(0.2, 0.45, 0.5, 1.0))
+                .with_dark(Color::new(0.3, 0.6, 0.65, 1.0)),
         );
         tokens.insert(
             ThemeToken::DesktopBackground,
-            ThemeValue::new(Color::new(0.2, 0.2, 0.2, 1.0))
-                .with_dark(Color::new(0.05, 0.05, 0.05, 1.0)),
+            ThemeValue::new(Color::new(0.15, 0.15, 0.15, 1.0))
+                .with_dark(Color::new(0.04, 0.04, 0.06, 1.0)),
         );
-        // Copy remaining from platinum with grayscale adjustments
+        // Copy remaining from platinum with teal accent adjustments
         for (k, v) in &self.themes.get("platinum").unwrap().tokens {
-            tokens.entry(*k).or_insert_with(|| v.clone());
+            // Skip the ones we've already set
+            if !matches!(
+                k,
+                ThemeToken::WindowBackground
+                    | ThemeToken::WindowBorder
+                    | ThemeToken::WindowTitle
+                    | ThemeToken::MenuBackground
+                    | ThemeToken::MenuHighlight
+                    | ThemeToken::ButtonBackground
+                    | ThemeToken::ButtonHighlight
+                    | ThemeToken::SelectionBackground
+                    | ThemeToken::DesktopBackground
+            ) {
+                tokens.entry(*k).or_insert_with(|| v.clone());
+            }
         }
         self.themes.insert(
             "graphite".into(),
