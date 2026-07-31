@@ -6,21 +6,12 @@ use wgpu::{Device, Instance, Queue, Surface as WgpuSurface, SurfaceConfiguration
 /// Surface format / present-mode policy for the wgpu renderer.
 ///
 /// Safe defaults are SDR + stable Fifo (no HDR float formats, no adaptive sync).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DisplayRenderPolicy {
     /// When true, prefer wide-color / HDR surface formats if the adapter advertises them.
     pub hdr_enabled: bool,
     /// When true, prefer adaptive-sync present modes (AutoVsync / FifoRelaxed).
     pub vrr_adaptive: bool,
-}
-
-impl Default for DisplayRenderPolicy {
-    fn default() -> Self {
-        Self {
-            hdr_enabled: false,
-            vrr_adaptive: false,
-        }
-    }
 }
 
 impl DisplayRenderPolicy {
