@@ -9,3 +9,11 @@ packaging/vm/qa_key
 packaging/vm/qa_key.pub
 packaging/vm/known_hosts
 packaging/vm/*.png
+
+# Model weights — downloaded for local dev tests, never committed.
+# The model manifest (models/vision/manifest.toml) is committed; weights
+# are fetched by scripts into the directories below.
+models/vision/*.onnx
+models/vision/*.rten
+models/vision/*.txt
+models/vision/*.bin

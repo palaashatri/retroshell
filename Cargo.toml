@@ -8,11 +8,16 @@ members = [
     "crates/slopos-sdk",
     "crates/slopos-compositor",
     "crates/slopos-session",
+    "crates/slopos-vision",
+    "crates/slopos-vision-protocol",
+    "crates/slopos-vision-client",
+    "crates/slopos-visiond",
     "apps/finder",
     "apps/settings",
     "apps/textedit",
     "apps/terminal",
     "apps/appstore",
+    "apps/preview",
 ]
 
 [workspace.dependencies]
@@ -36,3 +41,7 @@ parking_lot = "0.12"
 bytemuck = { version = "1", features = ["derive"] }
 bitflags = "2"
 uuid = { version = "1", features = ["v4"] }
+rten = "0.24"
+sha2 = "0.10"
+hex = "0.4"
+tempfile = "3"
