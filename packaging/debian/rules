@@ -1,0 +1,26 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --release --workspace --locked
+
+override_dh_auto_install:
+	# Install binaries
+	dh_auto_install -- --release
+	install -Dm755 target/release/retro-compositor debian/retroshell/usr/bin/retro-compositor
+	install -Dm755 target/release/retro-shell debian/retroshell/usr/bin/retro-shell
+	install -Dm755 target/release/finder debian/retroshell/usr/bin/finder
+	install -Dm755 target/release/settings debian/retroshell/usr/bin/settings
+	install -Dm755 target/release/textedit debian/retroshell/usr/bin/textedit
+	install -Dm755 target/release/terminal debian/retroshell/usr/bin/terminal
+	install -Dm755 target/release/appstore debian/retroshell/usr/bin/appstore
+	install -Dm755 scripts/start-retroshell debian/retroshell/usr/bin/start-retroshell
+
+	# Install session files
+	install -Dm644 packaging/retroshell.desktop debian/retroshell/usr/share/xsessions/retroshell.desktop
+	install -Dm644 packaging/retroshell-wayland.desktop debian/retroshell/usr/share/wayland-sessions/retroshell.desktop
+	install -Dm644 packaging/retroshell.service debian/retroshell/usr/lib/systemd/user/retroshell.service
+
+override_dh_shlibdeps:
+	# Skip automatic library dependency detection; Cargo handles it
