@@ -449,6 +449,8 @@ struct ShellDesktop {
     network_connect_spawn: bool,
     /// Which subset of the desktop to paint (layer-shell Phase 3 multi-surface).
     paint_filter: ShellPaintFilter,
+    /// Spotlight search overlay (Super+Space) — interior-mutable for layout during draw.
+    spotlight_ui: std::cell::RefCell<spotlight_ui::SpotlightUI>,
 }
 
 /// Paint subset for multi-surface layer-shell chrome (Phase 3).
@@ -669,6 +671,7 @@ impl ShellDesktop {
             last_network_connect: None,
             network_connect_spawn: true,
             paint_filter: ShellPaintFilter::All,
+            spotlight_ui: std::cell::RefCell::new(spotlight_ui::SpotlightUI::new()),
         };
         // Map layer-shell chrome + sync foreign-toplevel list when a compositor is live.
         RetroShell::attach_wayland_session_protocols(&mut shell);
@@ -3212,6 +3215,15 @@ impl Widget for ShellDesktop {
         {
             self.menu_bar.draw(theme);
         }
+        // Draw Spotlight overlay on top of everything
+        {
+            let mut spotlight = self.spotlight_ui.borrow_mut();
+            if spotlight.is_visible() {
+                // Layout the overlay in the center of the screen
+                spotlight.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+                // TODO: Render search field, results list, and overlay background
+            }
+        }
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
@@ -3276,6 +3288,62 @@ impl Widget for ShellDesktop {
                     return EventResult::Handled;
                 }
             }
+        }
+
+        // Spotlight overlay (Super+Space) — modal layer that intercepts before menu bar.
+        // When visible, all events route to the overlay; when invisible, events pass through.
+        if let Event::KeyDown {
+            key: retro_kit::event::KeyCode::Space,
+            modifiers,
+        } = event
+        {
+            if modifiers.meta && !modifiers.control && !modifiers.alt {
+                // Super+Space toggles the overlay
+                let mut spotlight = self.spotlight_ui.borrow_mut();
+                if spotlight.is_visible() {
+                    spotlight.hide();
+                } else {
+                    spotlight.show();
+                    // Pre-populate results with featured apps
+                    let apps = self.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
+                    spotlight.update_results(&apps);
+                }
+                drop(spotlight);
+                return EventResult::Handled;
+            }
+        }
+
+        // If Spotlight is visible, route events to it
+        {
+            let mut spotlight = self.spotlight_ui.borrow_mut();
+            if spotlight.is_visible() {
+                if let Event::KeyDown { key, modifiers } = event {
+                    let result = spotlight.handle_overlay_key(*key, modifiers);
+                    if matches!(result, EventResult::Handled) {
+                        // Update search results if a character was typed or search changed
+                        if *key != retro_kit::event::KeyCode::Escape
+                            && *key != retro_kit::event::KeyCode::Enter
+                        {
+                            let apps = self.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
+                            spotlight.update_results(&apps);
+                        }
+                        drop(spotlight);
+                        return EventResult::Handled;
+                    }
+                } else if let Event::Char { character } = event {
+                    // Character input: append to search query
+                    spotlight.append_char(*character);
+                    let apps = self.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
+                    spotlight.update_results(&apps);
+                    drop(spotlight);
+                    return EventResult::Handled;
+                } else {
+                    // Any other event while overlay is visible: still swallow it
+                    drop(spotlight);
+                    return EventResult::Handled;
+                }
+            }
+            drop(spotlight);
         }
 
         let result = self.menu_bar.handle_event(event);

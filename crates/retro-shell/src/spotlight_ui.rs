@@ -12,7 +12,7 @@ use retro_kit::{EventResult, Rect, Widget};
 /// Spotlight search UI state — owns the spotlight logic + UI widgets.
 pub struct SpotlightUI {
     /// The search backend and state machine.
-    spotlight: Spotlight,
+    pub spotlight: Spotlight,
     /// Text input field for the search query.
     search_field: TextField,
     /// List view for displaying search results.
@@ -64,6 +64,11 @@ impl SpotlightUI {
     /// Get the currently selected result, if any.
     pub fn selected_result(&self) -> Option<&SearchResult> {
         self.current_results.get(self.selected_index)
+    }
+
+    /// Append a character to the search query.
+    pub fn append_char(&mut self, c: char) {
+        self.spotlight.append_char(c);
     }
 
     /// Handle a keyboard event (for the search UI overlay).
