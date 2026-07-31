@@ -1,22 +1,28 @@
 //! Spotlight search UI — rendering and input handling for the search overlay.
 //!
-//! This module integrates the search backend with retro-kit widgets and manages
-//! the overlay surface presentation.
+//! Pixels are produced by the SDK canvas path (`draw_widget`) walking
+//! [`SpotlightUI`] widgets exposed via [`ShellDesktop::children`]. Kit
+//! `Widget::draw` stubs are intentionally unused.
 
 use crate::spotlight::{SearchResult, Spotlight};
 use retro_kit::event::{KeyCode, Modifiers};
 use retro_kit::list_view::ListView;
+use retro_kit::panel::Panel;
 use retro_kit::text_field::TextField;
-use retro_kit::{EventResult, Rect, ThemeContext, Widget};
+use retro_kit::{EventResult, Rect, Widget};
 
-/// Spotlight search UI state — owns the spotlight logic + UI widgets.
+/// Spotlight search UI state — owns the spotlight logic + drawable widgets.
 pub struct SpotlightUI {
     /// The search backend and state machine.
     pub spotlight: Spotlight,
+    /// Full-screen dimming scrim (behind the card).
+    pub(crate) scrim: Panel,
+    /// Raised card behind the search field + results.
+    pub(crate) card: Panel,
     /// Text input field for the search query.
-    search_field: TextField,
+    pub(crate) search_field: TextField,
     /// List view for displaying search results.
-    results_list: ListView,
+    pub(crate) results_list: ListView,
     /// Current search results.
     current_results: Vec<SearchResult>,
     /// Index of the currently selected result (keyboard navigation).
@@ -28,6 +34,8 @@ impl SpotlightUI {
     pub fn new() -> Self {
         Self {
             spotlight: Spotlight::new(),
+            scrim: Panel::scrim(),
+            card: Panel::card(),
             search_field: TextField::new().with_placeholder("Search apps, files, settings..."),
             results_list: ListView::new(),
             current_results: Vec::new(),
@@ -44,21 +52,48 @@ impl SpotlightUI {
     pub fn show(&mut self) {
         self.spotlight.show();
         self.search_field.set_text("");
+        self.search_field.widget_state_mut().focused = true;
         self.current_results.clear();
         self.selected_index = 0;
+        self.sync_widgets();
     }
 
     /// Hide the overlay.
     pub fn hide(&mut self) {
         self.spotlight.hide();
         self.search_field.set_text("");
+        self.search_field.widget_state_mut().focused = false;
         self.current_results.clear();
+        self.selected_index = 0;
+        self.sync_widgets();
     }
 
     /// Update the search results based on current query and available apps.
     pub fn update_results(&mut self, apps: &[crate::launch_services::AppBundle]) {
         self.current_results = self.spotlight.search_results(apps);
         self.selected_index = 0.min(self.current_results.len().saturating_sub(1));
+        self.sync_widgets();
+    }
+
+    /// Keep drawable widgets in sync with search state.
+    fn sync_widgets(&mut self) {
+        self.search_field.set_text(self.spotlight.query());
+        self.results_list.items = self
+            .current_results
+            .iter()
+            .map(|r| {
+                if let Some(desc) = r.description() {
+                    format!("{} — {}", r.display_name(), desc)
+                } else {
+                    r.display_name()
+                }
+            })
+            .collect();
+        self.results_list.selected_index = if self.current_results.is_empty() {
+            None
+        } else {
+            Some(self.selected_index)
+        };
     }
 
     /// Get the currently selected result, if any.
@@ -69,6 +104,7 @@ impl SpotlightUI {
     /// Append a character to the search query.
     pub fn append_char(&mut self, c: char) {
         self.spotlight.append_char(c);
+        self.sync_widgets();
     }
 
     /// Handle a keyboard event (for the search UI overlay).
@@ -87,67 +123,73 @@ impl SpotlightUI {
             KeyCode::ArrowUp => {
                 if self.selected_index > 0 {
                     self.selected_index -= 1;
+                    self.sync_widgets();
                 }
                 EventResult::Handled
             }
             KeyCode::ArrowDown => {
                 if self.selected_index < self.current_results.len().saturating_sub(1) {
                     self.selected_index += 1;
+                    self.sync_widgets();
                 }
                 EventResult::Handled
             }
             KeyCode::Backspace => {
                 self.spotlight.backspace();
-                // Update search on backspace
-                // (would call update_results in practice)
+                self.sync_widgets();
                 EventResult::Handled
             }
-            // For letter/number keys, delegate to text field for input
-            // The actual character mapping happens at a higher level
             _ => EventResult::Ignored,
         }
     }
 
-    /// Render the Spotlight overlay to a rect.
-    /// This would be called from the shell's render loop when visible.
-    pub fn layout(&mut self, rect: Rect) {
-        // Overlay is centered and takes up ~80% of screen width/height
-        let width = (rect.width * 0.8).max(400.0);
-        let height = (rect.height * 0.6).max(300.0);
-        let x = (rect.width - width) / 2.0;
-        let y = (rect.height - height) / 2.0;
+    /// Position scrim/card/field/list for the given screen size.
+    pub fn layout_for_screen(&mut self, screen_w: f32, screen_h: f32) {
+        self.scrim.set_rect(Rect::new(0.0, 0.0, screen_w, screen_h));
 
-        let overlay_rect = Rect::new(x, y, width, height);
+        let width = (screen_w * 0.55).clamp(420.0, 720.0);
+        let height = (screen_h * 0.45).clamp(260.0, 420.0);
+        let x = ((screen_w - width) / 2.0).max(0.0);
+        let y = (screen_h * 0.18).min(screen_h - height).max(40.0);
+        self.card.set_rect(Rect::new(x, y, width, height));
 
-        // Layout: search field at top, results list below
-        let field_height = 40.0;
         let padding = 16.0;
-
-        // Search field
-        let field_rect = Rect::new(
-            overlay_rect.x + padding,
-            overlay_rect.y + padding,
-            overlay_rect.width - padding * 2.0,
+        let field_height = 36.0;
+        self.search_field.set_rect(Rect::new(
+            x + padding,
+            y + padding,
+            width - padding * 2.0,
             field_height,
-        );
-        self.search_field.set_rect(field_rect);
+        ));
 
-        // Results list
-        let list_y = overlay_rect.y + padding + field_height + padding;
-        let list_height = overlay_rect.height - (padding * 3.0 + field_height);
-        let list_rect = Rect::new(
-            overlay_rect.x + padding,
+        let list_y = y + padding + field_height + 12.0;
+        let list_height = (height - (padding * 2.0 + field_height + 12.0)).max(40.0);
+        self.results_list.set_rect(Rect::new(
+            x + padding,
             list_y,
-            overlay_rect.width - padding * 2.0,
+            width - padding * 2.0,
             list_height,
-        );
-        self.results_list.set_rect(list_rect);
+        ));
     }
 
-    /// Get the overlay rect (for layer-shell positioning).
-    /// Returns a rect that covers the centered search overlay.
-    pub fn overlay_rect(&self) -> Rect {
-        Rect::new(100.0, 100.0, 1080.0, 600.0) // stub: should be calculated from screen size
+    /// Drawable widgets in paint order (scrim → card → field → list).
+    pub fn paint_widgets(&self) -> [&dyn Widget; 4] {
+        [
+            &self.scrim as &dyn Widget,
+            &self.card as &dyn Widget,
+            &self.search_field as &dyn Widget,
+            &self.results_list as &dyn Widget,
+        ]
+    }
+
+    /// Mutable drawable widgets (for update walks).
+    pub fn paint_widgets_mut(&mut self) -> [&mut dyn Widget; 4] {
+        [
+            &mut self.scrim as &mut dyn Widget,
+            &mut self.card as &mut dyn Widget,
+            &mut self.search_field as &mut dyn Widget,
+            &mut self.results_list as &mut dyn Widget,
+        ]
     }
 
     /// Get the current search query string.
@@ -163,22 +205,6 @@ impl SpotlightUI {
     /// Get the index of the selected result.
     pub fn selected_index(&self) -> usize {
         self.selected_index
-    }
-
-    /// Render the overlay visually (scrim + search field + results).
-    /// This is called from ShellDesktop::draw() when Spotlight is visible.
-    pub fn draw_overlay(&self, theme: &ThemeContext, screen_w: f32, screen_h: f32) {
-        // Draw the search field and results list widgets
-        // The widgets handle their own rendering via the Widget trait
-        self.search_field.draw(theme);
-        self.results_list.draw(theme);
-
-        // NOTE: For full visual polish, we would add:
-        // - Semi-transparent scrim background (drawn before field/list)
-        // - Selection highlight glyph/color for current item
-        // - Empty state messaging ("type to search")
-        // These require direct canvas access, which is available at the
-        // compositor level in layer_desktop.rs, not at the widget level.
     }
 }
 
@@ -209,7 +235,6 @@ mod tests {
         let mut ui = SpotlightUI::new();
         ui.show();
 
-        // Simulate some results
         let results = vec![
             SearchResult::Setting {
                 category: "Display".to_string(),
@@ -222,6 +247,7 @@ mod tests {
         ];
         ui.current_results = results;
         ui.selected_index = 0;
+        ui.sync_widgets();
 
         let modifiers = Modifiers {
             shift: false,
@@ -230,20 +256,29 @@ mod tests {
             meta: false,
         };
 
-        // Arrow down
         ui.handle_overlay_key(KeyCode::ArrowDown, &modifiers);
         assert_eq!(ui.selected_index, 1);
+        assert_eq!(ui.results_list.selected_index, Some(1));
 
-        // Arrow up
         ui.handle_overlay_key(KeyCode::ArrowUp, &modifiers);
         assert_eq!(ui.selected_index, 0);
 
-        // Escape
         let result = ui.handle_overlay_key(KeyCode::Escape, &modifiers);
         match result {
-            EventResult::Handled => {},
+            EventResult::Handled => {}
             _ => panic!("Expected Handled"),
         }
         assert!(!ui.is_visible());
+    }
+
+    #[test]
+    fn layout_places_card_on_screen() {
+        let mut ui = SpotlightUI::new();
+        ui.show();
+        ui.layout_for_screen(1280.0, 800.0);
+        assert!(ui.scrim.rect().width >= 1280.0);
+        assert!(ui.card.rect().width >= 420.0);
+        assert!(ui.search_field.rect().width > 0.0);
+        assert!(ui.results_list.rect().height > 0.0);
     }
 }

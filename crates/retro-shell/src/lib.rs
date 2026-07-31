@@ -450,7 +450,7 @@ struct ShellDesktop {
     /// Which subset of the desktop to paint (layer-shell Phase 3 multi-surface).
     paint_filter: ShellPaintFilter,
     /// Spotlight search overlay (Super+Space) — interior-mutable for layout during draw.
-    spotlight_ui: std::cell::RefCell<spotlight_ui::SpotlightUI>,
+    spotlight_ui: spotlight_ui::SpotlightUI,
 }
 
 /// Paint subset for multi-surface layer-shell chrome (Phase 3).
@@ -671,7 +671,7 @@ impl ShellDesktop {
             last_network_connect: None,
             network_connect_spawn: true,
             paint_filter: ShellPaintFilter::All,
-            spotlight_ui: std::cell::RefCell::new(spotlight_ui::SpotlightUI::new()),
+            spotlight_ui: spotlight_ui::SpotlightUI::new(),
         };
         // Map layer-shell chrome + sync foreign-toplevel list when a compositor is live.
         RetroShell::attach_wayland_session_protocols(&mut shell);
@@ -3178,6 +3178,11 @@ impl Widget for ShellDesktop {
 
         self.layout_windows();
 
+        if self.spotlight_ui.is_visible() {
+            self.spotlight_ui
+                .layout_for_screen(size.width, size.height);
+        }
+
         size
     }
 
@@ -3239,16 +3244,7 @@ impl Widget for ShellDesktop {
         {
             self.menu_bar.draw(theme);
         }
-        // Draw Spotlight overlay on top of everything
-        {
-            let mut spotlight = self.spotlight_ui.borrow_mut();
-            if spotlight.is_visible() {
-                // Layout the overlay in the center of the screen
-                spotlight.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-                // Draw: semi-opaque background + search field + results list
-                spotlight.draw_overlay(theme, 1280.0, 800.0);
-            }
-        }
+        // Spotlight pixels come from children() → SDK draw_widget, not Widget::draw.
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
@@ -3324,62 +3320,64 @@ impl Widget for ShellDesktop {
         {
             if modifiers.meta && !modifiers.control && !modifiers.alt {
                 // Super+Space toggles the overlay
-                let mut spotlight = self.spotlight_ui.borrow_mut();
-                if spotlight.is_visible() {
-                    spotlight.hide();
+                if self.spotlight_ui.is_visible() {
+                    self.spotlight_ui.hide();
                 } else {
-                    spotlight.show();
-                    // Pre-populate results with featured apps
-                    let apps = self.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
-                    spotlight.update_results(&apps);
+                    self.spotlight_ui.show();
+                    let apps = self
+                        .launch_services
+                        .read()
+                        .bundles
+                        .values()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    self.spotlight_ui.update_results(&apps);
                 }
-                drop(spotlight);
                 return EventResult::Handled;
             }
         }
 
         // If Spotlight is visible, route events to it
-        {
-            let mut spotlight = self.spotlight_ui.borrow_mut();
-            if spotlight.is_visible() {
-                if let Event::KeyDown { key, modifiers } = event {
-                    // Check for Enter to activate selected result
-                    if *key == retro_kit::event::KeyCode::Enter {
-                        if let Some(selected) = spotlight.selected_result() {
-                            let selected_clone = selected.clone();
-                            drop(spotlight);
-                            // Handle activation outside the borrow
-                            self.activate_spotlight_result(&selected_clone);
-                            return EventResult::Handled;
-                        }
-                    }
-
-                    let result = spotlight.handle_overlay_key(*key, modifiers);
-                    if matches!(result, EventResult::Handled) {
-                        // Update search results if a character was typed or search changed
-                        if *key != retro_kit::event::KeyCode::Escape
-                            && *key != retro_kit::event::KeyCode::Enter
-                        {
-                            let apps = self.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
-                            spotlight.update_results(&apps);
-                        }
-                        drop(spotlight);
+        if self.spotlight_ui.is_visible() {
+            if let Event::KeyDown { key, modifiers } = event {
+                if *key == retro_kit::event::KeyCode::Enter {
+                    if let Some(selected) = self.spotlight_ui.selected_result() {
+                        let selected_clone = selected.clone();
+                        self.activate_spotlight_result(&selected_clone);
                         return EventResult::Handled;
                     }
-                } else if let Event::Char { character } = event {
-                    // Character input: append to search query
-                    spotlight.append_char(*character);
-                    let apps = self.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
-                    spotlight.update_results(&apps);
-                    drop(spotlight);
-                    return EventResult::Handled;
-                } else {
-                    // Any other event while overlay is visible: still swallow it
-                    drop(spotlight);
+                }
+
+                let result = self.spotlight_ui.handle_overlay_key(*key, modifiers);
+                if matches!(result, EventResult::Handled) {
+                    if *key != retro_kit::event::KeyCode::Escape
+                        && *key != retro_kit::event::KeyCode::Enter
+                    {
+                        let apps = self
+                            .launch_services
+                            .read()
+                            .bundles
+                            .values()
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        self.spotlight_ui.update_results(&apps);
+                    }
                     return EventResult::Handled;
                 }
+            } else if let Event::Char { character } = event {
+                self.spotlight_ui.append_char(*character);
+                let apps = self
+                    .launch_services
+                    .read()
+                    .bundles
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                self.spotlight_ui.update_results(&apps);
+                return EventResult::Handled;
+            } else {
+                return EventResult::Handled;
             }
-            drop(spotlight);
         }
 
         let result = self.menu_bar.handle_event(event);
@@ -3606,6 +3604,29 @@ impl Widget for ShellDesktop {
         // App Store install marker → rescan ~/Applications/*.app (Stage 3).
         self.maybe_rescan_applications();
 
+        // Visual QA hook: auto-open Spotlight with an optional query.
+        // Example: RETROSHELL_QA_SPOTLIGHT=vol
+        if !self.spotlight_ui.is_visible() {
+            if let Ok(query) = std::env::var("RETROSHELL_QA_SPOTLIGHT") {
+                self.spotlight_ui.show();
+                for ch in query.chars() {
+                    self.spotlight_ui.append_char(ch);
+                }
+                let apps = self
+                    .launch_services
+                    .read()
+                    .bundles
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>();
+                self.spotlight_ui.update_results(&apps);
+                let (w, h) = (self.rect().width.max(1280.0), self.rect().height.max(800.0));
+                self.spotlight_ui.layout_for_screen(w, h);
+                // Consume so we do not re-show every frame after Escape.
+                std::env::remove_var("RETROSHELL_QA_SPOTLIGHT");
+            }
+        }
+
         // Sync lock state from SessionManager
         if self.session_manager.read().state == session_manager::SessionState::Locked
             && !self.locked
@@ -3768,6 +3789,17 @@ impl Widget for ShellDesktop {
         {
             children.push(&self.menu_bar);
         }
+        if self.spotlight_ui.is_visible()
+            && matches!(
+                self.paint_filter,
+                ShellPaintFilter::Background | ShellPaintFilter::All
+            )
+        {
+            children.push(&self.spotlight_ui.scrim);
+            children.push(&self.spotlight_ui.card);
+            children.push(&self.spotlight_ui.search_field);
+            children.push(&self.spotlight_ui.results_list);
+        }
         children
     }
 
@@ -3801,6 +3833,17 @@ impl Widget for ShellDesktop {
         }
         if paint_chrome {
             children.push(&mut self.menu_bar);
+        }
+        if self.spotlight_ui.is_visible()
+            && matches!(
+                self.paint_filter,
+                ShellPaintFilter::Background | ShellPaintFilter::All
+            )
+        {
+            children.push(&mut self.spotlight_ui.scrim);
+            children.push(&mut self.spotlight_ui.card);
+            children.push(&mut self.spotlight_ui.search_field);
+            children.push(&mut self.spotlight_ui.results_list);
         }
         children
     }
@@ -5277,7 +5320,7 @@ mod tests {
         let (mut desktop, _) = test_desktop();
 
         // Precondition: overlay starts hidden
-        assert!(!desktop.spotlight_ui.borrow().is_visible());
+        assert!(!desktop.spotlight_ui.is_visible());
 
         // Super+Space shows overlay
         let result = desktop.handle_event(&Event::KeyDown {
@@ -5294,7 +5337,7 @@ mod tests {
             EventResult::Handled => {}
             _ => panic!("Super+Space should be handled"),
         }
-        assert!(desktop.spotlight_ui.borrow().is_visible());
+        assert!(desktop.spotlight_ui.is_visible());
 
         // Super+Space hides overlay
         let result = desktop.handle_event(&Event::KeyDown {
@@ -5311,7 +5354,7 @@ mod tests {
             EventResult::Handled => {}
             _ => panic!("Super+Space should be handled"),
         }
-        assert!(!desktop.spotlight_ui.borrow().is_visible());
+        assert!(!desktop.spotlight_ui.is_visible());
     }
 
     #[test]
@@ -5319,9 +5362,9 @@ mod tests {
         let (mut desktop, _) = test_desktop();
 
         // Show overlay
-        desktop.spotlight_ui.borrow_mut().show();
+        desktop.spotlight_ui.show();
         let apps = desktop.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
-        desktop.spotlight_ui.borrow_mut().update_results(&apps);
+        desktop.spotlight_ui.update_results(&apps);
 
         // Type 's' to match settings
         let result = desktop.handle_event(&Event::Char { character: 's' });
@@ -5330,7 +5373,7 @@ mod tests {
             _ => panic!("Event should be handled"),
         }
 
-        let spotlight = desktop.spotlight_ui.borrow();
+        let spotlight = &desktop.spotlight_ui;
         assert_eq!(spotlight.query(), "s");
         // Should have settings results (always available)
         assert!(!spotlight.results().is_empty());
@@ -5341,8 +5384,8 @@ mod tests {
         let (mut desktop, _) = test_desktop();
 
         // Show overlay
-        desktop.spotlight_ui.borrow_mut().show();
-        assert!(desktop.spotlight_ui.borrow().is_visible());
+        desktop.spotlight_ui.show();
+        assert!(desktop.spotlight_ui.is_visible());
 
         // Press Escape
         let result = desktop.handle_event(&Event::KeyDown {
@@ -5354,7 +5397,7 @@ mod tests {
             EventResult::Handled => {}
             _ => panic!("Event should be handled"),
         }
-        assert!(!desktop.spotlight_ui.borrow().is_visible());
+        assert!(!desktop.spotlight_ui.is_visible());
     }
 
     #[test]
@@ -5362,12 +5405,12 @@ mod tests {
         let (mut desktop, _) = test_desktop();
 
         // Show overlay and populate results
-        desktop.spotlight_ui.borrow_mut().show();
+        desktop.spotlight_ui.show();
         let apps = desktop.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
-        desktop.spotlight_ui.borrow_mut().update_results(&apps);
+        desktop.spotlight_ui.update_results(&apps);
 
         // Initial selection at index 0
-        assert_eq!(desktop.spotlight_ui.borrow().selected_index(), 0);
+        assert_eq!(desktop.spotlight_ui.selected_index(), 0);
 
         // Arrow down
         let result = desktop.handle_event(&Event::KeyDown {
@@ -5379,7 +5422,7 @@ mod tests {
             EventResult::Handled => {}
             _ => panic!("Event should be handled"),
         }
-        let spotlight = desktop.spotlight_ui.borrow();
+        let spotlight = &desktop.spotlight_ui;
         let result_count = spotlight.results().len();
         if result_count > 1 {
             assert_eq!(spotlight.selected_index(), 1);
@@ -5391,9 +5434,9 @@ mod tests {
         let (mut desktop, _) = test_desktop();
 
         // Show overlay
-        desktop.spotlight_ui.borrow_mut().show();
+        desktop.spotlight_ui.show();
         let apps = desktop.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
-        desktop.spotlight_ui.borrow_mut().update_results(&apps);
+        desktop.spotlight_ui.update_results(&apps);
 
         // Search for 'vol' to match Volume setting
         let result = desktop.handle_event(&Event::Char { character: 'v' });
@@ -5413,9 +5456,10 @@ mod tests {
         }
 
         // Verify we have results (Volume setting)
-        let spotlight = desktop.spotlight_ui.borrow();
-        assert!(!spotlight.results().is_empty(), "Volume setting should be found");
-        drop(spotlight);
+        assert!(
+            !desktop.spotlight_ui.results().is_empty(),
+            "Volume setting should be found"
+        );
 
         // Press Enter (should activate selected result)
         let result = desktop.handle_event(&Event::KeyDown {
@@ -5428,6 +5472,6 @@ mod tests {
             _ => panic!("Event should be handled"),
         }
         // Overlay remains visible (user can select another result or press Escape to close)
-        assert!(desktop.spotlight_ui.borrow().is_visible());
+        assert!(desktop.spotlight_ui.is_visible());
     }
 }

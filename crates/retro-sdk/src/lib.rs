@@ -10,6 +10,7 @@ use retro_kit::layout::{Layout, LayoutView};
 use retro_kit::list_view::ListView;
 use retro_kit::menu::{Menu, MenuItem, MenuItemKind};
 use retro_kit::menu_bar::MenuBar;
+use retro_kit::panel::Panel;
 use retro_kit::popup_button::PopupButton;
 use retro_kit::progress_bar::ProgressBar;
 use retro_kit::scroll_view::ScrollView;
@@ -1929,6 +1930,19 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
         return;
     } else if let Some(layout_view) = widget.as_any().downcast_ref::<LayoutView>() {
         draw_layout(canvas, &layout_view.layout);
+        return;
+    } else if let Some(panel) = widget.as_any().downcast_ref::<Panel>() {
+        let fill = if panel.themed {
+            theme_color("window_bg")
+        } else {
+            panel.fill
+        };
+        canvas.rect(rect, fill);
+        if panel.beveled {
+            draw_beveled_rect(canvas, rect, fill, panel.raised);
+        } else if panel.bordered {
+            canvas.stroke(rect, theme_color("border"));
+        }
         return;
     }
 
