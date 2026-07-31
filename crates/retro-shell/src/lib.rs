@@ -37,6 +37,7 @@ pub mod session_packaging;
 pub mod session_recovery;
 pub mod shell_scale;
 pub mod spotlight;
+pub mod spotlight_ui;
 pub mod startup_budget;
 pub mod theme_manager;
 pub mod window_manager;
@@ -182,6 +183,7 @@ pub use shell_scale::{
     ShellScale,
 };
 pub use spotlight::{SearchBackend, SearchResult, Spotlight, SpotlightState};
+pub use spotlight_ui::SpotlightUI;
 pub use startup_budget::{
     default_desktop_budget, overall_ok, record_phase, total_elapsed_ms, PhaseResult, StartupBudget,
     StartupPhase,
