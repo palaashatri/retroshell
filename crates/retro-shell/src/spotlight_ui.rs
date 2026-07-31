@@ -168,17 +168,17 @@ impl SpotlightUI {
     /// Render the overlay visually (scrim + search field + results).
     /// This is called from ShellDesktop::draw() when Spotlight is visible.
     pub fn draw_overlay(&self, theme: &ThemeContext, screen_w: f32, screen_h: f32) {
-        // This is a placeholder implementation.
-        // In a real implementation, we would render:
-        // 1. Semi-transparent scrim background
-        // 2. Search field with typed text
-        // 3. Results list with app icons and names
-        // 4. Selection highlight on current item
-        //
-        // For now, the infrastructure is in place (search_field, results_list widgets)
-        // and they can be drawn via the widget system.
-        //
-        // TODO: Wire up canvas rendering when canvas access is available in draw()
+        // Draw the search field and results list widgets
+        // The widgets handle their own rendering via the Widget trait
+        self.search_field.draw(theme);
+        self.results_list.draw(theme);
+
+        // NOTE: For full visual polish, we would add:
+        // - Semi-transparent scrim background (drawn before field/list)
+        // - Selection highlight glyph/color for current item
+        // - Empty state messaging ("type to search")
+        // These require direct canvas access, which is available at the
+        // compositor level in layer_desktop.rs, not at the widget level.
     }
 }
 
