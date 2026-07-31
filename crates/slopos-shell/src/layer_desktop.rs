@@ -380,12 +380,10 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
     paint_all(&mut state, &mut runtime)?;
     state.runtime = Some(runtime);
 
-    // Wake at least once a second so the menu clock / dock tick without input.
-    // `blocking_dispatch` alone stalls until the next Wayland event.
+    // Wake at most once a second for the menu clock. Wayland input/configure
+    // events interrupt the poll immediately; an idle shell performs no redraw.
     while state.running {
-        event_queue
-            .blocking_dispatch(&mut state)
-            .map_err(|e| anyhow!("wayland dispatch: {}", e))?;
+        dispatch_with_timeout(&conn, &mut event_queue, &mut state, 1_000)?;
 
         if let Some(mut runtime) = state.runtime.take() {
             runtime.tick();
@@ -582,6 +580,9 @@ fn paint_all(state: &mut LayerDesktopState, runtime: &mut UiRuntime) -> anyhow::
         }
     });
     runtime.resize(state.output_w, state.output_h, 1.0);
+    // The resize above restores hit-test layout after painting menu/dock strips;
+    // it does not invalidate the pixels just committed to those surfaces.
+    runtime.clear_dirty();
 
     Ok(())
 }

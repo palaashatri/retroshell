@@ -7,6 +7,7 @@ members = [
     "crates/slopos-bus",
     "crates/slopos-sdk",
     "crates/slopos-compositor",
+    "crates/slopos-session",
     "apps/finder",
     "apps/settings",
     "apps/textedit",

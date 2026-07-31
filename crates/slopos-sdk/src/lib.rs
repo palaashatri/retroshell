@@ -299,6 +299,49 @@ fn ui(light: [f32; 4], dark: [f32; 4]) -> [f32; 4] {
     }
 }
 
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowChromeHit {
+    Content,
+    Titlebar,
+    Close,
+    Zoom,
+    ResizeSouthEast,
+}
+
+fn hit_test_window_chrome(point: Point, size: Size) -> WindowChromeHit {
+    const TITLEBAR_HEIGHT: f32 = 24.0;
+    const CONTROL_TOP: f32 = 5.0;
+    const CONTROL_SIZE: f32 = 14.0;
+    const CONTROL_MARGIN: f32 = 11.0;
+    const RESIZE_GRIP: f32 = 18.0;
+
+    if point.x >= (size.width - RESIZE_GRIP).max(0.0)
+        && point.y >= (size.height - RESIZE_GRIP).max(0.0)
+    {
+        return WindowChromeHit::ResizeSouthEast;
+    }
+    if point.y >= CONTROL_TOP
+        && point.y <= CONTROL_TOP + CONTROL_SIZE
+        && point.x >= CONTROL_MARGIN
+        && point.x <= CONTROL_MARGIN + CONTROL_SIZE
+    {
+        return WindowChromeHit::Close;
+    }
+    let zoom_left = (size.width - CONTROL_MARGIN - CONTROL_SIZE).max(0.0);
+    if point.y >= CONTROL_TOP
+        && point.y <= CONTROL_TOP + CONTROL_SIZE
+        && point.x >= zoom_left
+        && point.x <= zoom_left + CONTROL_SIZE
+    {
+        return WindowChromeHit::Zoom;
+    }
+    if point.y >= 1.0 && point.y < TITLEBAR_HEIGHT {
+        return WindowChromeHit::Titlebar;
+    }
+    WindowChromeHit::Content
+}
+
 pub struct Application {
     pub name: String,
     pub bundle_id: String,
@@ -477,8 +520,7 @@ impl Application {
                 apply_theme(self.dark_mode, self.accent_color);
                 let scale = self.scale;
                 if let Err(err) = presenter.render(|canvas| {
-                    canvas.width /= scale;
-                    canvas.height /= scale;
+                    canvas.set_scale(scale);
                     draw_desktop_backdrop(canvas);
                     draw_window(canvas, window);
                 }) {
@@ -565,6 +607,19 @@ impl Application {
                         let scale = self.scale;
                         self.cursor_position =
                             Point::new(position.x as f32 / scale, position.y as f32 / scale);
+                        if let Some(window) = &self.platform_window {
+                            let logical = window.inner_size().to_logical::<f32>(self.scale as f64);
+                            let hit = hit_test_window_chrome(
+                                self.cursor_position,
+                                Size::new(logical.width, logical.height),
+                            );
+                            window.set_cursor(match hit {
+                                WindowChromeHit::ResizeSouthEast => {
+                                    winit::window::CursorIcon::NwseResize
+                                }
+                                _ => winit::window::CursorIcon::Default,
+                            });
+                        }
                         let _ = self.dispatch(slopos_kit::Event::MouseMove {
                             point: self.cursor_position,
                             modifiers: self.modifiers(),
@@ -578,42 +633,87 @@ impl Application {
                     }
                     winit::event::WindowEvent::MouseInput { state, button, .. } => {
                         if let Some(button) = winit_to_retro_mouse_button(button) {
-                            let event = match state {
-                                winit::event::ElementState::Pressed => {
-                                    let now = std::time::Instant::now();
-                                    let is_double_click = self
-                                        .last_click
-                                        .as_ref()
-                                        .map(|(last_button, last_point, last_time)| {
-                                            *last_button == button
-                                                && now.duration_since(*last_time)
-                                                    <= std::time::Duration::from_millis(500)
-                                                && distance_squared(
-                                                    *last_point,
-                                                    self.cursor_position,
-                                                ) <= 16.0
-                                        })
-                                        .unwrap_or(false);
-                                    self.last_click = Some((button, self.cursor_position, now));
-                                    if is_double_click {
-                                        slopos_kit::Event::DoubleClick {
-                                            button,
-                                            point: self.cursor_position,
-                                            modifiers: self.modifiers(),
+                            let now = std::time::Instant::now();
+                            let is_double_click = state == winit::event::ElementState::Pressed
+                                && self
+                                    .last_click
+                                    .as_ref()
+                                    .map(|(last_button, last_point, last_time)| {
+                                        *last_button == button
+                                            && now.duration_since(*last_time)
+                                                <= std::time::Duration::from_millis(500)
+                                            && distance_squared(
+                                                *last_point,
+                                                self.cursor_position,
+                                            ) <= 16.0
+                                    })
+                                    .unwrap_or(false);
+
+                            if state == winit::event::ElementState::Pressed {
+                                self.last_click = Some((button, self.cursor_position, now));
+                            }
+
+                            if button == MouseButton::Left
+                                && state == winit::event::ElementState::Pressed
+                            {
+                                if let Some(window) = &self.platform_window {
+                                    let logical =
+                                        window.inner_size().to_logical::<f32>(self.scale as f64);
+                                    match hit_test_window_chrome(
+                                        self.cursor_position,
+                                        Size::new(logical.width, logical.height),
+                                    ) {
+                                        WindowChromeHit::Close => {
+                                            event_loop.exit();
+                                            return;
                                         }
-                                    } else {
-                                        slopos_kit::Event::MouseDown {
-                                            button,
-                                            point: self.cursor_position,
-                                            modifiers: self.modifiers(),
+                                        WindowChromeHit::Zoom => {
+                                            window.set_maximized(!window.is_maximized());
+                                            return;
                                         }
+                                        WindowChromeHit::Titlebar => {
+                                            if is_double_click {
+                                                window.set_maximized(!window.is_maximized());
+                                            } else if let Err(err) = window.drag_window() {
+                                                tracing::warn!("failed to request compositor window move: {err}");
+                                            }
+                                            return;
+                                        }
+                                        WindowChromeHit::ResizeSouthEast => {
+                                            if let Err(err) = window.drag_resize_window(
+                                                winit::window::ResizeDirection::SouthEast,
+                                            ) {
+                                                tracing::warn!("failed to request compositor resize: {err}");
+                                            }
+                                            return;
+                                        }
+                                        WindowChromeHit::Content => {}
                                     }
                                 }
-                                winit::event::ElementState::Released => slopos_kit::Event::MouseUp {
-                                    button,
-                                    point: self.cursor_position,
-                                    modifiers: self.modifiers(),
-                                },
+                            }
+
+                            let event = match state {
+                                winit::event::ElementState::Pressed if is_double_click => {
+                                    slopos_kit::Event::DoubleClick {
+                                        button,
+                                        point: self.cursor_position,
+                                        modifiers: self.modifiers(),
+                                    }
+                                }
+                                winit::event::ElementState::Pressed => {
+                                    slopos_kit::Event::MouseDown {
+                                        button,
+                                        point: self.cursor_position,
+                                        modifiers: self.modifiers(),
+                                    }
+                                }
+                                winit::event::ElementState::Released => {
+                                    slopos_kit::Event::MouseUp {
+                                        button,
+                                        point: self.cursor_position,
+                                        modifiers: self.modifiers(),
+                                    }
+                                }
                             };
                             let _ = self.dispatch(event);
                         }
@@ -1104,8 +1204,7 @@ impl UiRuntime {
         apply_theme(self.dark_mode, self.accent_color);
         let scale = self.scale;
         renderer.render(|canvas| {
-            canvas.width /= scale;
-            canvas.height /= scale;
+            canvas.set_scale(scale);
             if backdrop {
                 draw_desktop_backdrop(canvas);
             }
@@ -1128,6 +1227,12 @@ impl UiRuntime {
     /// Mark the UI dirty so the next driver iteration repaints.
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    /// Mark the current pixels/layout as synchronized. Layer-shell drivers use
+    /// this after restoring hit-test layout following a multi-surface paint.
+    pub fn clear_dirty(&mut self) {
+        self.dirty = false;
     }
 
     /// Dispatch an event to the window and mark as dirty on any result.
@@ -1368,6 +1473,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 pub struct Canvas<'a> {
     width: f32,
     height: f32,
+    /// Number of physical framebuffer pixels per logical UI unit.
+    pixel_scale: f32,
     vertices: Vec<Vertex>,
     clip: Option<Rect>,
     _marker: std::marker::PhantomData<&'a ()>,
@@ -1378,10 +1485,27 @@ impl<'a> Canvas<'a> {
         Self {
             width,
             height,
+            pixel_scale: 1.0,
             vertices: Vec::with_capacity(8192),
             clip: None,
             _marker: std::marker::PhantomData,
         }
+    }
+
+    /// Configure logical layout coordinates while preserving the physical
+    /// framebuffer scale for text rasterization and pixel snapping.
+    pub fn set_scale(&mut self, scale: f32) {
+        let scale = scale.max(1.0);
+        if (self.pixel_scale - scale).abs() <= f32::EPSILON {
+            return;
+        }
+        self.width /= scale;
+        self.height /= scale;
+        self.pixel_scale = scale;
+    }
+
+    pub fn pixel_scale(&self) -> f32 {
+        self.pixel_scale
     }
 
     pub fn rect(&mut self, rect: Rect, color: [f32; 4]) {
@@ -1445,15 +1569,47 @@ impl<'a> Canvas<'a> {
     }
 
     pub fn measure_text(&self, text: &str) -> f32 {
+        let scale = self.pixel_scale.max(1.0);
         let mut width = 0.0;
         for ch in text.chars() {
-            if let Some(glyph) = slopos_render::rasterize_char(ch, 13.0) {
-                width += glyph.advance;
+            if ch == '\n' {
+                break;
+            }
+            if let Some(glyph) = slopos_render::rasterize_char(ch, 13.0 * scale) {
+                width += glyph.advance / scale;
             } else {
                 width += 6.0;
             }
         }
         width
+    }
+
+    /// Return text that fits the requested logical width, adding a measured
+    /// ellipsis when truncation is required.
+    pub fn ellipsize_text(&self, text: &str, max_width: f32) -> String {
+        if max_width <= 0.0 {
+            return String::new();
+        }
+        if self.measure_text(text) <= max_width {
+            return text.to_owned();
+        }
+        let ellipsis = "...";
+        let ellipsis_width = self.measure_text(ellipsis);
+        if ellipsis_width >= max_width {
+            return ellipsis.to_owned();
+        }
+        let mut out = String::new();
+        for ch in text.chars() {
+            let mut candidate = out.clone();
+            candidate.push(ch);
+            candidate.push_str(ellipsis);
+            if self.measure_text(&candidate) > max_width {
+                break;
+            }
+            out.push(ch);
+        }
+        out.push_str(ellipsis);
+        out
     }
 
     pub fn text(&mut self, text: &str, x: f32, y: f32, color: [f32; 4]) {
@@ -1470,10 +1626,12 @@ impl<'a> Canvas<'a> {
     }
 
     fn glyph(&mut self, ch: char, x: f32, y: f32, color: [f32; 4]) -> f32 {
-        if let Some(glyph) = slopos_render::rasterize_char(ch, 13.0) {
-            let baseline_y = y + glyph.ascent;
-            let start_x = x + glyph.bearing_x;
-            let start_y = baseline_y + glyph.bearing_y;
+        let scale = self.pixel_scale.max(1.0);
+        if let Some(glyph) = slopos_render::rasterize_char(ch, 13.0 * scale) {
+            let baseline_y_px = y * scale + glyph.ascent;
+            let start_x_px = x * scale + glyph.bearing_x;
+            let start_y_px = baseline_y_px + glyph.bearing_y;
+            let logical_pixel = 1.0 / scale;
 
             for row in 0..glyph.height {
                 for col in 0..glyph.width {
@@ -1484,22 +1642,31 @@ impl<'a> Canvas<'a> {
                         c[3] *= alpha;
                         self.rect(
                             Rect::new(
-                                (start_x + col as f32).round(),
-                                (start_y + row as f32).round(),
-                                1.0,
-                                1.0,
+                                (start_x_px + col as f32).round() / scale,
+                                (start_y_px + row as f32).round() / scale,
+                                logical_pixel,
+                                logical_pixel,
                             ),
                             c,
                         );
                     }
                 }
             }
-            glyph.advance
+            glyph.advance / scale
         } else {
+            let logical_pixel = 1.0 / scale;
             for (row, bits) in glyph_pattern(ch).iter().enumerate() {
                 for col in 0..5 {
                     if bits & (1 << (4 - col)) != 0 {
-                        self.rect(Rect::new((x + col as f32).round(), (y + row as f32).round(), 1.0, 1.0), color);
+                        self.rect(
+                            Rect::new(
+                                (x * scale + col as f32).round() / scale,
+                                (y * scale + row as f32).round() / scale,
+                                logical_pixel,
+                                logical_pixel,
+                            ),
+                            color,
+                        );
                     }
                 }
             }
@@ -3040,7 +3207,7 @@ fn draw_icon_view(canvas: &mut Canvas<'_>, icon_view: &IconView) {
         canvas.rect(rect, theme_paper());
     }
     for item in &icon_view.items {
-        let display_label = truncate_label(&item.label, 12);
+        let display_label = canvas.ellipsize_text(&item.label, (item.rect.width + 8.0).max(36.0));
         if item.selected {
             let sel_rect = Rect::new(
                 item.rect.x - 4.0,

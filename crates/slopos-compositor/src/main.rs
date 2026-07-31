@@ -34,12 +34,13 @@ mod linux {
         accumulate_damage_for_window_move, accumulate_damage_rect, apply_scale_to_output_config,
         assign_new_window_to_active, cascade_position, detect_dri3_from_env,
         detect_output_scale_from_env, focus_window_after_workspace_switch, move_to_top,
-        next_cascade_offset, output_scale_summary, prefer_full_redraw,
-        resolve_laid_out_outputs_from_env, select_backend_kind,
-        selection_bytes_for_mime_with_text_fallback, session_mode_note, session_mode_summary,
+        geometry_for_interactive_grab, next_cascade_offset, output_scale_summary,
+        prefer_full_redraw, resolve_laid_out_outputs_from_env,
+        selection_bytes_for_mime_with_text_fallback, session_mode_note,
         text_input_capability_from_env, text_input_capability_summary, topmost_window_at,
         total_output_size, window_paint_source, CompositorBackendKind, DamageRect, DisplayPolicy,
-        LaidOutOutput, OutputScale, PlaceholderPresentStats, TextInputCapability, WindowGeometry,
+        InteractiveGrab, InteractiveGrabKind, LaidOutOutput, OutputScale,
+        PlaceholderPresentStats, ResizeEdges, TextInputCapability, WindowGeometry,
         WindowPaintSource, WorkspaceId, WorkspaceState, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
     };
     use slopos_compositor::frame_timing::{FrameScheduler, RefreshRate};
@@ -71,7 +72,9 @@ mod linux {
         delegate_seat, delegate_shm, delegate_xdg_shell,
         input::{
             keyboard::{FilterResult, XkbConfig},
-            pointer::{ButtonEvent, CursorImageStatus, MotionEvent},
+            pointer::{
+                ButtonEvent, CursorImageStatus, CursorImageSurfaceData, MotionEvent,
+            },
             Seat, SeatHandler, SeatState,
         },
         output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
@@ -79,7 +82,7 @@ mod linux {
             calloop::{EventLoop, LoopHandle, LoopSignal},
             wayland_server::{
                 backend::{ClientData, ClientId, DisconnectReason},
-                protocol::wl_surface::WlSurface,
+                protocol::{wl_output, wl_surface::WlSurface},
                 Display, DisplayHandle, Resource,
             },
         },
@@ -177,6 +180,10 @@ mod linux {
         position: Point<i32, Logical>,
         /// Last committed size (logical pixels)
         size: Size<i32, Logical>,
+        /// Geometry restored after maximize/fullscreen.
+        restore_geometry: Option<WindowGeometry>,
+        /// Minimized windows stay mapped but are excluded from hit-testing/painting.
+        minimized: bool,
     }
 
     struct MappedLayer {
@@ -239,6 +246,14 @@ mod linux {
         next_window_offset: i32,
         // Current pointer position (logical)
         pointer_pos: Point<f64, Logical>,
+        /// Client requested cursor surface/name; Named always has a software fallback.
+        cursor_status: CursorImageStatus,
+        /// Current compositor-owned xdg_toplevel move/resize operation.
+        interactive_grab: Option<InteractiveGrab>,
+        /// Tracks BTN_LEFT so stale xdg move/resize requests cannot start a grab.
+        left_button_down: bool,
+        /// A frame is produced only after damage, input, commit, or a frame event.
+        frame_dirty: bool,
         // Output size advertised for X11 input transforms (union of all outputs).
         output_size: Size<i32, Physical>,
         // Serial counter for synthetic events
@@ -298,7 +313,7 @@ mod linux {
         fn window_at(&self, pt: Point<f64, Logical>) -> Option<usize> {
             // Walk top→bottom; skip windows on inactive workspaces.
             for (idx, w) in self.windows.iter().enumerate().rev() {
-                if !self.workspace_state.is_visible(&w.window_id) {
+                if w.minimized || !self.workspace_state.is_visible(&w.window_id) {
                     continue;
                 }
                 if w.geometry().contains_f64(pt.x, pt.y) {
@@ -310,6 +325,10 @@ mod linux {
 
         /// Bring window at `idx` to the top and focus keyboard+pointer on it.
         fn focus_window(&mut self, idx: usize) {
+            if idx >= self.windows.len() {
+                return;
+            }
+            self.windows[idx].minimized = false;
             // Rotate to top
             let surface = self.windows[idx].toplevel.wl_surface().clone();
             move_to_top(&mut self.windows, idx);
@@ -358,7 +377,12 @@ mod linux {
         /// After Super+workspace switch: unfocus windows now hidden; focus topmost
         /// visible window (paint order bottom→top). Clears keyboard focus when none.
         fn apply_focus_after_workspace_switch(&mut self) {
-            let order: Vec<&str> = self.windows.iter().map(|w| w.window_id.as_str()).collect();
+            let order: Vec<&str> = self
+                .windows
+                .iter()
+                .filter(|w| !w.minimized)
+                .map(|w| w.window_id.as_str())
+                .collect();
             let target =
                 focus_window_after_workspace_switch(&self.workspace_state, &order).map(str::to_owned);
             if let Some(id) = target {
@@ -380,6 +404,11 @@ mod linux {
         fn request_full_redraw(&mut self) {
             self.need_full_redraw = true;
             self.pending_damage = None;
+            self.frame_dirty = true;
+        }
+
+        fn request_redraw(&mut self) {
+            self.frame_dirty = true;
         }
 
         /// Record dirty rects when a window moves/resizes (`accumulate_damage` over old+new).
@@ -395,6 +424,7 @@ mod linux {
             if let Some(d) = accumulate_damage_for_window_move(window_id, old, new) {
                 self.pending_damage = Some(accumulate_damage_rect(self.pending_damage, d));
             }
+            self.frame_dirty = true;
         }
 
         /// Move a mapped window and accumulate damage over old+new extents.
@@ -406,6 +436,132 @@ mod linux {
             let old = self.windows[idx].geometry();
             self.windows[idx].position = Point::from((x, y));
             let new = self.windows[idx].geometry();
+            let id = self.windows[idx].window_id.clone();
+            self.note_window_geometry_change(&id, old, new);
+        }
+
+        fn begin_interactive_grab(
+            &mut self,
+            surface: &ToplevelSurface,
+            kind: InteractiveGrabKind,
+        ) {
+            if !self.left_button_down {
+                tracing::debug!("ignoring xdg move/resize without pressed left button");
+                return;
+            }
+            let Some(window) = self
+                .windows
+                .iter()
+                .find(|w| w.toplevel.wl_surface() == surface.wl_surface())
+            else {
+                return;
+            };
+            let pointer_x = self.pointer_pos.x.round() as i32;
+            let pointer_y = self.pointer_pos.y.round() as i32;
+            self.interactive_grab = Some(InteractiveGrab {
+                window_id: window.window_id.clone(),
+                kind,
+                start_pointer_x: pointer_x,
+                start_pointer_y: pointer_y,
+                start_geometry: window.geometry(),
+            });
+            tracing::debug!(
+                window_id = %window.window_id,
+                ?kind,
+                pointer_x,
+                pointer_y,
+                "interactive grab started"
+            );
+        }
+
+        fn update_interactive_grab(&mut self) {
+            let Some(grab) = self.interactive_grab.clone() else {
+                return;
+            };
+            let Some(idx) = self.windows.iter().position(|w| w.window_id == grab.window_id) else {
+                self.interactive_grab = None;
+                return;
+            };
+            let new = geometry_for_interactive_grab(
+                &grab,
+                self.pointer_pos.x.round() as i32,
+                self.pointer_pos.y.round() as i32,
+                160,
+                96,
+                self.output_size.w,
+                self.output_size.h,
+            );
+            let old = self.windows[idx].geometry();
+            if old == new {
+                return;
+            }
+            self.windows[idx].position = Point::from((new.x, new.y));
+            self.windows[idx].size = Size::from((new.width, new.height));
+            let surface = self.windows[idx].toplevel.clone();
+            let id = self.windows[idx].window_id.clone();
+            if matches!(grab.kind, InteractiveGrabKind::Resize(_)) {
+                surface.with_pending_state(|state| {
+                    state.size = Some(Size::from((new.width, new.height)));
+                    state.states.set(xdg_toplevel::State::Resizing);
+                });
+                surface.send_configure();
+            }
+            self.note_window_geometry_change(&id, old, new);
+        }
+
+        fn finish_interactive_grab(&mut self) {
+            let Some(grab) = self.interactive_grab.take() else {
+                return;
+            };
+            if matches!(grab.kind, InteractiveGrabKind::Resize(_)) {
+                if let Some(window) = self.windows.iter().find(|w| w.window_id == grab.window_id) {
+                    let surface = window.toplevel.clone();
+                    surface.with_pending_state(|state| {
+                        state.states.unset(xdg_toplevel::State::Resizing);
+                        state.size = Some(window.size);
+                    });
+                    surface.send_configure();
+                }
+            }
+            tracing::debug!(window_id = %grab.window_id, "interactive grab finished");
+            self.request_redraw();
+        }
+
+        fn set_window_state_geometry(
+            &mut self,
+            surface: &ToplevelSurface,
+            state_flag: xdg_toplevel::State,
+            enabled: bool,
+        ) {
+            let Some(idx) = self
+                .windows
+                .iter()
+                .position(|w| w.toplevel.wl_surface() == surface.wl_surface())
+            else {
+                return;
+            };
+            let old = self.windows[idx].geometry();
+            if enabled {
+                if self.windows[idx].restore_geometry.is_none() {
+                    self.windows[idx].restore_geometry = Some(old);
+                }
+                self.windows[idx].position = Point::from((0, 0));
+                self.windows[idx].size = Size::from((self.output_size.w, self.output_size.h));
+            } else if let Some(restore) = self.windows[idx].restore_geometry.take() {
+                self.windows[idx].position = Point::from((restore.x, restore.y));
+                self.windows[idx].size = Size::from((restore.width, restore.height));
+            }
+            let new = self.windows[idx].geometry();
+            let toplevel = self.windows[idx].toplevel.clone();
+            toplevel.with_pending_state(|state| {
+                if enabled {
+                    state.states.set(state_flag);
+                } else {
+                    state.states.unset(state_flag);
+                }
+                state.size = Some(Size::from((new.width, new.height)));
+            });
+            toplevel.send_configure();
             let id = self.windows[idx].window_id.clone();
             self.note_window_geometry_change(&id, old, new);
         }
@@ -463,7 +619,7 @@ mod linux {
             // Present plan: workspace switch forces full redraw; otherwise use pending
             // damage heuristic (still full clear today — partial clip is follow-on).
             let full_redraw = self.need_full_redraw
-                || self.pending_damage.map_or(true, |d| {
+                || self.pending_damage.map_or(false, |d| {
                     prefer_full_redraw(d, self.output_size.w, self.output_size.h)
                 });
             self.need_full_redraw = false;
@@ -476,19 +632,22 @@ mod linux {
                 self.pending_damage = None;
             }
 
+            let cursor_status = self.cursor_status.clone();
+            let cursor_position = self.pointer_pos;
             let (renderer, x11_surface) = match (self.renderer.as_mut(), self.x11_surface.as_mut()) {
                 (Some(r), Some(s)) => (r, s),
                 _ => {
                     let now = self.clock.now();
                     if let Some(output) = self.outputs.first().cloned() {
                         let workspace_state = &self.workspace_state;
-                        for w in self.windows.iter().filter(|w| workspace_state.is_visible(&w.window_id)) {
+                        for w in self.windows.iter().filter(|w| !w.minimized && workspace_state.is_visible(&w.window_id)) {
                             send_frames_surface_tree(w.toplevel.wl_surface(), &output, now, Some(Duration::ZERO), |_, _| None);
                         }
                         for layer in &self.layer_surfaces {
                             send_frames_surface_tree(layer.surface.wl_surface(), &output, now, Some(Duration::ZERO), |_, _| None);
                         }
                     }
+                    self.frame_dirty = false;
                     return;
                 }
             };
@@ -545,7 +704,7 @@ mod linux {
             let visible_windows: Vec<&MappedWindow> = self
                 .windows
                 .iter()
-                .filter(|w| workspace_state.is_visible(&w.window_id))
+                .filter(|w| !w.minimized && workspace_state.is_visible(&w.window_id))
                 .collect();
             for (i, w) in visible_windows.iter().enumerate() {
                 let loc = Point::<i32, Physical>::from((w.position.x, w.position.y));
@@ -584,6 +743,34 @@ mod linux {
                     1.0_f32,
                     Kind::Unspecified,
                 ));
+            }
+
+            // Client cursor surfaces are real Wayland surfaces and must be the
+            // top-most render element.  If a client does not provide one, the
+            // permanent software fallback below is used.
+            let mut client_cursor_drawn = false;
+            if let CursorImageStatus::Surface(surface) = &cursor_status {
+                let hotspot = with_states(surface, |states| {
+                    states
+                        .data_map
+                        .get::<CursorImageSurfaceData>()
+                        .and_then(|attrs| attrs.lock().ok().map(|attrs| attrs.hotspot))
+                        .unwrap_or_else(|| Point::from((0, 0)))
+                });
+                let cursor_loc = Point::<i32, Physical>::from((
+                    cursor_position.x.round() as i32 - hotspot.x,
+                    cursor_position.y.round() as i32 - hotspot.y,
+                ));
+                let cursor_elements = render_elements_from_surface_tree(
+                    renderer,
+                    surface,
+                    cursor_loc,
+                    1.0_f64,
+                    1.0_f32,
+                    Kind::Cursor,
+                );
+                client_cursor_drawn = !cursor_elements.is_empty();
+                surface_elements.extend(cursor_elements);
             }
 
             // Acquire the next buffer from the X11 swapchain
@@ -658,14 +845,44 @@ mod linux {
                 }
             }
 
-            // Diagnostic Magenta Cursor Pass: Render solid 6x6 magenta square at pointer_pos
-            let cursor_color = [1.0, 0.0, 1.0, 1.0]; // Magenta (R=1, G=0, B=1, A=1)
-            let cursor_rect = Rectangle::from_loc_and_size(
-                Point::<i32, Physical>::from((self.pointer_pos.x as i32, self.pointer_pos.y as i32)),
-                Size::<i32, Physical>::from((6, 6)),
-            );
-            if let Err(e) = frame.clear(cursor_color.into(), &[cursor_rect]) {
-                eprintln!("[render] diagnostic cursor clear failed: {e}");
+            // Permanent compositor-owned software cursor fallback.  It remains
+            // visible for Named cursors and whenever a client cursor surface has
+            // not committed a buffer. Hidden is respected exactly.
+            let fallback_cursor = !matches!(cursor_status, CursorImageStatus::Hidden)
+                && !client_cursor_drawn;
+            if fallback_cursor {
+                let origin_x = cursor_position.x.round() as i32;
+                let origin_y = cursor_position.y.round() as i32;
+                let black = Color32F::from([0.0, 0.0, 0.0, 1.0]);
+                let white = Color32F::from([1.0, 1.0, 1.0, 1.0]);
+                // Classic high-contrast arrow, represented as horizontal runs.
+                const OUTLINE: &[(i32, i32, i32)] = &[
+                    (0, 0, 1), (0, 1, 2), (0, 2, 3), (0, 3, 4),
+                    (0, 4, 5), (0, 5, 6), (0, 6, 7), (0, 7, 8),
+                    (0, 8, 9), (0, 9, 10), (0, 10, 11), (0, 11, 12),
+                    (0, 12, 8), (0, 13, 5), (0, 14, 4), (0, 15, 3),
+                    (5, 12, 4), (6, 13, 4), (7, 14, 4), (8, 15, 4),
+                    (9, 16, 3), (10, 17, 3),
+                ];
+                const FILL: &[(i32, i32, i32)] = &[
+                    (1, 2, 1), (1, 3, 2), (1, 4, 3), (1, 5, 4),
+                    (1, 6, 5), (1, 7, 6), (1, 8, 7), (1, 9, 8),
+                    (1, 10, 9), (1, 11, 6), (1, 12, 3),
+                ];
+                for &(x, y, width) in OUTLINE {
+                    let rect = Rectangle::from_loc_and_size(
+                        Point::<i32, Physical>::from((origin_x + x, origin_y + y)),
+                        Size::<i32, Physical>::from((width, 1)),
+                    );
+                    let _ = frame.clear(black, &[rect]);
+                }
+                for &(x, y, width) in FILL {
+                    let rect = Rectangle::from_loc_and_size(
+                        Point::<i32, Physical>::from((origin_x + x, origin_y + y)),
+                        Size::<i32, Physical>::from((width, 1)),
+                    );
+                    let _ = frame.clear(white, &[rect]);
+                }
             }
 
             // Finish the frame (flushes GL commands)
@@ -689,7 +906,7 @@ mod linux {
                 for w in self
                     .windows
                     .iter()
-                    .filter(|w| self.workspace_state.is_visible(&w.window_id))
+                    .filter(|w| !w.minimized && self.workspace_state.is_visible(&w.window_id))
                 {
                     send_frames_surface_tree(
                         w.toplevel.wl_surface(),
@@ -711,6 +928,7 @@ mod linux {
             }
 
             self.frame_scheduler.record_frame();
+            self.frame_dirty = false;
         }
     }
 
@@ -771,6 +989,7 @@ mod linux {
             if let Some((id, old, new)) = geometry_change {
                 self.note_window_geometry_change(&id, old, new);
             }
+            self.request_redraw();
         }
     }
 
@@ -801,7 +1020,10 @@ mod linux {
             &mut self.seat_state
         }
 
-        fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+        fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+            self.cursor_status = image;
+            self.request_redraw();
+        }
 
         fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
             let client = focused.and_then(|s| s.client());
@@ -1076,11 +1298,76 @@ mod linux {
                 window_id,
                 position,
                 size: Size::from((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)),
+                restore_geometry: None,
+                minimized: false,
             });
+            self.request_full_redraw();
 
             // Focus the new window
             let idx = self.windows.len() - 1;
             self.focus_window(idx);
+        }
+
+        fn move_request(
+            &mut self,
+            surface: ToplevelSurface,
+            _seat: wl_seat::WlSeat,
+            _serial: Serial,
+        ) {
+            self.begin_interactive_grab(&surface, InteractiveGrabKind::Move);
+        }
+
+        fn resize_request(
+            &mut self,
+            surface: ToplevelSurface,
+            _seat: wl_seat::WlSeat,
+            _serial: Serial,
+            edges: xdg_toplevel::ResizeEdge,
+        ) {
+            let edges = match edges {
+                xdg_toplevel::ResizeEdge::Top => ResizeEdges::TOP,
+                xdg_toplevel::ResizeEdge::Bottom => ResizeEdges::BOTTOM,
+                xdg_toplevel::ResizeEdge::Left => ResizeEdges::LEFT,
+                xdg_toplevel::ResizeEdge::Right => ResizeEdges::RIGHT,
+                xdg_toplevel::ResizeEdge::TopLeft => ResizeEdges::TOP_LEFT,
+                xdg_toplevel::ResizeEdge::TopRight => ResizeEdges::TOP_RIGHT,
+                xdg_toplevel::ResizeEdge::BottomLeft => ResizeEdges::BOTTOM_LEFT,
+                xdg_toplevel::ResizeEdge::BottomRight => ResizeEdges::BOTTOM_RIGHT,
+                _ => return,
+            };
+            self.begin_interactive_grab(&surface, InteractiveGrabKind::Resize(edges));
+        }
+
+        fn maximize_request(&mut self, surface: ToplevelSurface) {
+            self.set_window_state_geometry(&surface, xdg_toplevel::State::Maximized, true);
+        }
+
+        fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+            self.set_window_state_geometry(&surface, xdg_toplevel::State::Maximized, false);
+        }
+
+        fn fullscreen_request(
+            &mut self,
+            surface: ToplevelSurface,
+            _output: Option<wl_output::WlOutput>,
+        ) {
+            self.set_window_state_geometry(&surface, xdg_toplevel::State::Fullscreen, true);
+        }
+
+        fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+            self.set_window_state_geometry(&surface, xdg_toplevel::State::Fullscreen, false);
+        }
+
+        fn minimize_request(&mut self, surface: ToplevelSurface) {
+            if let Some(idx) = self
+                .windows
+                .iter()
+                .position(|w| w.toplevel.wl_surface() == surface.wl_surface())
+            {
+                self.windows[idx].minimized = true;
+                self.request_full_redraw();
+                self.apply_focus_after_workspace_switch();
+            }
         }
 
         fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
@@ -1538,6 +1825,8 @@ mod linux {
         let logical = Size::<i32, Logical>::from((state.output_size.w, state.output_size.h));
         let pos = ev.position_transformed(logical);
         state.pointer_pos = pos;
+        state.update_interactive_grab();
+        state.request_redraw();
 
         // Find which window (if any) the pointer is over
         let focus = state.window_at(pos).map(|idx| {
@@ -1575,6 +1864,14 @@ mod linux {
         let button = ev.button_code();
         let btn_state = ev.state();
 
+        let primary_button = button == 0x110 || button == 1;
+        if primary_button {
+            state.left_button_down = btn_state == ButtonState::Pressed;
+            if btn_state == ButtonState::Released {
+                state.finish_interactive_grab();
+            }
+        }
+
         // On press: hit-test surfaces and focus the topmost one
         if btn_state == ButtonState::Pressed {
             let pos = state.pointer_pos;
@@ -1603,6 +1900,7 @@ mod linux {
             );
             ptr.frame(state);
         }
+        state.request_redraw();
     }
 
     /// Create one or more wl_output globals at the given logical origins.
@@ -1784,50 +2082,42 @@ pub fn parse_bool_env(key: &str) -> bool {
             }
         }
 
-        // ---- Backend mode honesty (session DRM vs nested X11 vs labwc) ----
-        let force_labwc = parse_bool_env("SLOPOS_FORCE_LABWC")
-            || std::env::var("SLOPOS_COMPOSITOR")
-                .map(|v| v.eq_ignore_ascii_case("labwc"))
-                .unwrap_or(false);
+        // Backend selection is explicit and fail-fast. The production session
+        // never substitutes labwc/sway or silently changes the requested backend.
+        let requested_backend = backend_arg.unwrap_or_else(|| {
+            if std::env::var_os("DISPLAY").is_some()
+                || std::env::var_os("SLOPOS_HOST_WAYLAND_DISPLAY").is_some()
+            {
+                "nested".to_owned()
+            } else {
+                "drm".to_owned()
+            }
+        });
 
-        let prefer_drm = match backend_arg.as_deref() {
-            Some("drm") => true,
-            Some("winit") | Some("headless") => false,
-            _ => parse_bool_env("SLOPOS_PREFER_DRM") || std::path::Path::new("/dev/dri").exists(),
-        };
-        let dri3 = detect_dri3_from_env().unwrap_or(prefer_drm && !force_labwc);
-        let backend_kind = select_backend_kind(prefer_drm, dri3, force_labwc);
-        let mode_line = session_mode_summary(backend_kind);
-        tracing::info!("compositor backend selection: {mode_line}");
-        eprintln!("[slopos-compositor] backend: {mode_line}");
-        if matches!(backend_kind, CompositorBackendKind::LabwcFallback) {
+        if requested_backend == "drm" {
+            eprintln!("[slopos-compositor] backend: SessionDrm (explicit)");
+            return slopos_compositor::session_drm::run_drm_session();
+        }
+
+        let headless = requested_backend == "headless";
+        if !matches!(
+            requested_backend.as_str(),
+            "nested" | "x11" | "winit" | "headless"
+        ) {
             anyhow::bail!(
-                "SLOPOS_FORCE_LABWC / COMPOSITOR=labwc set; refusing to start nested compositor"
+                "unsupported backend '{requested_backend}'; expected drm, nested, x11, winit, or headless"
             );
         }
-        if matches!(backend_kind, CompositorBackendKind::SessionDrm) {
-            if slopos_compositor::session_drm::drm_session_available() {
-                match slopos_compositor::session_drm::run_drm_session() {
-                    Ok(()) => return Ok(()),
-                    Err(err) => {
-                        tracing::warn!(
-                            error = %err,
-                            "SessionDrm path failed; falling back to NestedX11"
-                        );
-                        eprintln!(
-                            "[slopos-compositor] SessionDrm failed ({err:#}); falling back to NestedX11"
-                        );
-                    }
-                }
-            } else {
-                tracing::warn!(
-                    "SessionDrm selected by policy but no /dev/dri nodes; falling back to NestedX11"
-                );
-                eprintln!(
-                    "[slopos-compositor] SessionDrm preferred but /dev/dri unavailable — NestedX11 fallback"
-                );
-            }
+        if requested_backend == "winit" {
+            tracing::warn!(
+                "--backend winit currently uses Smithay's nested X11 transport; use --backend nested"
+            );
         }
+        let backend_kind = CompositorBackendKind::NestedX11;
+        eprintln!(
+            "[slopos-compositor] backend: {} (explicit)",
+            if headless { "Headless" } else { "NestedX11" }
+        );
 
         // ---- Display policy (HDR / VRR / refresh / color) ----
         let display_policy = DisplayPolicy::resolve();
@@ -1951,13 +2241,14 @@ pub fn parse_bool_env(key: &str) -> bool {
         // Backend + GL renderer setup
         // -----------------------------------------------------------------------
 
-        let x11_backend = match X11Backend::new() {
-            Ok(b) => Some(b),
-            Err(err) => {
-                eprintln!("[slopos-compositor] X11Backend unavailable ({err:#}); starting pure Wayland socket server");
-                tracing::warn!(?err, "X11Backend unavailable; starting pure Wayland socket server");
-                None
-            }
+        let x11_backend = if headless {
+            None
+        } else {
+            Some(X11Backend::new().map_err(|err| {
+                anyhow::anyhow!(
+                    "requested nested backend could not initialize Smithay X11 transport: {err:#}"
+                )
+            })?)
         };
 
         let mut renderer_opt = None;
@@ -2037,8 +2328,8 @@ pub fn parse_bool_env(key: &str) -> bool {
                         state.running = false;
                     }
                     X11Event::Refresh { .. } | X11Event::PresentCompleted { .. } => {
-                        // Frame pacing hint from X server — render immediately
-                        state.render_frame();
+                        // Coalesce host refresh with pending compositor damage.
+                        state.request_redraw();
                     }
                     X11Event::Resized { new_size, .. } => {
                         tracing::debug!("resized: {:?}", new_size);
@@ -2090,6 +2381,10 @@ pub fn parse_bool_env(key: &str) -> bool {
             layer_surfaces: Vec::new(),
             next_window_offset: 0,
             pointer_pos: Point::from((0.0_f64, 0.0_f64)),
+            cursor_status: CursorImageStatus::default_named(),
+            interactive_grab: None,
+            left_button_down: false,
+            frame_dirty: true,
             output_size,
             serial: 0,
             renderer: renderer_opt,
@@ -2116,19 +2411,21 @@ pub fn parse_bool_env(key: &str) -> bool {
         try_start_xwayland(&mut state);
 
         tracing::info!("slopos-compositor event loop starting");
-        let mut frame_counter: u32 = 0;
         while state.running {
             display.flush_clients()?;
 
             // Pace the loop with FrameScheduler when not adaptive (VRR).
             // Adaptive uses a short poll so PresentCompleted / input wake us quickly.
-            let dispatch_timeout = if state.frame_scheduler.refresh_rate().is_fixed() {
+            let dispatch_timeout = if !state.frame_dirty {
+                // File-descriptor sources wake calloop immediately. A long idle
+                // timeout prevents an empty desktop from polling at 1 kHz.
+                Some(Duration::from_millis(250))
+            } else if state.frame_scheduler.refresh_rate().is_fixed() {
                 let wait = state.frame_scheduler.time_until_next_frame();
-                // Cap wait so input stays responsive; floor at 1ms.
                 let ms = wait.as_millis().min(32).max(1) as u64;
                 Some(Duration::from_millis(ms))
             } else {
-                Some(Duration::from_millis(1))
+                Some(Duration::from_millis(16))
             };
 
             event_loop.dispatch(dispatch_timeout, &mut state)?;
@@ -2140,17 +2437,10 @@ pub fn parse_bool_env(key: &str) -> bool {
             display.dispatch_clients(&mut state)?;
             display.flush_clients()?;
 
-            // Steady-state frames: fixed rates render ~every N ticks; adaptive more often.
-            frame_counter = frame_counter.wrapping_add(1);
-            let render_every = match state.frame_scheduler.refresh_rate() {
-                RefreshRate::Hz60 => 4,
-                RefreshRate::Hz120 => 2,
-                RefreshRate::Hz144 | RefreshRate::Hz165 => 2,
-                RefreshRate::Adaptive => 1,
-            };
-            // `x % 1 == 1` is never true, so adaptive (render_every == 1) must
-            // bypass the modulo gate or steady-state frames never render.
-            if render_every <= 1 || frame_counter % render_every == 1 {
+            // Damage-driven rendering: commits, pointer motion, output refresh,
+            // workspace changes and animations explicitly mark the frame dirty.
+            // Static desktops therefore sleep instead of saturating LLVMpipe.
+            if state.frame_dirty {
                 state.render_frame();
             }
         }

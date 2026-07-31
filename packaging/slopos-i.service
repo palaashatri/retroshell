@@ -9,7 +9,7 @@ Type=simple
 ExecStart=/usr/local/bin/start-slopos-i
 Restart=on-failure
 RestartSec=2
-# Honest fallback still handled inside start-slopos-i (labwc if compositor dies).
+# slopos-session and slopos-compositor fail closed; no third-party compositor fallback.
 Environment=XDG_SESSION_TYPE=wayland
 Environment=XDG_CURRENT_DESKTOP=SLOPOS-I
 

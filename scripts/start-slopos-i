@@ -1,32 +1,16 @@
 #!/usr/bin/env bash
-# start-slopos-i — XDG Wayland session entry for SLOPOS-I.
+# start-slopos-i — stable XDG session entry for SLOPOS-I.
+# Copyright (c) 2026 Palaash Atri
+# SPDX-License-Identifier: MIT
 #
-# Prefer slopos-compositor when available. If it is missing from PATH, forced
-# off, or dies early (common under nested X without DRI3), fall back to labwc
-# with an honest message. Then exec slopos-shell as the session client.
-#
-# Overrides:
-#   SLOPOS_COMPOSITOR=labwc|slopos-compositor
-#   SLOPOS_FORCE_LABWC=1          — same as COMPOSITOR=labwc
-#   SLOPOS_COMPOSITOR_WAIT_SECS   — how long to wait for compositor (default 3)
-#   SLOPOS_OUTPUTS_LAYOUT         — multi-monitor layout blob (re-exported if set)
-#   WLR_BACKENDS / WLR_RENDERER_ALLOW_SOFTWARE — passed through to labwc if set
-#
-# Compositor selection is always logged honestly (preferred vs fallback reason).
+# This wrapper deliberately does not select or fall back to a third-party
+# compositor.  The Rust slopos-session supervisor owns process lifecycle and
+# slopos-compositor owns every visible SLOPOS window.
 set -euo pipefail
 
 export XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-wayland}"
 export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-SLOPOS-I}"
 export DESKTOP_SESSION="${DESKTOP_SESSION:-slopos-i}"
-
-# Re-export multi-monitor layout when the greeter/user session already set it so
-# slopos-shell display_arrange can read the same env (EmitLayoutEnv key).
-if [ -n "${SLOPOS_OUTPUTS_LAYOUT:-}" ]; then
-  export SLOPOS_OUTPUTS_LAYOUT
-  echo "start-slopos-i: SLOPOS_OUTPUTS_LAYOUT is set (len=${#SLOPOS_OUTPUTS_LAYOUT}); re-exported for session"
-else
-  echo "start-slopos-i: SLOPOS_OUTPUTS_LAYOUT unset (single-output / default arrange)"
-fi
 
 if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
   export XDG_RUNTIME_DIR="/run/user/$(id -u)"
@@ -34,26 +18,14 @@ fi
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
 
-WAIT_SECS="${SLOPOS_COMPOSITOR_WAIT_SECS:-3}"
-COMPOSITOR_LOG="${XDG_RUNTIME_DIR}/slopos-compositor.log"
-COMPOSITOR_PID=""
-SELECTED_COMPOSITOR=""
-
-die() {
-  echo "start-slopos-i: $*" >&2
-  exit 1
-}
-
 resolve_bin() {
   local name="$1"
   if command -v "$name" >/dev/null 2>&1; then
     command -v "$name"
     return 0
   fi
-  # Dev trees: next to this script → repo target/{release,debug}
-  local here
+  local here candidate
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  local candidate
   for candidate in \
     "$here/../target/release/$name" \
     "$here/../target/debug/$name" \
@@ -62,125 +34,27 @@ resolve_bin() {
     "/usr/bin/$name"
   do
     if [ -x "$candidate" ]; then
-      echo "$candidate"
+      printf '%s\n' "$candidate"
       return 0
     fi
   done
   return 1
 }
 
-pick_wayland_display() {
-  # Prefer socket name published by slopos-compositor (Docker entrypoint path),
-  # then XDG_RUNTIME_DIR, then wayland-0.
-  local socket=""
-  if [ -f /tmp/runtime-root/wayland-display ]; then
-    socket="$(tr -d '[:space:]' </tmp/runtime-root/wayland-display || true)"
-  fi
-  if [ -z "$socket" ] && [ -f "$XDG_RUNTIME_DIR/wayland-display" ]; then
-    socket="$(tr -d '[:space:]' <"$XDG_RUNTIME_DIR/wayland-display" || true)"
-  fi
-  if [ -z "$socket" ]; then
-    # Newest wayland-* socket that is not a lock file
-    local f
-    for f in "$XDG_RUNTIME_DIR"/wayland-*; do
-      [ -S "$f" ] || continue
-      socket="$(basename "$f")"
-    done
-  fi
-  if [ -z "$socket" ]; then
-    socket="wayland-0"
-  fi
-  echo "$socket"
+SESSION_BIN="$(resolve_bin slopos-session)" || {
+  echo "start-slopos-i: slopos-session not found" >&2
+  exit 1
 }
 
-start_labwc() {
-  local labwc_bin
-  labwc_bin="$(resolve_bin labwc)" || die "labwc not found on PATH (needed for fallback or SLOPOS_COMPOSITOR=labwc)"
-
-  echo "start-slopos-i: launching labwc ($labwc_bin)"
-  # Nested under X11 (Docker/Xvfb/desktop X): use x11 backend if caller did not set WLR_BACKENDS.
-  # Bare-metal Wayland/DRM sessions leave WLR_BACKENDS unset so labwc uses its default.
-  if [ -n "${WLR_BACKENDS:-}" ]; then
-    echo "start-slopos-i: using existing WLR_BACKENDS=$WLR_BACKENDS"
-    "$labwc_bin" &
-  elif [ -n "${DISPLAY:-}" ]; then
-    echo "start-slopos-i: DISPLAY=$DISPLAY set; starting labwc with WLR_BACKENDS=x11 (nested / no native DRM seat)"
-    echo "start-slopos-i: note — software rendering may be used; this is the honest labwc fallback path"
-    WLR_BACKENDS=x11 WLR_RENDERER_ALLOW_SOFTWARE="${WLR_RENDERER_ALLOW_SOFTWARE:-1}" "$labwc_bin" &
+# Backend selection is explicit.  Nested development uses SLOPOS' own nested
+# compositor window; it is not a labwc/sway session fallback.
+backend="${SLOPOS_BACKEND:-}"
+if [ -z "$backend" ]; then
+  if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    backend="nested"
   else
-    echo "start-slopos-i: starting labwc on default backend (expect DRM/KMS session)"
-    "$labwc_bin" &
+    backend="drm"
   fi
-  COMPOSITOR_PID=$!
-  sleep 2
-  if ! kill -0 "$COMPOSITOR_PID" 2>/dev/null; then
-    die "labwc exited immediately (pid $COMPOSITOR_PID)"
-  fi
-  export WAYLAND_DISPLAY
-  WAYLAND_DISPLAY="$(pick_wayland_display)"
-  echo "start-slopos-i: labwc running (pid $COMPOSITOR_PID), WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
-}
-
-start_slopos_compositor() {
-  local comp_bin
-  comp_bin="$(resolve_bin slopos-compositor)" || {
-    die "slopos-compositor binary not found on PATH or target/{release,debug}"
-  }
-
-  # Preserve host Wayland display for nested backend
-  if [ -n "${WAYLAND_DISPLAY:-}" ]; then
-    export SLOPOS_HOST_WAYLAND_DISPLAY="$WAYLAND_DISPLAY"
-    echo "start-slopos-i: host Wayland display preserved: SLOPOS_HOST_WAYLAND_DISPLAY=$SLOPOS_HOST_WAYLAND_DISPLAY"
-  fi
-
-  rm -f "$XDG_RUNTIME_DIR/slopos-client-wayland-display"
-
-  : >"$COMPOSITOR_LOG"
-  echo "start-slopos-i: launching slopos-compositor ($comp_bin)"
-  echo "start-slopos-i: log → $COMPOSITOR_LOG"
-  "$comp_bin" >>"$COMPOSITOR_LOG" 2>&1 &
-  COMPOSITOR_PID=$!
-
-  # Poll for client socket readiness file
-  local _try
-  local client_socket=""
-  for _try in $(seq 1 40); do
-    if ! kill -0 "$COMPOSITOR_PID" 2>/dev/null; then
-      echo "start-slopos-i: slopos-compositor died during startup wait"
-      echo "start-slopos-i: --- slopos-compositor log (tail) ---"
-      tail -40 "$COMPOSITOR_LOG" 2>/dev/null || true
-      die "slopos-compositor startup failed (refusing silent fallback under COMPOSITOR SOVEREIGNTY)"
-    fi
-
-    if [ -f "$XDG_RUNTIME_DIR/slopos-client-wayland-display" ]; then
-      client_socket="$(tr -d '[:space:]' <"$XDG_RUNTIME_DIR/slopos-client-wayland-display" || true)"
-      if [ -n "$client_socket" ]; then
-        break
-      fi
-    fi
-    sleep 0.25
-  done
-
-  if [ -z "$client_socket" ]; then
-    die "slopos-compositor did not produce client socket file after wait period"
-  fi
-
-  export SLOPOS_CLIENT_WAYLAND_DISPLAY="$client_socket"
-  export WAYLAND_DISPLAY="$client_socket"
-  echo "start-slopos-i: slopos-compositor running (pid $COMPOSITOR_PID), SLOPOS_CLIENT_WAYLAND_DISPLAY=$SLOPOS_CLIENT_WAYLAND_DISPLAY"
-  return 0
-}
-
-# --- launch session -------------------------------------------------------
-
-echo "start-slopos-i: launching slopos-compositor session (COMPOSITOR SOVEREIGNTY mode)"
-start_slopos_compositor
-SELECTED_COMPOSITOR="slopos-compositor"
-
-SHELL_BIN="$(resolve_bin slopos-shell)" || die "slopos-shell not found on PATH or in target/{release,debug}"
-echo "start-slopos-i: exec slopos-shell ($SHELL_BIN) on WAYLAND_DISPLAY=${WAYLAND_DISPLAY}"
-if [ -n "${WAYLAND_DISPLAY:-}" ] && [ "${SLOPOS_KEEP_DISPLAY:-}" != "1" ]; then
-  exec env -u DISPLAY "$SHELL_BIN" "$@"
-else
-  exec "$SHELL_BIN" "$@"
 fi
+
+exec "$SESSION_BIN" --backend "$backend" "$@"

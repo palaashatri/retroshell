@@ -41,7 +41,7 @@ use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
 use smithay::backend::udev::{all_gpus, primary_gpu, UdevBackend, UdevEvent};
 use smithay::input::keyboard::XkbConfig;
-use smithay::input::pointer::CursorImageStatus;
+use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::{EventLoop, LoopSignal};
@@ -96,9 +96,10 @@ use crate::hdr::HdrCapabilities;
 use crate::{
     assign_new_window_to_active, discover_drm_nodes, drm_presentation_pipeline,
     focus_window_after_workspace_switch, plan_drm_modeset, preferred_primary_drm_node,
-    session_mode_summary, visible_paint_order, CompositorBackendKind, DisplayPolicy,
-    DrmPresentationStage, WorkspaceId, WorkspaceState, DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W,
-    DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+    geometry_for_interactive_grab, session_mode_summary, visible_paint_order,
+    CompositorBackendKind, DisplayPolicy, DrmPresentationStage, InteractiveGrab,
+    InteractiveGrabKind, ResizeEdges, WindowGeometry, WorkspaceId, WorkspaceState,
+    DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
 };
 // Workspace cycle helpers (`cycle_workspace_*` / `activate_workspace_index`) request a
 // full redraw and re-focus the topmost visible window. Super+key bindings can call them
@@ -212,9 +213,16 @@ fn collect_render_elements(
             ));
         }
         if let CursorImageStatus::Surface(ref surface) = state.cursor_status {
+            let hotspot = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<CursorImageSurfaceData>()
+                    .and_then(|attrs| attrs.lock().ok().map(|attrs| attrs.hotspot))
+                    .unwrap_or_else(|| Point::from((0, 0)))
+            });
             let loc = (
-                state.pointer_location.x.round() as i32,
-                state.pointer_location.y.round() as i32,
+                state.pointer_location.x.round() as i32 - hotspot.x,
+                state.pointer_location.y.round() as i32 - hotspot.y,
             );
             elements.extend(render_elements_from_surface_tree(
                 renderer,
@@ -233,10 +241,17 @@ fn collect_render_elements(
     // client-provided surface can be drawn here; a named cursor needs a theme
     // (XCursor) which the DRM path does not load yet.
     if let CursorImageStatus::Surface(ref surface) = state.cursor_status {
-        let loc = (
-            state.pointer_location.x.round() as i32,
-            state.pointer_location.y.round() as i32,
-        );
+            let hotspot = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<CursorImageSurfaceData>()
+                    .and_then(|attrs| attrs.lock().ok().map(|attrs| attrs.hotspot))
+                    .unwrap_or_else(|| Point::from((0, 0)))
+            });
+            let loc = (
+                state.pointer_location.x.round() as i32 - hotspot.x,
+                state.pointer_location.y.round() as i32 - hotspot.y,
+            );
         elements.extend(render_elements_from_surface_tree(
             renderer,
             surface,
@@ -266,7 +281,7 @@ fn collect_render_elements(
         .windows
         .iter()
         .rev()
-        .filter(|w| state.workspace_state.is_visible(&w.window_id))
+        .filter(|w| !w.minimized && state.workspace_state.is_visible(&w.window_id))
     {
         elements.extend(render_elements_from_surface_tree(
             renderer,
@@ -886,6 +901,8 @@ pub fn run_drm_session() -> Result<()> {
         need_full_redraw: true,
         drm_compositor,
         cursor_status: CursorImageStatus::default_named(),
+        interactive_grab: None,
+        left_button_down: false,
     };
 
     eprintln!(
@@ -986,7 +1003,7 @@ pub fn run_drm_session() -> Result<()> {
                     let visible: Vec<WlSurface> = state
                         .windows
                         .iter()
-                        .filter(|w| state.workspace_state.is_visible(&w.window_id))
+                        .filter(|w| !w.minimized && state.workspace_state.is_visible(&w.window_id))
                         .map(|w| w.toplevel.wl_surface().clone())
                         .collect();
                     for surface in visible {
@@ -1055,6 +1072,19 @@ struct MappedWindow {
     window_id: String,
     position: Point<i32, Logical>,
     size: Size<i32, Logical>,
+    restore_geometry: Option<WindowGeometry>,
+    minimized: bool,
+}
+
+impl MappedWindow {
+    fn geometry(&self) -> WindowGeometry {
+        WindowGeometry {
+            x: self.position.x,
+            y: self.position.y,
+            width: self.size.w,
+            height: self.size.h,
+        }
+    }
 }
 
 struct MappedLayer {
@@ -1120,6 +1150,8 @@ fn layer_configure_size(namespace: &str, output: (i32, i32)) -> (i32, i32) {
 struct DrmSessionState {
     /// Latest client-set cursor image; drawn topmost each frame.
     cursor_status: CursorImageStatus,
+    interactive_grab: Option<InteractiveGrab>,
+    left_button_down: bool,
     /// GL compositor over the scanout surface. `None` when it could not be
     /// built, in which case the session falls back to a solid dumb-buffer flip.
     /// Lives in the state so the vblank handler can call `frame_submitted()`.
@@ -1194,13 +1226,23 @@ impl DrmSessionState {
     /// pageflip only); this filter is the live listing contract for focus and any
     /// future composite path.
     fn window_ids_for_present(&self) -> Vec<&str> {
-        let order: Vec<&str> = self.windows.iter().map(|w| w.window_id.as_str()).collect();
+        let order: Vec<&str> = self
+            .windows
+            .iter()
+            .filter(|w| !w.minimized)
+            .map(|w| w.window_id.as_str())
+            .collect();
         visible_paint_order(&self.workspace_state, &order)
     }
 
     /// Focus topmost visible window after map/destroy/workspace change; clear if none.
     fn apply_focus_after_workspace_switch(&mut self) {
-        let order: Vec<&str> = self.windows.iter().map(|w| w.window_id.as_str()).collect();
+        let order: Vec<&str> = self
+            .windows
+            .iter()
+            .filter(|w| !w.minimized)
+            .map(|w| w.window_id.as_str())
+            .collect();
         let target =
             focus_window_after_workspace_switch(&self.workspace_state, &order).map(str::to_owned);
         if let Some(id) = target {
@@ -1270,7 +1312,7 @@ impl DrmSessionState {
         self.windows
             .iter()
             .enumerate()
-            .filter(|(_, w)| self.workspace_state.is_visible(&w.window_id))
+            .filter(|(_, w)| !w.minimized && self.workspace_state.is_visible(&w.window_id))
             .rev()
             .find(|(_, w)| {
                 let x0 = w.position.x as f64;
@@ -1281,6 +1323,120 @@ impl DrmSessionState {
                     && pos.y < y0 + w.size.h as f64
             })
             .map(|(i, _)| i)
+    }
+
+    fn begin_interactive_grab(
+        &mut self,
+        surface: &ToplevelSurface,
+        kind: InteractiveGrabKind,
+    ) {
+        if !self.left_button_down {
+            tracing::debug!("ignoring xdg move/resize without pressed left button");
+            return;
+        }
+        let Some(window) = self
+            .windows
+            .iter()
+            .find(|w| w.toplevel.wl_surface() == surface.wl_surface())
+        else {
+            return;
+        };
+        self.interactive_grab = Some(InteractiveGrab {
+            window_id: window.window_id.clone(),
+            kind,
+            start_pointer_x: self.pointer_location.x.round() as i32,
+            start_pointer_y: self.pointer_location.y.round() as i32,
+            start_geometry: window.geometry(),
+        });
+    }
+
+    fn update_interactive_grab(&mut self) {
+        let Some(grab) = self.interactive_grab.clone() else {
+            return;
+        };
+        let Some(idx) = self.windows.iter().position(|w| w.window_id == grab.window_id) else {
+            self.interactive_grab = None;
+            return;
+        };
+        let next = geometry_for_interactive_grab(
+            &grab,
+            self.pointer_location.x.round() as i32,
+            self.pointer_location.y.round() as i32,
+            160,
+            96,
+            self.output_size.0,
+            self.output_size.1,
+        );
+        if self.windows[idx].geometry() == next {
+            return;
+        }
+        self.windows[idx].position = Point::from((next.x, next.y));
+        self.windows[idx].size = Size::from((next.width, next.height));
+        if matches!(grab.kind, InteractiveGrabKind::Resize(_)) {
+            let toplevel = self.windows[idx].toplevel.clone();
+            toplevel.with_pending_state(|state| {
+                state.size = Some(Size::from((next.width, next.height)));
+                state.states.set(xdg_toplevel::State::Resizing);
+            });
+            toplevel.send_configure();
+        }
+        self.request_full_redraw();
+    }
+
+    fn finish_interactive_grab(&mut self) {
+        let Some(grab) = self.interactive_grab.take() else {
+            return;
+        };
+        if matches!(grab.kind, InteractiveGrabKind::Resize(_)) {
+            if let Some(window) = self.windows.iter().find(|w| w.window_id == grab.window_id) {
+                let toplevel = window.toplevel.clone();
+                let size = window.size;
+                toplevel.with_pending_state(|state| {
+                    state.states.unset(xdg_toplevel::State::Resizing);
+                    state.size = Some(size);
+                });
+                toplevel.send_configure();
+            }
+        }
+        self.request_full_redraw();
+    }
+
+    fn set_window_state_geometry(
+        &mut self,
+        surface: &ToplevelSurface,
+        state_flag: xdg_toplevel::State,
+        enabled: bool,
+    ) {
+        let Some(idx) = self
+            .windows
+            .iter()
+            .position(|w| w.toplevel.wl_surface() == surface.wl_surface())
+        else {
+            return;
+        };
+        let old = self.windows[idx].geometry();
+        if enabled {
+            if self.windows[idx].restore_geometry.is_none() {
+                self.windows[idx].restore_geometry = Some(old);
+            }
+            self.windows[idx].position = Point::from((0, 0));
+            self.windows[idx].size = Size::from(self.output_size);
+        } else if let Some(restore) = self.windows[idx].restore_geometry.take() {
+            self.windows[idx].position = Point::from((restore.x, restore.y));
+            self.windows[idx].size = Size::from((restore.width, restore.height));
+        }
+        let toplevel = self.windows[idx].toplevel.clone();
+        let size = self.windows[idx].size;
+        toplevel.with_pending_state(|state| {
+            if enabled {
+                state.states.set(state_flag);
+            } else {
+                state.states.unset(state_flag);
+            }
+            state.size = Some(size);
+        });
+        toplevel.send_configure();
+        self.request_full_redraw();
     }
 
     fn handle_libinput(
@@ -1358,6 +1514,7 @@ impl DrmSessionState {
                 let x = event.x_transformed(self.output_size.0);
                 let y = event.y_transformed(self.output_size.1);
                 self.pointer_location = Point::from((x, y));
+                self.update_interactive_grab();
                 self.forward_pointer_motion(event.time_msec());
             }
             InputEvent::PointerMotion { event } => {
@@ -1366,6 +1523,7 @@ impl DrmSessionState {
                 let x = (self.pointer_location.x + dx).clamp(0.0, self.output_size.0 as f64 - 1.0);
                 let y = (self.pointer_location.y + dy).clamp(0.0, self.output_size.1 as f64 - 1.0);
                 self.pointer_location = Point::from((x, y));
+                self.update_interactive_grab();
                 self.forward_pointer_motion(event.time_msec());
             }
             InputEvent::PointerButton { event } => {
@@ -1373,6 +1531,12 @@ impl DrmSessionState {
                 let time = event.time_msec();
                 let button = event.button_code();
                 let btn_state = event.state();
+                if button == 0x110 || button == 1 {
+                    self.left_button_down = btn_state == ButtonState::Pressed;
+                    if btn_state == ButtonState::Released {
+                        self.finish_interactive_grab();
+                    }
+                }
 
                 if btn_state == ButtonState::Pressed && !self.locked {
                     let pos = self.pointer_location;
@@ -1600,6 +1764,7 @@ impl SeatHandler for DrmSessionState {
     /// this is why the DRM session had no visible pointer at all.
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
         self.cursor_status = image;
+        self.request_full_redraw();
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
@@ -1783,6 +1948,8 @@ impl XdgShellHandler for DrmSessionState {
             window_id: window_id.clone(),
             position,
             size: Size::from((win_w, win_h)),
+            restore_geometry: None,
+            minimized: false,
         });
         // Listing/present filter: only active-workspace ids (client SHM composite TBD).
         eprintln!(
@@ -1791,6 +1958,68 @@ impl XdgShellHandler for DrmSessionState {
             self.window_ids_for_present()
         );
         self.focus_surface(Some(surface.wl_surface().clone()));
+    }
+
+    fn move_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _seat: wl_seat::WlSeat,
+        _serial: Serial,
+    ) {
+        self.begin_interactive_grab(&surface, InteractiveGrabKind::Move);
+    }
+
+    fn resize_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _seat: wl_seat::WlSeat,
+        _serial: Serial,
+        edges: xdg_toplevel::ResizeEdge,
+    ) {
+        let edges = match edges {
+            xdg_toplevel::ResizeEdge::Top => ResizeEdges::TOP,
+            xdg_toplevel::ResizeEdge::Bottom => ResizeEdges::BOTTOM,
+            xdg_toplevel::ResizeEdge::Left => ResizeEdges::LEFT,
+            xdg_toplevel::ResizeEdge::Right => ResizeEdges::RIGHT,
+            xdg_toplevel::ResizeEdge::TopLeft => ResizeEdges::TOP_LEFT,
+            xdg_toplevel::ResizeEdge::TopRight => ResizeEdges::TOP_RIGHT,
+            xdg_toplevel::ResizeEdge::BottomLeft => ResizeEdges::BOTTOM_LEFT,
+            xdg_toplevel::ResizeEdge::BottomRight => ResizeEdges::BOTTOM_RIGHT,
+            _ => return,
+        };
+        self.begin_interactive_grab(&surface, InteractiveGrabKind::Resize(edges));
+    }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        self.set_window_state_geometry(&surface, xdg_toplevel::State::Maximized, true);
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        self.set_window_state_geometry(&surface, xdg_toplevel::State::Maximized, false);
+    }
+
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        self.set_window_state_geometry(&surface, xdg_toplevel::State::Fullscreen, true);
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        self.set_window_state_geometry(&surface, xdg_toplevel::State::Fullscreen, false);
+    }
+
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(idx) = self
+            .windows
+            .iter()
+            .position(|w| w.toplevel.wl_surface() == surface.wl_surface())
+        {
+            self.windows[idx].minimized = true;
+            self.request_full_redraw();
+            self.apply_focus_after_workspace_switch();
+        }
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {

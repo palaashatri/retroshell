@@ -26,6 +26,5 @@ pipewire-pulse
 wireplumber
 policykit-1
 xwayland
-labwc
 foot
 wl-clipboard

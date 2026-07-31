@@ -58,7 +58,7 @@ impl Widget for Toolbar {
         let height = 32.0;
         let mut width = 0.0;
         for child in &mut self.items {
-            let size = child.layout(LayoutConstraint::loose(Size::new(100.0, height)));
+            let size = child.layout(LayoutConstraint::loose(Size::new(180.0, height)));
             width += size.width;
         }
         let preferred_width = if constraint.max_width.is_finite() {
@@ -151,9 +151,8 @@ mod tests {
         toolbar.add(Box::new(Button::new("B")));
         let _ = toolbar.layout(LayoutConstraint::loose(Size::new(200.0, 32.0)));
 
-        // "A" and "B" are both single-character labels -> 34px wide each
-        // (see Button::layout), laid out left to right: A in [0, 34), B in
-        // [34, 68). This point is inside B and well clear of A.
+        // "A" and "B" are both single-character labels -> 27.5px wide each
+        // (see Button::layout), laid out left to right. This point is inside B.
         let point = Point::new(50.0, 10.0);
         let result = toolbar.handle_event(&Event::MouseDown {
             button: MouseButton::Left,
@@ -179,7 +178,7 @@ mod tests {
         let _ = toolbar.layout(LayoutConstraint::loose(Size::new(200.0, 32.0)));
 
         // Toolbar itself spans [0, 200) (loose max_width), but "A" only
-        // spans [0, 34): 190 is inside the toolbar and outside every item.
+        // spans only its natural width: 190 is inside the toolbar and outside every item.
         let result = toolbar.handle_event(&Event::MouseDown {
             button: MouseButton::Left,
             point: Point::new(190.0, 10.0),

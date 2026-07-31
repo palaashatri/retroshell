@@ -1317,6 +1317,142 @@ impl WindowGeometry {
     }
 }
 
+
+/// Edges involved in a compositor-owned interactive resize operation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ResizeEdges {
+    pub top: bool,
+    pub bottom: bool,
+    pub left: bool,
+    pub right: bool,
+}
+
+impl ResizeEdges {
+    pub const TOP: Self = Self { top: true, bottom: false, left: false, right: false };
+    pub const BOTTOM: Self = Self { top: false, bottom: true, left: false, right: false };
+    pub const LEFT: Self = Self { top: false, bottom: false, left: true, right: false };
+    pub const RIGHT: Self = Self { top: false, bottom: false, left: false, right: true };
+    pub const TOP_LEFT: Self = Self { top: true, bottom: false, left: true, right: false };
+    pub const TOP_RIGHT: Self = Self { top: true, bottom: false, left: false, right: true };
+    pub const BOTTOM_LEFT: Self = Self { top: false, bottom: true, left: true, right: false };
+    pub const BOTTOM_RIGHT: Self = Self { top: false, bottom: true, left: false, right: true };
+
+    pub fn is_empty(self) -> bool {
+        !(self.top || self.bottom || self.left || self.right)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InteractiveGrabKind {
+    Move,
+    Resize(ResizeEdges),
+}
+
+/// Pure compositor state captured at the start of an xdg_toplevel move/resize.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InteractiveGrab {
+    pub window_id: String,
+    pub kind: InteractiveGrabKind,
+    pub start_pointer_x: i32,
+    pub start_pointer_y: i32,
+    pub start_geometry: WindowGeometry,
+}
+
+impl InteractiveGrab {
+    pub fn moving(
+        window_id: impl Into<String>,
+        pointer_x: i32,
+        pointer_y: i32,
+        geometry: WindowGeometry,
+    ) -> Self {
+        Self {
+            window_id: window_id.into(),
+            kind: InteractiveGrabKind::Move,
+            start_pointer_x: pointer_x,
+            start_pointer_y: pointer_y,
+            start_geometry: geometry,
+        }
+    }
+
+    pub fn resizing(
+        window_id: impl Into<String>,
+        edges: ResizeEdges,
+        pointer_x: i32,
+        pointer_y: i32,
+        geometry: WindowGeometry,
+    ) -> Option<Self> {
+        if edges.is_empty() {
+            return None;
+        }
+        Some(Self {
+            window_id: window_id.into(),
+            kind: InteractiveGrabKind::Resize(edges),
+            start_pointer_x: pointer_x,
+            start_pointer_y: pointer_y,
+            start_geometry: geometry,
+        })
+    }
+}
+
+/// Resolve an interactive move/resize against the current pointer position.
+///
+/// Geometry remains inside the compositor output and never shrinks below the
+/// provided minimum.  Keeping this policy pure makes nested and DRM backends
+/// share exactly the same window-management behaviour.
+pub fn geometry_for_interactive_grab(
+    grab: &InteractiveGrab,
+    pointer_x: i32,
+    pointer_y: i32,
+    min_width: i32,
+    min_height: i32,
+    output_width: i32,
+    output_height: i32,
+) -> WindowGeometry {
+    let dx = pointer_x - grab.start_pointer_x;
+    let dy = pointer_y - grab.start_pointer_y;
+    let min_width = min_width.max(1);
+    let min_height = min_height.max(1);
+    let output_width = output_width.max(min_width);
+    let output_height = output_height.max(min_height);
+    let start = grab.start_geometry;
+
+    let mut result = match grab.kind {
+        InteractiveGrabKind::Move => WindowGeometry::new(
+            start.x.saturating_add(dx),
+            start.y.saturating_add(dy),
+            start.width,
+            start.height,
+        ),
+        InteractiveGrabKind::Resize(edges) => {
+            let mut left = start.x;
+            let mut top = start.y;
+            let mut right = start.x.saturating_add(start.width);
+            let mut bottom = start.y.saturating_add(start.height);
+
+            if edges.left {
+                left = left.saturating_add(dx).min(right - min_width);
+            }
+            if edges.right {
+                right = right.saturating_add(dx).max(left + min_width);
+            }
+            if edges.top {
+                top = top.saturating_add(dy).min(bottom - min_height);
+            }
+            if edges.bottom {
+                bottom = bottom.saturating_add(dy).max(top + min_height);
+            }
+
+            WindowGeometry::new(left, top, right - left, bottom - top)
+        }
+    };
+
+    result.width = result.width.clamp(min_width, output_width);
+    result.height = result.height.clamp(min_height, output_height);
+    result.x = result.x.clamp(0, output_width.saturating_sub(result.width));
+    result.y = result.y.clamp(0, output_height.saturating_sub(result.height));
+    result
+}
+
 pub fn cascade_position(offset: i32) -> (i32, i32) {
     (INITIAL_WINDOW_X + offset, INITIAL_WINDOW_Y + offset)
 }
@@ -3032,4 +3168,47 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn interactive_move_clamps_to_output() {
+        let grab = InteractiveGrab::moving("finder", 10, 10, WindowGeometry::new(50, 40, 300, 200));
+        assert_eq!(
+            geometry_for_interactive_grab(&grab, 210, 110, 120, 80, 1024, 768),
+            WindowGeometry::new(250, 140, 300, 200)
+        );
+        assert_eq!(
+            geometry_for_interactive_grab(&grab, -500, -500, 120, 80, 1024, 768),
+            WindowGeometry::new(0, 0, 300, 200)
+        );
+    }
+
+    #[test]
+    fn interactive_resize_honours_edges_and_minimum() {
+        let grab = InteractiveGrab::resizing(
+            "textedit",
+            ResizeEdges::BOTTOM_RIGHT,
+            100,
+            100,
+            WindowGeometry::new(50, 40, 300, 200),
+        )
+        .unwrap();
+        assert_eq!(
+            geometry_for_interactive_grab(&grab, 250, 180, 160, 120, 1024, 768),
+            WindowGeometry::new(50, 40, 450, 280)
+        );
+
+        let left = InteractiveGrab::resizing(
+            "textedit",
+            ResizeEdges::LEFT,
+            100,
+            100,
+            WindowGeometry::new(50, 40, 300, 200),
+        )
+        .unwrap();
+        assert_eq!(
+            geometry_for_interactive_grab(&left, 500, 100, 160, 120, 1024, 768),
+            WindowGeometry::new(190, 40, 160, 200)
+        );
+    }
+
 }

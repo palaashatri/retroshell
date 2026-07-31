@@ -59,7 +59,7 @@ impl Widget for Button {
     }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
-        let width = self.label.len() as f32 * 10.0 + 24.0;
+        let width = self.label.chars().count() as f32 * 7.5 + 20.0;
         let height = 28.0;
         let size = constraint.clamp(Size::new(width, height));
         self.set_rect(Rect::new(
