@@ -1,9 +1,11 @@
 pub mod message;
 pub mod service_registry;
+pub mod services;
 pub mod transport;
 
 pub use message::*;
 pub use service_registry::ServiceRegistry;
+pub use services::*;
 pub use transport::Transport;
 
 use parking_lot::RwLock;
@@ -36,16 +38,60 @@ pub struct BusMessage {
     pub timestamp: u64,
 }
 
-pub struct RetroBus {
+pub struct SloposBus {
     pub registry: Arc<RwLock<ServiceRegistry>>,
     pub transport: Box<dyn Transport>,
 }
 
-impl RetroBus {
+impl Default for SloposBus {
+    fn default() -> Self {
+        Self::new(Box::new(transport::LocalTransport::new()))
+    }
+}
+
+impl SloposBus {
     pub fn new(transport: Box<dyn Transport>) -> Self {
         Self {
             registry: Arc::new(RwLock::new(ServiceRegistry::new())),
             transport,
         }
+    }
+
+    pub fn send_message(&self, message: BusMessage) -> Result<Option<BusMessage>> {
+        if self.transport.is_connected() {
+            self.transport.send(message.clone())?;
+        }
+        self.registry.read().send(message)
+    }
+
+    pub fn receive(&self) -> Result<Option<BusMessage>> {
+        self.transport.receive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_slopos_bus_queue_and_dispatch() {
+        let bus = SloposBus::default();
+        let msg = BusMessage {
+            id: "msg-1".into(),
+            source: "shell".into(),
+            target: None,
+            kind: MessageKind::Event(Event::ThemeChanged {
+                name: "graphite".into(),
+                is_dark: true,
+            }),
+            payload: serde_json::Value::Null,
+            timestamp: 100,
+        };
+
+        bus.send_message(msg.clone()).expect("send success");
+        let received = bus.receive().expect("receive success");
+        assert!(received.is_some());
+        let recv_msg = received.unwrap();
+        assert_eq!(recv_msg.id, "msg-1");
     }
 }

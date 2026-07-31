@@ -433,8 +433,8 @@ mod tests {
     #[test]
     fn parse_force_quit_entry_window_and_client() {
         assert_eq!(
-            parse_force_quit_entry("window: SLOPOS HD"),
-            Some(ForceQuitTarget::WindowTitle("SLOPOS HD".into()))
+            parse_force_quit_entry("window: SLOPOS-I"),
+            Some(ForceQuitTarget::WindowTitle("SLOPOS-I".into()))
         );
         assert_eq!(
             parse_force_quit_entry("client: finder (pid 203)"),

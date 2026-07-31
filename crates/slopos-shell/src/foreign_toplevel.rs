@@ -308,7 +308,7 @@ mod tests {
             })
         );
         assert_eq!(parse_toplevel_force_quit("toplevel: "), None);
-        assert_eq!(parse_toplevel_force_quit("window: SLOPOS HD"), None);
+        assert_eq!(parse_toplevel_force_quit("window: SLOPOS-I"), None);
         assert_eq!(parse_toplevel_force_quit("client: finder (pid 1)"), None);
     }
 

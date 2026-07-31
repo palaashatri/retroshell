@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use crate::{BusMessage, Result};
 
 pub trait Transport: Send + Sync {
@@ -8,10 +10,10 @@ pub trait Transport: Send + Sync {
     fn is_connected(&self) -> bool;
 }
 
+#[derive(Clone)]
 pub struct LocalTransport {
     connected: bool,
-    #[allow(dead_code)]
-    messages: Vec<BusMessage>,
+    queue: Arc<Mutex<VecDeque<BusMessage>>>,
 }
 
 impl Default for LocalTransport {
@@ -23,8 +25,8 @@ impl Default for LocalTransport {
 impl LocalTransport {
     pub fn new() -> Self {
         Self {
-            connected: false,
-            messages: vec![],
+            connected: true,
+            queue: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 }
@@ -32,11 +34,18 @@ impl LocalTransport {
 impl Transport for LocalTransport {
     fn send(&self, message: BusMessage) -> Result<()> {
         tracing::debug!("[LocalTransport] sent: {:?}", message);
+        if let Ok(mut q) = self.queue.lock() {
+            q.push_back(message);
+        }
         Ok(())
     }
 
     fn receive(&self) -> Result<Option<BusMessage>> {
-        Ok(None)
+        if let Ok(mut q) = self.queue.lock() {
+            Ok(q.pop_front())
+        } else {
+            Ok(None)
+        }
     }
 
     fn connect(&mut self, _endpoint: &str) -> Result<()> {

@@ -1,0 +1,7 @@
+Invalid value for option player-operation-mode: pseudo
+Valid values are:
+    cplayer
+    pseudo-gui
+Error parsing option player-operation-mode (option parameter could not be parsed)
+Setting commandline option --player-operation-mode=pseudo failed.
+Exiting... (Fatal error)

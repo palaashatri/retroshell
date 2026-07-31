@@ -112,7 +112,7 @@ only painted once widgets were on that path (`Panel` + children).
 | `slopos-sdk` | App framework + **primary paint path** |
 | `slopos-kit` | Widgets (layout/input; many draw stubs) |
 | `slopos-render` | wgpu / text plumbing |
-| `slopos-bus` | IPC facade (**Defect H**) — may still have `RetroBus` type name |
+| `slopos-bus` | Real in-process/queue IPC (`SloposBus`) — thread-safe transport queue & dispatch |
 | `apps/*` | Finder, Settings, TextEdit, Terminal, App Store |
 
 ### Runtime gates / QA hooks
@@ -305,7 +305,7 @@ to A/B without regressing HDR/VRR.
 | Wire or remove decorative menus | S1, A1–A4 |
 | UTM Defect J re-proof | T4 |
 | Stage 4 clean-VM / greeter DoD | P3 |
-| Rename leftovers (`RetroBus` → `SloposBus`, …) | P4 |
+| Rename leftovers (`RetroBus` → `SloposBus`) | P4 (**VERIFIED**) |
 
 #### Phase B — integration spine
 
@@ -469,3 +469,5 @@ SLOPOS_LAYER_SHELL_CHROME=1 ./scripts/start-slopos-i
 | Date | Change |
 |------|--------|
 | 2026-07-31 | Consolidated PROGRAM + UI + HANDOFF + FUTURE + MATURITY + docs README into this single living doc |
+| 2026-07-31 | Renamed RetroBus to SloposBus (P4); implemented LocalTransport thread-safe queue & unit tests (Defect H) |
+| 2026-07-31 | Created assets/slopos-logo.png, added Material/Retro icon style toggle, expanded missing icon kinds, fixed text alignment via Canvas::measure_text |

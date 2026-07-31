@@ -67,16 +67,23 @@ fn load_ab_font() -> Option<FontArc> {
     None
 }
 
-/// Rasterized glyph data.
+/// Rasterized glyph data with exact typographic bearings and metrics.
+#[derive(Debug, Clone)]
 pub struct RasterGlyph {
     pub data: Vec<u8>,
     pub width: u32,
     pub height: u32,
     pub advance: f32,
-    /// Top offset relative to baseline (in pixels). Typically negative for ascenders.
+    /// Horizontal left-side bearing (min x offset from glyph origin).
+    pub bearing_x: f32,
+    /// Vertical top bearing relative to baseline (min y offset from baseline).
+    pub bearing_y: f32,
+    /// Top offset relative to baseline (legacy alias for bearing_y).
     pub top: f32,
-    /// Font ascent at this size (in pixels): distance from baseline to top of line.
+    /// Font ascent at this size (in pixels): distance from baseline to line top.
     pub ascent: f32,
+    /// Font descent at this size (in pixels): distance from baseline to line bottom.
+    pub descent: f32,
 }
 
 pub fn rasterize_char(ch: char, font_size: f32) -> Option<RasterGlyph> {
@@ -88,10 +95,11 @@ pub fn rasterize_char(ch: char, font_size: f32) -> Option<RasterGlyph> {
     if glyph_id.0 == 0 && !ch.is_control() {
         return None;
     }
-    let px_scale = PxScale::from(font_size * 1.4);
+    let px_scale = PxScale::from(font_size);
     let scaled_font = font.as_scaled(px_scale);
-    let advance = scaled_font.h_advance(glyph_id).max(font_size * 0.35);
+    let advance = scaled_font.h_advance(glyph_id);
     let ascent = scaled_font.ascent();
+    let descent = scaled_font.descent();
     let glyph = glyph_id.with_scale(px_scale);
     let Some(outlined) = AbFont::outline_glyph(font, glyph) else {
         return Some(RasterGlyph {
@@ -99,13 +107,18 @@ pub fn rasterize_char(ch: char, font_size: f32) -> Option<RasterGlyph> {
             width: 0,
             height: 0,
             advance,
-            top: 0.0,
+            bearing_x: 0.0,
+            bearing_y: -ascent,
+            top: -ascent,
             ascent,
+            descent,
         });
     };
     let bounds = outlined.px_bounds();
     let width = bounds.width().ceil() as u32;
     let height = bounds.height().ceil() as u32;
+    let bearing_x = bounds.min.x;
+    let bearing_y = bounds.min.y;
     let top = bounds.min.y;
     if width == 0 || height == 0 {
         return Some(RasterGlyph {
@@ -113,8 +126,11 @@ pub fn rasterize_char(ch: char, font_size: f32) -> Option<RasterGlyph> {
             width: 0,
             height: 0,
             advance,
+            bearing_x,
+            bearing_y,
             top,
             ascent,
+            descent,
         });
     }
     let mut data = vec![0u8; (width * height) as usize];
@@ -130,7 +146,10 @@ pub fn rasterize_char(ch: char, font_size: f32) -> Option<RasterGlyph> {
         width,
         height,
         advance,
+        bearing_x,
+        bearing_y,
         top,
         ascent,
+        descent,
     })
 }

@@ -1,4 +1,4 @@
-﻿use slopos_kit::button::Button;
+use slopos_kit::button::Button;
 use slopos_kit::event::{KeyCode, Modifiers};
 use slopos_kit::label::Label;
 use slopos_kit::list_view::ListView;
@@ -436,12 +436,17 @@ impl AppStoreView {
     fn refresh_backend(&mut self) -> bool {
         self.backend = CatalogStore::load();
         self.backend_label.text = self.backend.status_text();
-        if self.featured_mode {
+        let saved_status = self.status.text.clone();
+        let ok = if self.featured_mode {
             self.load_featured();
             true
         } else {
             self.run_search()
+        };
+        if saved_status.starts_with("INSTALLED") || saved_status.starts_with("INSTALL FAILED") {
+            self.status.text = saved_status;
         }
+        ok
     }
 
     fn selected_package(&self) -> Option<String> {
@@ -1048,7 +1053,7 @@ mod tests {
     fn appstore_install_requires_catalog_entry() {
         let mut view = AppStoreView::new();
         view.layout(LayoutConstraint::tight(Size::new(900.0, 640.0)));
-        view.results.items = vec!["[AVAILABLE] TextEdit".to_string()];
+        view.results.items = vec!["[AVAILABLE] NonExistentPackage123".to_string()];
         view.results.selected_index = Some(0);
 
         let point = rect_center(view.install_button.rect());

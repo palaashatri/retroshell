@@ -182,7 +182,7 @@ impl FinderView {
         favorites.expanded = true;
 
         let mut locations = TreeNode::new("Locations");
-        locations.children.push(TreeNode::new("SLOPOS HD"));
+        locations.children.push(TreeNode::new("SLOPOS-I"));
         locations.children.push(TreeNode::new("Network"));
         locations.expanded = true;
 

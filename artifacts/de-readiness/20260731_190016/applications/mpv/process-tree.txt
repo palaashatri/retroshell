@@ -1,0 +1,1 @@
+ubuntu     93808 17.9  3.8 1187300 132208 ?      Sl   19:00   0:00 mpv --player-operation-mode=pseudo-gui

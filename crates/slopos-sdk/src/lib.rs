@@ -1,5 +1,5 @@
 use parking_lot::Mutex;
-use slopos_bus::RetroBus;
+use slopos_bus::SloposBus;
 use slopos_kit::button::Button;
 use slopos_kit::dialog::Dialog;
 use slopos_kit::dock_view::DockView;
@@ -34,6 +34,30 @@ use wgpu::util::DeviceExt;
 
 static RENDER_DARK_MODE: AtomicBool = AtomicBool::new(false);
 static RENDER_ACCENT_COLOR: Mutex<[f32; 4]> = Mutex::new([0.36, 0.54, 0.85, 1.0]); // default Mac OS 7 blue
+
+/// Snaps a float value to the nearest integer pixel.
+pub fn snap_to_pixel(val: f32) -> f32 {
+    val.round()
+}
+
+/// Snaps a 2D point (x, y) to integer pixel boundaries.
+pub fn snap_point_to_pixel(x: f32, y: f32) -> (f32, f32) {
+    (x.round(), y.round())
+}
+
+/// Snaps a rectangle to integer pixel boundaries.
+pub fn snap_rect_to_pixel(rect: Rect) -> Rect {
+    let x = rect.x.round();
+    let y = rect.y.round();
+    let width = rect.width.round().max(1.0);
+    let height = rect.height.round().max(1.0);
+    Rect::new(x, y, width, height)
+}
+
+/// Snaps 1-pixel strokes to half-pixel raster alignment.
+pub fn snap_stroke_1px(val: f32) -> f32 {
+    val.floor() + 0.5
+}
 
 // System 7 Classic palette — aligned to Calculable/System7Components Assets.xcassets
 // See docs/UI-REFERENCES.md
@@ -281,7 +305,7 @@ pub struct Application {
     pub main_window: Option<Window>,
     pub initial_size: Size,
     pub menus: Vec<Menu>,
-    pub bus: Option<RetroBus>,
+    pub bus: Option<SloposBus>,
     pub running: bool,
 }
 
@@ -306,7 +330,7 @@ impl Application {
         }
     }
 
-    pub fn with_bus(mut self, bus: RetroBus) -> Self {
+    pub fn with_bus(mut self, bus: SloposBus) -> Self {
         self.bus = Some(bus);
         self
     }
@@ -1422,6 +1446,18 @@ impl<'a> Canvas<'a> {
         );
     }
 
+    pub fn measure_text(&self, text: &str) -> f32 {
+        let mut width = 0.0;
+        for ch in text.chars() {
+            if let Some(glyph) = slopos_render::rasterize_char(ch, 13.0) {
+                width += glyph.advance;
+            } else {
+                width += 6.0;
+            }
+        }
+        width
+    }
+
     pub fn text(&mut self, text: &str, x: f32, y: f32, color: [f32; 4]) {
         let mut cursor_x = x;
         let mut cursor_y = y;
@@ -1437,49 +1473,35 @@ impl<'a> Canvas<'a> {
 
     fn glyph(&mut self, ch: char, x: f32, y: f32, color: [f32; 4]) -> f32 {
         if let Some(glyph) = slopos_render::rasterize_char(ch, 13.0) {
-            // Position glyph on a shared baseline. Callers pass `y` as the top of
-            // the text line, so the baseline sits `ascent` px below it. `glyph.top`
-            // (bounds.min.y) is negative for ink above the baseline, so a capital
-            // lands its ink-top ≈ y while descenders (p/g/y) hang below the baseline.
             let baseline_y = y + glyph.ascent;
-            let glyph_top = baseline_y + glyph.top;
+            let start_x = x + glyph.bearing_x;
+            let start_y = baseline_y + glyph.bearing_y;
 
-            // Subpixel antialiasing: apply horizontal smoothing pass before rendering.
-            // For each pixel with alpha > 0 whose left neighbour has alpha == 0,
-            // paint a faint hint at x-1 (alpha * 0.3) to simulate RGB subpixel rendering.
-            let mut smoothed: Vec<u8> = glyph.data.clone();
-            for row in 0..glyph.height {
-                for col in 1..glyph.width {
-                    let idx = (row * glyph.width + col) as usize;
-                    let left_idx = (row * glyph.width + col - 1) as usize;
-                    if glyph.data[idx] > 0 && glyph.data[left_idx] == 0 {
-                        let hint = (glyph.data[idx] as f32 * 0.3) as u8;
-                        if hint > smoothed[left_idx] {
-                            smoothed[left_idx] = hint;
-                        }
-                    }
-                }
-            }
             for row in 0..glyph.height {
                 for col in 0..glyph.width {
                     let idx = (row * glyph.width + col) as usize;
-                    let alpha = smoothed[idx] as f32 / 255.0;
+                    let alpha = glyph.data[idx] as f32 / 255.0;
                     if alpha > 0.05 {
                         let mut c = color;
                         c[3] *= alpha;
                         self.rect(
-                            Rect::new(x + col as f32, glyph_top + row as f32, 1.0, 1.0),
+                            Rect::new(
+                                (start_x + col as f32).round(),
+                                (start_y + row as f32).round(),
+                                1.0,
+                                1.0,
+                            ),
                             c,
                         );
                     }
                 }
             }
-            glyph.advance.max(4.0)
+            glyph.advance
         } else {
             for (row, bits) in glyph_pattern(ch).iter().enumerate() {
                 for col in 0..5 {
                     if bits & (1 << (4 - col)) != 0 {
-                        self.rect(Rect::new(x + col as f32, y + row as f32, 1.0, 1.0), color);
+                        self.rect(Rect::new((x + col as f32).round(), (y + row as f32).round(), 1.0, 1.0), color);
                     }
                 }
             }
@@ -1651,7 +1673,7 @@ fn draw_window_grip(canvas: &mut Canvas<'_>, x: f32, y: f32, width: f32, height:
 }
 
 fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str, is_active: bool) {
-    // Port of System7FrameHeader (Calculable/System7Components)
+    let title_w = canvas.measure_text(title);
     if !is_active {
         let bg = if render_dark_mode() {
             theme_color("window_bg")
@@ -1665,9 +1687,8 @@ fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str, is_ac
         } else {
             S7_GRAY300
         };
-        let title_width = title.len() as f32 * 7.0;
-        let title_x = rect.x + (rect.width - title_width) * 0.5;
-        canvas.text(title, title_x, rect.y + 7.0, text_color);
+        let title_x = (rect.x + (rect.width - title_w) * 0.5).round();
+        canvas.text(title, title_x, rect.y + 6.0, text_color);
         return;
     }
 
@@ -1687,45 +1708,51 @@ fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str, is_ac
     canvas.rect(inner, face);
     canvas.stroke(rect, if render_dark_mode() { COLOR_DARK_BORDER } else { S7_FG });
 
-    // Layout: [grip5][close][grip][title][grip][zoom][grip5]
+    // Boxes layout
     let box_size = 13.0;
     let box_y = inner.y + (inner.height - box_size) * 0.5;
-    let mut x = inner.x + 3.0;
 
+    // Left close box
+    let mut x = inner.x + 3.0;
     draw_window_grip(canvas, x, inner.y + 2.0, 5.0, inner.height - 4.0);
     x += 7.0;
-
-    // Close box
     let close_box = Rect::new(x, box_y, box_size, box_size);
     draw_beveled_rect(canvas, close_box, face, true);
     canvas.stroke(close_box, if render_dark_mode() { COLOR_DARK_TEXT } else { S7_FG });
-    x += box_size + 2.0;
+    let left_end = close_box.x + close_box.width + 2.0;
 
-    let grip_before_title = ((inner.width - (x - inner.x) - 80.0) * 0.35).max(12.0);
-    draw_window_grip(canvas, x, inner.y + 2.0, grip_before_title, inner.height - 4.0);
-    x += grip_before_title + 2.0;
-
-    // Title pill (clears grips behind text)
-    let title_width = (title.len() as f32 * 7.0 + 12.0).min(inner.width * 0.45);
-    let title_rect = Rect::new(x, inner.y + 2.0, title_width, inner.height - 4.0);
-    canvas.rect(title_rect, face);
-    let text_color = theme_color("text");
-    canvas.text(
-        title,
-        title_rect.x + 6.0,
-        rect.y + 7.0,
-        text_color,
-    );
-    x += title_width + 2.0;
-
+    // Right zoom box
     let zoom_x = inner.x + inner.width - 3.0 - 5.0 - box_size - 2.0;
-    let grip_after = (zoom_x - x).max(8.0);
-    draw_window_grip(canvas, x, inner.y + 2.0, grip_after, inner.height - 4.0);
+    let zoom_box = Rect::new(zoom_x, box_y, box_size, box_size);
+    let right_start = zoom_box.x - 2.0;
+
+    // Centered Title Pill
+    let pill_w = (title_w + 16.0).min(inner.width - 70.0).max(20.0);
+    let pill_x = (rect.x + (rect.width - pill_w) * 0.5).round();
+    let pill_rect = Rect::new(pill_x, inner.y + 2.0, pill_w, inner.height - 4.0);
+
+    // Left & Right Grips (Symmetrical around title pill)
+    let left_grip_w = (pill_x - 2.0 - left_end).max(0.0);
+    if left_grip_w > 4.0 {
+        draw_window_grip(canvas, left_end, inner.y + 2.0, left_grip_w, inner.height - 4.0);
+    }
+
+    let right_grip_x = pill_x + pill_w + 2.0;
+    let right_grip_w = (right_start - right_grip_x).max(0.0);
+    if right_grip_w > 4.0 {
+        draw_window_grip(canvas, right_grip_x, inner.y + 2.0, right_grip_w, inner.height - 4.0);
+    }
+
+    // Title face pill + text
+    canvas.rect(pill_rect, face);
+    let text_x = (pill_rect.x + (pill_w - title_w) * 0.5).round();
+    let text_color = theme_color("text");
+    canvas.text(title, text_x, rect.y + 6.0, text_color);
 
     // Zoom box (right)
-    let zoom_box = Rect::new(zoom_x, box_y, box_size, box_size);
     draw_beveled_rect(canvas, zoom_box, face, true);
     canvas.stroke(zoom_box, if render_dark_mode() { COLOR_DARK_TEXT } else { S7_FG });
+    draw_window_grip(canvas, zoom_box.x + zoom_box.width + 2.0, inner.y + 2.0, 5.0, inner.height - 4.0);
     // Inner zoom mark
     canvas.rect(
         Rect::new(zoom_box.x + 3.0, zoom_box.y + 3.0, zoom_box.width - 6.0, zoom_box.height - 6.0),
@@ -2041,8 +2068,8 @@ fn draw_dialog(canvas: &mut Canvas<'_>, rect: Rect, dialog: &Dialog) {
 
     // Title text centered in title bar
     let title = &dialog.title;
-    let title_w = title.len() as f32 * 7.0;
-    let title_x = rect.x + (rect.width - title_w) * 0.5;
+    let title_w = canvas.measure_text(title);
+    let title_x = (rect.x + (rect.width - title_w) * 0.5).round();
     canvas.text(title, title_x, rect.y + 10.0, theme_color("text"));
 
     // Horizontal separator below title
@@ -2064,15 +2091,17 @@ fn draw_dialog(canvas: &mut Canvas<'_>, rect: Rect, dialog: &Dialog) {
     let mut btn_x = rect.x + rect.width - 10.0;
     for btn in dialog.buttons.iter().rev() {
         let label = btn.label();
-        let btn_w = (label.len() as f32 * 7.0 + 20.0).max(72.0);
+        let label_w = canvas.measure_text(label);
+        let btn_w = (label_w + 20.0).max(72.0);
         btn_x -= btn_w;
         let btn_rect = Rect::new(btn_x, btn_y, btn_w, btn_h);
         let btn_bg = theme_color("button_bg");
         canvas.rect(btn_rect, btn_bg);
         draw_beveled_rect(canvas, btn_rect, btn_bg, true);
+        let text_x = (btn_rect.x + (btn_w - label_w) * 0.5).round();
         canvas.text(
             label,
-            btn_rect.x + (btn_w - label.len() as f32 * 7.0) * 0.5,
+            text_x,
             btn_rect.y + 6.0,
             theme_color("text"),
         );
@@ -2243,7 +2272,8 @@ fn draw_tab_view(canvas: &mut Canvas<'_>, rect: Rect, tv: &TabView) {
     );
     let mut current_x = rect.x + 8.0;
     for (i, tab) in tv.tabs.iter().enumerate() {
-        let tab_width = tab.title.len() as f32 * 7.0 + 24.0;
+        let title_w = canvas.measure_text(&tab.title);
+        let tab_width = title_w + 24.0;
         let tab_rect = Rect::new(current_x, rect.y + 4.0, tab_width, 25.0);
         let is_selected = tv.selected_tab_index == i;
         if is_selected {
@@ -2277,7 +2307,8 @@ fn draw_tab_view(canvas: &mut Canvas<'_>, rect: Rect, tv: &TabView) {
                 [0.39, 0.39, 0.37, 1.0]
             }
         };
-        canvas.text(&tab.title, tab_rect.x + 12.0, tab_rect.y + 8.0, text_color);
+        let text_x = (tab_rect.x + (tab_width - title_w) * 0.5).round();
+        canvas.text(&tab.title, text_x, tab_rect.y + 7.0, text_color);
         current_x += tab_width + 4.0;
     }
     if let Some(content) = tv.selected_content() {
@@ -2396,7 +2427,7 @@ fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
     );
 
     let mut x = rect.x + 10.0;
-    draw_apple_icon(canvas, x + 1.0, rect.y + 7.0, false);
+    draw_slopos_menu_logo(canvas, x + 1.0, rect.y + 6.0, false);
     x += 18.0;
 
     for child in toolbar.children() {
@@ -2408,9 +2439,10 @@ fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
     }
 
     let right_label = menu_status_label();
+    let right_w = canvas.measure_text(&right_label);
     canvas.text(
         &right_label,
-        rect.x + rect.width - right_label.len() as f32 * 7.0 - 72.0,
+        rect.x + rect.width - right_w - 72.0,
         rect.y + 8.0,
         theme_color("text"),
     );
@@ -2457,7 +2489,7 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
             );
         }
         if index == 0 {
-            draw_apple_icon(canvas, menu_rect.x + 4.0, menu_rect.y + 7.0, active);
+            draw_slopos_menu_logo(canvas, menu_rect.x + 4.0, menu_rect.y + 6.0, active);
             canvas.text(
                 &menu.title,
                 menu_rect.x + 18.0,
@@ -2483,9 +2515,10 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
     }
 
     let right_label = menu_status_label();
+    let right_w = canvas.measure_text(&right_label);
     canvas.text(
         &right_label,
-        rect.x + rect.width - right_label.len() as f32 * 7.0 - 72.0,
+        rect.x + rect.width - right_w - 72.0,
         rect.y + 8.0,
         theme_ink(),
     );
@@ -2499,26 +2532,33 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
     }
 }
 
-fn draw_apple_icon(canvas: &mut Canvas<'_>, x: f32, y: f32, active: bool) {
-    let color = if active {
+fn draw_slopos_menu_logo(canvas: &mut Canvas<'_>, x: f32, y: f32, active: bool) {
+    let main_color = if active {
         [1.0, 1.0, 1.0, 1.0]
     } else {
-        theme_color("text")
+        theme_ink()
     };
-    canvas.rect(Rect::new(x + 1.0, y + 1.0, 5.0, 5.0), color);
-    canvas.rect(Rect::new(x + 1.0, y + 2.0, 1.0, 3.0), color);
-    canvas.rect(Rect::new(x + 5.0, y + 2.0, 1.0, 3.0), color);
-    canvas.rect(Rect::new(x + 2.0, y, 3.0, 1.0), color);
-    canvas.rect(Rect::new(x + 1.0, y + 6.0, 1.0, 1.0), color);
-    canvas.rect(Rect::new(x + 5.0, y + 6.0, 1.0, 1.0), color);
-    canvas.rect(
-        Rect::new(x + 2.0, y + 6.0, 3.0, 1.0),
-        if active {
-            [0.09, 0.09, 0.09, 1.0]
-        } else {
-            theme_color("window_bg")
-        },
-    );
+    let accent_color = if active {
+        S7_LAVENDER300
+    } else if render_dark_mode() {
+        [0.4, 0.4, 0.6, 1.0]
+    } else {
+        S7_LAVENDER100
+    };
+
+    // Retro monitor bezel (10x8)
+    canvas.rect(Rect::new(x, y, 10.0, 8.0), main_color);
+    // Monitor screen interior (6x5)
+    canvas.rect(Rect::new(x + 2.0, y + 1.5, 6.0, 5.0), accent_color);
+    // 'S' logo symbol inside screen
+    let s_color = if active { [0.0, 0.0, 0.0, 1.0] } else { theme_paper() };
+    canvas.rect(Rect::new(x + 3.0, y + 2.0, 4.0, 1.0), s_color);
+    canvas.rect(Rect::new(x + 3.0, y + 3.0, 2.0, 1.0), s_color);
+    canvas.rect(Rect::new(x + 3.0, y + 4.0, 4.0, 1.0), s_color);
+    canvas.rect(Rect::new(x + 5.0, y + 5.0, 2.0, 1.0), s_color);
+
+    // Keyboard base (12x2)
+    canvas.rect(Rect::new(x - 1.0, y + 9.0, 12.0, 2.0), main_color);
 }
 
 fn draw_open_menu(canvas: &mut Canvas<'_>, menu_bar: &MenuBar, menu_index: usize) {
@@ -2667,9 +2707,10 @@ fn draw_open_menu_box(
         );
         if let Some((key, modifiers)) = item.shortcut {
             let shortcut = shortcut_label(key, modifiers);
+            let shortcut_w = canvas.measure_text(&shortcut);
             canvas.text(
                 &shortcut,
-                item_rect.x + item_rect.width - shortcut.len() as f32 * 7.0 - 8.0,
+                item_rect.x + item_rect.width - shortcut_w - 8.0,
                 item_rect.y + 7.0,
                 text_color,
             );
@@ -3004,17 +3045,17 @@ fn draw_icon_view(canvas: &mut Canvas<'_>, icon_view: &IconView) {
         let display_label = truncate_label(&item.label, 12);
         if item.selected {
             let sel_rect = Rect::new(
-                item.rect.x - 6.0,
-                item.rect.y - 6.0,
-                item.rect.width + 12.0,
-                icon_view.icon_size + 32.0,
+                item.rect.x - 4.0,
+                item.rect.y - 2.0,
+                item.rect.width + 8.0,
+                52.0,
             );
             draw_selection_highlight(canvas, sel_rect);
         }
         draw_desktop_icon(canvas, item);
-        let label_y = item.rect.y + icon_view.icon_size + 6.0;
-        let text_w = display_label.len() as f32 * 6.0;
-        let label_x = item.rect.x + (item.rect.width - text_w) * 0.5;
+        let label_y = item.rect.y + 36.0;
+        let text_w = canvas.measure_text(&display_label);
+        let label_x = (item.rect.x + (item.rect.width - text_w) * 0.5).round();
         if item.selected {
             let plate = Rect::new(label_x - 3.0, label_y - 2.0, text_w + 6.0, 14.0);
             canvas.rect(plate, render_accent());
@@ -3085,6 +3126,21 @@ fn draw_monospace_view(canvas: &mut Canvas<'_>, rect: Rect, grid: &MonospaceView
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IconStyle {
+    Retro,
+    Material,
+}
+
+pub fn current_icon_style() -> IconStyle {
+    if let Ok(val) = std::env::var("SLOPOS_ICON_STYLE") {
+        if val.eq_ignore_ascii_case("material") {
+            return IconStyle::Material;
+        }
+    }
+    IconStyle::Retro
+}
+
 fn draw_desktop_icon(canvas: &mut Canvas<'_>, item: &IconItem) {
     // Fixed 32×32 icon footprint centered in the cell — NEVER use full
     // item.rect width for the shadow (that painted the gray column bands).
@@ -3116,14 +3172,46 @@ fn draw_desktop_icon(canvas: &mut Canvas<'_>, item: &IconItem) {
                 draw_document_icon(canvas, x - 6.0, y - 4.0);
                 return;
             }
+            "image" => {
+                draw_image_icon(canvas, x, y);
+                return;
+            }
+            "audio" => {
+                draw_audio_icon(canvas, x, y);
+                return;
+            }
+            "video" => {
+                draw_video_icon(canvas, x, y);
+                return;
+            }
+            "code" => {
+                draw_code_icon(canvas, x, y);
+                return;
+            }
+            "archive" => {
+                draw_archive_icon(canvas, x, y);
+                return;
+            }
+            "network" => {
+                draw_network_icon(canvas, x, y);
+                return;
+            }
+            "user" => {
+                draw_user_icon(canvas, x, y);
+                return;
+            }
             _ => {}
         }
     }
     draw_labeled_icon(canvas, item.label.as_str(), x, y);
 }
 
-/// Dispatch trademark-safe per-app icons by label.
+/// Dispatch per-app icons by label with Retro or Material style support.
 fn draw_labeled_icon(canvas: &mut Canvas<'_>, label: &str, x: f32, y: f32) {
+    if current_icon_style() == IconStyle::Material {
+        draw_material_icon(canvas, label, x, y);
+        return;
+    }
     match label {
         "Hard Disk" => draw_drive_icon(canvas, x - 6.0, y - 4.0),
         "Home" => draw_folder_icon(canvas, x - 6.0, y - 4.0, rgb(226, 216, 142)),
@@ -3136,6 +3224,99 @@ fn draw_labeled_icon(canvas: &mut Canvas<'_>, label: &str, x: f32, y: f32) {
         "TextEdit" => draw_textedit_icon(canvas, x, y),
         _ => draw_generic_app_icon(canvas, x, y),
     }
+}
+
+fn draw_material_icon(canvas: &mut Canvas<'_>, label: &str, x: f32, y: f32) {
+    let card_color = match label {
+        "Hard Disk" => rgb(66, 133, 244),   // Material Blue
+        "Home" => rgb(251, 188, 4),         // Material Amber
+        "Trash" => rgb(234, 67, 53),        // Material Red
+        "Applications" => rgb(103, 58, 183),// Material Purple
+        "App Store" => rgb(52, 168, 83),    // Material Green
+        "Finder" => rgb(0, 172, 193),       // Material Cyan
+        "Settings" => rgb(96, 125, 139),    // Material Blue Grey
+        "Terminal" => rgb(38, 50, 56),      // Material Dark Slate
+        "TextEdit" => rgb(255, 112, 67),    // Material Deep Orange
+        _ => rgb(120, 144, 156),
+    };
+
+    // Rounded Material card base
+    canvas.rect(Rect::new(x, y, 32.0, 32.0), card_color);
+    canvas.rect(Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), [1.0, 1.0, 1.0, 0.15]);
+
+    // Material inner glyph symbol
+    match label {
+        "Hard Disk" => {
+            canvas.rect(Rect::new(x + 8.0, y + 10.0, 16.0, 12.0), [1.0, 1.0, 1.0, 0.9]);
+            canvas.rect(Rect::new(x + 12.0, y + 14.0, 8.0, 4.0), card_color);
+        }
+        "Home" | "folder" => {
+            canvas.rect(Rect::new(x + 6.0, y + 10.0, 20.0, 14.0), [1.0, 1.0, 1.0, 0.9]);
+            canvas.rect(Rect::new(x + 6.0, y + 8.0, 8.0, 4.0), [1.0, 1.0, 1.0, 0.9]);
+        }
+        "Trash" => {
+            canvas.rect(Rect::new(x + 10.0, y + 10.0, 12.0, 14.0), [1.0, 1.0, 1.0, 0.9]);
+            canvas.rect(Rect::new(x + 8.0, y + 8.0, 16.0, 2.0), [1.0, 1.0, 1.0, 0.9]);
+        }
+        "Settings" => {
+            canvas.rect(Rect::new(x + 10.0, y + 10.0, 12.0, 12.0), [1.0, 1.0, 1.0, 0.9]);
+            canvas.rect(Rect::new(x + 14.0, y + 14.0, 4.0, 4.0), card_color);
+        }
+        "Terminal" => {
+            canvas.rect(Rect::new(x + 8.0, y + 12.0, 6.0, 2.0), rgb(80, 220, 120));
+            canvas.rect(Rect::new(x + 12.0, y + 14.0, 2.0, 4.0), rgb(80, 220, 120));
+            canvas.rect(Rect::new(x + 14.0, y + 18.0, 10.0, 2.0), [1.0, 1.0, 1.0, 0.9]);
+        }
+        _ => {
+            canvas.rect(Rect::new(x + 10.0, y + 10.0, 12.0, 12.0), [1.0, 1.0, 1.0, 0.8]);
+        }
+    }
+}
+
+fn draw_image_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    draw_beveled_rect(canvas, Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), rgb(180, 130, 210), true);
+    canvas.rect(Rect::new(x + 6.0, y + 6.0, 20.0, 20.0), theme_paper());
+    canvas.rect(Rect::new(x + 10.0, y + 14.0, 12.0, 8.0), rgb(100, 160, 220));
+    canvas.rect(Rect::new(x + 18.0, y + 9.0, 4.0, 4.0), rgb(240, 200, 80));
+}
+
+fn draw_audio_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    draw_beveled_rect(canvas, Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), rgb(240, 160, 80), true);
+    canvas.rect(Rect::new(x + 8.0, y + 16.0, 6.0, 8.0), theme_ink());
+    canvas.rect(Rect::new(x + 18.0, y + 10.0, 6.0, 8.0), theme_ink());
+    canvas.rect(Rect::new(x + 12.0, y + 10.0, 12.0, 3.0), theme_ink());
+}
+
+fn draw_video_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    draw_beveled_rect(canvas, Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), rgb(220, 80, 80), true);
+    canvas.rect(Rect::new(x + 6.0, y + 8.0, 20.0, 16.0), theme_paper());
+    canvas.rect(Rect::new(x + 13.0, y + 12.0, 6.0, 8.0), rgb(220, 80, 80));
+}
+
+fn draw_code_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    draw_beveled_rect(canvas, Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), rgb(60, 80, 120), true);
+    canvas.rect(Rect::new(x + 7.0, y + 12.0, 4.0, 8.0), rgb(80, 220, 120));
+    canvas.rect(Rect::new(x + 21.0, y + 12.0, 4.0, 8.0), rgb(80, 220, 120));
+    canvas.rect(Rect::new(x + 13.0, y + 10.0, 6.0, 12.0), theme_paper());
+}
+
+fn draw_archive_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    draw_beveled_rect(canvas, Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), rgb(200, 140, 60), true);
+    canvas.rect(Rect::new(x + 6.0, y + 8.0, 20.0, 6.0), theme_paper());
+    canvas.rect(Rect::new(x + 8.0, y + 14.0, 16.0, 12.0), theme_paper());
+    canvas.rect(Rect::new(x + 14.0, y + 16.0, 4.0, 4.0), theme_ink());
+}
+
+fn draw_network_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    draw_beveled_rect(canvas, Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), rgb(60, 160, 200), true);
+    canvas.rect(Rect::new(x + 8.0, y + 8.0, 16.0, 16.0), theme_paper());
+    canvas.rect(Rect::new(x + 10.0, y + 10.0, 12.0, 12.0), rgb(60, 160, 200));
+}
+
+fn draw_user_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
+    draw_beveled_rect(canvas, Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), rgb(0, 150, 136), true);
+    canvas.rect(Rect::new(x + 12.0, y + 8.0, 8.0, 8.0), theme_paper());
+    canvas.rect(Rect::new(x + 8.0, y + 18.0, 16.0, 8.0), theme_paper());
 }
 
 fn draw_drive_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {

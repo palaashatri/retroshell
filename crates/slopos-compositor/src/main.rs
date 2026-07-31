@@ -650,6 +650,16 @@ mod linux {
                 }
             }
 
+            // Diagnostic Magenta Cursor Pass: Render solid 6x6 magenta square at pointer_pos
+            let cursor_color = [1.0, 0.0, 1.0, 1.0]; // Magenta (R=1, G=0, B=1, A=1)
+            let cursor_rect = Rectangle::from_loc_and_size(
+                Point::<i32, Physical>::from((self.pointer_pos.x as i32, self.pointer_pos.y as i32)),
+                Size::<i32, Physical>::from((6, 6)),
+            );
+            if let Err(e) = frame.clear(cursor_color.into(), &[cursor_rect]) {
+                eprintln!("[render] diagnostic cursor clear failed: {e}");
+            }
+
             // Finish the frame (flushes GL commands)
             if let Err(e) = frame.finish() {
                 eprintln!("[render] frame finish failed: {e}");
@@ -1737,6 +1747,13 @@ mod linux {
         }
     }
 
+pub fn parse_bool_env(key: &str) -> bool {
+    match std::env::var(key) {
+        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
+        Err(_) => false,
+    }
+}
+
     // -----------------------------------------------------------------------
     // Entry point
     // -----------------------------------------------------------------------
@@ -1747,13 +1764,12 @@ mod linux {
         // ---- Backend mode honesty (session DRM vs nested X11 vs labwc) ----
         // This binary is the nested-X11 / session candidate; labwc is chosen by
         // start-slopos-i/entrypoint when we die early. Log the selected kind.
-        let force_labwc = std::env::var_os("SLOPOS_FORCE_LABWC").is_some()
+        let force_labwc = parse_bool_env("SLOPOS_FORCE_LABWC")
             || std::env::var("SLOPOS_COMPOSITOR")
                 .map(|v| v.eq_ignore_ascii_case("labwc"))
                 .unwrap_or(false);
-        let prefer_drm = std::env::var("SLOPOS_PREFER_DRM")
-            .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-            .unwrap_or(std::path::Path::new("/dev/dri").exists());
+        let prefer_drm = parse_bool_env("SLOPOS_PREFER_DRM")
+            || std::path::Path::new("/dev/dri").exists();
         let dri3 = detect_dri3_from_env().unwrap_or(prefer_drm && !force_labwc);
         let backend_kind = select_backend_kind(prefer_drm, dri3, force_labwc);
         let mode_line = session_mode_summary(backend_kind);
@@ -2100,5 +2116,33 @@ mod linux {
 
         tracing::info!("slopos-compositor exiting");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use linux::parse_bool_env;
+
+    #[test]
+    fn test_parse_bool_env() {
+        std::env::set_var("TEST_BOOL_ENV_TRUE_1", "1");
+        std::env::set_var("TEST_BOOL_ENV_TRUE_2", "true");
+        std::env::set_var("TEST_BOOL_ENV_TRUE_3", "YES");
+        std::env::set_var("TEST_BOOL_ENV_TRUE_4", "On");
+        std::env::set_var("TEST_BOOL_ENV_FALSE_1", "0");
+        std::env::set_var("TEST_BOOL_ENV_FALSE_2", "false");
+        std::env::set_var("TEST_BOOL_ENV_FALSE_3", "no");
+        std::env::set_var("TEST_BOOL_ENV_FALSE_4", "OFF");
+
+        assert!(parse_bool_env("TEST_BOOL_ENV_TRUE_1"));
+        assert!(parse_bool_env("TEST_BOOL_ENV_TRUE_2"));
+        assert!(parse_bool_env("TEST_BOOL_ENV_TRUE_3"));
+        assert!(parse_bool_env("TEST_BOOL_ENV_TRUE_4"));
+        assert!(!parse_bool_env("TEST_BOOL_ENV_FALSE_1"));
+        assert!(!parse_bool_env("TEST_BOOL_ENV_FALSE_2"));
+        assert!(!parse_bool_env("TEST_BOOL_ENV_FALSE_3"));
+        assert!(!parse_bool_env("TEST_BOOL_ENV_FALSE_4"));
+        assert!(!parse_bool_env("TEST_BOOL_ENV_UNSET"));
     }
 }

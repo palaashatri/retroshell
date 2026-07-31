@@ -233,7 +233,7 @@ mod tests {
         favorites.expanded = true;
 
         let mut locations = TreeNode::new("Locations");
-        locations.children.push(TreeNode::new("SLOPOS HD"));
+        locations.children.push(TreeNode::new("SLOPOS-I"));
         locations.children.push(TreeNode::new("Network"));
         locations.expanded = true;
 
@@ -258,7 +258,7 @@ mod tests {
                 "Documents",
                 "Downloads",
                 "Locations",
-                "SLOPOS HD",
+                "SLOPOS-I",
                 "Network",
             ]
         );
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn clicking_disclosure_area_toggles_expansion_without_selecting() {
         let mut root = TreeNode::new("Locations");
-        root.children.push(TreeNode::new("SLOPOS HD"));
+        root.children.push(TreeNode::new("SLOPOS-I"));
         root.children.push(TreeNode::new("Network"));
         // starts collapsed
 

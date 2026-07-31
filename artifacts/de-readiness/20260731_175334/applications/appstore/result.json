@@ -1,0 +1,10 @@
+{
+  "application": "appstore",
+  "status": "PASS",
+  "protocol": "native_wayland",
+  "launched": true,
+  "window_mapped": true,
+  "decorations_correct": true,
+  "move_resize_pass": true,
+  "exit_clean": true
+}

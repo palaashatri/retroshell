@@ -97,15 +97,15 @@ impl Widget for IconView {
                     "Trash" => trash_y,
                     _ => {
                         let y = app_y;
-                        app_y += icon_size + 20.0;
+                        app_y += 72.0;
                         y
                     }
                 };
-                item.rect = Rect::new(right_x, y, icon_size, icon_size + 22.0);
+                item.rect = Rect::new(right_x, y, icon_size, 52.0);
             }
         } else {
-            let cell_w = 90.0;
-            let cell_h = 90.0;
+            let cell_w = 84.0;
+            let cell_h = 68.0;
             let cols = (size.width / cell_w).max(1.0) as usize;
             for (i, item) in self.items.iter_mut().enumerate() {
                 let col = i % cols;
@@ -114,7 +114,7 @@ impl Widget for IconView {
                     r.x + col as f32 * cell_w + (cell_w - icon_size) * 0.5,
                     r.y + row as f32 * cell_h + 10.0,
                     icon_size,
-                    icon_size + 20.0,
+                    52.0,
                 );
             }
         }

@@ -282,6 +282,11 @@ impl SloposI {
             tm.load_default();
             // Load named theme + a11y prefs (high_contrast / reduced_motion) from settings.conf.
             tm.load_theme_from_settings();
+            if let Ok(t) = std::env::var("SLOPOS_THEME") {
+                tm.set_theme(&t);
+            } else if std::env::var_os("SLOPOS_DARK_MODE").is_some() {
+                tm.set_theme("dark");
+            }
         }
         // Locale from LANG + optional settings.conf; drive system menu chrome strings.
         {
@@ -675,7 +680,18 @@ impl ShellDesktop {
         };
         // Map layer-shell chrome + sync foreign-toplevel list when a compositor is live.
         SloposI::attach_wayland_session_protocols(&mut shell);
-        shell.open_finder_window();
+        if let Ok(app) = std::env::var("SLOPOS_START_APP") {
+            if app == "finder" || app == "com.slopos.finder" {
+                shell.open_finder_window();
+            } else {
+                shell.launch_external_app(&app);
+            }
+        } else {
+            shell.open_finder_window();
+        }
+        if std::env::var_os("SLOPOS_START_SPOTLIGHT").is_some() {
+            shell.spotlight_ui.show();
+        }
         shell
     }
 
@@ -925,7 +941,7 @@ impl ShellDesktop {
     }
 
     fn open_finder_window(&mut self) -> Uuid {
-        self.open_folder_window("SLOPOS HD", PathBuf::from("/"))
+        self.open_folder_window("SLOPOS-I", PathBuf::from("/"))
     }
 
     fn active_workspace(&self) -> usize {
@@ -2800,7 +2816,7 @@ fn clamp_window_rect(rect: Rect, bounds: Rect) -> Rect {
 
 fn build_folder_window(title: &str, path: &PathBuf) -> Window {
     let mut files = IconView::new();
-    files.icon_size = 76.0;
+    files.icon_size = 48.0;
     files.spacing = 10.0;
     files.items = folder_items_for_path(path);
 
@@ -4483,7 +4499,7 @@ mod tests {
             assert!(list
                 .items
                 .iter()
-                .any(|item| item == "window: SLOPOS HD" || item.contains("SLOPOS HD")));
+                .any(|item| item == "window: SLOPOS-I" || item.contains("SLOPOS-I")));
         } else {
             panic!("not vertical layout");
         }
@@ -4492,24 +4508,24 @@ mod tests {
     #[test]
     fn force_quit_apply_closes_listed_shell_window() {
         let (mut desktop, _) = test_desktop();
-        // test_desktop opens a Finder-style "SLOPOS HD" window among others.
+        // test_desktop opens a Finder-style "SLOPOS-I" window among others.
         let before = desktop.windows.len();
         assert!(
             desktop
                 .windows
                 .iter()
-                .any(|w| w.window.title() == "SLOPOS HD"),
-            "precondition: SLOPOS HD window present"
+                .any(|w| w.window.title() == "SLOPOS-I"),
+            "precondition: SLOPOS-I window present"
         );
 
         // Drive the same path Force Quit button uses (shipped apply helper).
-        assert!(desktop.apply_force_quit_entry("window: SLOPOS HD"));
+        assert!(desktop.apply_force_quit_entry("window: SLOPOS-I"));
         assert!(
             !desktop
                 .windows
                 .iter()
-                .any(|w| w.window.title() == "SLOPOS HD"),
-            "SLOPOS HD must be closed after force quit"
+                .any(|w| w.window.title() == "SLOPOS-I"),
+            "SLOPOS-I must be closed after force quit"
         );
         assert!(desktop.windows.len() < before);
     }

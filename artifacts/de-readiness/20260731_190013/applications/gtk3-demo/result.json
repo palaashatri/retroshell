@@ -1,0 +1,12 @@
+{
+  "timestamp": "20260731_190013",
+  "application": "gtk3-demo",
+  "package": "gtk-3-examples",
+  "package_version": "3.24.52-0ubuntu1",
+  "launch_cmd": "gtk3-demo",
+  "pid": 93627,
+  "protocol": "wayland-1",
+  "status": "PASS",
+  "process_tree_recorded": true,
+  "screenshot_captured": false
+}
