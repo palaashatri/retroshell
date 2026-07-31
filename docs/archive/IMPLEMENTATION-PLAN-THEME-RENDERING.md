@@ -2,14 +2,14 @@
 
 ## Problem Statement
 
-RetroShell has:
-- ✅ Complete rendering system with beveled 3D effects (in retro-sdk)
-- ✅ Complete theme token system (in retro-shell)
+SLOPOS-I has:
+- ✅ Complete rendering system with beveled 3D effects (in slopos-sdk)
+- ✅ Complete theme token system (in slopos-shell)
 - ❌ **No connection between them** - rendering uses hardcoded colors
 
 Current state:
-- `draw_widget()` in retro-sdk/src/lib.rs renders all UI with hardcoded RGB
-- `ThemeContext` in retro-shell/src/theme_manager.rs has all color tokens
+- `draw_widget()` in slopos-sdk/src/lib.rs renders all UI with hardcoded RGB
+- `ThemeContext` in slopos-shell/src/theme_manager.rs has all color tokens
 - `apply_theme()` sets dark-mode + accent, but no other colors propagate
 - Result: Changing theme colors has no visual effect
 
@@ -70,9 +70,9 @@ let bg = get_theme_color(ThemeToken::ButtonBackground);  // from theme
 ### Color Lookup Architecture
 
 ```
-ThemeContext (in retro-shell) 
+ThemeContext (in slopos-shell) 
     ↓ apply_theme()
-CURRENT_THEME (global state in retro-sdk)
+CURRENT_THEME (global state in slopos-sdk)
     ↓ get_theme_color(token)
 [f32; 4] RGB value
     ↓ ui() helper
@@ -84,11 +84,11 @@ Pixel on screen
 ### Implementation Steps
 
 #### Step 1: Create theme color access layer
-File: `crates/retro-sdk/src/lib.rs`
+File: `crates/slopos-sdk/src/lib.rs`
 
 Add at the top level:
 ```rust
-// Global theme state (set by apply_theme from retro-shell)
+// Global theme state (set by apply_theme from slopos-shell)
 static THEME_TOKEN_COLORS: Mutex<HashMap<String, [f32; 4]>> = /* ... */;
 
 fn set_theme_color(token_name: &str, light: [f32; 4], dark: [f32; 4]) {
@@ -112,7 +112,7 @@ pub fn apply_theme(is_dark: bool, accent: [f32; 4]) {
     set_render_accent(accent);
     
     // Map theme tokens to colors
-    // (These would normally come from retro-shell, 
+    // (These would normally come from slopos-shell, 
     //  for now use current hardcoded defaults as fallback)
     set_theme_color("window_bg", /* light */, /* dark */);
     set_theme_color("button_bg", /* light */, /* dark */);
@@ -157,24 +157,24 @@ const COLOR_MAP: &[(&str, &str)] = &[
 This allows `draw_widget()` to use simple names while mapping to actual theme tokens.
 
 #### Step 5: Wire theme system end-to-end
-In retro-shell (layer_desktop.rs):
+In slopos-shell (layer_desktop.rs):
 - When `apply_theme()` is called, pass full ThemeContext or color map
 - Populate SDK's theme color cache with actual token values
 - Trigger full redraw so new colors take effect
 
 ## Files to Modify
 
-1. **crates/retro-sdk/src/lib.rs** (main work ~200-300 lines)
+1. **crates/slopos-sdk/src/lib.rs** (main work ~200-300 lines)
    - Add color lookup system
    - Update apply_theme()
    - Replace hardcoded colors in draw_* functions (~40-50 locations)
    - Add COLOR_MAP constant
 
-2. **crates/retro-shell/src/layer_desktop.rs** (~20 lines)
+2. **crates/slopos-shell/src/layer_desktop.rs** (~20 lines)
    - Pass theme colors to SDK when apply_theme is called
    - Or create API that SDK can query
 
-3. **crates/retro-shell/src/lib.rs** (~10 lines)
+3. **crates/slopos-shell/src/lib.rs** (~10 lines)
    - Export theme token values
    - Create function to get colors from ThemeContext
 

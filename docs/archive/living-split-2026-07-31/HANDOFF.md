@@ -1,150 +1,256 @@
-# HANDOFF — continue RetroShell (updated 2026-07-31)
+# HANDOFF — continue SLOPOS-I (updated 2026-07-31 evening)
 
 > You are a fresh coding agent taking over mid-effort. Read **[README.md](README.md)**
-> first (doc map), then [PROGRAM.md](PROGRAM.md) (honesty + stages) and [UI.md](UI.md)
+> first (doc map), then [PROGRAM.md](PROGRAM.md) (honesty + stages),
+> [MATURITY.md](MATURITY.md) (gaps vs GNOME/KDE + fix phases), and [UI.md](UI.md)
 > (visual SoT). Ops details for VMs are below.
-> **Honesty contract governs everything:** a task/stage is done only when its
-> acceptance command passes on the real VM, evidenced by a transcript or
-> screenshot — never by reading code or self-scoring. Do not mark anything
-> "verified" you have not actually run. Do not trust a subagent that claims a
-> build passed on the macOS/Windows host — the workspace only builds on the Linux VM.
+>
+> **Honesty contract:** a task/stage is done only when its acceptance command
+> passes on the real VM, evidenced by a transcript or screenshot — never by
+> reading code or self-scoring. Do not trust a subagent that claims a smithay
+> compositor build “passed” on macOS/Windows — **build and run graphics on the
+> Linux VM**. Do **not** claim GNOME/KDE parity.
+
+---
+
+## 0. Snapshot — where the code actually is
+
+| Item | Truth |
+|------|--------|
+| Product name | **SLOPOS-I** (was RetroShell) |
+| Crates / bins | `slopos-{render,kit,sdk,shell,bus,compositor}`; bins `slopos-shell`, `slopos-compositor`, `slopos-lock` |
+| Env / config | `SLOPOS_*`, `~/.config/slopos-i` |
+| Stages 0–3 | **VERIFIED** (see `qa/stage-*.md`) |
+| Stage 4 | Packaging in-tree; **clean install / ISO DoD unverified** |
+| Spotlight | **Paints** on UTM (`qa/v0.2.0/`) — was previously invisible (stub widgets + not in paint tree) |
+| UI polish | Better chrome/icons/Graphite; **not** System7Components parity (`qa/ui-polish/`, [UI.md](UI.md)) |
+| Defect H | `slopos-bus` still a facade |
+| Defect J | Clicks proven Env B; not re-proven UTM |
+| **vs GNOME/KDE** | **~15–25%** daily-driver — research DE, not a peer ([MATURITY.md](MATURITY.md)) |
+| Branch | `docs/program-design` — rename + latest UI work may be **uncommitted** locally; check `git status` |
+| Host folder | Still often named `retroshell` on disk; guest path **`~/slopos-i`** |
+| UTM SSH key | Still `~/.ssh/retroshell_utm` (legacy filename only) |
+
+**Do next (default priority unless user says otherwise):**
+
+1. UI polish toward System 7 kits — edit `slopos-sdk` paint, capture into `qa/ui-polish/`, update [UI.md](UI.md) gaps only.
+2. Or Phase A honesty from [MATURITY.md](MATURITY.md): wire/remove fake menus, Stage 4 DoD, UTM Defect J.
+3. Broader “make it a real DE” → Phases B→C in MATURITY (bus, portals, DRM/XWayland, WM) — only if asked.
+4. Never claim visual success without non-blank screenshots on the VM.
+
+---
 
 ## 1. What this project is
-RetroShell is a classic-Mac-styled Linux **desktop environment** in Rust (Cargo
-workspace). Own Wayland compositor (`crates/retro-compositor`, smithay), own shell
-(`crates/retro-shell`), a widget kit (`crates/retro-kit`), an app SDK
-(`crates/retro-sdk`, winit+wgpu), and first-party apps (`apps/*`).
 
-## 2. Two supported environments — pick whichever machine you're on
-The **Rust source and all fixes are architecture-independent**; only the VM
-lifecycle, SSH, screenshot method, and GL specifics differ. Both are documented.
+SLOPOS-I is a classic-Mac-styled Linux **desktop environment** in Rust (Cargo
+workspace): Wayland compositor (`crates/slopos-compositor`, smithay), shell
+(`crates/slopos-shell`), widget kit (`crates/slopos-kit`), app SDK
+(`crates/slopos-sdk`, winit+wgpu), first-party apps (`apps/*`).
 
-| Aspect | **A: macOS + UTM** (set up, used this session) | **B: Windows + VirtualBox** (Cursor's setup) |
+Paint reality check: many kit `Widget::draw` impls are **empty stubs**. The
+desktop/Spotlight you see is largely **`slopos-sdk::draw_widget`** walking the
+shell’s widget tree. Spotlight only became visible when its widgets were put on
+that path (`Panel` + children), not when stub `draw()` methods were “implemented”
+in isolation.
+
+---
+
+## 2. Two supported environments
+
+The **Rust source is architecture-independent**; VM lifecycle, SSH, screenshots,
+and GL differ.
+
+| Aspect | **A: macOS + UTM** (recent UI / Stage 3 / Spotlight) | **B: Windows + VirtualBox** (Stages 0–2 DRM proofs) |
 |---|---|---|
 | Host | macOS (Apple Silicon) | Windows x86_64 |
-| Guest | Ubuntu 26.04 **aarch64**, VM name `Ubuntu` | Arch **x86_64**, VM name `retroshell-arch` |
+| Guest | Ubuntu 26.04 **aarch64**, VM name `Ubuntu` | Arch **x86_64**, VM name `slopos-i-arch` |
 | GPU/KMS | virtio-gpu → `/dev/dri/card0` | VMSVGA+3D → `vmwgfx` → `/dev/dri/card0` |
-| Disk | LVM | `/dev/sda` |
-| SSH | key `~/.ssh/retroshell_utm`, `192.168.64.15:22` | key `packaging/vm/qa_key`, `127.0.0.1:2222` |
+| SSH | `~/.ssh/retroshell_utm`, `192.168.64.15:22` | `packaging/vm/qa_key`, `127.0.0.1:2222` |
 | User | `ubuntu` / `ubuntu` (passwordless sudo) | `retro` / `retro` |
-| **Screenshot** | **sway+grim / Xvfb** (SIGUSR1 dump BLOCKED) | **`VBoxManage screenshotpng`** (works directly) |
-| Software GL | **required** (`LIBGL_ALWAYS_SOFTWARE=1`) — virtio hw GL fails wgpu | usually NOT needed (vmwgfx renders wgpu) |
-| VM create | UTM app / `utmctl` | `packaging/vm/create-vm.ps1` |
+| Guest tree | **`~/slopos-i`** (`~/retroshell` may symlink) | typically `~/slopos-i` or legacy path — confirm |
+| **Screenshot** | **sway headless + grim** (SIGUSR1 compositor dump **BLOCKED** on UTM) | **`VBoxManage screenshotpng`** |
+| Software GL | **Required:** `LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe` | usually not needed |
+| Disk | ~30G LVM — **easy to fill** with duplicate `target/` trees; exclude `target*` on rsync | larger disk typical |
 
-Both VMs give a real `/dev/dri/card0` with KMS + render node. Ignore the repo's
-Mac-only arm64 *Arch* scripts (`arch-install-arm64.sh`, `provision-arm64.sh`) —
-those were an earlier dead-end; the UTM VM used this session is a plain Ubuntu VM.
+Ignore Mac-only *Arch* arm64 install scripts (`arch-install-arm64.sh`,
+`provision-arm64.sh`) for the current UTM Ubuntu guest.
 
-## 3A. Environment A — macOS + UTM (currently provisioned & running)
-- Start VM: `/Applications/UTM.app/Contents/MacOS/utmctl start Ubuntu`. If the IP
-  changed: `arp -a | grep 192.168.64`. (No guest agent, so `utmctl ip-address` fails.)
-- SSH: `ssh -i ~/.ssh/retroshell_utm ubuntu@192.168.64.15`.
-- Already provisioned: rustup, build-essential, wayland/drm/seatd/libinput/gbm/egl
-  dev libs, fonts-dejavu, xvfb, imagemagick, sway, grim, libxkbcommon-x11-0, 4G
-  swap. User in `video,render,input` groups (the `seat` group does not exist here).
-- **Edit-on-host / build-on-VM** loop:
-  ```bash
-  rsync -az --exclude target --exclude .git --exclude docs/screenshots \
-    -e "ssh -i ~/.ssh/retroshell_utm" ./ ubuntu@192.168.64.15:/home/ubuntu/retroshell/
-  ssh -i ~/.ssh/retroshell_utm ubuntu@192.168.64.15 \
-    'cd ~/retroshell && source ~/.cargo/env && cargo build --release -p <crate>'
-  ```
-- **Run compositor (real DRM/KMS, headless over SSH):**
-  ```bash
-  export XDG_RUNTIME_DIR=/run/user/1000 LIBSEAT_BACKEND=seatd \
-         LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
-  ./target/release/retro-compositor        # gets seat0 + card0 + 1280x800 + spawns shell
-  ```
-- **Screenshots (SIGUSR1 dump is BLOCKED here — glReadPixels rejected by the driver):**
-  - Layer-shell UI: run under **sway headless + grim** — exact recipe in
-    `docs/tasks/stage-2b-layer-shell-chrome.md` (§QA); see `qa-layer-desktop.png`.
-  - Plain winit UI: `Xvfb :99 -screen 0 1280x800x24 &`, then `DISPLAY=:99`
-    (unset `WAYLAND_DISPLAY`) run the binary, then `DISPLAY=:99 import -window root out.png`.
+---
 
-## 3B. Environment B — Windows + VirtualBox (rebuild from scratch if you use this)
-`create-vm.ps1` handles KMS (VMSVGA+3D → real vmwgfx). A standard x86_64 Arch ISO
-from archlinux.org works.
-1. Host prereqs: VirtualBox (`C:\Program Files\Oracle\VirtualBox\VBoxManage.exe`),
-   PowerShell 7 (`pwsh`), Git, OpenSSH client. Download x86_64 Arch ISO.
-2. Create VM:
+## 3A. Environment A — macOS + UTM
+
+- Start: `/Applications/UTM.app/Contents/MacOS/utmctl start Ubuntu`. IP drift:
+  `arp -a | grep 192.168.64`.
+- SSH: `ssh -i ~/.ssh/retroshell_utm ubuntu@192.168.64.15`
+- Provisioned: rustup, build-essential, wayland/drm/seatd/libinput/gbm/egl,
+  fonts-dejavu, xvfb, imagemagick, sway, grim, libxkbcommon-x11-0, swap.
+  User in `video,render,input`.
+
+### Edit-on-host / build-on-VM
+
+```bash
+rsync -az --exclude target --exclude target-docker --exclude .git \
+  --exclude 'docs/qa/**/*.png' --exclude docs/screenshots \
+  -e "ssh -i ~/.ssh/retroshell_utm" \
+  ./ ubuntu@192.168.64.15:/home/ubuntu/slopos-i/
+
+ssh -i ~/.ssh/retroshell_utm ubuntu@192.168.64.15 \
+  'cd ~/slopos-i && source ~/.cargo/env && cargo build --release -p <crate>'
+```
+
+**Disk gotcha:** do not rsync `target`/`target-docker`. If `df` shows ~100% on `/`,
+delete guest `target*` and duplicate checkouts before syncing again.
+
+### Run compositor (DRM over SSH)
+
+```bash
+export XDG_RUNTIME_DIR=/run/user/1000 LIBSEAT_BACKEND=seatd \
+       LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe \
+       SLOPOS_LAYER_SHELL_CHROME=1
+./target/release/slopos-compositor
+```
+
+### Screenshots on UTM (use this, not ImageMagick `import` alone)
+
+SIGUSR1 GL readback is blocked. Prefer **sway headless + grim**:
+
+```bash
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+export WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1
+export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
+export SLOPOS_LAYER_SHELL_CHROME=1
+# sway config: output * { resolution 1280x800 }
+sway -c /tmp/sway-headless.conf &
+export SWAYSOCK=... WAYLAND_DISPLAY=wayland-1
+./target/release/slopos-shell &
+# optional Spotlight QA: SLOPOS_QA_SPOTLIGHT=vol ./target/release/slopos-shell
+sleep 7
+grim docs/qa/ui-polish/01-desktop.png
+```
+
+Full Spotlight recipe + honesty notes: `docs/qa/v0.2.0/QA-RESULTS.md`.
+
+Reject any PNG that is tiny/blank (~hundreds of bytes / 1-bit empty). Prior false
+“QA passed” used those — they are invalid.
+
+---
+
+## 3B. Environment B — Windows + VirtualBox
+
+`create-vm.ps1` → VMSVGA+3D → real `vmwgfx`.
+
+1. Prereqs: VirtualBox, PowerShell 7, Git, OpenSSH; x86_64 Arch ISO.
+2. Create:
    ```powershell
    pwsh -File packaging\vm\create-vm.ps1 -IsoPath C:\path\to\archlinux-x86_64.iso -Recreate
    ```
-   → `retroshell-arch`: 8192 MB / 4 CPU / 60 GB, EFI, VMSVGA+3D, NAT host `2222`→guest `22`.
-3. Host file server + key (installer fetches itself):
-   ```powershell
-   ssh-keygen -t ed25519 -N '""' -f packaging\vm\qa_key -C retroshell-vm
-   cd packaging\vm ; python -m http.server 8000
-   ```
-   (`arch-install.sh` may not install your pubkey — set the `retro` password at the
-   console and use password SSH, or add the key step.)
-4. From the VirtualBox live console: `curl -sL http://10.0.2.2:8000/arch-install.sh | bash`
-   — partitions `/dev/sda`, installs x86_64 Arch + deps, user `retro`/`retro`,
-   `cargo build --release --workspace`, session files, tty1 autologin, reboots.
-5. From the Windows host, sync edits + build (analogous to §3A but with
-   `packaging\vm\qa_key` and `-p 2222 retro@127.0.0.1`).
-- **Screenshots are easy here:** `VBoxManage controlvm retroshell-arch screenshotpng out.png`
-  (see `packaging/vm/qa-live.sh`) captures the real scanout — no sway/Xvfb needed.
-  So on VBox you can screenshot `retro-compositor` running the desktop directly.
-- Software GL is usually unnecessary (vmwgfx rendered Cursor's wgpu clients). If a
-  client can't get a GPU, fall back to `LIBGL_ALWAYS_SOFTWARE=1`.
+3. Host file server + key under `packaging\vm\` as documented in older Stage 0 tasks.
+4. Live console: `curl -sL http://10.0.2.2:8000/arch-install.sh | bash`
+5. Sync/build with `qa_key` and `-p 2222 retro@127.0.0.1`.
 
-## 4. Common to both — the layer-shell desktop
-- The reworked desktop is gated behind env `RETROSHELL_LAYER_SHELL_CHROME=1`. Set
-  it in the environment of `retro-compositor` (the spawned shell inherits it), or
-  when running `retro-shell` directly under any wlr-layer-shell compositor.
-- When unset, the shell uses the original winit xdg-toplevel path (unchanged).
-- Milestone proof so far (Env A, under sway): `docs/screenshots/qa-layer-desktop.png`
-  — fullscreen root-level background layer, full-width menu bar, correct fonts,
-  desktop icons, Finder window, dock.
+Screenshots: `VBoxManage controlvm slopos-i-arch screenshotpng out.png`
+(see `packaging/vm/qa-live.sh`). This captures real compositor scanout — easier
+than UTM for DRM-path evidence.
 
-## 5. What was done this session (branch `docs/program-design`, 8 commits)
-Re-audited Cursor's Stage 2 ("VERIFIED" was overclaimed); fixed and evidenced:
-- **Fonts fixed** (retro-render baseline bearing/ascent + retro-sdk bitmap
-  descenders) — `docs/screenshots/qa-shell-xvfb.png`.
-- **Global-menu-only** — removed the legacy in-window `MenuBar` from retro-sdk.
-- **Audit corrections** — `docs/qa/stage-2.md` retracts "VERIFIED"; deleted
-  misleading old screenshots; added `docs/FUTURE.md` (backlog + HIG constraints)
-  and `docs/tasks/stage-2b-layer-shell-chrome.md`.
-- **Layer-shell rework — Phase 2b rendering DONE:** `retro_sdk::RawSurfaceRenderer`
-  (wgpu from raw wl handles) + `retro_sdk::UiRuntime` (backend-agnostic render/input
-  core; `tick()` drives `ShellDesktop::update()` → dock) + `retro-shell/src/layer_desktop.rs`
-  (wlr-layer-shell background surface driver). Verified under sway+grim.
-- Compositor also got a (non-firing) app_id fullscreen attempt and the blocked
-  SIGUSR1 screenshot tool.
+---
 
-Commits: `c9d17c3` handoff · `2552fc6` polish (chromeless+dock) · `119abc5`
-evidence · `a7d5e37` layer_desktop · `db41171` UiRuntime · `1bd616c`
-RawSurfaceRenderer · `441b6a6` scope · `aea7014` fonts/menu/audit. **Not pushed to
-origin yet.**
+## 4. Layer-shell desktop (common)
 
-## 6. NEXT STEPS (priority order)
-1. **DONE (Env B / VBox):** layer desktop under `retro-compositor` with
-   `RETROSHELL_LAYER_SHELL_CHROME=1` — see `docs/screenshots/qa-layer-desktop-vbox.png`
-   and `qa-layer-input-click.png` (menu opens on click). Compositor now hit-tests
-   layer surfaces; smithay focus Point is surface **origin**, not pointer-local.
-2. **DONE (Phase 3 exclusive chrome):** menu → Top exclusive, dock → Bottom exclusive,
-   wallpaper/icons → Background. Gray PoC live-bind removed; kit chrome gated.
-   Evidence: `qa-phase3-exclusive-chrome.png`.
-3. **DONE (keyboard + Stage 2 Re-QA on Env B):** layer_desktop maps letters/modifiers
-   and emits `Char` for lock typing; compositor Super+O/L already xkb-backed.
-   Re-QA under layer chrome: `stage2-reqa-*.png` + STATUS
-   (`FINDER_AFTER_SUPER_O=YES`, `LOCK_CLIENT=YES`, `FINDER_WHILE_LOCKED=1`, unlock
-   restores desktop).
-4. **DONE (menu Overlay):** open dropdowns paint on `retroshell-menu-popup` Overlay
-   (exact size + margins); evidence `qa-phase3-menu-dropdown.png`.
-5. **DONE (polish):** menu-bar inter-item gap; live clock via 1s `poll` timeout;
-   evidence `qa-polish-menu-spacing.png`, `qa-polish-live-clock.png`.
-6. **IN PROGRESS (Stage 3 `.app` bundles):** Tasks 3.0–3.8 done on Env B —
-   disk scan, launch entrypoint, packaging scripts (5 apps), package-manager path
-   removed, sha256 installer + install button wired, shell rescan via
-   `~/Applications/.retroshell-rescan`. Next: Task 3.10 VM DoD (store install →
-   Finder/dock → launch + screenshots). Optional 3.9 HTTP fetch skipped.
+- Gate: `SLOPOS_LAYER_SHELL_CHROME=1` (inherited by shell when set for compositor).
+- Unset → legacy winit xdg-toplevel desktop path (keep working for apps).
+- Layout: wallpaper/icons Background; menu Top exclusive; dock Bottom exclusive;
+  open menus on Overlay (`slopos-i-menu-popup`).
+- Evidence (historical): `docs/screenshots/qa-layer-desktop.png`,
+  `qa-phase3-exclusive-chrome.png`, `qa-phase3-menu-dropdown.png`, plus Env B
+  `qa-layer-desktop-vbox.png` / click / Stage 2 re-QA set.
+
+---
+
+## 5. What landed recently (honest changelog)
+
+Consolidate claims against evidence — not commit mythology.
+
+### Verified program stages
+
+- **0–2:** Env B DRM path (build, Finder paint, lock/shortcuts/clicks) — `qa/stage-0.md`…`stage-2.md`.
+- **2b layer-shell:** exclusive chrome + menu overlay + keyboard for lock — Env B re-QA + UTM sway captures.
+- **3:** `.app` scan/launch/packaging/store install DoD on **Env A** — `qa/stage-3.md` (`INSTALLED-VIA-STORE`).
+- **4:** `install.sh`, Arch PKGBUILD, Debian metadata, archiso profile, verify scripts **authored**;
+  clean-VM / ISO boot rows in `qa/stage-4.md` still **PENDING**.
+
+### v0.2.0 / Spotlight (UTM)
+
+- Prior “Spotlight complete” was **false** (stub draws; overlay not in paint tree;
+  blank PNGs). Fixed path: `slopos-kit` `Panel` + SDK `draw_widget` + shell children;
+  QA hook `SLOPOS_QA_SPOTLIGHT`. Evidence: `qa/v0.2.0/*.png` + `QA-RESULTS.md`.
+
+### UI polish (still open-ended)
+
+- System7Components palette, multi-layer bevels, frame title bar, fixed 32×32 icons,
+  trademark-safe per-app glyphs, Graphite theme helpers, desktop nameplates.
+- Evidence: `qa/ui-polish/`. Gaps remain (fonts, pixel icons, dark menu fidelity,
+  full control port) — see [UI.md](UI.md).
+
+### Rename RetroShell → SLOPOS-I
+
+- Crates, binaries, env, session files, docs, packaging renamed.
+- Release build on UTM after rename: `slopos-compositor`, `slopos-shell`,
+  `slopos-lock`, `finder`, `settings` succeeded.
+- Session packaging scripts (`verify_session_packaging.sh`,
+  `verify_greeter_session.sh`) PASS with `DesktopNames=SLOPOS-I`.
+- Leftovers to be aware of: host directory name, SSH key filename, possible
+  `RetroBus` type inside `slopos-bus`, archived docs under `docs/archive/`.
+
+### Docs consolidation
+
+Living SoT only: `docs/README.md`, `PROGRAM.md`, `UI.md`, `HANDOFF.md`,
+`FUTURE.md`, plus `tasks/`, `qa/`, `specs/`. Session sprawl → `docs/archive/`.
+
+---
+
+## 6. NEXT STEPS (priority)
+
+1. **UI quality (default):** iterate `slopos-sdk` / kit paint vs System7Components +
+   Figma; fresh `qa/ui-polish/` screenshots; update [UI.md](UI.md) gap list only.
+2. **Do not regress** HDR/VRR / DRM compositor paths while polishing.
+3. **Phase A honesty** ([MATURITY.md](MATURITY.md)): wire or remove decorative menus;
+   Stage 4 DoD (`qa/stage-4.md`); UTM Defect J re-proof.
+4. **Phase B+ when asked:** Defect H, live settings, clipboard, portals, workspace
+   sync, then DRM scanout / XWayland / PAM / PipeWire (Phases C–D).
+5. **Commit / push** rename + docs when the user asks — check `git status` first.
+
+Full gap register + acceptance ideas: **[MATURITY.md](MATURITY.md)**.
+
+---
 
 ## 7. Gotchas
-- Some docs (e.g. `docs/qa/stage-2.md`) had **CRLF** line endings from the Windows
-  work — if a line-based Edit fails to match, use Write.
-- `RETROSHELL_LAYER_SHELL_CHROME` gates the `layer_desktop` multi-surface path.
-- Any Cargo.toml **dependency** change forces a ~15 min feature re-unification
-  rebuild on the VM; code-only changes are fast.
-- Keep the winit default path working — it is the fallback and how `apps/*` render.
+
+- **Blank screenshots lie.** Reject tiny/empty PNGs; prefer grim under sway.
+- `SLOPOS_LAYER_SHELL_CHROME` gates multi-surface chrome.
+- Kit `draw()` stubs ≠ on-screen widgets — follow the SDK paint tree.
+- Cargo **dependency** changes → long feature unification rebuilds on the VM;
+  code-only changes are faster.
+- Keep the **winit** app path working — first-party apps still use it.
+- Some older `docs/qa/*.md` may have **CRLF** from Windows — Edit may fail to match.
+- Desktop title **`SLOPOS-I Desktop`** is special-cased in `draw_window` for
+  chromeless desktop; renaming that string without updating the special case
+  breaks chrome-less layout.
+- Product display strings use **SLOPOS-I**; Rust type for the shell may be
+  `SloposI` — do not “fix” identifiers into invalid `SLOPOS-I` tokens.
+
+---
+
+## 8. Quick verification commands
+
+```bash
+# Packaging / greeter files (host or VM)
+./scripts/verify_session_packaging.sh
+./scripts/verify_greeter_session.sh
+
+# Core release build (VM)
+cd ~/slopos-i && source ~/.cargo/env
+cargo build --release -p slopos-compositor -p slopos-shell -p finder
+
+# Lib tests (VM; counts drift — don't hardcode forever)
+cargo test -p slopos-kit -p slopos-sdk -p slopos-shell --lib --release
+```

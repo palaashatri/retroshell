@@ -292,7 +292,7 @@ pub fn plan_display_apply(arr: &DisplayArrangement) -> Result<DisplayApplyPlan, 
         .collect::<Vec<_>>()
         .join(";");
     steps.push(DisplayApplyStep::EmitLayoutEnv {
-        key: "RETROSHELL_OUTPUTS_LAYOUT".into(),
+        key: "SLOPOS_OUTPUTS_LAYOUT".into(),
         value: layout_value,
     });
 
@@ -304,7 +304,7 @@ pub fn plan_display_apply(arr: &DisplayArrangement) -> Result<DisplayApplyPlan, 
     })
 }
 
-/// Parse `RETROSHELL_OUTPUT_LAYOUT` style mode names (alias of [`ArrangeMode::parse`]).
+/// Parse `SLOPOS_OUTPUT_LAYOUT` style mode names (alias of [`ArrangeMode::parse`]).
 pub fn arrange_mode_from_env_value(value: Option<&str>) -> ArrangeMode {
     value.and_then(ArrangeMode::parse).unwrap_or_default()
 }
@@ -314,7 +314,7 @@ pub fn arrange_mode_from_env_value(value: Option<&str>) -> ArrangeMode {
 /// Returns the `(key, value)` pairs that were applied. Other plan steps
 /// (Place / Disable / SetPrimary) are left for compositor/DRM paths — this
 /// helper only bridges the nested layout env contract
-/// (`RETROSHELL_OUTPUTS_LAYOUT`).
+/// (`SLOPOS_OUTPUTS_LAYOUT`).
 pub fn apply_display_plan_env(plan: &DisplayApplyPlan) -> Vec<(String, String)> {
     let mut applied = Vec::new();
     for step in &plan.steps {
@@ -417,14 +417,14 @@ mod tests {
         let applied = apply_display_plan_env(&plan);
         let layout = applied
             .iter()
-            .find(|(k, _)| k == "RETROSHELL_OUTPUTS_LAYOUT")
+            .find(|(k, _)| k == "SLOPOS_OUTPUTS_LAYOUT")
             .map(|(_, v)| v.as_str())
-            .expect("expected RETROSHELL_OUTPUTS_LAYOUT in applied pairs");
+            .expect("expected SLOPOS_OUTPUTS_LAYOUT in applied pairs");
         // Assert on the returned pairs (stable under parallel tests that also
         // touch process env). Process env is set best-effort for live apply.
         assert!(layout.contains("eDP-1"), "layout value={layout}");
         assert!(layout.contains("HDMI-1"), "layout value={layout}");
         // Cleanup so other tests are not polluted (best-effort).
-        std::env::remove_var("RETROSHELL_OUTPUTS_LAYOUT");
+        std::env::remove_var("SLOPOS_OUTPUTS_LAYOUT");
     }
 }

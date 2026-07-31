@@ -1,4 +1,4 @@
-//! Global search/launcher (Spotlight-like) for RetroShell.
+//! Global search/launcher (Spotlight-like) for SLOPOS-I.
 //!
 //! Provides a system-wide search overlay for apps, files, and settings.
 //! Invoked by Super+Space; displays results as user types.
@@ -203,7 +203,7 @@ mod tests {
         let backend = SearchBackend::new();
         let apps = vec![
             AppBundle {
-                bundle_id: "com.retro.finder".to_string(),
+                bundle_id: "com.slopos.finder".to_string(),
                 name: "Finder".to_string(),
                 version: "0.1.0".to_string(),
                 path: "/Applications/Finder.app".to_string(),
@@ -212,7 +212,7 @@ mod tests {
                 permissions: vec![],
             },
             AppBundle {
-                bundle_id: "com.retro.terminal".to_string(),
+                bundle_id: "com.slopos.terminal".to_string(),
                 name: "Terminal".to_string(),
                 version: "0.1.0".to_string(),
                 path: "/Applications/Terminal.app".to_string(),

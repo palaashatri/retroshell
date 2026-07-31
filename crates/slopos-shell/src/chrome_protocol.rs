@@ -175,13 +175,13 @@ pub fn should_paint_kit_chrome(layer_shell_bound: bool) -> bool {
     !layer_shell_bound
 }
 
-/// Compositor output size from `RETROSHELL_COMPOSITOR_WIDTH` / `HEIGHT` (default 1024×768).
+/// Compositor output size from `SLOPOS_COMPOSITOR_WIDTH` / `HEIGHT` (default 1024×768).
 pub fn session_output_size() -> (i32, i32) {
-    let w = std::env::var("RETROSHELL_COMPOSITOR_WIDTH")
+    let w = std::env::var("SLOPOS_COMPOSITOR_WIDTH")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1024);
-    let h = std::env::var("RETROSHELL_COMPOSITOR_HEIGHT")
+    let h = std::env::var("SLOPOS_COMPOSITOR_HEIGHT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(768);

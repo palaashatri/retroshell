@@ -1,5 +1,5 @@
-# Base system packages for RetroShell live ISO
-# Add base live packages + RetroShell deps + build tools
+# Base system packages for SLOPOS-I live ISO
+# Add base live packages + SLOPOS-I deps + build tools
 
 # Base system
 base
@@ -16,7 +16,7 @@ e2fsprogs
 btrfs-progs
 xfsprogs
 
-# RetroShell runtime dependencies (from packaging/deps/arch.txt)
+# SLOPOS-I runtime dependencies (from packaging/deps/arch.txt)
 wayland
 wayland-protocols
 libxkbcommon
@@ -44,7 +44,7 @@ labwc
 foot
 wl-clipboard
 
-# Build tools (so ISO can build RetroShell if needed)
+# Build tools (so ISO can build SLOPOS-I if needed)
 base-devel
 pkgconf
 rust

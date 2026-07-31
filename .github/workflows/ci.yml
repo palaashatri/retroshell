@@ -1,6 +1,6 @@
 name: CI
 
-# The compositor is Linux-only: on macOS/Windows crates/retro-compositor
+# The compositor is Linux-only: on macOS/Windows crates/slopos-compositor
 # compiles down to a stub main() that prints "Linux-only". That is exactly how
 # a borrow-checker error in the real implementation went unnoticed from
 # 2026-07-11 to 2026-07-26 while ~30 commits claimed the compositor was "live".
@@ -86,7 +86,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # The release profile is what packaging/vm and scripts/start-retroshell
+      # The release profile is what packaging/vm and scripts/start-slopos-i
       # actually install, so it gets its own gate.
       - name: Build release binaries
         run: cargo build --workspace --release --locked

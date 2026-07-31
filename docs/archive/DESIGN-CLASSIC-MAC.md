@@ -1,4 +1,4 @@
-# RetroShell — Classic Macintosh UI Design System
+# SLOPOS-I — Classic Macintosh UI Design System
 
 **Last Updated:** 2026-07-31  
 **Status:** 🔄 In progress vs kit parity (System7Components + Figma)  
@@ -6,14 +6,14 @@
 **Source kits:** Classic Macintosh UI Kit (Figma) + [System7Components](https://github.com/Calculable/System7Components)
 
 > Prior “✅ Implemented & Tested” claims oversold token wiring. Visual parity with the
-> System 7 kits is an active paint rewrite in `retro-sdk`, evidenced only by
+> System 7 kits is an active paint rewrite in `slopos-sdk`, evidenced only by
 > `docs/qa/ui-polish/` screenshots.
 
 ---
 
 ## Overview
 
-RetroShell's UI design follows the **authentic Classic Macintosh aesthetic** from the 1990s, inspired by Mac OS 7 through Mac OS 8.5. The theme system uses proper 3D beveled styling, platinum silver UI, and classic Mac blue accents to create a genuinely retro desktop environment.
+SLOPOS-I's UI design follows the **authentic Classic Macintosh aesthetic** from the 1990s, inspired by Mac OS 7 through Mac OS 8.5. The theme system uses proper 3D beveled styling, platinum silver UI, and classic Mac blue accents to create a genuinely retro desktop environment.
 
 This is **NOT** flat modern design with retro colors — it's authentic beveled 3D UI with proper depth perception, shadows, and highlights that characterized the era. Implementation must track [`UI-REFERENCES.md`](UI-REFERENCES.md) (no Apple trademarks; preserve HDR/VRR roadmap).
 
@@ -123,7 +123,7 @@ This is **NOT** flat modern design with retro colors — it's authentic beveled 
 
 **Typography:**
 
-- **Font:** System default (in RetroShell's case, available system fonts)
+- **Font:** System default (in SLOPOS-I's case, available system fonts)
 - **Style:** Regular weight for most text, bold for emphasis
 - **Size:** Consistent sizing across UI (smaller than modern apps)
 - **Anti-aliasing:** Off or minimal (authentic pixel-sharp rendering)
@@ -258,13 +258,13 @@ DesktopBackground:   0.25, 0.25, 0.25
 - Platinum theme perfected
 - High-quality icon design
 
-RetroShell captures the **aesthetic of Mac OS 7-8.5**, the golden era of beveled 3D interface design before the translucent Aqua era began.
+SLOPOS-I captures the **aesthetic of Mac OS 7-8.5**, the golden era of beveled 3D interface design before the translucent Aqua era began.
 
 ---
 
 ## Implementation Files
 
-- **File:** `crates/retro-shell/src/theme_manager.rs`
+- **File:** `crates/slopos-shell/src/theme_manager.rs`
 - **Themes:** `load_platinum()` and `load_graphite()` functions
 - **Token coverage:** 30+ tokens for comprehensive UI styling
 - **Dark mode support:** Full light/dark variants for all tokens
@@ -315,6 +315,6 @@ RetroShell captures the **aesthetic of Mac OS 7-8.5**, the golden era of beveled
 
 ---
 
-**Result:** RetroShell now features an **authentic Classic Macintosh aesthetic** that transports users back to the 1990s desktop experience while maintaining modern usability standards. The beveled 3D design, platinum silver UI, and classic blue accents create a genuinely retro atmosphere that's instantly recognizable and visually distinctive.
+**Result:** SLOPOS-I now features an **authentic Classic Macintosh aesthetic** that transports users back to the 1990s desktop experience while maintaining modern usability standards. The beveled 3D design, platinum silver UI, and classic blue accents create a genuinely retro atmosphere that's instantly recognizable and visually distinctive.
 
 All work is verified with comprehensive testing and clean compilation. The theme system is production-ready and extensible for future theme variants.

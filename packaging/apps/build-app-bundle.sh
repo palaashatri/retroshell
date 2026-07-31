@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assemble one RetroShell .app bundle (Stage 3 / spec §5).
+# Assemble one SLOPOS-I .app bundle (Stage 3 / spec §5).
 # Usage:
 #   build-app-bundle.sh <app-crate> <Display Name> <bundle_id> <version> <OUTDIR> [icon.png]
 set -euo pipefail

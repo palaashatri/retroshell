@@ -1,4 +1,4 @@
-# RetroShell — Classic Macintosh Redesign Session (2026-07-31)
+# SLOPOS-I — Classic Macintosh Redesign Session (2026-07-31)
 
 **Status:** ✅ COMPLETE & PRODUCTION-READY  
 **Duration:** Extended session across context windows  
@@ -9,11 +9,11 @@
 
 ## Session Overview
 
-This session focused on **comprehensive UI redesign** — transforming RetroShell from a generic flat modern design to an **authentic Classic Macintosh aesthetic**. The work was driven by user feedback: "continue UI polish. Right now it SUCKS looking at it from the @docs/screenshots/ provided."
+This session focused on **comprehensive UI redesign** — transforming SLOPOS-I from a generic flat modern design to an **authentic Classic Macintosh aesthetic**. The work was driven by user feedback: "continue UI polish. Right now it SUCKS looking at it from the @docs/screenshots/ provided."
 
 ### Key Achievement
 
-**RetroShell's visual identity transformed from:**
+**SLOPOS-I's visual identity transformed from:**
 - ❌ Flat modern design with retro colors
 - ❌ Dull backgrounds, weak contrast
 - ❌ Generic appearance (could be any OS)
@@ -29,7 +29,7 @@ This session focused on **comprehensive UI redesign** — transforming RetroShel
 ## Work Completed
 
 ### 1. Theme System Redesign
-**File:** `crates/retro-shell/src/theme_manager.rs`
+**File:** `crates/slopos-shell/src/theme_manager.rs`
 
 #### Platinum Theme (Light Mode)
 - Updated `load_platinum()` function
@@ -104,14 +104,14 @@ Comprehensive specification of the Classic Macintosh aesthetic:
 
 #### Compilation
 ```bash
-✅ cargo build --lib -p retro-shell
+✅ cargo build --lib -p slopos-shell
    No errors
    3 pre-existing warnings (unrelated to themes)
 ```
 
 #### Testing
 ```bash
-✅ cargo test --lib -p retro-shell
+✅ cargo test --lib -p slopos-shell
    316 tests PASSED (0 failed)
    
    Test breakdown:
@@ -177,7 +177,7 @@ pub struct ThemeValue {
 ### File Structure
 
 ```
-crates/retro-shell/src/
+crates/slopos-shell/src/
 ├── theme_manager.rs      (753 lines, 30+ tokens)
 │   ├── ThemeName enum    (Classic, Dark, Grape, etc.)
 │   ├── ThemeManager      (loading, switching)
@@ -247,7 +247,7 @@ crates/retro-shell/src/
 - Analyzed authentic beveling techniques
 - Extracted color specifications
 - Documented design principles
-- Applied to RetroShell themes
+- Applied to SLOPOS-I themes
 
 ### Historical Reference
 - **Mac OS 7 (1991):** First Platinum theme
@@ -290,7 +290,7 @@ crates/retro-shell/src/
 ## How This Serves Users
 
 ### First Impression
-User boots up RetroShell and sees:
+User boots up SLOPOS-I and sees:
 - ✅ Platinum silver UI (not flat white)
 - ✅ Classic Mac blue accents
 - ✅ Proper beveled buttons
@@ -307,7 +307,7 @@ User boots up RetroShell and sees:
 - ✅ Professional quality (intentional design)
 
 ### Comparison to Alternatives
-| Aspect | Modern Flat | RetroShell Classic Mac |
+| Aspect | Modern Flat | SLOPOS-I Classic Mac |
 |--------|-------------|----------------------|
 | **Recognition** | Generic | Instantly iconic |
 | **Depth** | None | 3D beveled |
@@ -363,7 +363,7 @@ User boots up RetroShell and sees:
 
 ## Session Conclusion
 
-**This session successfully transformed RetroShell's visual design from a generic flat aesthetic to an authentic Classic Macintosh experience.**
+**This session successfully transformed SLOPOS-I's visual design from a generic flat aesthetic to an authentic Classic Macintosh experience.**
 
 ### What Was Accomplished
 1. ✅ Researched authentic Classic Mac UI design (Figma kit)
@@ -405,7 +405,7 @@ User boots up RetroShell and sees:
 ## Files for Review
 
 **Core Implementation:**
-- `crates/retro-shell/src/theme_manager.rs` (updated)
+- `crates/slopos-shell/src/theme_manager.rs` (updated)
 
 **Documentation:**
 - `DESIGN-CLASSIC-MAC.md` (new, 311 lines)
@@ -422,7 +422,7 @@ User boots up RetroShell and sees:
 
 ## Summary
 
-RetroShell's visual identity has been **completely transformed** to match an **authentic Classic Macintosh aesthetic**. The redesign applies genuine 1990s design principles with beveled 3D UI, platinum silver backgrounds, classic blue accents, and professional polish.
+SLOPOS-I's visual identity has been **completely transformed** to match an **authentic Classic Macintosh aesthetic**. The redesign applies genuine 1990s design principles with beveled 3D UI, platinum silver backgrounds, classic blue accents, and professional polish.
 
 **Result: A visually distinctive, professionally polished retro desktop environment that's instantly recognizable as Classic Macintosh, not just "retro styling" on modern design.**
 
@@ -435,4 +435,4 @@ All work is tested (316/316 passing), documented, and production-ready for v0.1.
 **Production Readiness:** READY  
 **Visual Quality:** ⭐⭐⭐⭐⭐ Professional retro aesthetic  
 
-🖥️ RetroShell is ready to take users on a genuine trip back to the 1990s Macintosh era! ✨
+🖥️ SLOPOS-I is ready to take users on a genuine trip back to the 1990s Macintosh era! ✨

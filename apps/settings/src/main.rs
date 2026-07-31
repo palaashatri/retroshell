@@ -1,14 +1,14 @@
-use retro_kit::button::Button;
-use retro_kit::event::{KeyCode, Modifiers};
-use retro_kit::label::Label;
-use retro_kit::slider::Slider;
-use retro_kit::window::Window;
-use retro_kit::{
+use slopos_kit::button::Button;
+use slopos_kit::event::{KeyCode, Modifiers};
+use slopos_kit::label::Label;
+use slopos_kit::slider::Slider;
+use slopos_kit::window::Window;
+use slopos_kit::{
     AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint, PointerDispatcher,
     Rect, Size, ThemeContext, Widget, WidgetState,
 };
-use retro_sdk::{build_menu, Application};
-use retro_shell::DisplayConfig;
+use slopos_sdk::{build_menu, Application};
+use slopos_shell::DisplayConfig;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 fn main() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    let mut app = Application::new("Settings", "com.retro.settings");
+    let mut app = Application::new("Settings", "com.slopos.settings");
 
     let mut file_menu = build_menu("File");
     file_menu.add_action("Close").with_shortcut(
@@ -165,11 +165,11 @@ impl Category {
 
     fn description(self) -> &'static str {
         match self {
-            Category::General => "Choose system defaults used by first-party RetroShell apps.",
-            Category::Appearance => "Choose how RetroShell draws native windows and apps.",
+            Category::General => "Choose system defaults used by first-party SLOPOS-I apps.",
+            Category::Appearance => "Choose how SLOPOS-I draws native windows and apps.",
             Category::DesktopDock => "Control desktop icons and the shell launcher position.",
             Category::Display => "Configure advertised display capabilities for the shell session.",
-            Category::Sound => "Control desktop sound effects for native RetroShell apps.",
+            Category::Sound => "Control desktop sound effects for native SLOPOS-I apps.",
             Category::Network => "Set the network profile exposed to shell status surfaces.",
             Category::Keyboard => "Tune keyboard repeat behavior for native controls.",
             Category::Mouse => "Tune pointer and scrolling behavior.",
@@ -536,14 +536,14 @@ struct SettingsStore {
 
 impl Default for SettingsStore {
     fn default() -> Self {
-        let config_dir = std::env::var_os("RETROSHELL_CONFIG_DIR")
+        let config_dir = std::env::var_os("SLOPOS_CONFIG_DIR")
             .map(PathBuf::from)
             .or_else(|| {
                 std::env::var_os("HOME")
                     .map(PathBuf::from)
-                    .map(|home| home.join(".config/retroshell"))
+                    .map(|home| home.join(".config/slopos-i"))
             })
-            .unwrap_or_else(|| PathBuf::from("/tmp/retroshell"));
+            .unwrap_or_else(|| PathBuf::from("/tmp/slopos-i"));
         Self {
             path: config_dir.join("settings.conf"),
         }
@@ -861,7 +861,7 @@ impl SettingsView {
                 .map(|category| Button::new(category.label()))
                 .collect(),
             heading: Label::new("APPEARANCE"),
-            description: Label::new("Choose how RetroShell draws native windows and apps."),
+            description: Label::new("Choose how SLOPOS-I draws native windows and apps."),
             status: Label::new(""),
             option_buttons: Vec::new(),
             volume_label: Label::new("VOLUME"),
@@ -948,7 +948,7 @@ impl SettingsView {
         self.settings.apply_choice(choice);
         match self.store.save(&self.settings) {
             Ok(()) => {
-                // Display pane: plan arrangement + apply RETROSHELL_OUTPUTS_LAYOUT env.
+                // Display pane: plan arrangement + apply SLOPOS_OUTPUTS_LAYOUT env.
                 if matches!(
                     choice,
                     Choice::HdrOff
@@ -1318,8 +1318,8 @@ impl Widget for SettingsView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use retro_kit::event::MouseButton;
-    use retro_kit::Point;
+    use slopos_kit::event::MouseButton;
+    use slopos_kit::Point;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1332,7 +1332,7 @@ mod tests {
             .as_nanos();
         let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir()
-            .join(format!("retroshell_settings_{unique}_{sequence}"))
+            .join(format!("slopos-i_settings_{unique}_{sequence}"))
             .join("settings.conf")
     }
 
@@ -1423,10 +1423,10 @@ mod tests {
         assert_eq!(loaded.arrange_mode, "mirror");
         assert!(view.status.text.contains("ARRANGE MIRROR"));
 
-        let layout = std::env::var("RETROSHELL_OUTPUTS_LAYOUT")
-            .expect("apply_arrangement_env should set RETROSHELL_OUTPUTS_LAYOUT");
+        let layout = std::env::var("SLOPOS_OUTPUTS_LAYOUT")
+            .expect("apply_arrangement_env should set SLOPOS_OUTPUTS_LAYOUT");
         assert!(layout.contains("eDP-1"), "layout={layout}");
-        std::env::remove_var("RETROSHELL_OUTPUTS_LAYOUT");
+        std::env::remove_var("SLOPOS_OUTPUTS_LAYOUT");
     }
 
     #[test]

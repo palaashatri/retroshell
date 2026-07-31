@@ -1,4 +1,4 @@
-//! AT-SPI2 accessibility export and pure a11y helpers for RetroShell.
+//! AT-SPI2 accessibility export and pure a11y helpers for SLOPOS-I.
 //!
 //! # What works today
 //! - Role name + numeric `AtspiRole` mapping for kit chrome and widgets
@@ -227,7 +227,7 @@ pub fn atspi_object_path_with_label(index: usize, role_name: &str, label: &str) 
     format!("{ATSPI_ACCESSIBLE_PREFIX}/{index}/{role_seg}_{label_seg}")
 }
 
-/// Map a RetroShell role to the numeric `AtspiRole` enum value.
+/// Map a SLOPOS-I role to the numeric `AtspiRole` enum value.
 ///
 /// Values from atspi-constants.h / org.a11y.atspi.Accessible.GetRole docs.
 /// Exhaustive match — adding a role without a mapping is a compile error.
@@ -339,16 +339,16 @@ pub fn shell_chrome_accessibility_tree(app_name: &str) -> AccessibilityTree {
 
     let mut menu_bar = AccessibilityNode::new(AccessibilityRole::MenuBar, "Menu Bar");
     // Retro system menu with session actions discoverable by ATs.
-    let mut retro = AccessibilityNode::new(AccessibilityRole::Menu, "Retro");
+    let mut retro = AccessibilityNode::new(AccessibilityRole::Menu, "SLOPOS");
     for item in [
-        "About RetroShell",
+        "About SLOPOS-I",
         "System Settings…",
         "Lock Screen",
         "Sleep",
         "Restart…",
         "Shut Down…",
         "Log Out…",
-        "Quit RetroShell",
+        "Quit SLOPOS-I",
     ] {
         retro
             .children
@@ -393,7 +393,7 @@ pub fn shell_chrome_accessibility_tree(app_name: &str) -> AccessibilityTree {
 // AccessibleAction — pure Activate / Press / Focus set
 // ---------------------------------------------------------------------------
 
-/// Canonical AT-SPI actions RetroShell exposes on interactive nodes.
+/// Canonical AT-SPI actions SLOPOS-I exposes on interactive nodes.
 ///
 /// Names match common AT-SPI / ATK action strings so Orca and similar ATs can
 /// discover them via `org.a11y.atspi.Action`. Invoking `DoAction` on the bus
@@ -1740,7 +1740,7 @@ struct AtspiApplication {
 impl AtspiApplication {
     #[zbus(property, name = "ToolkitName")]
     fn toolkit_name(&self) -> &str {
-        "RetroShell"
+        "SLOPOS-I"
     }
 
     #[zbus(property, name = "Version")]
@@ -2110,7 +2110,7 @@ pub fn register_at_spi_app_with_tree(
         // Root accessible (Application role) + Application interface
         let root = AtspiAccessible {
             name: app_name.to_string(),
-            description: format!("RetroShell application {app_name}"),
+            description: format!("SLOPOS-I application {app_name}"),
             role: 75, // ATSPI_ROLE_APPLICATION
             role_name: "application".to_string(),
             bus_name: bus_name.clone(),
@@ -2588,13 +2588,13 @@ mod tests {
 
     #[test]
     fn shell_chrome_includes_session_menu_items() {
-        let tree = shell_chrome_accessibility_tree("RetroShell");
+        let tree = shell_chrome_accessibility_tree("SLOPOS-I");
         // menu bar is first node; Retro submenu has Lock Screen
         let menu_bar = &tree.nodes[0];
         let retro = menu_bar
             .children
             .iter()
-            .find(|n| n.label == "Retro")
+            .find(|n| n.label == "SLOPOS")
             .expect("Retro menu");
         assert!(retro
             .children
@@ -2670,13 +2670,13 @@ mod tests {
 
     #[test]
     fn shell_chrome_tree_has_menu_desktop_dock_window() {
-        let tree = shell_chrome_accessibility_tree("RetroShell");
+        let tree = shell_chrome_accessibility_tree("SLOPOS-I");
         assert!(tree.len() >= 4);
         assert_eq!(tree.nodes()[0].role, AccessibilityRole::MenuBar);
         assert_eq!(tree.nodes()[1].role, AccessibilityRole::Desktop);
         assert_eq!(tree.nodes()[2].role, AccessibilityRole::Dock);
         assert_eq!(tree.nodes()[3].role, AccessibilityRole::Window);
-        assert_eq!(tree.nodes()[3].label, "RetroShell");
+        assert_eq!(tree.nodes()[3].label, "SLOPOS-I");
 
         // Nested structure for AT depth
         assert!(!tree.nodes()[0].children.is_empty());
@@ -2692,7 +2692,7 @@ mod tests {
 
     #[test]
     fn chrome_focus_indices_follow_cycle_order() {
-        let tree = shell_chrome_accessibility_tree("RetroShell");
+        let tree = shell_chrome_accessibility_tree("SLOPOS-I");
         let indices = chrome_focus_indices(&tree);
         assert_eq!(indices.len(), 3);
         assert_eq!(indices[0].0, ChromeFocusRegion::MenuBar);
@@ -2705,7 +2705,7 @@ mod tests {
 
     #[test]
     fn next_chrome_focus_index_cycles() {
-        let tree = shell_chrome_accessibility_tree("RetroShell");
+        let tree = shell_chrome_accessibility_tree("SLOPOS-I");
         assert_eq!(next_chrome_focus_index(&tree, None), Some(0));
         assert_eq!(next_chrome_focus_index(&tree, Some(0)), Some(1));
         assert_eq!(next_chrome_focus_index(&tree, Some(1)), Some(2));
@@ -2917,7 +2917,7 @@ mod tests {
 
     #[test]
     fn tree_focus_changed_index_uses_canonical_path() {
-        let mut tree = shell_chrome_accessibility_tree("RetroShell");
+        let mut tree = shell_chrome_accessibility_tree("SLOPOS-I");
         let mut bus = AccessibilityEventBus::new();
         // Menu bar is index 0 in shell chrome tree.
         tree.focus_changed_index(0, &mut bus);
@@ -2931,7 +2931,7 @@ mod tests {
     #[test]
     fn chrome_focus_path_emits_focus_events_for_cycle() {
         // Keyboard chrome path: next_chrome_focus_index + tree focus hooks.
-        let mut tree = shell_chrome_accessibility_tree("RetroShell");
+        let mut tree = shell_chrome_accessibility_tree("SLOPOS-I");
         let mut bus = AccessibilityEventBus::new();
         let mut current: Option<usize> = None;
         let mut focused_paths = Vec::new();

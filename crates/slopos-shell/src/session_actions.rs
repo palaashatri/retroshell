@@ -132,7 +132,7 @@ pub fn confirm_prompt(action: SessionAction) -> Option<&'static str> {
     match action {
         SessionAction::Reboot => Some("Restart the computer now?"),
         SessionAction::PowerOff => Some("Shut down the computer now?"),
-        SessionAction::Logout => Some("Log out of RetroShell?"),
+        SessionAction::Logout => Some("Log out of SLOPOS-I?"),
         _ => None,
     }
 }

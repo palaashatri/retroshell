@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Unattended Arch (aarch64) install for the RetroShell UTM verification VM.
+# Unattended Arch (aarch64) install for the SLOPOS-I UTM verification VM.
 #
 # Run from the aarch64 Arch/archboot live environment:
 #   curl -sL http://10.0.2.2:8000/arch-install-arm64.sh | bash
 #
 # Produces a machine that boots to an autologin TTY with sshd + the host's key,
-# on real virtio-gpu DRM/KMS — the environment RetroShell has never been run on.
+# on real virtio-gpu DRM/KMS — the environment SLOPOS-I has never been run on.
 set -euxo pipefail
 
 DISK=/dev/vda                       # virtio-blk (NOT /dev/sda)
-HOSTNAME=retroshell-vm
+HOSTNAME=slopos-i-vm
 USERNAME=retro
 PASSWORD=retro
-REPO_URL="${REPO_URL:-https://github.com/palaashatri/retroshell.git}"
+REPO_URL="${REPO_URL:-https://github.com/palaashatri/slopos-i.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 HOST_HTTP="${HOST_HTTP:-http://10.0.2.2:8000}"   # host file server (Task 0.2)
 
@@ -38,7 +38,7 @@ mount "${DISK}2" /mnt
 mkdir -p /mnt/boot
 mount "${DISK}1" /mnt/boot
 
-echo "=== pacstrap base + RetroShell build/runtime deps (aarch64) ==="
+echo "=== pacstrap base + SLOPOS-I build/runtime deps (aarch64) ==="
 pacstrap -K /mnt \
   base "$KERNEL_PKG" linux-firmware \
   networkmanager sudo vim nano git curl wget \
@@ -107,16 +107,16 @@ chown $USERNAME:$USERNAME /home/$USERNAME/.ssh/authorized_keys
 chmod 600 /home/$USERNAME/.ssh/authorized_keys
 CHROOT
 
-echo "=== clone + build RetroShell as $USERNAME ==="
+echo "=== clone + build SLOPOS-I as $USERNAME ==="
 arch-chroot /mnt /bin/bash -euxo pipefail <<CHROOT
 su - $USERNAME -c '
   set -euxo pipefail
-  git clone --branch "$REPO_BRANCH" "$REPO_URL" ~/retroshell || git clone "$REPO_URL" ~/retroshell
-  mkdir -p ~/.config/retroshell
-  cat > ~/.config/retroshell/settings.conf <<EOF
+  git clone --branch "$REPO_BRANCH" "$REPO_URL" ~/slopos-i || git clone "$REPO_URL" ~/slopos-i
+  mkdir -p ~/.config/slopos-i
+  cat > ~/.config/slopos-i/settings.conf <<EOF
 theme=classic
 appearance=light
-lock_password=retroshell
+lock_password=slopos-i
 EOF
 '
 CHROOT

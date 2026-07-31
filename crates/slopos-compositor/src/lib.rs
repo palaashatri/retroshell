@@ -43,7 +43,7 @@ pub enum CompositorBackendKind {
     NestedX11,
     /// Session DRM/KMS (bare metal / seat) path when prefer_drm && dri3_ok.
     SessionDrm,
-    /// External labwc process — not retro-compositor itself.
+    /// External labwc process — not slopos-compositor itself.
     LabwcFallback,
 }
 
@@ -70,7 +70,7 @@ pub fn select_backend_kind(
     CompositorBackendKind::NestedX11
 }
 
-/// Detect DRI3 availability override from `RETROSHELL_DRI3`.
+/// Detect DRI3 availability override from `SLOPOS_DRI3`.
 ///
 /// - `1` / truthy → `Some(true)`
 /// - `0` / falsey → `Some(false)`
@@ -78,7 +78,7 @@ pub fn select_backend_kind(
 ///
 /// Intended for tests and CI; production can fall back to X11 extension probe.
 pub fn detect_dri3_from_env() -> Option<bool> {
-    detect_dri3_from_env_value(std::env::var("RETROSHELL_DRI3").ok().as_deref())
+    detect_dri3_from_env_value(std::env::var("SLOPOS_DRI3").ok().as_deref())
 }
 
 /// Pure form of [`detect_dri3_from_env`] for unit tests.
@@ -101,7 +101,7 @@ pub fn session_mode_summary(kind: CompositorBackendKind) -> String {
             "session_mode=session_drm (DRM/KMS seat path)".to_string()
         }
         CompositorBackendKind::LabwcFallback => {
-            "session_mode=labwc_fallback (external labwc; not retro-compositor)".to_string()
+            "session_mode=labwc_fallback (external labwc; not slopos-compositor)".to_string()
         }
     }
 }
@@ -417,13 +417,13 @@ pub enum DecorationPreference {
 pub fn decoration_preference_for_app_id(app_id: &str) -> DecorationPreference {
     let id = app_id.to_ascii_lowercase();
     // First-party suite draws own chrome via kit; external apps get SSD when possible.
-    if id.starts_with("retroshell.")
+    if id.starts_with("slopos-i.")
         || id == "finder"
         || id == "textedit"
         || id == "terminal"
         || id == "settings"
         || id == "appstore"
-        || id == "retro-shell"
+        || id == "slopos-shell"
     {
         DecorationPreference::ClientSide
     } else {
@@ -449,8 +449,8 @@ impl Default for OutputConfig {
 impl OutputConfig {
     pub fn from_env() -> Self {
         Self::from_env_values(
-            std::env::var("RETROSHELL_COMPOSITOR_WIDTH").ok(),
-            std::env::var("RETROSHELL_COMPOSITOR_HEIGHT").ok(),
+            std::env::var("SLOPOS_COMPOSITOR_WIDTH").ok(),
+            std::env::var("SLOPOS_COMPOSITOR_HEIGHT").ok(),
         )
     }
 
@@ -473,7 +473,7 @@ pub struct LaidOutOutput {
 /// Multi-output arrangement policy (pure).
 ///
 /// Default is [`OutputLayoutMode::SideBySide`]. Selected via
-/// `RETROSHELL_OUTPUT_LAYOUT` (`side` | `stack` | `grid`).
+/// `SLOPOS_OUTPUT_LAYOUT` (`side` | `stack` | `grid`).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub enum OutputLayoutMode {
     /// Left-to-right along Y=0 (default).
@@ -485,7 +485,7 @@ pub enum OutputLayoutMode {
     Grid,
 }
 
-/// Parse `RETROSHELL_OUTPUT_LAYOUT` value (`side` | `stack` | `grid`).
+/// Parse `SLOPOS_OUTPUT_LAYOUT` value (`side` | `stack` | `grid`).
 ///
 /// Unset, empty, or unrecognised → [`OutputLayoutMode::SideBySide`] (default).
 pub fn parse_layout_mode(value: Option<&str>) -> OutputLayoutMode {
@@ -502,12 +502,12 @@ pub fn parse_layout_mode(value: Option<&str>) -> OutputLayoutMode {
     }
 }
 
-/// Read layout mode from `RETROSHELL_OUTPUT_LAYOUT` (default side-by-side).
+/// Read layout mode from `SLOPOS_OUTPUT_LAYOUT` (default side-by-side).
 pub fn layout_mode_from_env() -> OutputLayoutMode {
-    parse_layout_mode(std::env::var("RETROSHELL_OUTPUT_LAYOUT").ok().as_deref())
+    parse_layout_mode(std::env::var("SLOPOS_OUTPUT_LAYOUT").ok().as_deref())
 }
 
-/// Parse `RETROSHELL_OUTPUTS=WxH,WxH` (comma-separated). Invalid tokens are skipped.
+/// Parse `SLOPOS_OUTPUTS=WxH,WxH` (comma-separated). Invalid tokens are skipped.
 ///
 /// Returns an empty vec when the string has no valid entries.
 pub fn parse_outputs_spec(spec: &str) -> Vec<OutputConfig> {
@@ -539,13 +539,13 @@ pub fn parse_outputs_spec(spec: &str) -> Vec<OutputConfig> {
     out
 }
 
-/// One entry from shell `RETROSHELL_OUTPUTS_LAYOUT`
+/// One entry from shell `SLOPOS_OUTPUTS_LAYOUT`
 /// (`name:WIDTHxHEIGHT@x,y:sSCALE`, semicolon-separated).
 ///
-/// Produced by `retro-shell` display arrange (`EmitLayoutEnv`). Nested compositor
+/// Produced by `slopos-shell` display arrange (`EmitLayoutEnv`). Nested compositor
 /// places logical `wl_output`s at these positions; scale percent is retained for
 /// logging / future per-output scale (global scale still comes from
-/// `RETROSHELL_OUTPUT_SCALE` on the nested path).
+/// `SLOPOS_OUTPUT_SCALE` on the nested path).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LayoutOutputEntry {
     pub name: String,
@@ -567,7 +567,7 @@ impl LayoutOutputEntry {
     }
 }
 
-/// Parse `RETROSHELL_OUTPUTS_LAYOUT` from shell display arrange.
+/// Parse `SLOPOS_OUTPUTS_LAYOUT` from shell display arrange.
 ///
 /// Format (per head, `;`-separated):
 /// `name:WIDTHxHEIGHT@x,y:sSCALE`
@@ -759,16 +759,16 @@ pub fn total_output_size(laid_out: &[LaidOutOutput]) -> OutputConfig {
 
 /// Resolve output list from the environment.
 ///
-/// - If `RETROSHELL_OUTPUTS` parses to one or more sizes, use those.
+/// - If `SLOPOS_OUTPUTS` parses to one or more sizes, use those.
 /// - Otherwise fall back to a single `OutputConfig::from_env()` (WIDTH/HEIGHT).
 ///
 /// Prefer [`resolve_laid_out_outputs_from_env`] when absolute positions from
-/// `RETROSHELL_OUTPUTS_LAYOUT` should win (shell display arrange).
+/// `SLOPOS_OUTPUTS_LAYOUT` should win (shell display arrange).
 pub fn outputs_from_env() -> Vec<OutputConfig> {
     outputs_from_env_values(
-        std::env::var("RETROSHELL_OUTPUTS").ok(),
-        std::env::var("RETROSHELL_COMPOSITOR_WIDTH").ok(),
-        std::env::var("RETROSHELL_COMPOSITOR_HEIGHT").ok(),
+        std::env::var("SLOPOS_OUTPUTS").ok(),
+        std::env::var("SLOPOS_COMPOSITOR_WIDTH").ok(),
+        std::env::var("SLOPOS_COMPOSITOR_HEIGHT").ok(),
     )
 }
 
@@ -789,9 +789,9 @@ pub fn outputs_from_env_values(
 /// Where nested multi-output geometry came from (for honest logs).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum OutputsLayoutSource {
-    /// Shell `RETROSHELL_OUTPUTS_LAYOUT` (`name:WxH@x,y:sNN;...`).
+    /// Shell `SLOPOS_OUTPUTS_LAYOUT` (`name:WxH@x,y:sNN;...`).
     LayoutSpec,
-    /// `RETROSHELL_OUTPUTS` sizes + `RETROSHELL_OUTPUT_LAYOUT` mode.
+    /// `SLOPOS_OUTPUTS` sizes + `SLOPOS_OUTPUT_LAYOUT` mode.
     OutputsSpec,
     /// Single default / WIDTH×HEIGHT fallback.
     Default,
@@ -826,8 +826,8 @@ impl ResolvedOutputsLayout {
             })
             .collect();
         let src = match self.source {
-            OutputsLayoutSource::LayoutSpec => "RETROSHELL_OUTPUTS_LAYOUT",
-            OutputsLayoutSource::OutputsSpec => "RETROSHELL_OUTPUTS+layout-mode",
+            OutputsLayoutSource::LayoutSpec => "SLOPOS_OUTPUTS_LAYOUT",
+            OutputsLayoutSource::OutputsSpec => "SLOPOS_OUTPUTS+layout-mode",
             OutputsLayoutSource::Default => "default",
         };
         format!(
@@ -845,7 +845,7 @@ impl ResolvedOutputsLayout {
 /// Resolve laid-out outputs for nested startup (pure).
 ///
 /// Preference:
-/// 1. `layout_spec` (`RETROSHELL_OUTPUTS_LAYOUT`) when it parses to ≥1 entry
+/// 1. `layout_spec` (`SLOPOS_OUTPUTS_LAYOUT`) when it parses to ≥1 entry
 /// 2. else `outputs_spec` / width / height via [`outputs_from_env_values`] + `layout_mode`
 pub fn resolve_laid_out_outputs_from_env_values(
     layout_spec: Option<&str>,
@@ -892,16 +892,16 @@ pub fn resolve_laid_out_outputs_from_env_values(
 
 /// Nested startup: read env and resolve laid-out outputs.
 ///
-/// Prefers `RETROSHELL_OUTPUTS_LAYOUT`, else `RETROSHELL_OUTPUTS` + layout mode,
+/// Prefers `SLOPOS_OUTPUTS_LAYOUT`, else `SLOPOS_OUTPUTS` + layout mode,
 /// else WIDTH/HEIGHT defaults.
 pub fn resolve_laid_out_outputs_from_env() -> ResolvedOutputsLayout {
     resolve_laid_out_outputs_from_env_values(
-        std::env::var("RETROSHELL_OUTPUTS_LAYOUT")
+        std::env::var("SLOPOS_OUTPUTS_LAYOUT")
             .ok()
             .as_deref(),
-        std::env::var("RETROSHELL_OUTPUTS").ok(),
-        std::env::var("RETROSHELL_COMPOSITOR_WIDTH").ok(),
-        std::env::var("RETROSHELL_COMPOSITOR_HEIGHT").ok(),
+        std::env::var("SLOPOS_OUTPUTS").ok(),
+        std::env::var("SLOPOS_COMPOSITOR_WIDTH").ok(),
+        std::env::var("SLOPOS_COMPOSITOR_HEIGHT").ok(),
         layout_mode_from_env(),
     )
 }
@@ -1017,11 +1017,11 @@ pub fn parse_output_scale(raw: &str) -> Option<OutputScale> {
     OutputScale::new(num as u32, PLACE)
 }
 
-/// Read `RETROSHELL_OUTPUT_SCALE` (e.g. `2`, `1.5`, `3/2`).
+/// Read `SLOPOS_OUTPUT_SCALE` (e.g. `2`, `1.5`, `3/2`).
 ///
 /// Returns `None` when unset or invalid so callers can default to 1×.
 pub fn detect_output_scale_from_env() -> Option<OutputScale> {
-    OutputScale::from_env_value(std::env::var("RETROSHELL_OUTPUT_SCALE").ok().as_deref())
+    OutputScale::from_env_value(std::env::var("SLOPOS_OUTPUT_SCALE").ok().as_deref())
 }
 
 /// Scale a logical size to physical pixels (ceil, never undersized).
@@ -1168,27 +1168,27 @@ impl DisplayPolicy {
 
     /// Apply environment overrides.
     ///
-    /// - `RETROSHELL_HDR` — truthy enables HDR request
-    /// - `RETROSHELL_VRR` — truthy enables adaptive VRR
-    /// - `RETROSHELL_REFRESH` — e.g. `60`, `60hz`, `adaptive`
-    /// - `RETROSHELL_COLOR_SPACE` — `srgb` / `rec2020` / `scrgb`
+    /// - `SLOPOS_HDR` — truthy enables HDR request
+    /// - `SLOPOS_VRR` — truthy enables adaptive VRR
+    /// - `SLOPOS_REFRESH` — e.g. `60`, `60hz`, `adaptive`
+    /// - `SLOPOS_COLOR_SPACE` — `srgb` / `rec2020` / `scrgb`
     pub fn apply_env_map(&mut self, env: HashMap<String, String>) {
-        if let Some(v) = env.get("RETROSHELL_HDR") {
+        if let Some(v) = env.get("SLOPOS_HDR") {
             if let Some(b) = parse_bool_loose(v) {
                 self.hdr_requested = b;
             }
         }
-        if let Some(v) = env.get("RETROSHELL_VRR") {
+        if let Some(v) = env.get("SLOPOS_VRR") {
             if let Some(b) = parse_bool_loose(v) {
                 self.vrr_adaptive = b;
             }
         }
-        if let Some(v) = env.get("RETROSHELL_REFRESH") {
+        if let Some(v) = env.get("SLOPOS_REFRESH") {
             if let Some(r) = RefreshRate::parse_flexible(v) {
                 self.refresh_rate = r;
             }
         }
-        if let Some(v) = env.get("RETROSHELL_COLOR_SPACE") {
+        if let Some(v) = env.get("SLOPOS_COLOR_SPACE") {
             if let Some(cs) = ColorSpace::from_str_flexible(v) {
                 self.color_space = cs;
             }
@@ -1483,14 +1483,14 @@ pub fn parse_key_value_conf(text: &str) -> Vec<(String, String)> {
 }
 
 fn settings_conf_path() -> Option<PathBuf> {
-    if let Ok(dir) = std::env::var("RETROSHELL_CONFIG_DIR") {
+    if let Ok(dir) = std::env::var("SLOPOS_CONFIG_DIR") {
         return Some(Path::new(&dir).join("settings.conf"));
     }
     if let Ok(home) = std::env::var("HOME") {
         return Some(
             Path::new(&home)
                 .join(".config")
-                .join("retroshell")
+                .join("slopos-i")
                 .join("settings.conf"),
         );
     }
@@ -2114,7 +2114,7 @@ mod tests {
         assert_eq!((resolved.laid_out[1].x, resolved.laid_out[1].y), (1920, 100));
         assert_eq!(resolved.laid_out[1].config.width, 1280);
         let s = resolved.summary();
-        assert!(s.contains("RETROSHELL_OUTPUTS_LAYOUT"), "summary={s}");
+        assert!(s.contains("SLOPOS_OUTPUTS_LAYOUT"), "summary={s}");
         assert!(s.contains("eDP-1"), "summary={s}");
     }
 
@@ -2362,10 +2362,10 @@ mod tests {
         assert_eq!(p.effective_refresh_rate(), RefreshRate::Adaptive);
 
         let mut env = HashMap::new();
-        env.insert("RETROSHELL_HDR".into(), "0".into());
-        env.insert("RETROSHELL_VRR".into(), "false".into());
-        env.insert("RETROSHELL_REFRESH".into(), "60".into());
-        env.insert("RETROSHELL_COLOR_SPACE".into(), "srgb".into());
+        env.insert("SLOPOS_HDR".into(), "0".into());
+        env.insert("SLOPOS_VRR".into(), "false".into());
+        env.insert("SLOPOS_REFRESH".into(), "60".into());
+        env.insert("SLOPOS_COLOR_SPACE".into(), "srgb".into());
         p.apply_env_map(env);
         assert!(!p.hdr_requested);
         assert!(!p.vrr_adaptive);
@@ -2476,7 +2476,7 @@ mod tests {
 
         let labwc = session_mode_summary(CompositorBackendKind::LabwcFallback);
         assert!(labwc.contains("labwc"));
-        assert!(labwc.contains("fallback") || labwc.contains("not retro-compositor"));
+        assert!(labwc.contains("fallback") || labwc.contains("not slopos-compositor"));
     }
 
     #[test]
@@ -2738,7 +2738,7 @@ mod tests {
     #[test]
     fn decoration_preference_first_party_csd_external_ssd() {
         assert_eq!(
-            decoration_preference_for_app_id("retroshell.finder"),
+            decoration_preference_for_app_id("slopos-i.finder"),
             DecorationPreference::ClientSide
         );
         assert_eq!(

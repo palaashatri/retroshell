@@ -242,7 +242,7 @@ mod tests {
     use super::*;
 
     fn sample_with_pid() -> ForeignToplevelEntry {
-        ForeignToplevelEntry::new("ft-1", "Finder", "com.retro.finder", Some(4242))
+        ForeignToplevelEntry::new("ft-1", "Finder", "com.slopos.finder", Some(4242))
     }
 
     fn sample_no_pid() -> ForeignToplevelEntry {
@@ -255,7 +255,7 @@ mod tests {
         reg.add(ForeignToplevelEntry::new(
             "fq",
             "Force Quit",
-            "retroshell",
+            "slopos-i",
             None,
         ));
         reg.add(sample_with_pid());
@@ -308,7 +308,7 @@ mod tests {
             })
         );
         assert_eq!(parse_toplevel_force_quit("toplevel: "), None);
-        assert_eq!(parse_toplevel_force_quit("window: Retro HD"), None);
+        assert_eq!(parse_toplevel_force_quit("window: SLOPOS HD"), None);
         assert_eq!(parse_toplevel_force_quit("client: finder (pid 1)"), None);
     }
 
@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn terminal_app_id_gets_workspace_from_rules() {
         let entry =
-            ForeignToplevelEntry::new("term-1", "bash", "org.retroshell.Terminal", Some(99));
+            ForeignToplevelEntry::new("term-1", "bash", "org.slopos-i.Terminal", Some(99));
         assert_eq!(
             entry.workspace,
             Some(1),

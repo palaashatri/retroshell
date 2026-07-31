@@ -1,4 +1,4 @@
-use retro_kit::Rect;
+use slopos_kit::Rect;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
@@ -59,7 +59,7 @@ impl Dock {
 
     fn setup_default_items(&mut self) {
         self.items.push(DockItem {
-            app_id: "com.retro.finder".into(),
+            app_id: "com.slopos.finder".into(),
             label: "Finder".into(),
             icon: Some("finder".into()),
             state: AppState::Focused,
@@ -68,7 +68,7 @@ impl Dock {
             position: Rect::ZERO,
         });
         self.items.push(DockItem {
-            app_id: "com.retro.settings".into(),
+            app_id: "com.slopos.settings".into(),
             label: "Settings".into(),
             icon: Some("settings".into()),
             state: AppState::NotRunning,
@@ -77,7 +77,7 @@ impl Dock {
             position: Rect::ZERO,
         });
         self.items.push(DockItem {
-            app_id: "com.retro.textedit".into(),
+            app_id: "com.slopos.textedit".into(),
             label: "TextEdit".into(),
             icon: Some("textedit".into()),
             state: AppState::NotRunning,
@@ -86,7 +86,7 @@ impl Dock {
             position: Rect::ZERO,
         });
         self.items.push(DockItem {
-            app_id: "com.retro.terminal".into(),
+            app_id: "com.slopos.terminal".into(),
             label: "Terminal".into(),
             icon: Some("terminal".into()),
             state: AppState::NotRunning,
@@ -95,7 +95,7 @@ impl Dock {
             position: Rect::ZERO,
         });
         self.items.push(DockItem {
-            app_id: "com.retro.appstore".into(),
+            app_id: "com.slopos.appstore".into(),
             label: "App Store".into(),
             icon: Some("appstore".into()),
             state: AppState::NotRunning,
@@ -150,7 +150,7 @@ impl Dock {
         }
     }
 
-    pub fn render_dock(&self) -> retro_render::RenderNode {
+    pub fn render_dock(&self) -> slopos_render::RenderNode {
         let mut children = vec![];
         if let (Some(first), Some(last)) = (self.items.first(), self.items.last()) {
             let padding = 8.0;
@@ -159,39 +159,39 @@ impl Dock {
             let bg_w = last.position.x + last.position.width + padding - bg_x;
             let bg_h = self.icon_size + padding * 2.0;
 
-            children.push(retro_render::RenderNode::Rect {
+            children.push(slopos_render::RenderNode::Rect {
                 x: bg_x,
                 y: bg_y,
                 width: bg_w,
                 height: bg_h,
-                color: retro_render::Color::new(0.8, 0.8, 0.8, 0.9),
+                color: slopos_render::Color::new(0.8, 0.8, 0.8, 0.9),
                 corner_radius: 8.0,
             });
         }
 
         for item in &self.items {
-            children.push(retro_render::RenderNode::Rect {
+            children.push(slopos_render::RenderNode::Rect {
                 x: item.position.x,
                 y: item.position.y,
                 width: item.position.width,
                 height: item.position.height,
                 color: match item.state {
-                    AppState::Focused => retro_render::Color::new(0.6, 0.6, 0.6, 1.0),
-                    AppState::Running => retro_render::Color::new(0.7, 0.7, 0.7, 1.0),
-                    AppState::AttentionRequired => retro_render::Color::new(0.9, 0.3, 0.3, 1.0),
-                    AppState::NotRunning => retro_render::Color::new(0.9, 0.9, 0.9, 1.0),
+                    AppState::Focused => slopos_render::Color::new(0.6, 0.6, 0.6, 1.0),
+                    AppState::Running => slopos_render::Color::new(0.7, 0.7, 0.7, 1.0),
+                    AppState::AttentionRequired => slopos_render::Color::new(0.9, 0.3, 0.3, 1.0),
+                    AppState::NotRunning => slopos_render::Color::new(0.9, 0.9, 0.9, 1.0),
                 },
                 corner_radius: 4.0,
             });
-            children.push(retro_render::RenderNode::Text {
+            children.push(slopos_render::RenderNode::Text {
                 x: item.position.x + 2.0,
                 y: item.position.y + item.position.height / 2.0 + 4.0,
                 text: item.label.clone(),
                 font_size: 11.0,
-                color: retro_render::Color::BLACK,
+                color: slopos_render::Color::BLACK,
             });
         }
 
-        retro_render::RenderNode::Group { children }
+        slopos_render::RenderNode::Group { children }
     }
 }

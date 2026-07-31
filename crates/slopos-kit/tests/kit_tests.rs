@@ -1,4 +1,4 @@
-use retro_kit::*;
+use slopos_kit::*;
 
 #[test]
 fn test_widget_creation() {
@@ -68,8 +68,8 @@ fn test_text_field_set_text_places_cursor_at_end() {
     assert_eq!(field.text(), "abcd");
 
     let result = field.handle_event(&Event::KeyDown {
-        key: retro_kit::event::KeyCode::Backspace,
-        modifiers: retro_kit::event::Modifiers::NONE,
+        key: slopos_kit::event::KeyCode::Backspace,
+        modifiers: slopos_kit::event::Modifiers::NONE,
     });
     assert!(matches!(result, EventResult::Handled));
     assert_eq!(field.text(), "abc");

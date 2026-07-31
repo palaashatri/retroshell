@@ -141,8 +141,8 @@ pub struct ServerInformation {
 impl Default for ServerInformation {
     fn default() -> Self {
         Self {
-            name: "RetroShell".to_string(),
-            vendor: "RetroShell".to_string(),
+            name: "SLOPOS-I".to_string(),
+            vendor: "SLOPOS-I".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             spec_version: "1.2".to_string(),
         }
@@ -708,7 +708,7 @@ mod tests {
         let caps = state.get_capabilities();
         assert!(caps.contains(&"body"));
         let info = state.get_server_information();
-        assert_eq!(info.name, "RetroShell");
+        assert_eq!(info.name, "SLOPOS-I");
         assert_eq!(info.spec_version, "1.2");
     }
 

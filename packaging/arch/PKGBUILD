@@ -1,10 +1,10 @@
-# Maintainer: RetroShell Contributors
-pkgname=retroshell
+# Maintainer: SLOPOS-I Contributors
+pkgname=slopos-i
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="RetroShell: a classic-Mac-styled Linux desktop environment in Rust"
+pkgdesc="SLOPOS-I: a classic-Mac-styled Linux desktop environment in Rust"
 arch=('x86_64' 'aarch64')
-url="https://github.com/retroshell/retroshell"
+url="https://github.com/slopos-i/slopos-i"
 license=('MIT')
 depends=(
   wayland
@@ -43,10 +43,10 @@ optdepends=(
   'greetd: for session greeter'
   'tuigreet: TUI greeter for greetd'
 )
-provides=('retroshell')
-conflicts=('retroshell')
+provides=('slopos-i')
+conflicts=('slopos-i')
 
-source=("$pkgname-$pkgver.tar.gz::https://github.com/retroshell/retroshell/archive/refs/tags/v$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/slopos-i/slopos-i/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 build() {
@@ -58,19 +58,19 @@ package() {
   cd "$srcdir/$pkgname-$pkgver"
 
   # Install binaries
-  install -Dm755 target/release/retro-compositor "$pkgdir/usr/bin/retro-compositor"
-  install -Dm755 target/release/retro-shell "$pkgdir/usr/bin/retro-shell"
+  install -Dm755 target/release/slopos-compositor "$pkgdir/usr/bin/slopos-compositor"
+  install -Dm755 target/release/slopos-shell "$pkgdir/usr/bin/slopos-shell"
   install -Dm755 target/release/finder "$pkgdir/usr/bin/finder"
   install -Dm755 target/release/settings "$pkgdir/usr/bin/settings"
   install -Dm755 target/release/textedit "$pkgdir/usr/bin/textedit"
   install -Dm755 target/release/terminal "$pkgdir/usr/bin/terminal"
   install -Dm755 target/release/appstore "$pkgdir/usr/bin/appstore"
-  install -Dm755 scripts/start-retroshell "$pkgdir/usr/bin/start-retroshell"
+  install -Dm755 scripts/start-slopos-i "$pkgdir/usr/bin/start-slopos-i"
 
   # Install session files
-  install -Dm644 packaging/retroshell.desktop "$pkgdir/usr/share/xsessions/retroshell.desktop"
-  install -Dm644 packaging/retroshell-wayland.desktop "$pkgdir/usr/share/wayland-sessions/retroshell.desktop"
-  install -Dm644 packaging/retroshell.service "$pkgdir/usr/lib/systemd/user/retroshell.service"
+  install -Dm644 packaging/slopos-i.desktop "$pkgdir/usr/share/xsessions/slopos-i.desktop"
+  install -Dm644 packaging/slopos-i-wayland.desktop "$pkgdir/usr/share/wayland-sessions/slopos-i.desktop"
+  install -Dm644 packaging/slopos-i.service "$pkgdir/usr/lib/systemd/user/slopos-i.service"
 
   # Install documentation
   install -Dm644 docs/PROGRAM.md "$pkgdir/usr/share/doc/$pkgname/PROGRAM.md"

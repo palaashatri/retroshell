@@ -112,7 +112,7 @@ pub use menu_server::{
 };
 pub use mime_open::{
     first_party_binary_for_app_id, mime_from_path, open_plan, open_plan_for_file_uri,
-    parse_desktop_exec, path_from_file_uri, seed_retroshell_defaults, spawn_argv, DesktopAppEntry,
+    parse_desktop_exec, path_from_file_uri, seed_slopos_defaults, spawn_argv, DesktopAppEntry,
     MimeOpenRegistry, OpenPlan,
 };
 pub use network_connect::{
@@ -197,21 +197,21 @@ pub use window_rules::{
 pub use workspace_manager::{WorkspaceManager, COMPOSITOR_WORKSPACE_COUNT, SHELL_DESKTOP_COUNT};
 
 use parking_lot::RwLock;
-use retro_kit::button::Button;
-use retro_kit::dispatch::{for_each_widget_mut, hit_test};
-use retro_kit::event::MouseButton;
-use retro_kit::icon_view::{IconItem, IconView};
-use retro_kit::label::Label;
-use retro_kit::layout::LayoutView;
-use retro_kit::list_view::ListView;
-use retro_kit::menu::{Menu, MenuItemKind};
-use retro_kit::menu_bar::MenuBar;
-use retro_kit::text_field::TextField;
-use retro_kit::theme::ThemeContext;
-use retro_kit::window::Window;
-use retro_kit::workspace_grid_view::WorkspaceGridView;
-use retro_kit::PointerDispatcher;
-use retro_kit::{
+use slopos_kit::button::Button;
+use slopos_kit::dispatch::{for_each_widget_mut, hit_test};
+use slopos_kit::event::MouseButton;
+use slopos_kit::icon_view::{IconItem, IconView};
+use slopos_kit::label::Label;
+use slopos_kit::layout::LayoutView;
+use slopos_kit::list_view::ListView;
+use slopos_kit::menu::{Menu, MenuItemKind};
+use slopos_kit::menu_bar::MenuBar;
+use slopos_kit::text_field::TextField;
+use slopos_kit::theme::ThemeContext;
+use slopos_kit::window::Window;
+use slopos_kit::workspace_grid_view::WorkspaceGridView;
+use slopos_kit::PointerDispatcher;
+use slopos_kit::{
     DockView, Event, EventResult, Layout, LayoutConstraint, Point, Rect, Size, Widget, WidgetState,
 };
 use std::fs;
@@ -235,7 +235,7 @@ pub enum ShellError {
     Menu(String),
 }
 
-pub struct RetroShell {
+pub struct SloposI {
     pub menu_server: Arc<RwLock<MenuServer>>,
     pub window_manager: Arc<RwLock<WindowManager>>,
     pub desktop_manager: Arc<RwLock<DesktopManager>>,
@@ -248,13 +248,13 @@ pub struct RetroShell {
     pub application_registry: Arc<RwLock<ApplicationRegistry>>,
 }
 
-impl Default for RetroShell {
+impl Default for SloposI {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl RetroShell {
+impl SloposI {
     pub fn new() -> Self {
         Self {
             menu_server: Arc::new(RwLock::new(MenuServer::new())),
@@ -307,7 +307,7 @@ impl RetroShell {
             shell.menu_server.write().apply_locale_labels(&prefs);
             tracing::info!(locale = %prefs.locale.tag(), "shell menu locale applied");
         }
-        // Multi-monitor arrange: plan + live EmitLayoutEnv (RETROSHELL_OUTPUTS_LAYOUT).
+        // Multi-monitor arrange: plan + live EmitLayoutEnv (SLOPOS_OUTPUTS_LAYOUT).
         apply_display_config_from_settings();
         // Best-effort FreeDesktop Notifications on the session bus (Linux).
         // Failure is non-fatal: pure NotificationCenter still works in-process.
@@ -323,9 +323,9 @@ impl RetroShell {
     ///
     /// Call after `WAYLAND_DISPLAY` is set (compositor/labwc running). Non-fatal.
     pub(crate) fn attach_wayland_session_protocols(desktop: &mut ShellDesktop) {
-        // When RETROSHELL_LAYER_SHELL_CHROME is set, `layer_desktop` owns exclusive
+        // When SLOPOS_LAYER_SHELL_CHROME is set, `layer_desktop` owns exclusive
         // Top/Bottom/Background surfaces. The gray PoC bind path is gone.
-        if std::env::var_os("RETROSHELL_LAYER_SHELL_CHROME").is_some() {
+        if std::env::var_os("SLOPOS_LAYER_SHELL_CHROME").is_some() {
             tracing::debug!("layer_desktop owns exclusive chrome surfaces");
             desktop.layer_shell_bound = true;
         } else {
@@ -342,9 +342,9 @@ impl RetroShell {
     pub fn run(&self) -> Result<()> {
         let (out_w, out_h) = session_output_size();
 
-        // Branch: if RETROSHELL_LAYER_SHELL_CHROME is set, use wlr-layer-shell background surface
+        // Branch: if SLOPOS_LAYER_SHELL_CHROME is set, use wlr-layer-shell background surface
         #[cfg(target_os = "linux")]
-        if std::env::var_os("RETROSHELL_LAYER_SHELL_CHROME").is_some() {
+        if std::env::var_os("SLOPOS_LAYER_SHELL_CHROME").is_some() {
             let content = Box::new(ShellDesktop::new(
                 self.menu_server.clone(),
                 self.launch_services.clone(),
@@ -359,7 +359,7 @@ impl RetroShell {
         }
 
         // Otherwise: use the default winit xdg-toplevel path
-        let mut app = retro_sdk::Application::new("RetroShell", "com.retro.shell");
+        let mut app = slopos_sdk::Application::new("SLOPOS-I", "com.slopos.shell");
         app.set_initial_size(Size::new(out_w as f32, out_h as f32));
 
         let desktop_view = ShellDesktop::new(
@@ -372,7 +372,7 @@ impl RetroShell {
             self.session_manager.clone(),
         );
 
-        let mut window = Window::new("RetroShell Desktop");
+        let mut window = Window::new("SLOPOS-I Desktop");
         window.set_content(Box::new(desktop_view));
         app.set_main_window(window);
         app.run();
@@ -433,7 +433,7 @@ struct ShellDesktop {
     idle_config: IdleConfig,
     /// Portal / media idle inhibit tokens.
     idle_inhibit: IdleInhibitState,
-    /// MIME open registry (seeded with RetroShell defaults).
+    /// MIME open registry (seeded with SLOPOS-I defaults).
     mime_registry: MimeOpenRegistry,
     /// When false, file open records [`Self::last_mime_open`] only (unit tests).
     mime_open_spawn: bool,
@@ -661,7 +661,7 @@ impl ShellDesktop {
             idle_inhibit: IdleInhibitState::new(),
             mime_registry: {
                 let mut reg = MimeOpenRegistry::new();
-                seed_retroshell_defaults(&mut reg);
+                seed_slopos_defaults(&mut reg);
                 reg
             },
             mime_open_spawn: true,
@@ -674,7 +674,7 @@ impl ShellDesktop {
             spotlight_ui: spotlight_ui::SpotlightUI::new(),
         };
         // Map layer-shell chrome + sync foreign-toplevel list when a compositor is live.
-        RetroShell::attach_wayland_session_protocols(&mut shell);
+        SloposI::attach_wayland_session_protocols(&mut shell);
         shell.open_finder_window();
         shell
     }
@@ -739,7 +739,7 @@ impl ShellDesktop {
 
     /// Drain kit AT-SPI pending DoAction queue into real shell handlers.
     fn drain_a11y_pending_actions(&mut self) {
-        let pending = retro_kit::drain_pending_actions();
+        let pending = slopos_kit::drain_pending_actions();
         for action in pending {
             let plan = resolve_pending_invoke(
                 &action.path,
@@ -770,8 +770,8 @@ impl ShellDesktop {
     fn dispatch_a11y_invoke(&mut self, invoke_id: &str) {
         match classify_a11y_invoke(invoke_id) {
             A11yDispatchTarget::ChromeMenuActivate => {
-                // Open the system/Retro menu (index 0). Prefer title "Retro" when present.
-                if let Some(idx) = self.menu_bar.menus.iter().position(|m| m.title == "Retro") {
+                // Open the system/SLOPOS menu (index 0). Prefer title "SLOPOS" when present.
+                if let Some(idx) = self.menu_bar.menus.iter().position(|m| m.title == "SLOPOS") {
                     let _ = self.menu_bar.open_menu_at(idx);
                 } else {
                     let _ = self.menu_bar.open_first_menu();
@@ -863,7 +863,7 @@ impl ShellDesktop {
                 let bundle_id = self
                     .launch_services
                     .read()
-                    .bundle_for_id("com.retro.finder")
+                    .bundle_for_id("com.slopos.finder")
                     .map(|bundle| bundle.bundle_id.clone());
                 if let Some(bundle_id) = bundle_id {
                     self.launch_external_app(&bundle_id);
@@ -884,7 +884,7 @@ impl ShellDesktop {
 
     fn content_bounds(&self) -> Rect {
         // Prefer protocol chrome exclusive zones (menu bar top / dock bottom).
-        // HiDPI: scale insets when RETROSHELL_OUTPUT_SCALE / SHELL_SCALE > 1.
+        // HiDPI: scale insets when SLOPOS_OUTPUT_SCALE / SHELL_SCALE > 1.
         let scale = detect_shell_scale_from_env();
         let menu_height = self
             .chrome
@@ -925,7 +925,7 @@ impl ShellDesktop {
     }
 
     fn open_finder_window(&mut self) -> Uuid {
-        self.open_folder_window("Retro HD", PathBuf::from("/"))
+        self.open_folder_window("SLOPOS HD", PathBuf::from("/"))
     }
 
     fn active_workspace(&self) -> usize {
@@ -941,7 +941,7 @@ impl ShellDesktop {
         let id =
             self.window_manager
                 .write()
-                .create_window("com.retro.finder", window.title(), rect);
+                .create_window("com.slopos.finder", window.title(), rect);
         self.window_manager.write().assign_workspace(id, workspace);
         self.windows.push(ShellWindow {
             id,
@@ -977,7 +977,7 @@ impl ShellDesktop {
         let id = self
             .window_manager
             .write()
-            .create_window("com.retro.shell", window.title(), rect);
+            .create_window("com.slopos.shell", window.title(), rect);
         self.window_manager.write().assign_workspace(id, workspace);
         self.windows.push(ShellWindow {
             id,
@@ -1168,13 +1168,13 @@ impl ShellDesktop {
                 }
             }
             spotlight::SearchResult::Setting { .. } => {
-                self.launch_external_app("com.retro.settings");
+                self.launch_external_app("com.slopos.settings");
             }
         }
     }
 
     fn refresh_menu_manifests(&mut self) {
-        let Some(dir) = retro_sdk::menu_manifest_dir() else {
+        let Some(dir) = slopos_sdk::menu_manifest_dir() else {
             return;
         };
         if let Err(err) = self.menu_server.write().load_menu_manifests_from_dir(dir) {
@@ -1182,15 +1182,15 @@ impl ShellDesktop {
         }
     }
 
-    /// Map compositor foreign-toplevel `app_id` to a RetroShell bundle id.
+    /// Map compositor foreign-toplevel `app_id` to a SLOPOS-I bundle id.
     fn bundle_id_for_foreign_app_id(app_id: &str) -> Option<&'static str> {
         let id = app_id.trim().to_ascii_lowercase();
         match id.as_str() {
-            "finder" => Some("com.retro.finder"),
-            "settings" => Some("com.retro.settings"),
-            "terminal" => Some("com.retro.terminal"),
-            "textedit" => Some("com.retro.textedit"),
-            "appstore" => Some("com.retro.appstore"),
+            "finder" => Some("com.slopos.finder"),
+            "settings" => Some("com.slopos.settings"),
+            "terminal" => Some("com.slopos.terminal"),
+            "textedit" => Some("com.slopos.textedit"),
+            "appstore" => Some("com.slopos.appstore"),
             _ => None,
         }
     }
@@ -1212,7 +1212,7 @@ impl ShellDesktop {
         });
 
         if let Some(app_id) = active_internal {
-            if app_id != "com.retro.finder" {
+            if app_id != "com.slopos.finder" {
                 return;
             }
         }
@@ -1326,7 +1326,7 @@ impl ShellDesktop {
         let id = self
             .window_manager
             .write()
-            .create_window("com.retro.shell", window.title(), rect);
+            .create_window("com.slopos.shell", window.title(), rect);
         self.window_manager.write().assign_workspace(id, workspace);
         self.windows.push(ShellWindow {
             id,
@@ -1534,7 +1534,7 @@ impl ShellDesktop {
 
             for label in clicked_buttons {
                 match (title.as_str(), label.as_str()) {
-                    ("Force Quit", "Cancel") | ("About RetroShell", "OK") => {
+                    ("Force Quit", "Cancel") | ("About SLOPOS-I", "OK") => {
                         actions.push(WindowAction::Close(id));
                     }
                     ("Force Quit", "Force Quit") => {
@@ -1641,7 +1641,7 @@ impl ShellDesktop {
                         );
                         self.last_error = Some(msg.clone());
                         self.record_notification(
-                            "com.retro.shell",
+                            "com.slopos.shell",
                             "Open Failed",
                             &msg,
                             NotificationPriority::Normal,
@@ -1654,7 +1654,7 @@ impl ShellDesktop {
                 self.last_mime_open = None;
                 self.last_error = Some(err.clone());
                 self.record_notification(
-                    "com.retro.shell",
+                    "com.slopos.shell",
                     "No Application",
                     &format!("{}: {err}", path.display()),
                     NotificationPriority::Normal,
@@ -1720,9 +1720,9 @@ impl ShellDesktop {
             "shell.open_computer" => {
                 self.open_folder_window("Hard Disk", PathBuf::from("/"));
             }
-            "shell.open_finder" => self.launch_external_app("com.retro.finder"),
-            "shell.settings" => self.launch_external_app("com.retro.settings"),
-            "shell.software_catalog" => self.launch_external_app("com.retro.appstore"),
+            "shell.open_finder" => self.launch_external_app("com.slopos.finder"),
+            "shell.settings" => self.launch_external_app("com.slopos.settings"),
+            "shell.software_catalog" => self.launch_external_app("com.slopos.appstore"),
             "shell.about" => {
                 self.open_about_window();
             }
@@ -1770,7 +1770,7 @@ impl ShellDesktop {
                 match result {
                     Ok(path) => {
                         self.record_notification(
-                            "com.retro.shell",
+                            "com.slopos.shell",
                             "Screenshot Saved",
                             &format!("Saved to {}", path.display()),
                             NotificationPriority::Normal,
@@ -1778,7 +1778,7 @@ impl ShellDesktop {
                     }
                     Err(err) => {
                         self.record_notification(
-                            "com.retro.shell",
+                            "com.slopos.shell",
                             "Screenshot Failed",
                             &err.to_string(),
                             NotificationPriority::High,
@@ -1789,7 +1789,7 @@ impl ShellDesktop {
             "shell.start_recording" => match capture::start_recording() {
                 Ok(path) => {
                     self.record_notification(
-                        "com.retro.shell",
+                        "com.slopos.shell",
                         "Screen Recording",
                         &format!("Recording to {}", path.display()),
                         NotificationPriority::Normal,
@@ -1797,7 +1797,7 @@ impl ShellDesktop {
                 }
                 Err(err) => {
                     self.record_notification(
-                        "com.retro.shell",
+                        "com.slopos.shell",
                         "Recording Failed",
                         &err.to_string(),
                         NotificationPriority::High,
@@ -1807,7 +1807,7 @@ impl ShellDesktop {
             "shell.stop_recording" => match capture::stop_recording() {
                 Ok(path) => {
                     self.record_notification(
-                        "com.retro.shell",
+                        "com.slopos.shell",
                         "Recording Saved",
                         &format!("Saved to {}", path.display()),
                         NotificationPriority::Normal,
@@ -1815,7 +1815,7 @@ impl ShellDesktop {
                 }
                 Err(err) => {
                     self.record_notification(
-                        "com.retro.shell",
+                        "com.slopos.shell",
                         "Stop Recording Failed",
                         &err.to_string(),
                         NotificationPriority::High,
@@ -1914,7 +1914,7 @@ impl ShellDesktop {
                         tracing::info!(%summary, "network connect spawned");
                         self.last_network_connect = Some(Ok(summary.clone()));
                         self.record_notification(
-                            "com.retro.shell",
+                            "com.slopos.shell",
                             "Network",
                             &format!("Connecting: {}", req.ssid),
                             NotificationPriority::Normal,
@@ -1926,7 +1926,7 @@ impl ShellDesktop {
                         tracing::warn!(%err, "network connect spawn failed");
                         self.last_network_connect = Some(Err(err.clone()));
                         self.record_notification(
-                            "com.retro.shell",
+                            "com.slopos.shell",
                             "Network Connect Failed",
                             &err,
                             NotificationPriority::High,
@@ -1937,7 +1937,7 @@ impl ShellDesktop {
             Err(err) => {
                 self.last_network_connect = Some(Err(err.clone()));
                 self.record_notification(
-                    "com.retro.shell",
+                    "com.slopos.shell",
                     "Network Connect Invalid",
                     &err,
                     NotificationPriority::High,
@@ -1946,22 +1946,22 @@ impl ShellDesktop {
         }
     }
 
-    /// Menu action: connect using `RETROSHELL_WIFI_SSID` (+ optional password env).
+    /// Menu action: connect using `SLOPOS_WIFI_SSID` (+ optional password env).
     fn handle_network_connect_menu(&mut self) {
-        let ssid = std::env::var("RETROSHELL_WIFI_SSID").unwrap_or_default();
+        let ssid = std::env::var("SLOPOS_WIFI_SSID").unwrap_or_default();
         if ssid.trim().is_empty() {
             self.open_shell_status_window(
                 "Network Connect",
                 [
-                    "Set RETROSHELL_WIFI_SSID to connect from the menu.".to_string(),
-                    "Optional: RETROSHELL_WIFI_PASSWORD.".to_string(),
+                    "Set SLOPOS_WIFI_SSID to connect from the menu.".to_string(),
+                    "Optional: SLOPOS_WIFI_PASSWORD.".to_string(),
                     "API: ShellDesktop::request_network_connect(NmConnectRequest).".to_string(),
                 ],
             );
             return;
         }
         let mut req = NmConnectRequest::new(ssid.trim());
-        if let Ok(pw) = std::env::var("RETROSHELL_WIFI_PASSWORD") {
+        if let Ok(pw) = std::env::var("SLOPOS_WIFI_PASSWORD") {
             if !pw.is_empty() {
                 req = req.with_password(pw);
             }
@@ -1973,7 +1973,7 @@ impl ShellDesktop {
                 [
                     format!(
                         "SSID: {}",
-                        std::env::var("RETROSHELL_WIFI_SSID").unwrap_or_default()
+                        std::env::var("SLOPOS_WIFI_SSID").unwrap_or_default()
                     ),
                     summary.clone(),
                     "Best-effort nmcli spawn (association is asynchronous).".to_string(),
@@ -2006,7 +2006,7 @@ impl ShellDesktop {
         }
     }
 
-    /// If the App Store left `~/Applications/.retroshell-rescan`, rescan `.app` bundles.
+    /// If the App Store left `~/Applications/.slopos-rescan`, rescan `.app` bundles.
     fn maybe_rescan_applications(&mut self) {
         let home = match std::env::var("HOME") {
             Ok(h) if !h.is_empty() => h,
@@ -2014,7 +2014,7 @@ impl ShellDesktop {
         };
         let marker = PathBuf::from(&home)
             .join("Applications")
-            .join(".retroshell-rescan");
+            .join(".slopos-rescan");
         if !marker.is_file() {
             return;
         }
@@ -2087,9 +2087,9 @@ impl ShellDesktop {
                 self.lock_error_message = None;
             } else {
                 self.notification_center.write().post(
-                    "com.retro.shell",
+                    "com.slopos.shell",
                     "Lock Password Not Set",
-                    "Configure RETROSHELL_LOCK_PASSWORD env var or lock_password in ~/.config/retroshell/settings.conf",
+                    "Configure SLOPOS_LOCK_PASSWORD env var or lock_password in ~/.config/slopos-i/settings.conf",
                     NotificationPriority::High,
                 );
             }
@@ -2110,7 +2110,7 @@ impl ShellDesktop {
                 {
                     Ok(_) => {
                         self.record_notification(
-                            "com.retro.shell",
+                            "com.slopos.shell",
                             "Session",
                             &format!("Started: {}", argv.join(" ")),
                             NotificationPriority::Normal,
@@ -2118,7 +2118,7 @@ impl ShellDesktop {
                     }
                     Err(err) => {
                         self.record_notification(
-                            "com.retro.shell",
+                            "com.slopos.shell",
                             "Session Action Failed",
                             &format!(
                                 "{} ({err})",
@@ -2196,7 +2196,7 @@ impl ShellDesktop {
             } else {
                 vec![
                     format!("Name: {sel}"),
-                    "Kind: RetroShell window".to_string(),
+                    "Kind: SLOPOS-I window".to_string(),
                     "Location: Internal shell workspace".to_string(),
                 ]
             }
@@ -2205,7 +2205,7 @@ impl ShellDesktop {
         } else {
             vec![
                 format!("Name: {title}"),
-                "Kind: RetroShell window".to_string(),
+                "Kind: SLOPOS-I window".to_string(),
                 "Location: Internal shell workspace".to_string(),
             ]
         };
@@ -2370,7 +2370,7 @@ impl ShellDesktop {
 
     fn open_about_window(&mut self) {
         for window in &self.windows {
-            if window.window.title() == "About RetroShell" {
+            if window.window.title() == "About SLOPOS-I" {
                 self.focus_window(window.id);
                 return;
             }
@@ -2403,7 +2403,7 @@ impl ShellDesktop {
         let network_line = network_manager::get_network_status().summary_line();
 
         let mut layout = Layout::vertical(12.0);
-        layout.add(Box::new(Label::new("          RetroShell   ")));
+        layout.add(Box::new(Label::new("          SLOPOS-I   ")));
         layout.add(Box::new(Label::new(
             "----------------------------------------",
         )));
@@ -2429,7 +2429,7 @@ impl ShellDesktop {
         layout.add(Box::new(LayoutView::new(btn_layout)));
 
         let rect = fit_dialog_rect(&mut layout, rect, self.content_bounds());
-        let mut window = Window::new("About RetroShell");
+        let mut window = Window::new("About SLOPOS-I");
         window.set_content(Box::new(LayoutView::new(layout)));
         window.set_rect(rect);
 
@@ -2437,7 +2437,7 @@ impl ShellDesktop {
         let id = self
             .window_manager
             .write()
-            .create_window("com.retro.shell", window.title(), rect);
+            .create_window("com.slopos.shell", window.title(), rect);
         self.window_manager.write().assign_workspace(id, workspace);
         self.windows.push(ShellWindow {
             id,
@@ -2522,7 +2522,7 @@ impl ShellDesktop {
 
         let mut items = Vec::new();
         for w in &self.windows {
-            if w.window.title() != "RetroShell Desktop" && w.window.title() != "Force Quit" {
+            if w.window.title() != "SLOPOS-I Desktop" && w.window.title() != "Force Quit" {
                 items.push(format!("window: {}", w.window.title()));
             }
         }
@@ -2558,7 +2558,7 @@ impl ShellDesktop {
         let id = self
             .window_manager
             .write()
-            .create_window("com.retro.shell", window.title(), rect);
+            .create_window("com.slopos.shell", window.title(), rect);
         self.window_manager.write().assign_workspace(id, workspace);
         self.windows.push(ShellWindow {
             id,
@@ -2641,7 +2641,7 @@ impl ShellDesktop {
         let Some(ref path) = self.windows[index].folder_path.clone() else {
             return;
         };
-        let mut files = retro_kit::icon_view::IconView::new();
+        let mut files = slopos_kit::icon_view::IconView::new();
         files.icon_size = 76.0;
         files.spacing = 10.0;
         files.items = folder_items_for_path(path);
@@ -2810,14 +2810,14 @@ fn build_folder_window(title: &str, path: &PathBuf) -> Window {
 }
 
 fn settings_conf_path() -> PathBuf {
-    std::env::var_os("RETROSHELL_CONFIG_DIR")
+    std::env::var_os("SLOPOS_CONFIG_DIR")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME")
                 .map(PathBuf::from)
-                .map(|home| home.join(".config/retroshell"))
+                .map(|home| home.join(".config/slopos-i"))
         })
-        .unwrap_or_else(|| PathBuf::from("/tmp/retroshell"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/slopos-i"))
         .join("settings.conf")
 }
 
@@ -2851,7 +2851,7 @@ fn apply_display_config_from_settings() {
 
 fn get_lock_password() -> Option<String> {
     // First, check environment variable
-    if let Ok(password) = std::env::var("RETROSHELL_LOCK_PASSWORD") {
+    if let Ok(password) = std::env::var("SLOPOS_LOCK_PASSWORD") {
         let password = password.trim();
         if !password.is_empty() {
             return Some(password.to_string());
@@ -2886,7 +2886,7 @@ fn shell_locale_prefs() -> LocalePrefs {
 fn build_lock_screen_window() -> Window {
     let locale = shell_locale_prefs();
     let mut layout = Layout::vertical(24.0);
-    layout.add(Box::new(Label::new("RetroShell")));
+    layout.add(Box::new(Label::new("SLOPOS-I")));
     layout.add(Box::new(Label::new(tr("lock.prompt", &locale.locale))));
     let mut window = Window::new(tr("menu.lock_screen", &locale.locale));
     window.set_content(Box::new(LayoutView::new(layout)));
@@ -3270,7 +3270,7 @@ impl Widget for ShellDesktop {
         if self.locked {
             match event {
                 Event::KeyDown {
-                    key: retro_kit::event::KeyCode::Escape,
+                    key: slopos_kit::event::KeyCode::Escape,
                     ..
                 } => {
                     // Escape key: clear the field and error
@@ -3279,7 +3279,7 @@ impl Widget for ShellDesktop {
                     return EventResult::Handled;
                 }
                 Event::KeyDown {
-                    key: retro_kit::event::KeyCode::Enter,
+                    key: slopos_kit::event::KeyCode::Enter,
                     ..
                 } => {
                     // Enter key: attempt to unlock (never unlock on empty / wrong / non-Enter keys)
@@ -3301,7 +3301,7 @@ impl Widget for ShellDesktop {
                 }
                 Event::Char { .. }
                 | Event::KeyDown {
-                    key: retro_kit::event::KeyCode::Backspace,
+                    key: slopos_kit::event::KeyCode::Backspace,
                     ..
                 } => {
                     // Pass character/backspace events to the password field
@@ -3319,7 +3319,7 @@ impl Widget for ShellDesktop {
         // Spotlight overlay (Super+Space) — modal layer that intercepts before menu bar.
         // When visible, all events route to the overlay; when invisible, events pass through.
         if let Event::KeyDown {
-            key: retro_kit::event::KeyCode::Space,
+            key: slopos_kit::event::KeyCode::Space,
             modifiers,
         } = event
         {
@@ -3345,7 +3345,7 @@ impl Widget for ShellDesktop {
         // If Spotlight is visible, route events to it
         if self.spotlight_ui.is_visible() {
             if let Event::KeyDown { key, modifiers } = event {
-                if *key == retro_kit::event::KeyCode::Enter {
+                if *key == slopos_kit::event::KeyCode::Enter {
                     if let Some(selected) = self.spotlight_ui.selected_result() {
                         let selected_clone = selected.clone();
                         self.activate_spotlight_result(&selected_clone);
@@ -3355,8 +3355,8 @@ impl Widget for ShellDesktop {
 
                 let result = self.spotlight_ui.handle_overlay_key(*key, modifiers);
                 if matches!(result, EventResult::Handled) {
-                    if *key != retro_kit::event::KeyCode::Escape
-                        && *key != retro_kit::event::KeyCode::Enter
+                    if *key != slopos_kit::event::KeyCode::Escape
+                        && *key != slopos_kit::event::KeyCode::Enter
                     {
                         let apps = self
                             .launch_services
@@ -3393,14 +3393,14 @@ impl Widget for ShellDesktop {
         if let Event::KeyDown { key, modifiers } = event {
             // Unified keyboard-only nav policy (Tab / Shift+Tab / Escape / Enter / lock / workspaces).
             let key_name = match key {
-                retro_kit::event::KeyCode::Tab => "tab",
-                retro_kit::event::KeyCode::Escape => "escape",
-                retro_kit::event::KeyCode::Enter => "enter",
-                retro_kit::event::KeyCode::Space => "space",
-                retro_kit::event::KeyCode::L => "l",
-                retro_kit::event::KeyCode::Q => "q",
-                retro_kit::event::KeyCode::LeftBracket => "[",
-                retro_kit::event::KeyCode::RightBracket => "]",
+                slopos_kit::event::KeyCode::Tab => "tab",
+                slopos_kit::event::KeyCode::Escape => "escape",
+                slopos_kit::event::KeyCode::Enter => "enter",
+                slopos_kit::event::KeyCode::Space => "space",
+                slopos_kit::event::KeyCode::L => "l",
+                slopos_kit::event::KeyCode::Q => "q",
+                slopos_kit::event::KeyCode::LeftBracket => "[",
+                slopos_kit::event::KeyCode::RightBracket => "]",
                 _ => "",
             };
             if !key_name.is_empty() {
@@ -3475,13 +3475,13 @@ impl Widget for ShellDesktop {
                 }
             }
             // Cmd+Tab: cycle focus through non-minimized windows on the active workspace
-            if modifiers.meta && *key == retro_kit::event::KeyCode::Tab {
+            if modifiers.meta && *key == slopos_kit::event::KeyCode::Tab {
                 self.focus_next_window();
                 return EventResult::Handled;
             }
 
             // Cmd+W: close the front window on the active workspace
-            if modifiers.meta && *key == retro_kit::event::KeyCode::W {
+            if modifiers.meta && *key == slopos_kit::event::KeyCode::W {
                 if let Some(id) = self.active_window_id() {
                     self.close_window(id);
                     return EventResult::Handled;
@@ -3610,9 +3610,9 @@ impl Widget for ShellDesktop {
         self.maybe_rescan_applications();
 
         // Visual QA hook: auto-open Spotlight with an optional query.
-        // Example: RETROSHELL_QA_SPOTLIGHT=vol
+        // Example: SLOPOS_QA_SPOTLIGHT=vol
         if !self.spotlight_ui.is_visible() {
-            if let Ok(query) = std::env::var("RETROSHELL_QA_SPOTLIGHT") {
+            if let Ok(query) = std::env::var("SLOPOS_QA_SPOTLIGHT") {
                 self.spotlight_ui.show();
                 for ch in query.chars() {
                     self.spotlight_ui.append_char(ch);
@@ -3628,7 +3628,7 @@ impl Widget for ShellDesktop {
                 let (w, h) = (self.rect().width.max(1280.0), self.rect().height.max(800.0));
                 self.spotlight_ui.layout_for_screen(w, h);
                 // Consume so we do not re-show every frame after Escape.
-                std::env::remove_var("RETROSHELL_QA_SPOTLIGHT");
+                std::env::remove_var("SLOPOS_QA_SPOTLIGHT");
             }
         }
 
@@ -3675,7 +3675,7 @@ impl Widget for ShellDesktop {
         if self.locked {
             let locale = shell_locale_prefs();
             let mut layout = Layout::vertical(12.0);
-            layout.add(Box::new(Label::new("RetroShell")));
+            layout.add(Box::new(Label::new("SLOPOS-I")));
             layout.add(Box::new(Label::new("")));
             layout.add(Box::new(Label::new(tr("lock.prompt", &locale.locale))));
 
@@ -3709,7 +3709,7 @@ impl Widget for ShellDesktop {
         let dock_read = self.dock.read();
         let mut dock_view_items = Vec::new();
         for item in &dock_read.items {
-            dock_view_items.push(retro_kit::dock_view::DockViewItem {
+            dock_view_items.push(slopos_kit::dock_view::DockViewItem {
                 label: item.label.clone(),
                 icon: item.icon.clone().unwrap_or_default(),
                 is_focused: item.state == crate::dock::AppState::Focused,
@@ -3865,7 +3865,7 @@ impl Widget for ShellDesktop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use retro_kit::event::Modifiers;
+    use slopos_kit::event::Modifiers;
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -3877,7 +3877,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("retroshell_shell_folder_{unique}"));
+        let root = std::env::temp_dir().join(format!("slopos-i_shell_folder_{unique}"));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
@@ -4040,11 +4040,11 @@ mod tests {
             .map(|menu| menu.title.as_str())
             .collect::<Vec<_>>();
 
-        assert!(titles.contains(&"Retro"));
+        assert!(titles.contains(&"SLOPOS"));
         assert!(titles.contains(&"Finder"));
         assert_eq!(
             desktop.menu_server.read().active_app.as_deref(),
-            Some("com.retro.finder")
+            Some("com.slopos.finder")
         );
 
         let second_id = desktop.open_finder_window();
@@ -4062,10 +4062,10 @@ mod tests {
     #[test]
     fn shell_global_menu_switches_to_launched_sdk_app() {
         let _guard = MENU_MANIFEST_ENV_LOCK.lock().unwrap();
-        std::env::remove_var("RETROSHELL_MENU_MANIFEST_DIR");
+        std::env::remove_var("SLOPOS_MENU_MANIFEST_DIR");
         let (mut desktop, _) = test_desktop();
 
-        desktop.activate_app_menu("com.retro.textedit");
+        desktop.activate_app_menu("com.slopos.textedit");
 
         let titles = desktop
             .menu_bar
@@ -4075,7 +4075,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             desktop.menu_server.read().active_app.as_deref(),
-            Some("com.retro.textedit")
+            Some("com.slopos.textedit")
         );
         assert!(titles.contains(&"TextEdit"));
         assert!(titles.contains(&"File"));
@@ -4089,17 +4089,17 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("retroshell_menu_manifest_shell_{unique}"));
+        let dir = std::env::temp_dir().join(format!("slopos-i_menu_manifest_shell_{unique}"));
         fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("RETROSHELL_MENU_MANIFEST_DIR", &dir);
+        std::env::set_var("SLOPOS_MENU_MANIFEST_DIR", &dir);
 
-        let mut textedit_file = retro_kit::menu::Menu::new("File");
+        let mut textedit_file = slopos_kit::menu::Menu::new("File");
         textedit_file
             .add_action("Save As...")
-            .with_action("com.retro.textedit.file.save_as");
-        let manifest = retro_sdk::MenuManifest {
+            .with_action("com.slopos.textedit.file.save_as");
+        let manifest = slopos_sdk::MenuManifest {
             app_name: "TextEdit".to_string(),
-            bundle_id: "com.retro.textedit".to_string(),
+            bundle_id: "com.slopos.textedit".to_string(),
             menus: vec![textedit_file],
             updated_at_millis: 1,
         };
@@ -4110,11 +4110,11 @@ mod tests {
         .unwrap();
 
         let (mut desktop, _) = test_desktop();
-        desktop.activate_app_menu("com.retro.textedit");
+        desktop.activate_app_menu("com.slopos.textedit");
 
         assert_eq!(
             desktop.menu_server.read().active_app.as_deref(),
-            Some("com.retro.textedit")
+            Some("com.slopos.textedit")
         );
         assert_eq!(
             desktop
@@ -4125,11 +4125,11 @@ mod tests {
                 .unwrap()
                 .items[0]
                 .action_id,
-            "com.retro.textedit.file.save_as"
+            "com.slopos.textedit.file.save_as"
         );
 
         let _ = fs::remove_dir_all(&dir);
-        std::env::remove_var("RETROSHELL_MENU_MANIFEST_DIR");
+        std::env::remove_var("SLOPOS_MENU_MANIFEST_DIR");
     }
 
     #[test]
@@ -4139,17 +4139,17 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("retroshell_menu_action_shell_{unique}"));
+        let dir = std::env::temp_dir().join(format!("slopos-i_menu_action_shell_{unique}"));
         fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("RETROSHELL_MENU_MANIFEST_DIR", &dir);
+        std::env::set_var("SLOPOS_MENU_MANIFEST_DIR", &dir);
 
-        let mut textedit_file = retro_kit::menu::Menu::new("File");
+        let mut textedit_file = slopos_kit::menu::Menu::new("File");
         textedit_file
             .add_action("Save As...")
-            .with_action("com.retro.textedit.file.save_as");
-        let manifest = retro_sdk::MenuManifest {
+            .with_action("com.slopos.textedit.file.save_as");
+        let manifest = slopos_sdk::MenuManifest {
             app_name: "TextEdit".to_string(),
-            bundle_id: "com.retro.textedit".to_string(),
+            bundle_id: "com.slopos.textedit".to_string(),
             menus: vec![textedit_file],
             updated_at_millis: 1,
         };
@@ -4160,18 +4160,18 @@ mod tests {
         .unwrap();
 
         let (mut desktop, _) = test_desktop();
-        desktop.activate_app_menu("com.retro.textedit");
-        desktop.handle_menu_action("com.retro.textedit.file.save_as");
+        desktop.activate_app_menu("com.slopos.textedit");
+        desktop.handle_menu_action("com.slopos.textedit.file.save_as");
 
         let active = desktop.windows.last().expect("dispatch status window");
         assert_eq!(active.window.title(), "Application Menu Action");
         let lines = message_window_lines(active);
-        assert!(lines.contains(&"Application: com.retro.textedit".to_string()));
+        assert!(lines.contains(&"Application: com.slopos.textedit".to_string()));
         assert!(lines.contains(&"Action: Save As...".to_string()));
-        assert!(lines.contains(&"Identifier: com.retro.textedit.file.save_as".to_string()));
+        assert!(lines.contains(&"Identifier: com.slopos.textedit.file.save_as".to_string()));
 
         let _ = fs::remove_dir_all(&dir);
-        std::env::remove_var("RETROSHELL_MENU_MANIFEST_DIR");
+        std::env::remove_var("SLOPOS_MENU_MANIFEST_DIR");
     }
 
     #[test]
@@ -4273,7 +4273,7 @@ mod tests {
             .last_mime_open
             .as_ref()
             .expect("MIME open plan recorded");
-        assert_eq!(plan.app_id, "com.retro.textedit");
+        assert_eq!(plan.app_id, "com.slopos.textedit");
         assert_eq!(
             spawn_argv(plan),
             vec!["textedit".to_string(), note.to_string_lossy().into_owned()]
@@ -4387,11 +4387,11 @@ mod tests {
         desktop.handle_menu_action("shell.about");
 
         let active = desktop.windows.last().expect("about window");
-        assert_eq!(active.window.title(), "About RetroShell");
+        assert_eq!(active.window.title(), "About SLOPOS-I");
         assert_eq!(active.folder_path, None);
         assert_eq!(window_manager.read().active_window, Some(active.id));
         let lines = message_window_lines(active);
-        assert!(lines[0].contains("RetroShell"));
+        assert!(lines[0].contains("SLOPOS-I"));
         assert!(lines
             .iter()
             .any(|line| line.contains("Classic Desktop Environment")));
@@ -4402,7 +4402,7 @@ mod tests {
         let (mut desktop, _) = test_desktop();
 
         let id = desktop.record_notification(
-            "com.retro.textedit",
+            "com.slopos.textedit",
             "Document Saved",
             "note.txt was written to disk.",
             NotificationPriority::Normal,
@@ -4420,7 +4420,7 @@ mod tests {
             .any(|line| line.contains("notif-0 - Document Saved")));
         assert!(lines
             .iter()
-            .any(|line| line.contains("App: com.retro.textedit")));
+            .any(|line| line.contains("App: com.slopos.textedit")));
 
         desktop.handle_menu_action("shell.clear_notifications");
         assert!(desktop.notification_center.read().visible().is_empty());
@@ -4483,7 +4483,7 @@ mod tests {
             assert!(list
                 .items
                 .iter()
-                .any(|item| item == "window: Retro HD" || item.contains("Retro HD")));
+                .any(|item| item == "window: SLOPOS HD" || item.contains("SLOPOS HD")));
         } else {
             panic!("not vertical layout");
         }
@@ -4492,24 +4492,24 @@ mod tests {
     #[test]
     fn force_quit_apply_closes_listed_shell_window() {
         let (mut desktop, _) = test_desktop();
-        // test_desktop opens a Finder-style "Retro HD" window among others.
+        // test_desktop opens a Finder-style "SLOPOS HD" window among others.
         let before = desktop.windows.len();
         assert!(
             desktop
                 .windows
                 .iter()
-                .any(|w| w.window.title() == "Retro HD"),
-            "precondition: Retro HD window present"
+                .any(|w| w.window.title() == "SLOPOS HD"),
+            "precondition: SLOPOS HD window present"
         );
 
         // Drive the same path Force Quit button uses (shipped apply helper).
-        assert!(desktop.apply_force_quit_entry("window: Retro HD"));
+        assert!(desktop.apply_force_quit_entry("window: SLOPOS HD"));
         assert!(
             !desktop
                 .windows
                 .iter()
-                .any(|w| w.window.title() == "Retro HD"),
-            "Retro HD must be closed after force quit"
+                .any(|w| w.window.title() == "SLOPOS HD"),
+            "SLOPOS HD must be closed after force quit"
         );
         assert!(desktop.windows.len() < before);
     }
@@ -4520,7 +4520,7 @@ mod tests {
         desktop
             .session_clients
             .register(session_clients::ExternalClient {
-                bundle_id: "com.retro.finder".into(),
+                bundle_id: "com.slopos.finder".into(),
                 binary_name: "finder".into(),
                 pid: 424_242,
                 child: None,
@@ -4572,7 +4572,7 @@ mod tests {
         let result = desktop.handle_event(&Event::MouseDown {
             button: MouseButton::Left,
             point,
-            modifiers: retro_kit::event::Modifiers::NONE,
+            modifiers: slopos_kit::event::Modifiers::NONE,
         });
 
         assert!(matches!(result, EventResult::Handled));
@@ -4590,7 +4590,7 @@ mod tests {
         let result = desktop.handle_event(&Event::MouseDown {
             button: MouseButton::Left,
             point,
-            modifiers: retro_kit::event::Modifiers::NONE,
+            modifiers: slopos_kit::event::Modifiers::NONE,
         });
 
         assert!(matches!(result, EventResult::Handled));
@@ -4607,7 +4607,7 @@ mod tests {
         let result = desktop.handle_event(&Event::MouseDown {
             button: MouseButton::Left,
             point: restore_point,
-            modifiers: retro_kit::event::Modifiers::NONE,
+            modifiers: slopos_kit::event::Modifiers::NONE,
         });
 
         assert!(matches!(result, EventResult::Handled));
@@ -4629,7 +4629,7 @@ mod tests {
         let result = desktop.handle_event(&Event::MouseDown {
             button: MouseButton::Left,
             point,
-            modifiers: retro_kit::event::Modifiers::NONE,
+            modifiers: slopos_kit::event::Modifiers::NONE,
         });
 
         assert!(matches!(result, EventResult::Handled));
@@ -4646,7 +4646,7 @@ mod tests {
         let result = desktop.handle_event(&Event::MouseDown {
             button: MouseButton::Left,
             point: restore_point,
-            modifiers: retro_kit::event::Modifiers::NONE,
+            modifiers: slopos_kit::event::Modifiers::NONE,
         });
 
         assert!(matches!(result, EventResult::Handled));
@@ -4747,7 +4747,7 @@ mod tests {
         let (mut desktop, _) = test_desktop();
         desktop.handle_menu_action("shell.about");
         let about = desktop.windows.last().expect("about window");
-        assert_eq!(about.window.title(), "About RetroShell");
+        assert_eq!(about.window.title(), "About SLOPOS-I");
         let about_id = about.id;
         let ok = center(button_rect_in_window(about, "OK"));
 
@@ -4792,8 +4792,8 @@ mod tests {
     fn dock_item_press_launches_through_dispatch() {
         let (mut desktop, _) = test_desktop();
         desktop.dock.write().items.clear();
-        desktop.dock.write().add_item("com.retro.ghost", "Ghost");
-        desktop.dock_view.items = vec![retro_kit::dock_view::DockViewItem {
+        desktop.dock.write().add_item("com.slopos.ghost", "Ghost");
+        desktop.dock_view.items = vec![slopos_kit::dock_view::DockViewItem {
             label: "Ghost".to_string(),
             icon: String::new(),
             is_focused: false,
@@ -4893,7 +4893,7 @@ mod tests {
         let initial_count = desktop.windows.len();
 
         let result = desktop.handle_event(&Event::KeyDown {
-            key: retro_kit::event::KeyCode::N,
+            key: slopos_kit::event::KeyCode::N,
             modifiers: Modifiers {
                 shift: false,
                 control: false,
@@ -4906,7 +4906,7 @@ mod tests {
         assert_eq!(desktop.windows.len(), initial_count + 1);
         assert_eq!(
             desktop.menu_server.read().active_app.as_deref(),
-            Some("com.retro.finder")
+            Some("com.slopos.finder")
         );
     }
 
@@ -4916,7 +4916,7 @@ mod tests {
         let initial_count = desktop.windows.len();
 
         let result = desktop.handle_event(&Event::KeyDown {
-            key: retro_kit::event::KeyCode::W,
+            key: slopos_kit::event::KeyCode::W,
             modifiers: Modifiers {
                 shift: false,
                 control: false,
@@ -4945,7 +4945,7 @@ mod tests {
         let server = MenuServer::new();
         for menu in &server.menus {
             for item in &menu.items {
-                if matches!(item.kind, retro_kit::menu::MenuItemKind::Action) {
+                if matches!(item.kind, slopos_kit::menu::MenuItemKind::Action) {
                     assert!(
                         !item.action_id.is_empty(),
                         "{} > {} has no action id",
@@ -4995,12 +4995,12 @@ mod tests {
     #[test]
     fn lock_password_env_is_source_for_expected_secret() {
         let _lock = LOCK_PASSWORD_ENV_LOCK.lock().unwrap();
-        std::env::remove_var("RETROSHELL_LOCK_PASSWORD");
-        std::env::set_var("RETROSHELL_LOCK_PASSWORD", "env_secret");
+        std::env::remove_var("SLOPOS_LOCK_PASSWORD");
+        std::env::set_var("SLOPOS_LOCK_PASSWORD", "env_secret");
         let expected = get_lock_password().expect("env secret");
         assert!(verify_lock_password("env_secret", &expected));
         assert!(!verify_lock_password("other", &expected));
-        std::env::remove_var("RETROSHELL_LOCK_PASSWORD");
+        std::env::remove_var("SLOPOS_LOCK_PASSWORD");
     }
 
     #[test]
@@ -5037,8 +5037,8 @@ mod tests {
         }
         assert_eq!(desktop.lock_password_field.text(), "wrong");
         desktop.handle_event(&Event::KeyDown {
-            key: retro_kit::event::KeyCode::Enter,
-            modifiers: retro_kit::event::Modifiers::NONE,
+            key: slopos_kit::event::KeyCode::Enter,
+            modifiers: slopos_kit::event::Modifiers::NONE,
         });
         assert!(desktop.locked, "wrong password unlocked the screen");
         assert_eq!(desktop.lock_password_field.text(), "");
@@ -5049,8 +5049,8 @@ mod tests {
         }
         assert_eq!(desktop.lock_password_field.text(), "secret");
         desktop.handle_event(&Event::KeyDown {
-            key: retro_kit::event::KeyCode::Enter,
-            modifiers: retro_kit::event::Modifiers::NONE,
+            key: slopos_kit::event::KeyCode::Enter,
+            modifiers: slopos_kit::event::Modifiers::NONE,
         });
         assert!(!desktop.locked, "correct password did not unlock");
     }
@@ -5095,7 +5095,7 @@ mod tests {
         let (mut desktop, _) = test_desktop();
         assert!(desktop.menu_bar.open_menu.is_none());
         assert!(
-            desktop.menu_bar.menus.iter().any(|m| m.title == "Retro"),
+            desktop.menu_bar.menus.iter().any(|m| m.title == "SLOPOS"),
             "precondition: system Retro menu present"
         );
 
@@ -5104,7 +5104,7 @@ mod tests {
             .menu_bar
             .menus
             .iter()
-            .position(|m| m.title == "Retro")
+            .position(|m| m.title == "SLOPOS")
             .expect("Retro menu");
         assert_eq!(desktop.menu_bar.open_menu, Some(retro_idx));
 
@@ -5195,7 +5195,7 @@ mod tests {
         desktop.focus_window(first);
 
         let result = desktop.handle_event(&Event::KeyDown {
-            key: retro_kit::event::KeyCode::Enter,
+            key: slopos_kit::event::KeyCode::Enter,
             modifiers: Modifiers::NONE,
         });
         assert!(matches!(result, EventResult::Handled));
@@ -5277,7 +5277,7 @@ mod tests {
             .any(|item| item.action_id == "shell.network_connect"));
 
         let (mut desktop, _) = test_desktop();
-        // No RETROSHELL_WIFI_SSID → status window, no panic.
+        // No SLOPOS_WIFI_SSID → status window, no panic.
         desktop.handle_menu_action("shell.network_connect");
         assert!(desktop
             .windows
@@ -5329,8 +5329,8 @@ mod tests {
 
         // Super+Space shows overlay
         let result = desktop.handle_event(&Event::KeyDown {
-            key: retro_kit::event::KeyCode::Space,
-            modifiers: retro_kit::event::Modifiers {
+            key: slopos_kit::event::KeyCode::Space,
+            modifiers: slopos_kit::event::Modifiers {
                 shift: false,
                 control: false,
                 alt: false,
@@ -5346,8 +5346,8 @@ mod tests {
 
         // Super+Space hides overlay
         let result = desktop.handle_event(&Event::KeyDown {
-            key: retro_kit::event::KeyCode::Space,
-            modifiers: retro_kit::event::Modifiers {
+            key: slopos_kit::event::KeyCode::Space,
+            modifiers: slopos_kit::event::Modifiers {
                 shift: false,
                 control: false,
                 alt: false,
@@ -5394,8 +5394,8 @@ mod tests {
 
         // Press Escape
         let result = desktop.handle_event(&Event::KeyDown {
-            key: retro_kit::event::KeyCode::Escape,
-            modifiers: retro_kit::event::Modifiers::NONE,
+            key: slopos_kit::event::KeyCode::Escape,
+            modifiers: slopos_kit::event::Modifiers::NONE,
         });
 
         match result {
@@ -5419,8 +5419,8 @@ mod tests {
 
         // Arrow down
         let result = desktop.handle_event(&Event::KeyDown {
-            key: retro_kit::event::KeyCode::ArrowDown,
-            modifiers: retro_kit::event::Modifiers::NONE,
+            key: slopos_kit::event::KeyCode::ArrowDown,
+            modifiers: slopos_kit::event::Modifiers::NONE,
         });
 
         match result {
@@ -5468,8 +5468,8 @@ mod tests {
 
         // Press Enter (should activate selected result)
         let result = desktop.handle_event(&Event::KeyDown {
-            key: retro_kit::event::KeyCode::Enter,
-            modifiers: retro_kit::event::Modifiers::NONE,
+            key: slopos_kit::event::KeyCode::Enter,
+            modifiers: slopos_kit::event::Modifiers::NONE,
         });
 
         match result {

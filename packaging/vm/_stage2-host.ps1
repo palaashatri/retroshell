@@ -1,6 +1,6 @@
 # Stage 2 host orchestration — VBox keyboard + screenshots.
 param(
-    [string]$VmName = "retroshell-arch",
+    [string]$VmName = "slopos-i-arch",
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 )
 
@@ -76,8 +76,8 @@ Capture "stage2-button.png"
 # 2.3–2.5 — lock session
 Send-Scan @("e0", "5b", "26", "a6", "e0", "db")
 Start-Sleep -Seconds 6
-$lk = Invoke-Ssh "pgrep -xc retro-lock || echo 0"
-Write-Host "retro-lock after Super+L: $lk"
+$lk = Invoke-Ssh "pgrep -xc slopos-lock || echo 0"
+Write-Host "slopos-lock after Super+L: $lk"
 Capture "stage2-locked.png"
 
 # bypass attempt while locked
@@ -87,8 +87,8 @@ $f2 = Invoke-Ssh "pgrep -xc finder || echo 0"
 Write-Host "finder while locked: $f2"
 Capture "stage2-lock-nobypass.png"
 
-# 2.6 — unlock via retro-lock password
-Send-Text "retroshell"
+# 2.6 — unlock via slopos-lock password
+Send-Text "slopos-i"
 Start-Sleep -Milliseconds 300
 Send-Scan @("1c", "9c")
 Start-Sleep -Seconds 6

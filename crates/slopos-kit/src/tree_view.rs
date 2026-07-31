@@ -22,7 +22,7 @@ impl TreeNode {
     }
 }
 
-/// Pixel height of one visible row. Also the line-pitch `retro-sdk`'s
+/// Pixel height of one visible row. Also the line-pitch `slopos-sdk`'s
 /// `draw_tree_node` currently hardcodes; kept as a named constant here so a
 /// future edit can make the painter read `TreeRow::rect` instead of
 /// recomputing this same number.
@@ -233,7 +233,7 @@ mod tests {
         favorites.expanded = true;
 
         let mut locations = TreeNode::new("Locations");
-        locations.children.push(TreeNode::new("Retro HD"));
+        locations.children.push(TreeNode::new("SLOPOS HD"));
         locations.children.push(TreeNode::new("Network"));
         locations.expanded = true;
 
@@ -258,7 +258,7 @@ mod tests {
                 "Documents",
                 "Downloads",
                 "Locations",
-                "Retro HD",
+                "SLOPOS HD",
                 "Network",
             ]
         );
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn clicking_disclosure_area_toggles_expansion_without_selecting() {
         let mut root = TreeNode::new("Locations");
-        root.children.push(TreeNode::new("Retro HD"));
+        root.children.push(TreeNode::new("SLOPOS HD"));
         root.children.push(TreeNode::new("Network"));
         // starts collapsed
 

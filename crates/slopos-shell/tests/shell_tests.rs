@@ -1,9 +1,9 @@
-use retro_shell::notification_center::NotificationPriority;
-use retro_shell::*;
+use slopos_shell::notification_center::NotificationPriority;
+use slopos_shell::*;
 
 #[test]
 fn test_shell_startup() {
-    let shell = RetroShell::startup().unwrap();
+    let shell = SloposI::startup().unwrap();
     assert_eq!(shell.workspace_manager.read().total, 8);
     assert!(server_has_desktop_8());
 }

@@ -1,4 +1,4 @@
-# RetroShell runtime dependencies for Debian/Ubuntu
+# SLOPOS-I runtime dependencies for Debian/Ubuntu
 libwayland-dev
 wayland-protocols
 libxkbcommon-dev

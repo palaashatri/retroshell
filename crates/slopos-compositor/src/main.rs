@@ -1,19 +1,19 @@
-//! retro-compositor — minimal Wayland compositor using Smithay.
+//! slopos-compositor — minimal Wayland compositor using Smithay.
 //!
-//! This compositor replaces labwc in the RetroShell stack. It:
+//! This compositor replaces labwc in the SLOPOS-I stack. It:
 //!   - Opens an X11 window (running nested under Xvfb on DISPLAY=:99)
-//!   - Exposes a Wayland socket so retro-shell (winit/wgpu) can connect
+//!   - Exposes a Wayland socket so slopos-shell (winit/wgpu) can connect
 //!   - Implements xdg_shell, wl_shm, wl_seat for basic window management
 //!   - Implements wl_data_device selection send (clipboard + primary store)
-//!   - Optionally multi-output via RETROSHELL_OUTPUTS=WxH,WxH or
-//!     RETROSHELL_OUTPUTS_LAYOUT (shell display arrange: name:WxH@x,y:sNN;...)
+//!   - Optionally multi-output via SLOPOS_OUTPUTS=WxH,WxH or
+//!     SLOPOS_OUTPUTS_LAYOUT (shell display arrange: name:WxH@x,y:sNN;...)
 //!   - Optionally starts XWayland (best-effort under nested X11)
 //!
 //! Linux-only: requires libgbm, libdrm, libEGL, libxcb and libwayland-server.
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
-    eprintln!("retro-compositor is Linux-only (requires Wayland/DRM/GBM system libraries).");
+    eprintln!("slopos-compositor is Linux-only (requires Wayland/DRM/GBM system libraries).");
     std::process::exit(1);
 }
 
@@ -30,7 +30,7 @@ mod linux {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use retro_compositor::{
+    use slopos_compositor::{
         accumulate_damage_for_window_move, accumulate_damage_rect, apply_scale_to_output_config,
         assign_new_window_to_active, cascade_position, detect_dri3_from_env,
         detect_output_scale_from_env, focus_window_after_workspace_switch, move_to_top,
@@ -42,8 +42,8 @@ mod linux {
         LaidOutOutput, OutputScale, PlaceholderPresentStats, TextInputCapability, WindowGeometry,
         WindowPaintSource, WorkspaceId, WorkspaceState, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
     };
-    use retro_compositor::frame_timing::{FrameScheduler, RefreshRate};
-    use retro_compositor::hdr::HdrCapabilities;
+    use slopos_compositor::frame_timing::{FrameScheduler, RefreshRate};
+    use slopos_compositor::hdr::HdrCapabilities;
     use smithay::{
         backend::{
             allocator::{
@@ -155,10 +155,10 @@ mod linux {
 
     impl ClientData for ClientState {
         fn initialized(&self, _client_id: ClientId) {
-            eprintln!("[retro-compositor] client connected");
+            eprintln!("[slopos-compositor] client connected");
         }
         fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {
-            eprintln!("[retro-compositor] client disconnected");
+            eprintln!("[slopos-compositor] client disconnected");
         }
     }
 
@@ -197,16 +197,16 @@ mod linux {
     // Main compositor state
     // -----------------------------------------------------------------------
 
-    struct RetroCompositor {
+    struct SloposCompositor {
         display_handle: DisplayHandle,
         _loop_signal: LoopSignal,
-        loop_handle: LoopHandle<'static, RetroCompositor>,
+        loop_handle: LoopHandle<'static, SloposCompositor>,
         clock: Clock<Monotonic>,
 
         // Smithay protocol states
         compositor_state: CompositorState,
         shm_state: ShmState,
-        seat_state: SeatState<RetroCompositor>,
+        seat_state: SeatState<SloposCompositor>,
         xdg_shell_state: XdgShellState,
         data_device_state: DataDeviceState,
         primary_selection_state: PrimarySelectionState,
@@ -215,15 +215,15 @@ mod linux {
         layer_shell_state: WlrLayerShellState,
         foreign_toplevel_list: ForeignToplevelListState,
         _xdg_decoration_state: XdgDecorationState,
-        /// Present when RETROSHELL_TEXT_INPUT enables text-input-v3 global.
+        /// Present when SLOPOS_TEXT_INPUT enables text-input-v3 global.
         _text_input_state: Option<smithay::wayland::text_input::TextInputManagerState>,
-        /// Present when RETROSHELL_TEXT_INPUT=full|im enables input-method-v2.
+        /// Present when SLOPOS_TEXT_INPUT=full|im enables input-method-v2.
         _input_method_state: Option<smithay::wayland::input_method::InputMethodManagerState>,
         /// Input-method popup surfaces (IME UI).
         im_popups: Vec<smithay::wayland::input_method::PopupSurface>,
 
-        seat: Seat<RetroCompositor>,
-        /// Registered wl_output objects (one or more; multi-output via RETROSHELL_OUTPUTS).
+        seat: Seat<SloposCompositor>,
+        /// Registered wl_output objects (one or more; multi-output via SLOPOS_OUTPUTS).
         /// Kept alive so globals stay registered for the compositor lifetime.
         #[allow(dead_code)]
         outputs: Vec<Output>,
@@ -287,7 +287,7 @@ mod linux {
         wayland_socket_name: String,
     }
 
-    impl RetroCompositor {
+    impl SloposCompositor {
         /// Allocate the next serial (wrapping)
         fn next_serial(&mut self) -> Serial {
             self.serial = self.serial.wrapping_add(1);
@@ -414,7 +414,7 @@ mod linux {
             self.workspace_state.cycle_next();
             self.request_full_redraw();
             eprintln!(
-                "[retro-compositor] {}",
+                "[slopos-compositor] {}",
                 self.workspace_state.summary_line()
             );
             self.apply_focus_after_workspace_switch();
@@ -424,7 +424,7 @@ mod linux {
             self.workspace_state.cycle_prev();
             self.request_full_redraw();
             eprintln!(
-                "[retro-compositor] {}",
+                "[slopos-compositor] {}",
                 self.workspace_state.summary_line()
             );
             self.apply_focus_after_workspace_switch();
@@ -435,7 +435,7 @@ mod linux {
                 if self.workspace_state.activate(ws) {
                     self.request_full_redraw();
                     eprintln!(
-                        "[retro-compositor] {}",
+                        "[slopos-compositor] {}",
                         self.workspace_state.summary_line()
                     );
                     self.apply_focus_after_workspace_switch();
@@ -477,7 +477,7 @@ mod linux {
             }
 
             // Paint order: bottom layers → xdg windows → top/overlay layers.
-            use retro_compositor::{plan_compose_order, ChromeLayer};
+            use slopos_compositor::{plan_compose_order, ChromeLayer};
             let layer_z: Vec<u8> = self
                 .layer_surfaces
                 .iter()
@@ -621,7 +621,7 @@ mod linux {
             if !placeholders.is_empty() {
                 if self.placeholder_stats.note_frame_with_placeholders() {
                     eprintln!(
-                        "[retro-compositor] present honesty: frame used solid placeholders \
+                        "[slopos-compositor] present honesty: frame used solid placeholders \
                          (no committed SHM buffer for {} window(s)); session counter starts at {}",
                         placeholders.len(),
                         self.placeholder_stats.frames_with_placeholders
@@ -662,7 +662,7 @@ mod linux {
 
             // Release frame callbacks for everything we just presented. Clients
             // that throttle drawing on wl_surface.frame (winit/wgpu apps, and
-            // therefore every RetroShell app) render exactly one frame and then
+            // therefore every SLOPOS-I app) render exactly one frame and then
             // wait forever without this.
             let now = self.clock.now();
             if let Some(output) = self.outputs.first().cloned() {
@@ -700,7 +700,7 @@ mod linux {
     // BufferHandler (required by on_commit_buffer_handler)
     // -----------------------------------------------------------------------
 
-    impl BufferHandler for RetroCompositor {
+    impl BufferHandler for SloposCompositor {
         fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
     }
 
@@ -708,7 +708,7 @@ mod linux {
     // CompositorHandler
     // -----------------------------------------------------------------------
 
-    impl CompositorHandler for RetroCompositor {
+    impl CompositorHandler for SloposCompositor {
         fn compositor_state(&mut self) -> &mut CompositorState {
             &mut self.compositor_state
         }
@@ -756,30 +756,30 @@ mod linux {
         }
     }
 
-    delegate_compositor!(RetroCompositor);
+    delegate_compositor!(SloposCompositor);
 
     // -----------------------------------------------------------------------
     // ShmHandler
     // -----------------------------------------------------------------------
 
-    impl ShmHandler for RetroCompositor {
+    impl ShmHandler for SloposCompositor {
         fn shm_state(&self) -> &ShmState {
             &self.shm_state
         }
     }
 
-    delegate_shm!(RetroCompositor);
+    delegate_shm!(SloposCompositor);
 
     // -----------------------------------------------------------------------
     // SeatHandler
     // -----------------------------------------------------------------------
 
-    impl SeatHandler for RetroCompositor {
+    impl SeatHandler for SloposCompositor {
         type KeyboardFocus = WlSurface;
         type PointerFocus = WlSurface;
         type TouchFocus = WlSurface;
 
-        fn seat_state(&mut self) -> &mut SeatState<RetroCompositor> {
+        fn seat_state(&mut self) -> &mut SeatState<SloposCompositor> {
             &mut self.seat_state
         }
 
@@ -792,7 +792,7 @@ mod linux {
         }
     }
 
-    delegate_seat!(RetroCompositor);
+    delegate_seat!(SloposCompositor);
 
     // -----------------------------------------------------------------------
     // SelectionHandler / DataDeviceHandler (P1.1)
@@ -823,7 +823,7 @@ mod linux {
         }
     }
 
-    impl SelectionHandler for RetroCompositor {
+    impl SelectionHandler for SloposCompositor {
         type SelectionUserData = MimePayload;
 
         fn new_selection(
@@ -918,13 +918,13 @@ mod linux {
         }
     }
 
-    impl DataDeviceHandler for RetroCompositor {
+    impl DataDeviceHandler for SloposCompositor {
         fn data_device_state(&self) -> &DataDeviceState {
             &self.data_device_state
         }
     }
 
-    impl ClientDndGrabHandler for RetroCompositor {
+    impl ClientDndGrabHandler for SloposCompositor {
         fn started(
             &mut self,
             _source: Option<WlDataSource>,
@@ -948,7 +948,7 @@ mod linux {
         }
     }
 
-    impl ServerDndGrabHandler for RetroCompositor {
+    impl ServerDndGrabHandler for SloposCompositor {
         fn send(
             &mut self,
             mime_type: String,
@@ -983,21 +983,21 @@ mod linux {
         }
     }
 
-    smithay::delegate_data_device!(RetroCompositor);
+    smithay::delegate_data_device!(SloposCompositor);
 
-    impl PrimarySelectionHandler for RetroCompositor {
+    impl PrimarySelectionHandler for SloposCompositor {
         fn primary_selection_state(&self) -> &PrimarySelectionState {
             &self.primary_selection_state
         }
     }
 
-    delegate_primary_selection!(RetroCompositor);
+    delegate_primary_selection!(SloposCompositor);
 
     // -----------------------------------------------------------------------
     // XdgShellHandler
     // -----------------------------------------------------------------------
 
-    impl XdgShellHandler for RetroCompositor {
+    impl XdgShellHandler for SloposCompositor {
         fn xdg_shell_state(&mut self) -> &mut XdgShellState {
             &mut self.xdg_shell_state
         }
@@ -1027,15 +1027,15 @@ mod linux {
                 let app_id = data
                     .as_ref()
                     .and_then(|d| d.app_id.clone())
-                    .unwrap_or_else(|| "retroshell.app".into());
+                    .unwrap_or_else(|| "slopos-i.app".into());
                 (title, app_id)
             });
             let foreign = self
                 .foreign_toplevel_list
-                .new_toplevel::<RetroCompositor>(&title, &app_id);
+                .new_toplevel::<SloposCompositor>(&title, &app_id);
 
             eprintln!(
-                "[retro-compositor] surface mapped at ({},{}) title={title}",
+                "[slopos-compositor] surface mapped at ({},{}) title={title}",
                 position.x, position.y
             );
 
@@ -1048,7 +1048,7 @@ mod linux {
                     .assign_window(window_id.clone(), WorkspaceId::FIRST);
             }
             eprintln!(
-                "[retro-compositor] assign window_id={window_id} {}",
+                "[slopos-compositor] assign window_id={window_id} {}",
                 self.workspace_state.summary_line()
             );
 
@@ -1128,13 +1128,13 @@ mod linux {
         }
     }
 
-    delegate_xdg_shell!(RetroCompositor);
+    delegate_xdg_shell!(SloposCompositor);
 
     // -----------------------------------------------------------------------
     // Layer shell (menu bar / dock / notifications chrome)
     // -----------------------------------------------------------------------
 
-    impl WlrLayerShellHandler for RetroCompositor {
+    impl WlrLayerShellHandler for SloposCompositor {
         fn shell_state(&mut self) -> &mut WlrLayerShellState {
             &mut self.layer_shell_state
         }
@@ -1147,7 +1147,7 @@ mod linux {
             namespace: String,
         ) {
             eprintln!(
-                "[retro-compositor] layer-shell surface namespace={namespace} layer={layer:?}"
+                "[slopos-compositor] layer-shell surface namespace={namespace} layer={layer:?}"
             );
             let size = self.output_size;
             surface.with_pending_state(|state| {
@@ -1167,27 +1167,27 @@ mod linux {
         }
     }
 
-    delegate_layer_shell!(RetroCompositor);
+    delegate_layer_shell!(SloposCompositor);
 
     // -----------------------------------------------------------------------
     // Foreign toplevel list (task list / overview / Force Quit)
     // -----------------------------------------------------------------------
 
-    impl ForeignToplevelListHandler for RetroCompositor {
+    impl ForeignToplevelListHandler for SloposCompositor {
         fn foreign_toplevel_list_state(&mut self) -> &mut ForeignToplevelListState {
             &mut self.foreign_toplevel_list
         }
     }
 
-    delegate_foreign_toplevel_list!(RetroCompositor);
+    delegate_foreign_toplevel_list!(SloposCompositor);
 
     // -----------------------------------------------------------------------
     // xdg-decoration (server-side preference for external apps)
     // -----------------------------------------------------------------------
 
-    impl XdgDecorationHandler for RetroCompositor {
+    impl XdgDecorationHandler for SloposCompositor {
         fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-            use retro_compositor::{decoration_preference_for_app_id, DecorationPreference};
+            use slopos_compositor::{decoration_preference_for_app_id, DecorationPreference};
             use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
             let app_id = with_states(toplevel.wl_surface(), |states| {
                 states
@@ -1227,13 +1227,13 @@ mod linux {
         }
     }
 
-    smithay::delegate_xdg_decoration!(RetroCompositor);
+    smithay::delegate_xdg_decoration!(SloposCompositor);
 
     // text-input-v3 manager (global advertised when policy enables it)
-    smithay::delegate_text_input_manager!(RetroCompositor);
+    smithay::delegate_text_input_manager!(SloposCompositor);
 
     // input-method-v2 (paired with text-input for IME clients)
-    impl smithay::wayland::input_method::InputMethodHandler for RetroCompositor {
+    impl smithay::wayland::input_method::InputMethodHandler for SloposCompositor {
         fn new_popup(&mut self, surface: smithay::wayland::input_method::PopupSurface) {
             tracing::debug!("input-method popup created");
             self.im_popups.push(surface);
@@ -1262,15 +1262,15 @@ mod linux {
         }
     }
 
-    smithay::delegate_input_method_manager!(RetroCompositor);
+    smithay::delegate_input_method_manager!(SloposCompositor);
 
     // -----------------------------------------------------------------------
     // OutputHandler (required by delegate_output!)
     // -----------------------------------------------------------------------
 
-    impl OutputHandler for RetroCompositor {}
+    impl OutputHandler for SloposCompositor {}
 
-    delegate_output!(RetroCompositor);
+    delegate_output!(SloposCompositor);
 
     // -----------------------------------------------------------------------
     // XWayland (P1.3) — best-effort under nested X11
@@ -1282,7 +1282,7 @@ mod linux {
     // accept maps and track surfaces so the path is live for native Linux.
     // -----------------------------------------------------------------------
 
-    impl XWaylandShellHandler for RetroCompositor {
+    impl XWaylandShellHandler for SloposCompositor {
         fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
             &mut self.xwayland_shell_state
         }
@@ -1307,9 +1307,9 @@ mod linux {
         }
     }
 
-    delegate_xwayland_shell!(RetroCompositor);
+    delegate_xwayland_shell!(SloposCompositor);
 
-    impl XwmHandler for RetroCompositor {
+    impl XwmHandler for SloposCompositor {
         fn xwm_state(&mut self, _xwm: XwmId) -> &mut X11Wm {
             self.xwm.as_mut().expect("X11Wm missing for XwmHandler")
         }
@@ -1445,7 +1445,7 @@ mod linux {
     // Input dispatch helpers (called from the X11 event handler)
     // -----------------------------------------------------------------------
 
-    fn handle_keyboard_event<E>(state: &mut RetroCompositor, ev: &E)
+    fn handle_keyboard_event<E>(state: &mut SloposCompositor, ev: &E)
     where
         E: KeyboardKeyEvent<X11Input>,
     {
@@ -1469,16 +1469,16 @@ mod linux {
                     if key_state == KeyState::Pressed && mods.logo {
                         let sym = keysym.modified_sym();
                         if sym == Keysym::o || sym == Keysym::O {
-                            retro_compositor::client_spawn::spawn_client(
+                            slopos_compositor::client_spawn::spawn_client(
                                 &data.wayland_socket_name,
                                 "finder",
                             );
                             return FilterResult::Intercept(());
                         }
                         if sym == Keysym::l || sym == Keysym::L {
-                            retro_compositor::client_spawn::spawn_client(
+                            slopos_compositor::client_spawn::spawn_client(
                                 &data.wayland_socket_name,
-                                "retro-lock",
+                                "slopos-lock",
                             );
                             return FilterResult::Intercept(());
                         }
@@ -1513,7 +1513,7 @@ mod linux {
         }
     }
 
-    fn handle_pointer_motion<E>(state: &mut RetroCompositor, ev: &E)
+    fn handle_pointer_motion<E>(state: &mut SloposCompositor, ev: &E)
     where
         E: PointerMotionAbsoluteEvent<X11Input>,
     {
@@ -1548,7 +1548,7 @@ mod linux {
         }
     }
 
-    fn handle_pointer_button<E>(state: &mut RetroCompositor, ev: &E)
+    fn handle_pointer_button<E>(state: &mut SloposCompositor, ev: &E)
     where
         E: PointerButtonEvent<X11Input>,
     {
@@ -1589,8 +1589,8 @@ mod linux {
 
     /// Create one or more wl_output globals at the given logical origins.
     ///
-    /// `laid_out` positions come from shell `RETROSHELL_OUTPUTS_LAYOUT` or from
-    /// `RETROSHELL_OUTPUTS` + layout mode. `names` are connector names when known
+    /// `laid_out` positions come from shell `SLOPOS_OUTPUTS_LAYOUT` or from
+    /// `SLOPOS_OUTPUTS` + layout mode. `names` are connector names when known
     /// (else synthetic `X11-N`). `scale` is advertised on each output (HiDPI);
     /// mode sizes stay logical width×height; scale is the wl_output scale factor.
     ///
@@ -1619,7 +1619,7 @@ mod linux {
                 PhysicalProperties {
                     size: (0, 0).into(),
                     subpixel: Subpixel::Unknown,
-                    make: "RetroShell".into(),
+                    make: "SLOPOS-I".into(),
                     model: format!("X11 Output {}", i + 1),
                 },
             );
@@ -1634,7 +1634,7 @@ mod linux {
                 Some((o.x, o.y).into()),
             );
             output.set_preferred(mode);
-            output.create_global::<RetroCompositor>(display_handle);
+            output.create_global::<SloposCompositor>(display_handle);
             tracing::info!(
                 "wl_output {} ({}) {}x{} at ({},{}) refresh={} mHz {}",
                 i + 1,
@@ -1659,13 +1659,13 @@ mod linux {
     /// Under nested X11 this is still useful: XWayland gets its own display number and
     /// clients can set DISPLAY=:N. Full scene integration of X11 surfaces remains limited
     /// because the compositor itself is an X11 client of the host server.
-    fn try_start_xwayland(state: &mut RetroCompositor) {
-        // Allow opt-out: RETROSHELL_XWAYLAND=0
-        if std::env::var("RETROSHELL_XWAYLAND")
+    fn try_start_xwayland(state: &mut SloposCompositor) {
+        // Allow opt-out: SLOPOS_XWAYLAND=0
+        if std::env::var("SLOPOS_XWAYLAND")
             .map(|v| matches!(v.as_str(), "0" | "false" | "off" | "no"))
             .unwrap_or(false)
         {
-            tracing::info!("XWayland disabled via RETROSHELL_XWAYLAND");
+            tracing::info!("XWayland disabled via SLOPOS_XWAYLAND");
             return;
         }
 
@@ -1702,9 +1702,9 @@ mod linux {
                                     data.xwm = Some(wm);
                                     data.xdisplay = Some(display_number);
                                     // Expose DISPLAY for child processes launched later.
-                                    std::env::set_var("RETROSHELL_XWAYLAND_DISPLAY", format!(":{display_number}"));
+                                    std::env::set_var("SLOPOS_XWAYLAND_DISPLAY", format!(":{display_number}"));
                                     eprintln!(
-                                        "[retro-compositor] XWayland ready DISPLAY=:{}",
+                                        "[slopos-compositor] XWayland ready DISPLAY=:{}",
                                         display_number
                                     );
                                 }
@@ -1731,7 +1731,7 @@ mod linux {
                     "XWayland spawn failed (install `xwayland` package for X11 client support; nested X11 may still be limited)"
                 );
                 eprintln!(
-                    "[retro-compositor] XWayland unavailable: {err} (continuing without it)"
+                    "[slopos-compositor] XWayland unavailable: {err} (continuing without it)"
                 );
             }
         }
@@ -1746,27 +1746,27 @@ mod linux {
 
         // ---- Backend mode honesty (session DRM vs nested X11 vs labwc) ----
         // This binary is the nested-X11 / session candidate; labwc is chosen by
-        // start-retroshell/entrypoint when we die early. Log the selected kind.
-        let force_labwc = std::env::var_os("RETROSHELL_FORCE_LABWC").is_some()
-            || std::env::var("RETROSHELL_COMPOSITOR")
+        // start-slopos-i/entrypoint when we die early. Log the selected kind.
+        let force_labwc = std::env::var_os("SLOPOS_FORCE_LABWC").is_some()
+            || std::env::var("SLOPOS_COMPOSITOR")
                 .map(|v| v.eq_ignore_ascii_case("labwc"))
                 .unwrap_or(false);
-        let prefer_drm = std::env::var("RETROSHELL_PREFER_DRM")
+        let prefer_drm = std::env::var("SLOPOS_PREFER_DRM")
             .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(std::path::Path::new("/dev/dri").exists());
         let dri3 = detect_dri3_from_env().unwrap_or(prefer_drm && !force_labwc);
         let backend_kind = select_backend_kind(prefer_drm, dri3, force_labwc);
         let mode_line = session_mode_summary(backend_kind);
         tracing::info!("compositor backend selection: {mode_line}");
-        eprintln!("[retro-compositor] backend: {mode_line}");
+        eprintln!("[slopos-compositor] backend: {mode_line}");
         if matches!(backend_kind, CompositorBackendKind::LabwcFallback) {
             anyhow::bail!(
-                "RETROSHELL_FORCE_LABWC / COMPOSITOR=labwc set; refusing to start nested compositor"
+                "SLOPOS_FORCE_LABWC / COMPOSITOR=labwc set; refusing to start nested compositor"
             );
         }
         if matches!(backend_kind, CompositorBackendKind::SessionDrm) {
-            if retro_compositor::session_drm::drm_session_available() {
-                match retro_compositor::session_drm::run_drm_session() {
+            if slopos_compositor::session_drm::drm_session_available() {
+                match slopos_compositor::session_drm::run_drm_session() {
                     Ok(()) => return Ok(()),
                     Err(err) => {
                         tracing::warn!(
@@ -1774,7 +1774,7 @@ mod linux {
                             "SessionDrm path failed; falling back to NestedX11"
                         );
                         eprintln!(
-                            "[retro-compositor] SessionDrm failed ({err:#}); falling back to NestedX11"
+                            "[slopos-compositor] SessionDrm failed ({err:#}); falling back to NestedX11"
                         );
                     }
                 }
@@ -1783,7 +1783,7 @@ mod linux {
                     "SessionDrm selected by policy but no /dev/dri nodes; falling back to NestedX11"
                 );
                 eprintln!(
-                    "[retro-compositor] SessionDrm preferred but /dev/dri unavailable — NestedX11 fallback"
+                    "[slopos-compositor] SessionDrm preferred but /dev/dri unavailable — NestedX11 fallback"
                 );
             }
         }
@@ -1802,7 +1802,7 @@ mod linux {
 
         let policy_line = display_policy.summary_line(hdr_caps.hdr_supported);
         tracing::info!("display policy applied: {policy_line} color_applied={color_applied}");
-        eprintln!("[retro-compositor] display policy: {policy_line}");
+        eprintln!("[slopos-compositor] display policy: {policy_line}");
         if display_policy.hdr_requested && !hdr_caps.hdr_supported {
             tracing::info!(
                 "HDR requested but not supported under nested X11/no-KMS probe; staying SDR ({})",
@@ -1810,32 +1810,32 @@ mod linux {
             );
         }
 
-        let mut event_loop: EventLoop<RetroCompositor> = EventLoop::try_new()?;
-        let mut display: Display<RetroCompositor> = Display::new()?;
+        let mut event_loop: EventLoop<SloposCompositor> = EventLoop::try_new()?;
+        let mut display: Display<SloposCompositor> = Display::new()?;
         let display_handle = display.handle();
         let loop_handle = event_loop.handle();
         let loop_signal = event_loop.get_signal();
 
         // Protocol states
-        let compositor_state = CompositorState::new::<RetroCompositor>(&display_handle);
-        let shm_state = ShmState::new::<RetroCompositor>(&display_handle, vec![]);
+        let compositor_state = CompositorState::new::<SloposCompositor>(&display_handle);
+        let shm_state = ShmState::new::<SloposCompositor>(&display_handle, vec![]);
         let mut seat_state = SeatState::new();
-        let xdg_shell_state = XdgShellState::new::<RetroCompositor>(&display_handle);
-        let data_device_state = DataDeviceState::new::<RetroCompositor>(&display_handle);
-        let primary_selection_state = PrimarySelectionState::new::<RetroCompositor>(&display_handle);
+        let xdg_shell_state = XdgShellState::new::<SloposCompositor>(&display_handle);
+        let data_device_state = DataDeviceState::new::<SloposCompositor>(&display_handle);
+        let primary_selection_state = PrimarySelectionState::new::<SloposCompositor>(&display_handle);
         let output_manager_state =
-            OutputManagerState::new_with_xdg_output::<RetroCompositor>(&display_handle);
-        let xwayland_shell_state = XWaylandShellState::new::<RetroCompositor>(&display_handle);
-        let layer_shell_state = WlrLayerShellState::new::<RetroCompositor>(&display_handle);
+            OutputManagerState::new_with_xdg_output::<SloposCompositor>(&display_handle);
+        let xwayland_shell_state = XWaylandShellState::new::<SloposCompositor>(&display_handle);
+        let layer_shell_state = WlrLayerShellState::new::<SloposCompositor>(&display_handle);
         let foreign_toplevel_list =
-            ForeignToplevelListState::new::<RetroCompositor>(&display_handle);
-        let xdg_decoration_state = XdgDecorationState::new::<RetroCompositor>(&display_handle);
+            ForeignToplevelListState::new::<SloposCompositor>(&display_handle);
+        let xdg_decoration_state = XdgDecorationState::new::<SloposCompositor>(&display_handle);
 
-        // text-input-v3 global when RETROSHELL_TEXT_INPUT requests it (default: on)
+        // text-input-v3 global when SLOPOS_TEXT_INPUT requests it (default: on)
         // Default "full" advertises text-input-v3 + input-method-v2 for IME clients.
-        // Set RETROSHELL_TEXT_INPUT=0 to disable, or v3 for text-input only.
+        // Set SLOPOS_TEXT_INPUT=0 to disable, or v3 for text-input only.
         let text_input_cap = text_input_capability_from_env(
-            std::env::var("RETROSHELL_TEXT_INPUT")
+            std::env::var("SLOPOS_TEXT_INPUT")
                 .ok()
                 .as_deref()
                 .or(Some("full")),
@@ -1845,15 +1845,15 @@ mod linux {
             TextInputCapability::TextInputV3 | TextInputCapability::InputMethodAndTextInput
         ) {
             eprintln!(
-                "[retro-compositor] {}",
+                "[slopos-compositor] {}",
                 text_input_capability_summary(text_input_cap)
             );
             Some(smithay::wayland::text_input::TextInputManagerState::new::<
-                RetroCompositor,
+                SloposCompositor,
             >(&display_handle))
         } else {
             eprintln!(
-                "[retro-compositor] {}",
+                "[slopos-compositor] {}",
                 text_input_capability_summary(TextInputCapability::None)
             );
             None
@@ -1862,9 +1862,9 @@ mod linux {
             text_input_cap,
             TextInputCapability::InputMethodAndTextInput
         ) {
-            eprintln!("[retro-compositor] input_method=zwp_input_method_v2");
+            eprintln!("[slopos-compositor] input_method=zwp_input_method_v2");
             Some(
-                smithay::wayland::input_method::InputMethodManagerState::new::<RetroCompositor, _>(
+                smithay::wayland::input_method::InputMethodManagerState::new::<SloposCompositor, _>(
                     &display_handle,
                     |_client| true,
                 ),
@@ -1874,7 +1874,7 @@ mod linux {
         };
 
         // Seat: keyboard + pointer
-        let mut seat: Seat<RetroCompositor> =
+        let mut seat: Seat<SloposCompositor> =
             seat_state.new_wl_seat(&display_handle, "seat0");
         seat.add_keyboard(XkbConfig::default(), 200, 25)?;
         seat.add_pointer();
@@ -1882,13 +1882,13 @@ mod linux {
         // ---- Outputs (P1.2 multi-output) + HiDPI scale ----
         let output_scale = detect_output_scale_from_env().unwrap_or(OutputScale::IDENTITY);
         eprintln!(
-            "[retro-compositor] {}",
+            "[slopos-compositor] {}",
             session_mode_note(backend_kind, output_scale)
         );
-        // Prefer RETROSHELL_OUTPUTS_LAYOUT (shell display arrange), else
-        // RETROSHELL_OUTPUTS + layout mode, else WIDTH/HEIGHT defaults.
+        // Prefer SLOPOS_OUTPUTS_LAYOUT (shell display arrange), else
+        // SLOPOS_OUTPUTS + layout mode, else WIDTH/HEIGHT defaults.
         let resolved = resolve_laid_out_outputs_from_env();
-        eprintln!("[retro-compositor] {}", resolved.summary());
+        eprintln!("[slopos-compositor] {}", resolved.summary());
         let (outputs, output_size) = create_outputs(
             &display_handle,
             &resolved.laid_out,
@@ -1898,7 +1898,7 @@ mod linux {
         );
         if resolved.laid_out.len() > 1 || !output_scale.is_identity() {
             eprintln!(
-                "[retro-compositor] multi-output/scale: {} heads, canvas {}x{} {}",
+                "[slopos-compositor] multi-output/scale: {} heads, canvas {}x{} {}",
                 resolved.laid_out.len(),
                 output_size.w,
                 output_size.h,
@@ -1914,7 +1914,7 @@ mod linux {
         let x11_handle = x11_backend.handle();
         // Single X11 host window covering the union of all logical outputs.
         let window = WindowBuilder::new()
-            .title("retro-compositor")
+            .title("slopos-compositor")
             .build(&x11_handle)?;
 
         // Obtain the DRM render node used by the X server
@@ -1952,7 +1952,7 @@ mod linux {
         let socket = ListeningSocketSource::new_auto()?;
         let socket_name = socket.socket_name().to_string_lossy().into_owned();
         tracing::info!("Listening on WAYLAND_DISPLAY={}", socket_name);
-        eprintln!("[retro-compositor] WAYLAND_DISPLAY={}", socket_name);
+        eprintln!("[slopos-compositor] WAYLAND_DISPLAY={}", socket_name);
         println!("WAYLAND_DISPLAY={}", socket_name);
         // Write the actual socket name to a file so the entrypoint can read it,
         // and set the env var so child processes launched by the compositor see the right name.
@@ -2006,7 +2006,7 @@ mod linux {
             .expect("failed to insert X11 backend");
 
         let clock = Clock::<Monotonic>::new();
-        let mut state = RetroCompositor {
+        let mut state = SloposCompositor {
             display_handle,
             _loop_signal: loop_signal,
             loop_handle,
@@ -2058,7 +2058,7 @@ mod linux {
         // P1.3: best-effort XWayland after state exists (needs loop_handle + display).
         try_start_xwayland(&mut state);
 
-        tracing::info!("retro-compositor event loop starting");
+        tracing::info!("slopos-compositor event loop starting");
         let mut frame_counter: u32 = 0;
         while state.running {
             display.flush_clients()?;
@@ -2098,7 +2098,7 @@ mod linux {
             }
         }
 
-        tracing::info!("retro-compositor exiting");
+        tracing::info!("slopos-compositor exiting");
         Ok(())
     }
 }

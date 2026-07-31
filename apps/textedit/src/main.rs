@@ -1,29 +1,29 @@
-use retro_kit::button::Button;
-use retro_kit::clipboard::Clipboard;
-use retro_kit::event::{KeyCode, Modifiers};
-use retro_kit::label::Label;
-use retro_kit::text_field::TextField;
-use retro_kit::toolbar::Toolbar;
-use retro_kit::window::Window;
-use retro_kit::{
+use slopos_kit::button::Button;
+use slopos_kit::clipboard::Clipboard;
+use slopos_kit::event::{KeyCode, Modifiers};
+use slopos_kit::label::Label;
+use slopos_kit::text_field::TextField;
+use slopos_kit::toolbar::Toolbar;
+use slopos_kit::window::Window;
+use slopos_kit::{
     widget_by_id, AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint,
     PointerDispatcher, Rect, Size, ThemeContext, Visibility, Widget, WidgetState,
 };
-use retro_sdk::{build_menu, Application};
+use slopos_sdk::{build_menu, Application};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Returns the default file path: $TEXTEDIT_FILE env var or /tmp/retroshell-textedit.txt.
+/// Returns the default file path: $TEXTEDIT_FILE env var or /tmp/slopos-i-textedit.txt.
 fn default_file_path() -> PathBuf {
     std::env::var("TEXTEDIT_FILE")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp/retroshell-textedit.txt"))
+        .unwrap_or_else(|_| PathBuf::from("/tmp/slopos-i-textedit.txt"))
 }
 
 fn main() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    let mut app = Application::new("TextEdit", "com.retro.textedit");
+    let mut app = Application::new("TextEdit", "com.slopos.textedit");
 
     let mut file_menu = build_menu("File");
     file_menu.add_action("New").with_shortcut(
@@ -262,7 +262,7 @@ impl TextEditView {
 
     /// Focus `id` through the real focus system (sets `WidgetState.focused`
     /// on exactly that widget, clears it everywhere else in the tree).
-    fn focus_widget(&mut self, id: retro_kit::WidgetId) {
+    fn focus_widget(&mut self, id: slopos_kit::WidgetId) {
         let mut focus = std::mem::take(&mut self.focus);
         focus.focus(self, id);
         self.focus = focus;
@@ -933,8 +933,8 @@ impl Widget for TextEditView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use retro_kit::event::MouseButton;
-    use retro_kit::Point;
+    use slopos_kit::event::MouseButton;
+    use slopos_kit::Point;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -947,7 +947,7 @@ mod tests {
             .as_nanos();
         let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir()
-            .join(format!("retroshell_textedit_{unique}_{sequence}"))
+            .join(format!("slopos-i_textedit_{unique}_{sequence}"))
             .join(name)
     }
 

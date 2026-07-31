@@ -62,10 +62,10 @@ run_vm_tests() {
     log_info "Starting Stage 4 tests on $vm_name ($vm_addr)..."
 
     # Copy repo to VM
-    log_info "Syncing code to $vm_addr:/root/retroshell..."
+    log_info "Syncing code to $vm_addr:/root/slopos-i..."
     rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
         --exclude=target --exclude=.git \
-        "$REPO_ROOT/" "root@$vm_addr:/root/retroshell/" || {
+        "$REPO_ROOT/" "root@$vm_addr:/root/slopos-i/" || {
         log_fail "Failed to sync code to $vm_addr"
         return 1
     }
@@ -73,7 +73,7 @@ run_vm_tests() {
     # Run stage-4-verify.sh on the VM
     log_info "Running verification tests on $vm_name..."
     ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@$vm_addr" \
-        "cd /root/retroshell && bash packaging/vm/stage-4-verify.sh '$vm_name'" || {
+        "cd /root/slopos-i && bash packaging/vm/stage-4-verify.sh '$vm_name'" || {
         log_fail "Tests failed on $vm_name"
         return 1
     }

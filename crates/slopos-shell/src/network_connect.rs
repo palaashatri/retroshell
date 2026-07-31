@@ -248,7 +248,7 @@ mod tests {
     fn execute_missing_binary_is_err_not_panic() {
         // Use a plan whose program cannot exist on any host.
         let plan = vec![
-            "/nonexistent/retroshell-nmcli-missing-binary-xyz".to_string(),
+            "/nonexistent/slopos-i-nmcli-missing-binary-xyz".to_string(),
             "dev".into(),
             "wifi".into(),
             "connect".into(),
@@ -268,7 +268,7 @@ mod tests {
     fn connect_wifi_missing_nmcli_is_err_not_panic() {
         // When nmcli is absent (typical macOS CI), spawn fails cleanly.
         // When nmcli is present, spawn may succeed or fail later — either is Ok/Err, not panic.
-        let req = NmConnectRequest::new("RetroShellTestSsid");
+        let req = NmConnectRequest::new("SLOPOS-ITestSsid");
         let _ = connect_wifi(&req);
     }
 }

@@ -8,7 +8,7 @@
 /// Number of shell UI desktops (Window menu `workspace.switch.0..7`).
 pub const SHELL_DESKTOP_COUNT: usize = 8;
 
-/// Compositor-backed workspace count (pure model in `retro-compositor`).
+/// Compositor-backed workspace count (pure model in `slopos-compositor`).
 pub const COMPOSITOR_WORKSPACE_COUNT: usize = 8;
 
 /// Pure bridge: shell active index ↔ compositor workspace id (0..7).

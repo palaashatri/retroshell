@@ -1,14 +1,17 @@
-# RetroShell — Desktop Environment & Distribution Program Design
+# SLOPOS-I — Desktop Environment & Distribution Program Design
 
 **Date:** 2026-07-30
 **Status:** Approved design (spec). Implementation plans derive from this.
 **Author:** Design cycle following the QA report `docs/QA_REPORT_2026-07-26.md`.
 
+> **Living status / gaps / ops:** [`../SLOPOS-I.md`](../SLOPOS-I.md) — this spec is
+> historical rationale, not the day-to-day SoT.
+
 ---
 
 ## 1. Purpose & honest framing
 
-RetroShell is a classic-Mac-styled Linux desktop environment written in Rust —
+SLOPOS-I is a classic-Mac-styled Linux desktop environment written in Rust —
 its own Wayland compositor, shell, toolkit, SDK, IPC bus, and first-party apps —
 in the spirit of [helloSystem](https://hellosystem.github.io/docs/). The
 long-term ambition is a self-hosting desktop *and* distribution that a user could
@@ -43,10 +46,10 @@ program:
 
 | Area | Reality |
 |---|---|
-| Workspace | `cargo` workspace: `crates/{retro-render,retro-kit,retro-shell,retro-bus,retro-sdk,retro-compositor}` + `apps/{finder,settings,textedit,terminal,appstore}`. ~50k LOC. |
+| Workspace | `cargo` workspace: `crates/{slopos-render,slopos-kit,slopos-shell,slopos-bus,slopos-sdk,slopos-compositor}` + `apps/{finder,settings,textedit,terminal,appstore}`. ~50k LOC. |
 | Compositor | smithay 0.7, backends: `backend_x11` (nested) + `backend_drm`/`gbm`/`libinput`/`udev`/`session_libseat` (bare-metal KMS). Linux-only; stubs on macOS. |
 | CI | `.github/workflows/ci.yml` **already builds + tests + clippies the workspace on `ubuntu-latest`** (debug + release). This is the safety net the QA report asked for; it exists. It does **not** build a VM image or run any live/graphical test. |
-| App bundles | `crates/retro-shell/src/launch_services.rs` defines an `AppBundle` struct and search paths `/Applications`, `/User/Applications`, but `scan_applications()` is **stubbed** — it hardcodes 5 builtins and never reads disk. **No on-disk bundle format exists.** |
+| App bundles | `crates/slopos-shell/src/launch_services.rs` defines an `AppBundle` struct and search paths `/Applications`, `/User/Applications`, but `scan_applications()` is **stubbed** — it hardcodes 5 builtins and never reads disk. **No on-disk bundle format exists.** |
 | App store | `apps/appstore` installs software by shelling out to `pacman`/`apt`/`brew`. It is **completely disconnected** from `launch_services` / the `.app` model. |
 | VM tooling | `packaging/vm/*` targets **x86 VirtualBox** with `vmwgfx`. The host is **arm64 (Apple Silicon)** using **UTM**. The scripts are wrong for this machine and must be rewritten. |
 | Docs | Only `docs/QA_REPORT_2026-07-26.md` survives. All prior docs were removed in `61f95a9`. |
@@ -83,11 +86,11 @@ Still-open QA defects (later stages, unaffected by the above):
 
 - **A** — Lock screen does not lock a multi-client session (needs
   `ext-session-lock-v1`). Security hole: apps draw over the lock. (Stage 2)
-- **B** — Keyboard input never reaches `retro-shell` on the labwc fallback path.
+- **B** — Keyboard input never reaches `slopos-shell` on the labwc fallback path.
   (Stage 2 — may be moot once the real compositor path works.)
 - **E/F/G** — portal string parsing garbage; screenshot/record X11-only;
   display-arrange writes to the wrong process and fabricates output geometry.
-- **H** — `retro-bus` transports are a facade (sends discarded, never receives).
+- **H** — `slopos-bus` transports are a facade (sends discarded, never receives).
 - **I** — terminal VT parser missing cursor CSIs, ED 0/1, HT, DECSTBM scroll.
 - **J** — toolkit interaction layer largely dead (buttons/scroll/focus inert).
   (Stage 2 needs at least clickable buttons.)
@@ -98,7 +101,7 @@ Still-open QA defects (later stages, unaffected by the above):
 
 1. A reproducible **arm64 Arch Linux UTM VM** with real `virtio-gpu` KMS, that I
    can drive over SSH, on which the compositor can finally be exercised.
-2. **Prove the live path**: `retro-compositor` displays at least one real
+2. **Prove the live path**: `slopos-compositor` displays at least one real
    first-party app window, with working input, on that VM.
 3. A **documentation system** (`docs/PROGRAM.md`, `docs/tasks/`, `docs/qa/`) with
    atomic, Gemma-3n-executable task files and per-stage VM QA scripts.
@@ -123,7 +126,7 @@ the planning phase) is the living index; this section is the authoritative shape
   - Host GUI steps (human-only: creating the UTM VM, attaching the Arch ISO,
     enabling virtio-gpu, port-forwarding host→VM:22).
   - `arch-install.sh` rewritten for aarch64, GRUB/systemd-boot for UEFI,
-    `virtio_gpu` in initramfs, autologin on a TTY → `scripts/start-retroshell`.
+    `virtio_gpu` in initramfs, autologin on a TTY → `scripts/start-slopos-i`.
   - An **SSH bridge**: key-based access so the agent can drive the VM; an
     `rsync`/shared-folder path to push the working tree in.
 - Extend CI: keep the existing Linux build gate; add a `cargo fmt`/backlog note.
@@ -134,8 +137,8 @@ the planning phase) is the living index; this section is the authoritative shape
 ### Stage 1 — Prove the live path (the QA report's step zero)
 Verification-first. C/D/#3 are already fixed in code (§2.1); the unknown is
 runtime behavior on virtio-gpu, which has never been observed. Tasks:
-- Bring `retro-compositor` up on the VM's real KMS via the DRM backend
-  (`RETROSHELL_PREFER_DRM`), capture `compositor.log` + a framebuffer screenshot.
+- Bring `slopos-compositor` up on the VM's real KMS via the DRM backend
+  (`SLOPOS_PREFER_DRM`), capture `compositor.log` + a framebuffer screenshot.
 - Diagnose empirically: does the GL `DrmCompositor` path activate
   (`composition_active`) and composite client buffers, or does only the
   blank dumb-buffer path run? Record the answer with evidence.
@@ -145,7 +148,7 @@ runtime behavior on virtio-gpu, which has never been observed. Tasks:
   scope for the Stage 1 task docs**, which end at diagnosis.
 - Confirm input: inject a key/pointer event, confirm it reaches a client.
 - **Definition of done:** either (a) a screenshot (captured on the VM) of Finder
-  rendered by `retro-compositor` — not labwc — proving the path works end to end;
+  rendered by `slopos-compositor` — not labwc — proving the path works end to end;
   or (b) an evidenced diagnosis that isolates exactly why it does not, sufficient
   to write the compositing spec. Transcript + image in `docs/qa/stage-1.md`.
 
@@ -167,20 +170,20 @@ runtime behavior on virtio-gpu, which has never been observed. Tasks:
   appears in Finder/dock, and it launches — on the VM.
 
 ### Stage 4 — Distribution (two delivery paths, layer-first)
-RetroShell is a **desktop environment on a normal Linux base**, so the primary
+SLOPOS-I is a **desktop environment on a normal Linux base**, so the primary
 delivery path is layering it onto an existing distro; a bootable image is a
 secondary convenience. (Ordering confirmed with user.)
 - **Primary — install on an existing base.** An installer (script or native
-  package: AUR/`.deb`) that adds RetroShell + its session files to a running
+  package: AUR/`.deb`) that adds SLOPOS-I + its session files to a running
   **Arch** or **Ubuntu (incl. server)** system and registers it as a selectable
   session. This is how most users get it, and it reinforces §5.3: the base distro
   keeps its own package manager, reachable from the Terminal app.
 - **Secondary — bootable image.** An archiso-derived ISO that boots straight into
-  RetroShell, for evaluation / fresh installs. Built from the same session files
+  SLOPOS-I, for evaluation / fresh installs. Built from the same session files
   as the layered path so the two cannot drift.
 - **Definition of done:** (1) on a clean Arch VM *and* a clean Ubuntu-server VM,
-  the layered installer produces a login-selectable RetroShell session that
-  reaches the desktop; (2) the ISO boots a fresh VM into RetroShell. Transcripts
+  the layered installer produces a login-selectable SLOPOS-I session that
+  reaches the desktop; (2) the ISO boots a fresh VM into SLOPOS-I. Transcripts
   + screenshots in `docs/qa/stage-4.md`.
 
 ## 5. The `.app` bundle format (self-contained; target for Stage 3)
@@ -206,7 +209,7 @@ Installed to `/Applications/<Name>.app` (system) or
 
 ### 5.2 `Info.toml` manifest (maps to the existing `AppBundle` struct)
 ```toml
-bundle_id       = "com.retro.textedit"   # -> AppBundle.bundle_id
+bundle_id       = "com.slopos.textedit"   # -> AppBundle.bundle_id
 name            = "TextEdit"             # -> AppBundle.name
 version         = "0.1.0"                # -> AppBundle.version
 entrypoint      = "bin/textedit"         # -> AppBundle.entrypoint (path within bundle)
@@ -278,13 +281,13 @@ right." One task ≈ one commit.
 
 ## 8. Architecture map (existing crates — do not restructure without cause)
 
-- `retro-render` — event loop + wgpu render plumbing (returns `Result` now).
-- `retro-kit` — widget toolkit (interaction layer partly dead — defect J).
-- `retro-sdk` — app framework: theming, layout, text; used by all 5 apps.
-- `retro-shell` — desktop shell: menu bar, dock, workspaces, launch services,
+- `slopos-render` — event loop + wgpu render plumbing (returns `Result` now).
+- `slopos-kit` — widget toolkit (interaction layer partly dead — defect J).
+- `slopos-sdk` — app framework: theming, layout, text; used by all 5 apps.
+- `slopos-shell` — desktop shell: menu bar, dock, workspaces, launch services,
   portals, session/lock policy, layer-shell client.
-- `retro-bus` — IPC facade (currently non-functional — defect H).
-- `retro-compositor` — smithay compositor; X11-nested + DRM/KMS backends.
+- `slopos-bus` — IPC facade (currently non-functional — defect H).
+- `slopos-compositor` — smithay compositor; X11-nested + DRM/KMS backends.
 - `apps/*` — finder, settings, textedit, terminal, appstore.
 
 Keep boundaries as-is. Targeted fixes only where a stage requires them (e.g.
@@ -320,7 +323,7 @@ speculative refactors.
   per-component repos (gershwin-desktop style) now. The Cargo workspace gives one
   build graph, one lockfile, atomic cross-crate refactors, and one CI; gershwin's
   many-repos model is a FreeBSD/GNUstep *ports* constraint that does not transfer
-  to Rust. The natural split seam is Stage 3's `.app` format: once `retro-sdk`'s
+  to Rust. The natural split seam is Stage 3's `.app` format: once `slopos-sdk`'s
   API is stable and versioned, first-party `apps/*` can peel off into their own
   repos — the same seam third-party app developers use. Core (compositor, shell,
   kit, sdk, bus) stays together.

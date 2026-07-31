@@ -195,21 +195,21 @@ fn try_read_wl_paste() -> Option<String> {
 }
 
 fn clipboard_path() -> Option<PathBuf> {
-    std::env::var_os("RETROSHELL_CLIPBOARD_PATH")
+    std::env::var_os("SLOPOS_CLIPBOARD_PATH")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("XDG_RUNTIME_DIR").map(|runtime| {
                 PathBuf::from(runtime)
-                    .join("retroshell")
+                    .join("slopos-i")
                     .join("clipboard.txt")
             })
         })
         .or_else(|| {
             std::env::var_os("TMPDIR")
                 .map(PathBuf::from)
-                .map(|tmp| tmp.join("retroshell-clipboard.txt"))
+                .map(|tmp| tmp.join("slopos-i-clipboard.txt"))
         })
-        .or_else(|| Some(std::env::temp_dir().join("retroshell-clipboard.txt")))
+        .or_else(|| Some(std::env::temp_dir().join("slopos-i-clipboard.txt")))
 }
 
 #[cfg(test)]
@@ -219,7 +219,7 @@ mod tests {
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    // Serialize tests that mutate the RETROSHELL_CLIPBOARD_PATH env var,
+    // Serialize tests that mutate the SLOPOS_CLIPBOARD_PATH env var,
     // since std::env::set_var is not thread-safe across parallel test threads.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -228,14 +228,14 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("retroshell_clipboard_{unique}.txt"))
+        std::env::temp_dir().join(format!("slopos-i_clipboard_{unique}.txt"))
     }
 
     #[test]
     fn clipboard_persists_to_runtime_path() {
         let _guard = ENV_LOCK.lock();
         let path = unique_path();
-        std::env::set_var("RETROSHELL_CLIPBOARD_PATH", &path);
+        std::env::set_var("SLOPOS_CLIPBOARD_PATH", &path);
 
         Clipboard::clear();
         Clipboard::copy("hello from another app");
@@ -244,7 +244,7 @@ mod tests {
         Clipboard::clear();
         assert!(!path.exists());
 
-        std::env::remove_var("RETROSHELL_CLIPBOARD_PATH");
+        std::env::remove_var("SLOPOS_CLIPBOARD_PATH");
     }
 
     /// Verify that the file-based round-trip works when system tools are absent
@@ -253,7 +253,7 @@ mod tests {
     fn file_based_round_trip() {
         let _guard = ENV_LOCK.lock();
         let path = unique_path();
-        std::env::set_var("RETROSHELL_CLIPBOARD_PATH", &path);
+        std::env::set_var("SLOPOS_CLIPBOARD_PATH", &path);
 
         Clipboard::clear();
         Clipboard::copy("round-trip test");
@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(on_disk, "round-trip test");
 
         Clipboard::clear();
-        std::env::remove_var("RETROSHELL_CLIPBOARD_PATH");
+        std::env::remove_var("SLOPOS_CLIPBOARD_PATH");
     }
 
     /// available_backends() must always return a Vec (possibly empty on CI).

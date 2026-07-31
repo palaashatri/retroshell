@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build RetroShell bootable ISO using archiso
+# Build SLOPOS-I bootable ISO using archiso
 # Usage: sudo bash packaging/iso/build-iso.sh [output-dir]
 
 set -euo pipefail
 
 OUTPUT_DIR="${1:-.}"
 
-echo "=== Building RetroShell ISO ==="
+echo "=== Building SLOPOS-I ISO ==="
 echo "Output directory: $OUTPUT_DIR"
 echo ""
 
@@ -25,7 +25,7 @@ echo "Building ISO with archiso..."
 sudo mkarchiso -v -o "$OUTPUT_DIR" "$PROFILE_DIR"
 
 # Find the output ISO
-ISO_FILE=$(ls -t "$OUTPUT_DIR"/retroshell-*.iso 2>/dev/null | head -1)
+ISO_FILE=$(ls -t "$OUTPUT_DIR"/slopos-i-*.iso 2>/dev/null | head -1)
 
 if [[ -f "$ISO_FILE" ]]; then
   echo ""

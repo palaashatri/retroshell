@@ -57,7 +57,7 @@ impl Widget for Window {
             ));
             let rect = self.rect();
             if let Some(content) = &mut self.content {
-                let content_rect = if self.title == "RetroShell Desktop" {
+                let content_rect = if self.title == "SLOPOS-I Desktop" {
                     rect
                 } else {
                     Rect::new(

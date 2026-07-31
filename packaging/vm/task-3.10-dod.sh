@@ -46,7 +46,7 @@ cat > "$CATALOG" <<EOF
 [
   {
     "name": "TextEdit",
-    "bundle_id": "com.retro.textedit",
+    "bundle_id": "com.slopos.textedit",
     "version": "0.1.0",
     "url": "$TARBALL",
     "sha256": "$CHECKSUM",
@@ -70,9 +70,9 @@ echo "    export XDG_RUNTIME_DIR=/run/user/\$(id -u) \\"
 echo "           LIBSEAT_BACKEND=seatd \\"
 echo "           LIBGL_ALWAYS_SOFTWARE=1 \\"
 echo "           GALLIUM_DRIVER=llvmpipe \\"
-echo "           RETROSHELL_LAYER_SHELL_CHROME=1"
-echo "    cd ~/retroshell"
-echo "    ./target/release/retro-compositor"
+echo "           SLOPOS_LAYER_SHELL_CHROME=1"
+echo "    cd ~/slopos-i"
+echo "    ./target/release/slopos-compositor"
 echo ""
 
 # Step 5: Verification steps (to run in another terminal)
@@ -95,11 +95,11 @@ echo -e "${YELLOW}Step 6: Capture screenshots:${NC}"
 echo ""
 echo "  For Xvfb method (if running headless):"
 echo "    export DISPLAY=:99"
-echo "    import -window root ~/retroshell/docs/screenshots/stage3-appstore-install.png"
-echo "    import -window root ~/retroshell/docs/screenshots/stage3-textedit-launched.png"
+echo "    import -window root ~/slopos-i/docs/screenshots/stage3-appstore-install.png"
+echo "    import -window root ~/slopos-i/docs/screenshots/stage3-textedit-launched.png"
 echo ""
 echo "  For VBox screenshot:"
-echo "    VBoxManage controlvm retroshell-arch screenshotpng ~/retroshell/docs/screenshots/stage3-appstore-install.png"
+echo "    VBoxManage controlvm slopos-i-arch screenshotpng ~/slopos-i/docs/screenshots/stage3-appstore-install.png"
 echo ""
 
 # Final verification check (after manual steps)

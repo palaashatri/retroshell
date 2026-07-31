@@ -5,7 +5,7 @@ use crate::{
 
 /// A filled rectangle used for overlays, cards, and scrims.
 ///
-/// Actual pixels are painted by `retro-sdk::draw_widget` (kit `draw()` is a
+/// Actual pixels are painted by `slopos-sdk::draw_widget` (kit `draw()` is a
 /// no-op by design — same as other kit widgets).
 pub struct Panel {
     state: WidgetState,

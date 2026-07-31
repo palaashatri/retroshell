@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# RetroShell layered installer — primary distribution path
-# Installs RetroShell (DE + apps) onto a running Arch or Ubuntu system
+# SLOPOS-I layered installer — primary distribution path
+# Installs SLOPOS-I (DE + apps) onto a running Arch or Ubuntu system
 # Usage: sudo ./install.sh [--prefix /usr/local] [--no-deps] [--no-build] [--with-greeter] [--distro auto|arch|ubuntu]
 
 set -euo pipefail
@@ -62,7 +62,7 @@ if [[ "$DISTRO" == "auto" ]]; then
   fi
 fi
 
-echo "=== RetroShell Installer ==="
+echo "=== SLOPOS-I Installer ==="
 echo "Distro: $DISTRO"
 echo "Prefix: $PREFIX"
 echo "Install deps: $([[ $NO_DEPS -eq 0 ]] && echo yes || echo no)"
@@ -112,7 +112,7 @@ fi
 
 if [[ $NO_BUILD -eq 0 ]]; then
   echo ""
-  echo "Building RetroShell from source..."
+  echo "Building SLOPOS-I from source..."
 
   # Ensure Rust is available
   if ! command -v cargo &>/dev/null; then
@@ -139,8 +139,8 @@ echo ""
 echo "Installing binaries to $PREFIX/bin..."
 
 BINARIES=(
-  "target/release/retro-compositor"
-  "target/release/retro-shell"
+  "target/release/slopos-compositor"
+  "target/release/slopos-shell"
   "target/release/finder"
   "target/release/settings"
   "target/release/textedit"
@@ -157,8 +157,8 @@ for bin in "${BINARIES[@]}"; do
   sudo install -Dm755 "$bin" "$PREFIX/bin/$BINNAME"
 done
 
-# Install start-retroshell script
-sudo install -Dm755 scripts/start-retroshell "$PREFIX/bin/start-retroshell"
+# Install start-slopos-i script
+sudo install -Dm755 scripts/start-slopos-i "$PREFIX/bin/start-slopos-i"
 
 echo "✓ Binaries installed"
 
@@ -190,7 +190,7 @@ session_wrapper = "bash"
 sessions_dir = "/usr/share/wayland-sessions"
 
 [default_session]
-command = "tuigreet --time --cmd start-retroshell"
+command = "tuigreet --time --cmd start-slopos-i"
 EOF
 
   # Enable greetd
@@ -198,7 +198,7 @@ EOF
 
   echo ""
   echo "✓ Greeter configured (greetd + tuigreet)"
-  echo "  NOTE: Reboot or restart your display manager to see the RetroShell session."
+  echo "  NOTE: Reboot or restart your display manager to see the SLOPOS-I session."
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
@@ -206,24 +206,24 @@ fi
 echo ""
 echo "=== Installation Complete ==="
 echo ""
-echo "RetroShell has been installed to: $PREFIX"
+echo "SLOPOS-I has been installed to: $PREFIX"
 echo ""
 echo "Binaries:"
-echo "  $PREFIX/bin/retro-compositor"
-echo "  $PREFIX/bin/retro-shell"
+echo "  $PREFIX/bin/slopos-compositor"
+echo "  $PREFIX/bin/slopos-shell"
 echo "  $PREFIX/bin/finder, settings, textedit, terminal, appstore"
-echo "  $PREFIX/bin/start-retroshell"
+echo "  $PREFIX/bin/start-slopos-i"
 echo ""
 echo "Session files:"
-echo "  ~/.config/wayland-sessions/retroshell-wayland.desktop"
-echo "  ~/.local/share/systemd/user/retroshell.service"
+echo "  ~/.config/wayland-sessions/slopos-i-wayland.desktop"
+echo "  ~/.local/share/systemd/user/slopos-i.service"
 echo ""
 
 if [[ $WITH_GREETER -eq 0 ]]; then
-  echo "To select RetroShell:"
+  echo "To select SLOPOS-I:"
   echo "  1. Log out and log back in"
-  echo "  2. At the login screen, select RetroShell from the session menu"
-  echo "  3. Or run: start-retroshell"
+  echo "  2. At the login screen, select SLOPOS-I from the session menu"
+  echo "  3. Or run: start-slopos-i"
 else
   echo "Greeter is configured. Reboot or restart your DM to see the session selection."
 fi

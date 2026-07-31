@@ -1,6 +1,6 @@
-use retro_kit::event::{KeyCode, Modifiers};
-use retro_kit::menu::{Menu, MenuItem, MenuItemKind};
-use retro_sdk::MenuManifest;
+use slopos_kit::event::{KeyCode, Modifiers};
+use slopos_kit::menu::{Menu, MenuItem, MenuItemKind};
+use slopos_sdk::MenuManifest;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -126,9 +126,9 @@ impl MenuServer {
         let locale = LocalePrefs::parse_from_env_lang(std::env::var("LANG").ok().as_deref());
         let loc = &locale.locale;
 
-        let mut system_menu = Menu::new("Retro");
+        let mut system_menu = Menu::new("SLOPOS");
         system_menu
-            .add_action("About RetroShell")
+            .add_action("About SLOPOS-I")
             .with_action("shell.about");
         system_menu.add_separator();
         system_menu
@@ -473,11 +473,11 @@ impl MenuServer {
         }
 
         let title = match app_id {
-            "com.retro.finder" => "Finder",
-            "com.retro.textedit" => "TextEdit",
-            "com.retro.terminal" => "Terminal",
-            "com.retro.settings" => "Settings",
-            "com.retro.appstore" => "App Store",
+            "com.slopos.finder" => "Finder",
+            "com.slopos.textedit" => "TextEdit",
+            "com.slopos.terminal" => "Terminal",
+            "com.slopos.settings" => "Settings",
+            "com.slopos.appstore" => "App Store",
             _ => "Application",
         };
 
@@ -629,7 +629,7 @@ impl MenuServer {
         help_menu.add_action(format!("{title} Help"));
 
         let mut menus = vec![app_menu, file_menu, edit_menu, view_menu];
-        if app_id == "com.retro.finder" {
+        if app_id == "com.slopos.finder" {
             let mut go_menu = Menu::new("Go");
             go_menu.add_action("Home").with_action("shell.open_home");
             go_menu
@@ -665,30 +665,30 @@ impl MenuServer {
             .find_map(|menu| find_shortcut_action(&menu.items, key, modifiers))
     }
 
-    pub fn render_menu_bar(&self) -> retro_render::RenderNode {
+    pub fn render_menu_bar(&self) -> slopos_render::RenderNode {
         let mut children = vec![];
-        children.push(retro_render::RenderNode::Rect {
+        children.push(slopos_render::RenderNode::Rect {
             x: 0.0,
             y: 0.0,
             width: 1920.0,
             height: 24.0,
-            color: retro_render::Color::new(0.9, 0.9, 0.9, 1.0),
+            color: slopos_render::Color::new(0.9, 0.9, 0.9, 1.0),
             corner_radius: 0.0,
         });
 
         let mut x = 10.0;
         for menu in &self.menus {
-            children.push(retro_render::RenderNode::Text {
+            children.push(slopos_render::RenderNode::Text {
                 x,
                 y: 16.0,
                 text: menu.title.clone(),
                 font_size: 13.0,
-                color: retro_render::Color::BLACK,
+                color: slopos_render::Color::BLACK,
             });
             x += (menu.title.len() as f32) * 8.0 + 15.0;
         }
 
-        retro_render::RenderNode::Group { children }
+        slopos_render::RenderNode::Group { children }
     }
 }
 
@@ -812,8 +812,8 @@ fn find_shortcut_action(items: &[MenuItem], key: KeyCode, modifiers: Modifiers) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use retro_kit::menu::Menu;
-    use retro_sdk::MenuManifest;
+    use slopos_kit::menu::Menu;
+    use slopos_sdk::MenuManifest;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -822,7 +822,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("retroshell_menu_manifest_{unique}.json"));
+        let path = std::env::temp_dir().join(format!("slopos-i_menu_manifest_{unique}.json"));
 
         let mut file_menu = Menu::new("File");
         file_menu.add_action("New").with_action("com.test.app.new");

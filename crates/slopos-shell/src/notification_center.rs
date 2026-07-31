@@ -84,36 +84,36 @@ impl NotificationCenter {
             .retain(|n| n.dismissed || now.duration_since(n.timestamp) < max_age);
     }
 
-    pub fn render_notifications(&self) -> retro_render::RenderNode {
+    pub fn render_notifications(&self) -> slopos_render::RenderNode {
         let mut children = vec![];
         let mut y = 30.0;
 
         for notif in self.visible() {
-            children.push(retro_render::RenderNode::Rect {
+            children.push(slopos_render::RenderNode::Rect {
                 x: 1600.0,
                 y,
                 width: 300.0,
                 height: 80.0,
-                color: retro_render::Color::new(0.95, 0.95, 0.95, 0.9),
+                color: slopos_render::Color::new(0.95, 0.95, 0.95, 0.9),
                 corner_radius: 6.0,
             });
-            children.push(retro_render::RenderNode::Text {
+            children.push(slopos_render::RenderNode::Text {
                 x: 1610.0,
                 y: y + 20.0,
                 text: notif.title.clone(),
                 font_size: 13.0,
-                color: retro_render::Color::BLACK,
+                color: slopos_render::Color::BLACK,
             });
-            children.push(retro_render::RenderNode::Text {
+            children.push(slopos_render::RenderNode::Text {
                 x: 1610.0,
                 y: y + 45.0,
                 text: notif.message.clone(),
                 font_size: 11.0,
-                color: retro_render::Color::new(0.3, 0.3, 0.3, 1.0),
+                color: slopos_render::Color::new(0.3, 0.3, 0.3, 1.0),
             });
             y += 90.0;
         }
 
-        retro_render::RenderNode::Group { children }
+        slopos_render::RenderNode::Group { children }
     }
 }

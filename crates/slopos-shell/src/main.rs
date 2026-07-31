@@ -1,8 +1,8 @@
-use retro_shell::RetroShell;
+use slopos_shell::SloposI;
 
 fn main() {
     tracing_subscriber::fmt::init();
-    tracing::info!("Starting RetroShell...");
+    tracing::info!("Starting SLOPOS-I...");
 
     // Best-effort AT-SPI2 registration with structural shell chrome tree
     // (menu bar → desktop icons → dock + window). Connection is retained for
@@ -10,9 +10,9 @@ fn main() {
     // DoAction queues in-process for shell update() to drain into real handlers.
     // Still Orca-incomplete: no live tree re-export; D-Bus events fail open when
     // registry/bus absent; in-process AccessibilityEventBus always works.
-    match retro_kit::register_at_spi_shell_chrome("RetroShell") {
+    match slopos_kit::register_at_spi_shell_chrome("SLOPOS-I") {
         Ok(()) => {
-            if retro_kit::at_spi_registration_info().is_some() {
+            if slopos_kit::at_spi_registration_info().is_some() {
                 tracing::info!(
                     "AT-SPI2 accessibility registration active (shell chrome tree; event emit best-effort)"
                 );
@@ -25,15 +25,15 @@ fn main() {
         Err(err) => tracing::warn!("AT-SPI2 registration failed: {err}"),
     }
 
-    let shell = match RetroShell::startup() {
+    let shell = match SloposI::startup() {
         Ok(shell) => shell,
         Err(e) => {
-            tracing::error!("Failed to start RetroShell: {}", e);
+            tracing::error!("Failed to start SLOPOS-I: {}", e);
             return;
         }
     };
 
-    tracing::info!("RetroShell initialized successfully");
+    tracing::info!("SLOPOS-I initialized successfully");
     tracing::info!("Theme: {}", shell.theme_manager.read().current);
     tracing::info!(
         "Applications found: {}",

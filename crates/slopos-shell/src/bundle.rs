@@ -74,11 +74,11 @@ mod tests {
         std::fs::create_dir_all(&res).unwrap();
         std::fs::write(
             res.join("Info.toml"),
-            "bundle_id=\"com.retro.textedit\"\nname=\"TextEdit\"\nversion=\"0.1.0\"\nentrypoint=\"bin/textedit\"\nsupported_types=[\"txt\"]\npermissions=[\"files.read\"]\n",
+            "bundle_id=\"com.slopos.textedit\"\nname=\"TextEdit\"\nversion=\"0.1.0\"\nentrypoint=\"bin/textedit\"\nsupported_types=[\"txt\"]\npermissions=[\"files.read\"]\n",
         )
         .unwrap();
         let b = load_bundle(&tmp).unwrap();
-        assert_eq!(b.bundle_id, "com.retro.textedit");
+        assert_eq!(b.bundle_id, "com.slopos.textedit");
         assert_eq!(b.entrypoint, "bin/textedit");
         assert_eq!(b.supported_types, vec!["txt"]);
         std::fs::remove_dir_all(&tmp).ok();

@@ -7,7 +7,7 @@
 //! Pure [`handle_inhibit`] issues cookies; [`register_inhibit_cookie`] /
 //! [`release_inhibit_cookie`] keep a **process-wide** table the shell can poll
 //! via [`active_inhibits`] / [`active_idle_inhibit_state`] each frame. This is
-//! not logind Inhibit — only RetroShell idle policy consumes it.
+//! not logind Inhibit — only SLOPOS-I idle policy consumes it.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -41,8 +41,8 @@ pub fn handle_secret_retrieve(req: &PortalSecretRequest) -> PortalSecretResult {
             reason: "app_id contains null".into(),
         };
     }
-    // Label scheme: retroshell.portal.secret.<app_id>
-    let label = format!("retroshell.portal.secret.{}", req.app_id.trim());
+    // Label scheme: slopos-i.portal.secret.<app_id>
+    let label = format!("slopos-i.portal.secret.{}", req.app_id.trim());
     PortalSecretResult::Lookup { label }
 }
 

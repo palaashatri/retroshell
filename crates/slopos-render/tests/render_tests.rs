@@ -1,4 +1,4 @@
-use retro_render::{Color, RenderNode, RenderTree};
+use slopos_render::{Color, RenderNode, RenderTree};
 
 #[test]
 fn test_render_tree() {

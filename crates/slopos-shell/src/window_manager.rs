@@ -1,4 +1,4 @@
-use retro_kit::Rect;
+use slopos_kit::Rect;
 use std::collections::HashMap;
 use uuid::Uuid;
 

@@ -24,8 +24,8 @@ Stage 1 ran the DRM backend on the VM and observed:
   **defect B is a *verification*, not a rewrite** (Task 2.0). Do not "implement
   input" — confirm it, per spec §2.1.
 - **`Widget::draw` is not the render path.** Both `Button::draw`
-  (`retro-kit/src/button.rs:74-81`) and `Label::draw`
-  (`retro-kit/src/label.rs:41`) are no-ops, yet Stage 1's Finder screenshot
+  (`slopos-kit/src/button.rs:74-81`) and `Label::draw`
+  (`slopos-kit/src/label.rs:41`) are no-ops, yet Stage 1's Finder screenshot
   renders text and toolbar controls — so real drawing happens in the SDK/wgpu
   layer, not `Widget::draw`. **Therefore Task 2.2 is verification-first with a
   diagnosis branch; it must NOT prescribe "implement Button::draw()" as the fix —
@@ -47,12 +47,12 @@ clients drawing — defect A).
 
 ## Global constraints
 
-- All live/graphical checks run **on the VM** (per [HANDOFF.md](../HANDOFF.md) §3),
+- All live/graphical checks run **on the VM** (per [SLOPOS-I.md](../SLOPOS-I.md) §3),
   launched from tty1 (DRM needs the seat), as in Stage 1.
 - Keep `cargo build --workspace` + `cargo clippy --workspace` green (CI gate).
 - The DRM path (`DrmSessionState`, `session_drm.rs:977`) is the one that runs on
   the VM. Prioritize it. Mirror changes to the nested X11 path
-  (`RetroCompositor`, `main.rs:200`) only if trivial; note when you skip it.
+  (`SloposCompositor`, `main.rs:200`) only if trivial; note when you skip it.
 - Honesty contract: no VERIFIED without a passing Acceptance transcript/screenshot.
 
 ## Grounded smithay 0.7 `session_lock` API (from the cargo cache, verbatim)
@@ -96,7 +96,7 @@ Existing delegate pattern to mirror: `delegate_layer_shell!(DrmSessionState);` a
 
 Precondition (on the VM):
 ```bash
-ssh -i packaging/vm/qa_key -p 2222 retro@127.0.0.1 'ls ~/retroshell/target/release/retro-compositor && ls /dev/dri/card0'
+ssh -i packaging/vm/qa_key -p 2222 retro@127.0.0.1 'ls ~/slopos-i/target/release/slopos-compositor && ls /dev/dri/card0'
 ```
 
 Steps:
@@ -126,10 +126,10 @@ Commit: _none (evidence goes in qa/stage-2.md)._
 
 Precondition:
 ```bash
-grep -n 'mods.logo' crates/retro-compositor/src/session_drm.rs | head -1   # → ~1151
+grep -n 'mods.logo' crates/slopos-compositor/src/session_drm.rs | head -1   # → ~1151
 ```
 
-Files: Modify `crates/retro-compositor/src/session_drm.rs`.
+Files: Modify `crates/slopos-compositor/src/session_drm.rs`.
 
 Design (consistent with existing Super+workspace interception): the compositor
 intercepts `Super+O` and spawns the Finder binary as a Wayland client. The
@@ -166,11 +166,11 @@ ssh ... 'pgrep -a finder'         # → a running finder process
 ls -l docs/screenshots/stage2-superO-finder.png   # screenshot showing Finder opened
 ```
 → expect: `finder` running and a screenshot of Finder opened by `Super+O`. Record
-in `docs/qa/stage-2.md`. (Host pre-check: `cargo build -p retro-compositor` →
+in `docs/qa/stage-2.md`. (Host pre-check: `cargo build -p slopos-compositor` →
 `Finished`.)
 
 DO NOT:
-- Make the compositor depend on `retro-shell` to launch (avoid a dep cycle) —
+- Make the compositor depend on `slopos-shell` to launch (avoid a dep cycle) —
   spawn the binary directly.
 - Hardcode an absolute path — resolve `finder` from PATH/target/release.
 
@@ -182,7 +182,7 @@ Commit: `feat(compositor): Super+O spawns Finder on the DRM path`
 
 Precondition:
 ```bash
-grep -q 'fn take_clicked' crates/retro-kit/src/button.rs && echo ok   # → ok
+grep -q 'fn take_clicked' crates/slopos-kit/src/button.rs && echo ok   # → ok
 ```
 
 Context: `Button::handle_event` is implemented and unit-tested
@@ -223,11 +223,11 @@ Commit: _none unless a grounded fix is written (then: `fix(kit): <specific event
 
 Precondition:
 ```bash
-cargo build -p retro-compositor 2>&1 | tail -1   # → Finished
-grep -n 'delegate_layer_shell!(DrmSessionState)' crates/retro-compositor/src/session_drm.rs  # → ~1609
+cargo build -p slopos-compositor 2>&1 | tail -1   # → Finished
+grep -n 'delegate_layer_shell!(DrmSessionState)' crates/slopos-compositor/src/session_drm.rs  # → ~1609
 ```
 
-Files: Modify `crates/retro-compositor/src/session_drm.rs` (and its imports).
+Files: Modify `crates/slopos-compositor/src/session_drm.rs` (and its imports).
 
 Steps:
 1. Add fields to `DrmSessionState` (`session_drm.rs:977`):
@@ -271,7 +271,7 @@ Steps:
 
 Acceptance:
 ```bash
-cargo build -p retro-compositor 2>&1 | tail -1
+cargo build -p slopos-compositor 2>&1 | tail -1
 ```
 → expect: `Finished`. (Enforcement is Tasks 2.4/2.5; this task only registers the
 protocol and compiles.)
@@ -289,11 +289,11 @@ Commit: `feat(compositor): register ext-session-lock-v1 (DRM path)`
 
 Precondition:
 ```bash
-grep -n 'fn collect_render_elements' crates/retro-compositor/src/session_drm.rs  # → ~191
-grep -q 'self.locked' crates/retro-compositor/src/session_drm.rs && echo ok      # Task 2.3 → ok
+grep -n 'fn collect_render_elements' crates/slopos-compositor/src/session_drm.rs  # → ~191
+grep -q 'self.locked' crates/slopos-compositor/src/session_drm.rs && echo ok      # Task 2.3 → ok
 ```
 
-Files: Modify `crates/retro-compositor/src/session_drm.rs`
+Files: Modify `crates/slopos-compositor/src/session_drm.rs`
 (`collect_render_elements`, `session_drm.rs:191-246`).
 
 Steps:
@@ -309,7 +309,7 @@ Steps:
 
 Acceptance:
 ```bash
-cargo build -p retro-compositor 2>&1 | tail -1
+cargo build -p slopos-compositor 2>&1 | tail -1
 ```
 → expect: `Finished`. Full proof is Task 2.7 (a launched app must not appear over
 the lock).
@@ -326,10 +326,10 @@ Commit: `feat(compositor): render only lock surfaces while locked (defect A)`
 
 Precondition:
 ```bash
-grep -q 'self.locked' crates/retro-compositor/src/session_drm.rs && echo ok
+grep -q 'self.locked' crates/slopos-compositor/src/session_drm.rs && echo ok
 ```
 
-Files: Modify `crates/retro-compositor/src/session_drm.rs` (`handle_libinput`
+Files: Modify `crates/slopos-compositor/src/session_drm.rs` (`handle_libinput`
 1140-1226; `forward_pointer_motion` 1230-1252; `focus_window_at_index` 1255-1264;
 `focus_surface` 1266-1274).
 
@@ -348,7 +348,7 @@ Steps:
 
 Acceptance:
 ```bash
-cargo build -p retro-compositor 2>&1 | tail -1
+cargo build -p slopos-compositor 2>&1 | tail -1
 ```
 → expect: `Finished`. Behavioral proof is Task 2.7.
 
@@ -364,9 +364,9 @@ Commit: `feat(compositor): route input only to the lock surface while locked`
 
 Precondition: Tasks 2.3–2.5 build.
 
-Files: Create a lock client (recommended: `crates/retro-shell/src/bin/retro-lock.rs`
+Files: Create a lock client (recommended: `crates/slopos-shell/src/bin/slopos-lock.rs`
 or a small `apps/lock` crate) and add a `Super+L` intercept in the compositor
-(`session_drm.rs` keyboard filter) that `spawn_client("retro-lock")` (reusing
+(`session_drm.rs` keyboard filter) that `spawn_client("slopos-lock")` (reusing
 Task 2.1's helper).
 
 Design:
@@ -376,7 +376,7 @@ Design:
   the version you pin — sctk provides a session-lock helper; bind the manager,
   call `lock`, create a lock surface per output, draw a password prompt, and on
   correct password call `unlock` (dropping the lock object).
-- Password source: read `RETROSHELL_LOCK_PASSWORD` (already referenced in
+- Password source: read `SLOPOS_LOCK_PASSWORD` (already referenced in
   `session_clients.rs`) or integrate `SessionManager` (`session_manager.rs`
   `lock`/`unlock`, `locked`). For this cycle, a matching env/config password that
   triggers `unlock` is sufficient — real PAM auth is a later hardening step; say
@@ -386,12 +386,12 @@ Design:
 
 Steps:
 1. Add the `Super+L` intercept in the compositor filter:
-   `if sym == Keysym::l || sym == Keysym::L { data.spawn_client("retro-lock"); return FilterResult::Intercept(()); }`
+   `if sym == Keysym::l || sym == Keysym::L { data.spawn_client("slopos-lock"); return FilterResult::Intercept(()); }`
    (still allowed while unlocked; once locked, Task 2.5 blocks other shortcuts).
-2. Implement `retro-lock`: bind session-lock, lock, draw prompt, read password,
+2. Implement `slopos-lock`: bind session-lock, lock, draw prompt, read password,
    unlock on match, exit.
 3. Add the binary to its crate's `Cargo.toml` (`[[bin]]` or `src/bin/`), and to
-   the installer copy-list note in Stage 4 (`retro-lock` joins the 7 binaries).
+   the installer copy-list note in Stage 4 (`slopos-lock` joins the 7 binaries).
 
 Acceptance:
 ```bash
@@ -408,20 +408,20 @@ DO NOT:
 - Use winit for the lock client — it can't speak `ext-session-lock-v1`; use
   smithay-client-toolkit.
 
-Commit: `feat(shell): retro-lock ext-session-lock-v1 client + Super+L trigger`
+Commit: `feat(shell): slopos-lock ext-session-lock-v1 client + Super+L trigger`
 
 ---
 
 ### Task 2.7 — VM DoD: lock is unbypassable, password unlocks, `Super+O` opens Finder   [VERIFIED]
 
-Precondition (VM): the compositor + `retro-lock` + `finder` all build on the VM:
+Precondition (VM): the compositor + `slopos-lock` + `finder` all build on the VM:
 ```bash
-ssh ... 'cd ~/retroshell && git pull && cargo build --release --workspace && echo BUILT'
+ssh ... 'cd ~/slopos-i && git pull && cargo build --release --workspace && echo BUILT'
 ```
 
 Steps (on tty1, seat required):
 1. Start the compositor + shell. Set the lock password (e.g.
-   `export RETROSHELL_LOCK_PASSWORD=retro`).
+   `export SLOPOS_LOCK_PASSWORD=retro`).
 2. Press **`Super+L`** → the screen locks (only the prompt renders).
 3. **Attempt to bypass:** press **`Super+O`** (and try other shortcuts). Confirm
    **no Finder window appears over the lock** — the app must not draw over it (the

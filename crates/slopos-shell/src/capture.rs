@@ -69,7 +69,7 @@ fn command_exists(name: &str) -> bool {
 /// Capture the root window to a PNG under Pictures (or /tmp).
 pub fn take_screenshot() -> Result<PathBuf, CaptureError> {
     let dir = capture_output_dir();
-    let path = dir.join(format!("RetroShell-Screenshot-{}.png", timestamp_slug()));
+    let path = dir.join(format!("SLOPOS-I-Screenshot-{}.png", timestamp_slug()));
     take_screenshot_to(&path)?;
     Ok(path)
 }
@@ -154,7 +154,7 @@ pub fn start_recording() -> Result<PathBuf, CaptureError> {
     }
 
     let dir = capture_output_dir();
-    let path = dir.join(format!("RetroShell-Recording-{}.mp4", timestamp_slug()));
+    let path = dir.join(format!("SLOPOS-I-Recording-{}.mp4", timestamp_slug()));
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -248,12 +248,12 @@ fn send_signal(pid: u32, sig: i32) -> std::io::Result<()> {
 
 /// Build a default screenshot filename (pure helper for tests).
 pub fn screenshot_filename(timestamp_secs: u64) -> String {
-    format!("RetroShell-Screenshot-{timestamp_secs}.png")
+    format!("SLOPOS-I-Screenshot-{timestamp_secs}.png")
 }
 
 /// Build a default recording filename (pure helper for tests).
 pub fn recording_filename(timestamp_secs: u64) -> String {
-    format!("RetroShell-Recording-{timestamp_secs}.mp4")
+    format!("SLOPOS-I-Recording-{timestamp_secs}.mp4")
 }
 
 #[cfg(test)]
@@ -262,8 +262,8 @@ mod tests {
 
     #[test]
     fn filenames() {
-        assert_eq!(screenshot_filename(123), "RetroShell-Screenshot-123.png");
-        assert_eq!(recording_filename(456), "RetroShell-Recording-456.mp4");
+        assert_eq!(screenshot_filename(123), "SLOPOS-I-Screenshot-123.png");
+        assert_eq!(recording_filename(456), "SLOPOS-I-Recording-456.mp4");
     }
 
     #[test]

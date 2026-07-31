@@ -26,7 +26,7 @@
 ### UI layout
 ```
 ┌─────────────────────────────────────┐
-│         RetroShell Search           │
+│         SLOPOS-I Search           │
 ├─────────────────────────────────────┤
 │ [text input field]                  │
 ├─────────────────────────────────────┤
@@ -54,19 +54,19 @@
 
 ## Implementation stages
 
-### Stage A: Shell infrastructure (retro-shell)
+### Stage A: Shell infrastructure (slopos-shell)
 - Add a `spotlight` module to manage the search UI state
 - Define keyboard shortcut handling (Super+Space)
 - Create overlay surface via layer-shell (z-order: above normal, below exclusive)
 - Emit input events (typing, arrow keys, Enter, Esc)
 
-### Stage B: Search backend (retro-shell)
+### Stage B: Search backend (slopos-shell)
 - Query `launch_services::scan_applications()` for app results
 - Implement file search in `$HOME` (non-blocking via a background thread)
 - Hardcode settings entries
 
-### Stage C: Search UI (retro-sdk + retro-kit)
-- Build a results list widget in `retro-kit::list_view` or custom
+### Stage C: Search UI (slopos-sdk + slopos-kit)
+- Build a results list widget in `slopos-kit::list_view` or custom
 - Display app icons (from the theme)
 - Show file previews / highlights
 - Theme-aware styling (fonts, colors, focus behavior)
@@ -86,7 +86,7 @@
 
 ## Defect risk
 
-The retro-kit interaction layer (defect J) is partly dead. If buttons/list clicks
+The slopos-kit interaction layer (defect J) is partly dead. If buttons/list clicks
 are inert, the mouse interaction in results won't work until **that** is fixed.
 Start with keyboard-only if needed.
 

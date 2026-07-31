@@ -64,26 +64,26 @@ EOF
 
 header "Task 4.0: Re-ground verification"
 
-log_test "Checking for retroshell.desktop"
-if [ -f /usr/local/share/wayland-sessions/retroshell.desktop ] || \
-   [ -f /usr/share/wayland-sessions/retroshell.desktop ]; then
-  log_pass "retroshell.desktop found"
+log_test "Checking for slopos-i.desktop"
+if [ -f /usr/local/share/wayland-sessions/slopos-i.desktop ] || \
+   [ -f /usr/share/wayland-sessions/slopos-i.desktop ]; then
+  log_pass "slopos-i.desktop found"
 else
-  log_fail "retroshell.desktop not found"
+  log_fail "slopos-i.desktop not found"
 fi
 
-log_test "Checking for retro-compositor binary"
-if command -v retro-compositor &>/dev/null; then
-  log_pass "retro-compositor in PATH"
+log_test "Checking for slopos-compositor binary"
+if command -v slopos-compositor &>/dev/null; then
+  log_pass "slopos-compositor in PATH"
 else
-  log_fail "retro-compositor not found in PATH"
+  log_fail "slopos-compositor not found in PATH"
 fi
 
-log_test "Checking for retro-shell binary"
-if command -v retro-shell &>/dev/null; then
-  log_pass "retro-shell in PATH"
+log_test "Checking for slopos-shell binary"
+if command -v slopos-shell &>/dev/null; then
+  log_pass "slopos-shell in PATH"
 else
-  log_fail "retro-shell not found in PATH"
+  log_fail "slopos-shell not found in PATH"
 fi
 
 # ============================================================================
@@ -148,11 +148,11 @@ else
   exit 1
 fi
 
-log_test "Checking PKGBUILD for retroshell package"
-if grep -q '^pkgname=retroshell' "$REPO_ROOT/packaging/arch/PKGBUILD"; then
-  log_pass "PKGBUILD defines retroshell package"
+log_test "Checking PKGBUILD for slopos-i package"
+if grep -q '^pkgname=slopos-i' "$REPO_ROOT/packaging/arch/PKGBUILD"; then
+  log_pass "PKGBUILD defines slopos-i package"
 else
-  log_fail "PKGBUILD does not define retroshell package"
+  log_fail "PKGBUILD does not define slopos-i package"
 fi
 
 log_test "Checking PKGBUILD for build function"
@@ -222,25 +222,25 @@ fi
 
 header "Task 4.5–4.6: Runtime verification (if installed)"
 
-log_test "Checking if retro-compositor can be found"
-if command -v retro-compositor &>/dev/null; then
-  log_pass "retro-compositor executable available"
+log_test "Checking if slopos-compositor can be found"
+if command -v slopos-compositor &>/dev/null; then
+  log_pass "slopos-compositor executable available"
 
   # Verify it's the right binary (check for symbol, not execute)
-  if file "$(which retro-compositor)" | grep -q 'ELF.*executable'; then
-    log_pass "retro-compositor is an ELF binary"
+  if file "$(which slopos-compositor)" | grep -q 'ELF.*executable'; then
+    log_pass "slopos-compositor is an ELF binary"
   else
-    log_warn "retro-compositor may not be a proper binary"
+    log_warn "slopos-compositor may not be a proper binary"
   fi
 else
-  log_warn "retro-compositor not installed (expected if this is pre-install)"
+  log_warn "slopos-compositor not installed (expected if this is pre-install)"
 fi
 
-log_test "Checking if retro-shell can be found"
-if command -v retro-shell &>/dev/null; then
-  log_pass "retro-shell executable available"
+log_test "Checking if slopos-shell can be found"
+if command -v slopos-shell &>/dev/null; then
+  log_pass "slopos-shell executable available"
 else
-  log_warn "retro-shell not installed (expected if this is pre-install)"
+  log_warn "slopos-shell not installed (expected if this is pre-install)"
 fi
 
 # ============================================================================
@@ -257,15 +257,15 @@ WAYLAND_SESSION_PATHS=(
 
 FOUND_SESSION=0
 for path in "${WAYLAND_SESSION_PATHS[@]}"; do
-  if [ -f "$path/retroshell.desktop" ]; then
-    log_pass "Found retroshell.desktop at $path"
+  if [ -f "$path/slopos-i.desktop" ]; then
+    log_pass "Found slopos-i.desktop at $path"
     FOUND_SESSION=1
     break
   fi
 done
 
 if [ $FOUND_SESSION -eq 0 ]; then
-  log_warn "No retroshell.desktop found in standard locations (may be installed)"
+  log_warn "No slopos-i.desktop found in standard locations (may be installed)"
 fi
 
 # ============================================================================
@@ -276,10 +276,10 @@ header "Greeter configuration (if enabled)"
 
 if [ -f /etc/greetd/config.toml ]; then
   if grep -q 'tuigreet' /etc/greetd/config.toml && \
-     grep -q 'start-retroshell' /etc/greetd/config.toml; then
-    log_pass "greetd configured for RetroShell"
+     grep -q 'start-slopos-i' /etc/greetd/config.toml; then
+    log_pass "greetd configured for SLOPOS-I"
   else
-    log_warn "greetd config exists but may not be for RetroShell"
+    log_warn "greetd config exists but may not be for SLOPOS-I"
   fi
 else
   log_warn "greetd not configured (expected if --with-greeter not used)"
@@ -308,7 +308,7 @@ if [ $FAILED -eq 0 ]; then
   echo "  1. If binaries not found, run: sudo bash $REPO_ROOT/install.sh"
   echo "  2. To use greeter, add: --with-greeter"
   echo "  3. After install, reboot or restart login manager"
-  echo "  4. Select 'RetroShell' from session menu"
+  echo "  4. Select 'SLOPOS-I' from session menu"
   echo ""
   exit 0
 else

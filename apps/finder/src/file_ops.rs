@@ -276,7 +276,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let test_root = temp.join(format!("retroshell_finder_test_{}", unique_id));
+        let test_root = temp.join(format!("slopos-i_finder_test_{}", unique_id));
 
         // 1. Create Directory
         create_directory(&test_root).unwrap();
@@ -376,7 +376,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("retroshell_finder_test_{label}_{nanos}"));
+        let dir = std::env::temp_dir().join(format!("slopos-i_finder_test_{label}_{nanos}"));
         create_directory(&dir).unwrap();
         dir
     }

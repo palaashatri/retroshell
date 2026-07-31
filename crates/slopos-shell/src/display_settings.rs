@@ -6,7 +6,7 @@
 //! flat `key=value` lines in `settings.conf`. On every save of those fields the
 //! UI **must** call [`DisplayConfig::apply_arrangement_env`] (which runs
 //! [`plan_arrangement`] + [`crate::display_arrange::apply_display_plan_env`])
-//! so nested compositor children immediately see `RETROSHELL_OUTPUTS_LAYOUT`.
+//! so nested compositor children immediately see `SLOPOS_OUTPUTS_LAYOUT`.
 //! Shell startup re-applies the same path via `apply_display_config_from_settings`.
 
 use serde::{Deserialize, Serialize};
@@ -314,10 +314,10 @@ mod tests {
         assert!(
             applied
                 .iter()
-                .any(|(k, v)| k == "RETROSHELL_OUTPUTS_LAYOUT" && v.contains(":s200")),
+                .any(|(k, v)| k == "SLOPOS_OUTPUTS_LAYOUT" && v.contains(":s200")),
             "expected layout env with scale 200, got {applied:?}"
         );
-        std::env::remove_var("RETROSHELL_OUTPUTS_LAYOUT");
+        std::env::remove_var("SLOPOS_OUTPUTS_LAYOUT");
     }
 
     #[test]

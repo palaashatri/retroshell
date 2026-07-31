@@ -38,14 +38,14 @@ pub fn try_register_portal_session_bus() -> bool {
                     secret = "org.freedesktop.impl.portal.Secret",
                     print = "org.freedesktop.impl.portal.Print",
                     inhibit = "org.freedesktop.impl.portal.Inhibit",
-                    "RetroShell portal handlers registered on session bus"
+                    "SLOPOS-I portal handlers registered on session bus"
                 );
                 true
             }
             Err(err) => {
                 tracing::warn!(
                     error = %err,
-                    "RetroShell portal registration skipped"
+                    "SLOPOS-I portal registration skipped"
                 );
                 false
             }
@@ -53,7 +53,7 @@ pub fn try_register_portal_session_bus() -> bool {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        tracing::debug!("RetroShell portal registration skipped (non-Linux host)");
+        tracing::debug!("SLOPOS-I portal registration skipped (non-Linux host)");
         false
     }
 }
@@ -549,7 +549,7 @@ mod linux {
     impl PortalInhibitIface {
         /// Inhibit — issue cookie into process-wide store for shell idle policy.
         ///
-        /// Not logind Inhibit; only RetroShell [`crate::idle_policy`] polls it.
+        /// Not logind Inhibit; only SLOPOS-I [`crate::idle_policy`] polls it.
         fn inhibit(
             &self,
             _handle: zbus::zvariant::ObjectPath<'_>,

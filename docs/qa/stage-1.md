@@ -2,12 +2,12 @@
 
 > **This doc holds evidence, not claims.** The QA report's core lesson: a
 > compositor was scored "85/100 daily-driver" while never having painted a window.
-> Stage 1 exists to never do that again. See [../PROGRAM.md](../PROGRAM.md).
+> Stage 1 exists to never do that again. See [../SLOPOS-I.md](../SLOPOS-I.md).
 
 **Tasks under test:** [tasks/stage-1-prove-live-path.md](../tasks/stage-1-prove-live-path.md)
 
 **Stage 1 definition of done — one of:**
-- **(a)** a VM screenshot of Finder rendered by `retro-compositor` (not labwc), or
+- **(a)** a VM screenshot of Finder rendered by `slopos-compositor` (not labwc), or
 - **(b)** an evidenced diagnosis of exactly why it does not paint, citing the
   backend, client-bind status, and the specific scanout code path.
 
@@ -30,10 +30,10 @@ x86_64 / `vmwgfx`). Screenshot: [../screenshots/stage1-finder.png](../screenshot
 - Proving log lines:
   ```text
   compositor backend selection: session_mode=session_drm (DRM/KMS seat path)
-  [retro-compositor] starting DRM/KMS session path (session_mode=session_drm …)
-  [retro-compositor] opening DRM node /dev/dri/card0
+  [slopos-compositor] starting DRM/KMS session path (session_mode=session_drm …)
+  [slopos-compositor] opening DRM node /dev/dri/card0
   DrmCompositor initialized; GL composition active
-  [retro-compositor] WAYLAND_DISPLAY=wayland-1 (DRM session)
+  [slopos-compositor] WAYLAND_DISPLAY=wayland-1 (DRM session)
   GL Vendor: "VMware, Inc." / GL Renderer: "SVGA3D; build: RELEASE;  LLVM;"
   ```
 - Note: smithay warns `Unable to become drm master, assuming unprivileged mode`
@@ -52,7 +52,7 @@ x86_64 / `vmwgfx`). Screenshot: [../screenshots/stage1-finder.png](../screenshot
 
 ## Finder DoD (Task 1.4)
 
-- Binary: `~/retroshell/target/release/finder`
+- Binary: `~/slopos-i/target/release/finder`
 - Hold state at capture: `COMPOSITOR_UP=YES CLIENT=YES MAPPED=YES SUBMISSIONS=11`
 - Client: `Application 'Finder' started`; wgpu via Vulkan **llvmpipe**
 - Screenshot shows Finder UI (sidebar, `/home/retro` icons, toolbar) on grey DRM
@@ -94,8 +94,8 @@ DRM session loop running (…; scanout_armed=false)
 
 ```text
 COMPOSITOR_UP=YES FOOT=YES MAPPED=YES SOCK=wayland-1 MASTER_WARN=1
-[retro-compositor/drm] toplevel mapped at (64,64) title=Untitled
-[retro-compositor/drm] workspace active=0/8 windows=1 visible=1 …
+[slopos-compositor/drm] toplevel mapped at (64,64) title=Untitled
+[slopos-compositor/drm] workspace active=0/8 windows=1 visible=1 …
 ```
 
 ### Task 1.4 — Finder

@@ -1,4 +1,4 @@
-# RetroShell — Next Steps (After 2026-07-31 Session)
+# SLOPOS-I — Next Steps (After 2026-07-31 Session)
 
 **Current Status:** 
 - ✅ Spotlight MVP: Functionally complete, 316 tests passing
@@ -15,8 +15,8 @@
 
 #### On Clean Arch VM:
 ```bash
-# Copy or clone repo to /root/retroshell
-cd /root/retroshell
+# Copy or clone repo to /root/slopos-i
+cd /root/slopos-i
 
 # Run verification harness
 bash packaging/vm/stage-4-verify.sh "arch-aarch64"
@@ -24,7 +24,7 @@ bash packaging/vm/stage-4-verify.sh "arch-aarch64"
 # Then: run actual install
 bash install.sh --with-greeter
 
-# Reboot and select RetroShell from session menu
+# Reboot and select SLOPOS-I from session menu
 # Verify desktop appears (wallpaper + dock visible)
 # Test keyboard: Super+L locks, Super+Space opens Spotlight
 ```
@@ -32,7 +32,7 @@ bash install.sh --with-greeter
 #### On Clean Ubuntu VM:
 ```bash
 # Same as above but on Ubuntu 22.04+ Server
-cd /root/retroshell
+cd /root/slopos-i
 bash packaging/vm/stage-4-verify.sh "ubuntu-aarch64"
 bash install.sh --with-greeter
 # Test desktop session
@@ -79,7 +79,7 @@ git push origin v0.1.0
 
 ### 4. Update README.md
 **Timeline:** 15 minutes  
-**Location:** `/Users/palaashatri/Code/retroshell/README.md`
+**Location:** `/Users/palaashatri/Code/slopos-i/README.md`
 
 Add to Installation section:
 ```markdown
@@ -87,14 +87,14 @@ Add to Installation section:
 
 ### From Source (All Platforms)
 ```bash
-bash <(curl https://raw.githubusercontent.com/you/retroshell/main/install.sh)
+bash <(curl https://raw.githubusercontent.com/you/slopos-i/main/install.sh)
 # or
 bash install.sh --with-greeter  # for login manager support
 ```
 
 ### Arch (AUR)
 ```bash
-yay -S retroshell
+yay -S slopos-i
 ```
 
 ### Ubuntu/Debian (PKGBUILD via debs.dev or manual)
@@ -105,13 +105,13 @@ yay -S retroshell
 
 ### Live ISO (aarch64)
 ```bash
-# Download: https://releases.retroshell.dev/retroshell-0.1.0-aarch64.iso
+# Download: https://releases.slopos-i.dev/slopos-i-0.1.0-aarch64.iso
 # Boot on VM or real hardware
 ```
 
 ## Quick Start
 ```bash
-retroshell-compositor         # Start compositor
+slopos-i-compositor         # Start compositor
 # or wait for session login (greeter will auto-start)
 
 # Super+Space: Spotlight search
@@ -138,7 +138,7 @@ retroshell-compositor         # Start compositor
 
 **Approach:**
 - Add rendering layer to SpotlightUI
-- Use retro-kit's canvas primitives (if available) or custom drawing
+- Use slopos-kit's canvas primitives (if available) or custom drawing
 - Sync with ThemeContext for colors
 - Test on real desktop (not just tests)
 
@@ -153,7 +153,7 @@ retroshell-compositor         # Start compositor
 - May involve input event routing or rendering glitch
 - **Acceptance:** All buttons clickable in actual session
 
-#### Defect H: retro-bus IPC
+#### Defect H: slopos-bus IPC
 - Event broadcasting for theme changes, lock state, etc.
 - Enables theme hot-swap without restart
 - **Acceptance:** Theme changes apply immediately to all apps
@@ -170,7 +170,7 @@ retroshell-compositor         # Start compositor
 
 - Load theme manifest at startup
 - Apply from Settings UI
-- Hot-swap via retro-bus (after H is fixed)
+- Hot-swap via slopos-bus (after H is fixed)
 - User-selectable themes (light/dark + variants)
 
 **Acceptance:** Themes menu in Settings, hot-swap working
@@ -219,7 +219,7 @@ main (merged docs/program-design, 50 commits)
 v0.1.1-dev (new branch, 1-3 weeks)
   ├─ Spotlight rendering (B2c)
   ├─ Button fixes (J)
-  ├─ retro-bus hotswap (H)
+  ├─ slopos-bus hotswap (H)
   └─ Themes (C1) — optional for v0.1.1
 ```
 
@@ -233,8 +233,8 @@ v0.1.1-dev (new branch, 1-3 weeks)
 | A | Merge + tag | 1 hour | VM success |
 | B1 | Spotlight render | 3-5 days | None |
 | B2 | Button debugging | 1-2 days | None |
-| B3 | retro-bus repair | 1-2 weeks | None |
-| B4 | Themes (optional) | 1-2 weeks | retro-bus |
+| B3 | slopos-bus repair | 1-2 weeks | None |
+| B4 | Themes (optional) | 1-2 weeks | slopos-bus |
 | **Total** | | **2-4 weeks** | **VM tests** |
 
 ---

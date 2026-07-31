@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Provision an ALREADY-INSTALLED Arch Linux ARM VM (e.g. the UTM gallery image)
-# with RetroShell's build + runtime deps, the host SSH key, tty1 autologin, and a
+# with SLOPOS-I's build + runtime deps, the host SSH key, tty1 autologin, and a
 # built workspace. Run INSIDE the VM as a sudo-capable user:
 #   curl -sL http://10.0.2.2:8000/provision-arm64.sh | bash
 #
@@ -10,7 +10,7 @@
 set -euxo pipefail
 
 USERNAME="${SUDO_USER:-$(whoami)}"
-REPO_URL="${REPO_URL:-https://github.com/palaashatri/retroshell.git}"
+REPO_URL="${REPO_URL:-https://github.com/palaashatri/slopos-i.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 HOST_HTTP="${HOST_HTTP:-http://10.0.2.2:8000}"
 
@@ -59,18 +59,18 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin $USERNAME --noclear %I \$TERM
 EOF
 
-echo "=== clone + build RetroShell ==="
-if [ ! -d "$HOME/retroshell" ]; then
-  git clone --branch "$REPO_BRANCH" "$REPO_URL" "$HOME/retroshell" \
-    || git clone "$REPO_URL" "$HOME/retroshell"
+echo "=== clone + build SLOPOS-I ==="
+if [ ! -d "$HOME/slopos-i" ]; then
+  git clone --branch "$REPO_BRANCH" "$REPO_URL" "$HOME/slopos-i" \
+    || git clone "$REPO_URL" "$HOME/slopos-i"
 fi
-mkdir -p "$HOME/.config/retroshell"
-cat > "$HOME/.config/retroshell/settings.conf" <<EOF
+mkdir -p "$HOME/.config/slopos-i"
+cat > "$HOME/.config/slopos-i/settings.conf" <<EOF
 theme=classic
 appearance=light
-lock_password=retroshell
+lock_password=slopos-i
 EOF
-cd "$HOME/retroshell"
+cd "$HOME/slopos-i"
 cargo build --release --workspace
 
 echo "=== done; reboot so virtio_gpu + group membership take effect ==="

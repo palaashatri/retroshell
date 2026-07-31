@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/retro-render",
-    "crates/retro-kit",
-    "crates/retro-shell",
-    "crates/retro-bus",
-    "crates/retro-sdk",
-    "crates/retro-compositor",
+    "crates/slopos-render",
+    "crates/slopos-kit",
+    "crates/slopos-shell",
+    "crates/slopos-bus",
+    "crates/slopos-sdk",
+    "crates/slopos-compositor",
     "apps/finder",
     "apps/settings",
     "apps/textedit",

@@ -144,11 +144,11 @@ pub fn parse_force_quit_entry(entry: &str) -> Option<ForceQuitTarget> {
 /// Map bundle id → executable name (shipped first-party apps).
 pub fn binary_name_for_bundle(bundle_id: &str) -> Option<&'static str> {
     match bundle_id {
-        "com.retro.finder" => Some("finder"),
-        "com.retro.settings" => Some("settings"),
-        "com.retro.textedit" => Some("textedit"),
-        "com.retro.terminal" => Some("terminal"),
-        "com.retro.appstore" => Some("appstore"),
+        "com.slopos.finder" => Some("finder"),
+        "com.slopos.settings" => Some("settings"),
+        "com.slopos.textedit" => Some("textedit"),
+        "com.slopos.terminal" => Some("terminal"),
+        "com.slopos.appstore" => Some("appstore"),
         _ => None,
     }
 }
@@ -197,24 +197,24 @@ fn which_exists(name: &str) -> bool {
 /// Build a `Command` for launching a first-party app as a Wayland client process.
 ///
 /// Inherits `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR` from the shell session so the
-/// child attaches to the same compositor (labwc or retro-compositor).
+/// child attaches to the same compositor (labwc or slopos-compositor).
 pub fn build_app_command(path: &std::path::Path) -> Command {
     let mut command = Command::new(path);
-    command.env("RETROSHELL_GLOBAL_MENU", "1");
+    command.env("SLOPOS_GLOBAL_MENU", "1");
     // The lock secret is shell-only; child apps must never see it.
-    command.env_remove("RETROSHELL_LOCK_PASSWORD");
+    command.env_remove("SLOPOS_LOCK_PASSWORD");
     if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
         let menu_dir = std::path::PathBuf::from(&runtime)
-            .join("retroshell")
+            .join("slopos-i")
             .join("menus");
         let _ = std::fs::create_dir_all(&menu_dir);
-        command.env("RETROSHELL_MENU_MANIFEST_DIR", menu_dir);
+        command.env("SLOPOS_MENU_MANIFEST_DIR", menu_dir);
     }
-    if let Ok(w) = std::env::var("RETROSHELL_COMPOSITOR_WIDTH") {
-        command.env("RETROSHELL_COMPOSITOR_WIDTH", w);
+    if let Ok(w) = std::env::var("SLOPOS_COMPOSITOR_WIDTH") {
+        command.env("SLOPOS_COMPOSITOR_WIDTH", w);
     }
-    if let Ok(h) = std::env::var("RETROSHELL_COMPOSITOR_HEIGHT") {
-        command.env("RETROSHELL_COMPOSITOR_HEIGHT", h);
+    if let Ok(h) = std::env::var("SLOPOS_COMPOSITOR_HEIGHT") {
+        command.env("SLOPOS_COMPOSITOR_HEIGHT", h);
     }
     // Prefer Wayland when a session is available; do not force a wrong display.
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
@@ -340,13 +340,13 @@ mod tests {
 
     #[test]
     fn binary_name_mapping_covers_first_party_suite() {
-        assert_eq!(binary_name_for_bundle("com.retro.finder"), Some("finder"));
+        assert_eq!(binary_name_for_bundle("com.slopos.finder"), Some("finder"));
         assert_eq!(
-            binary_name_for_bundle("com.retro.terminal"),
+            binary_name_for_bundle("com.slopos.terminal"),
             Some("terminal")
         );
         assert_eq!(
-            binary_name_for_bundle("com.retro.settings"),
+            binary_name_for_bundle("com.slopos.settings"),
             Some("settings")
         );
         assert_eq!(binary_name_for_bundle("unknown"), None);
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn bundle_entrypoint_path_joins_path_and_entrypoint() {
         let bundle = crate::launch_services::AppBundle {
-            bundle_id: "com.retro.foo".into(),
+            bundle_id: "com.slopos.foo".into(),
             name: "Foo".into(),
             version: "0.1.0".into(),
             path: "/Applications/Foo.app".into(),
@@ -374,12 +374,12 @@ mod tests {
     fn spawn_open_plan_argv_matches_mime_spawn_argv_pure() {
         // Pure: plan → spawn argv without spawning a GUI process.
         let mut reg = crate::mime_open::MimeOpenRegistry::new();
-        crate::mime_open::seed_retroshell_defaults(&mut reg);
+        crate::mime_open::seed_slopos_defaults(&mut reg);
         let plan =
             crate::mime_open::open_plan(&reg, std::path::PathBuf::from("/tmp/readme.txt")).unwrap();
         let argv = crate::mime_open::spawn_argv(&plan);
         assert_eq!(argv, vec!["textedit", "/tmp/readme.txt"]);
-        assert_eq!(plan.app_id, "com.retro.textedit");
+        assert_eq!(plan.app_id, "com.slopos.textedit");
         assert_eq!(binary_name_for_bundle(&plan.app_id), Some("textedit"));
     }
 
@@ -399,21 +399,21 @@ mod tests {
     fn registry_tracks_two_clients_as_multi_client_session() {
         let mut reg = SessionClientRegistry::new();
         reg.register(ExternalClient {
-            bundle_id: "com.retro.finder".into(),
+            bundle_id: "com.slopos.finder".into(),
             binary_name: "finder".into(),
             pid: 11,
             child: None,
             launched_at_unix: 1,
         });
         reg.register(ExternalClient {
-            bundle_id: "com.retro.terminal".into(),
+            bundle_id: "com.slopos.terminal".into(),
             binary_name: "terminal".into(),
             pid: 22,
             child: None,
             launched_at_unix: 2,
         });
         assert_eq!(reg.len(), 2);
-        assert_eq!(reg.count_for_bundle("com.retro.finder"), 1);
+        assert_eq!(reg.count_for_bundle("com.slopos.finder"), 1);
         let mut pids = reg.pids();
         pids.sort();
         assert_eq!(pids, vec![11, 22]);
@@ -424,7 +424,7 @@ mod tests {
         // Unknown bundle fails without inventing a binary.
         assert!(resolve_app_binary("com.not.real").is_err());
         // Known bundle either finds a path or fails with a clear message (host may lack bins).
-        match resolve_app_binary("com.retro.finder") {
+        match resolve_app_binary("com.slopos.finder") {
             Ok(p) => assert!(p.to_string_lossy().contains("finder")),
             Err(e) => assert!(e.contains("finder") || e.contains("Could not find")),
         }
@@ -433,8 +433,8 @@ mod tests {
     #[test]
     fn parse_force_quit_entry_window_and_client() {
         assert_eq!(
-            parse_force_quit_entry("window: Retro HD"),
-            Some(ForceQuitTarget::WindowTitle("Retro HD".into()))
+            parse_force_quit_entry("window: SLOPOS HD"),
+            Some(ForceQuitTarget::WindowTitle("SLOPOS HD".into()))
         );
         assert_eq!(
             parse_force_quit_entry("client: finder (pid 203)"),
@@ -446,8 +446,8 @@ mod tests {
         );
         // Legacy bare title still resolves to a shell window target.
         assert_eq!(
-            parse_force_quit_entry("About RetroShell"),
-            Some(ForceQuitTarget::WindowTitle("About RetroShell".into()))
+            parse_force_quit_entry("About SLOPOS-I"),
+            Some(ForceQuitTarget::WindowTitle("About SLOPOS-I".into()))
         );
         assert_eq!(parse_force_quit_entry("window: "), None);
         assert_eq!(parse_force_quit_entry("client: broken"), None);
@@ -457,7 +457,7 @@ mod tests {
     fn force_quit_pid_removes_registry_entry() {
         let mut reg = SessionClientRegistry::new();
         reg.register(ExternalClient {
-            bundle_id: "com.retro.finder".into(),
+            bundle_id: "com.slopos.finder".into(),
             binary_name: "finder".into(),
             pid: 999_001,
             child: None,

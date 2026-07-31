@@ -1,4 +1,4 @@
-//! Shell-side HiDPI / content scale (mirrors compositor RETROSHELL_OUTPUT_SCALE).
+//! Shell-side HiDPI / content scale (mirrors compositor SLOPOS_OUTPUT_SCALE).
 //!
 //! Pure helpers so tests and layout can share the same scale policy without
 //! depending on the compositor crate.
@@ -68,11 +68,11 @@ pub fn parse_shell_scale(raw: &str) -> Option<ShellScale> {
     ShellScale::new(num, 1000)
 }
 
-/// Read `RETROSHELL_OUTPUT_SCALE` or `RETROSHELL_SHELL_SCALE`.
+/// Read `SLOPOS_OUTPUT_SCALE` or `SLOPOS_SHELL_SCALE`.
 pub fn detect_shell_scale_from_env() -> ShellScale {
-    let v = std::env::var("RETROSHELL_SHELL_SCALE")
+    let v = std::env::var("SLOPOS_SHELL_SCALE")
         .ok()
-        .or_else(|| std::env::var("RETROSHELL_OUTPUT_SCALE").ok());
+        .or_else(|| std::env::var("SLOPOS_OUTPUT_SCALE").ok());
     v.as_deref()
         .and_then(parse_shell_scale)
         .unwrap_or(ShellScale::IDENTITY)

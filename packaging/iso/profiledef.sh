@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# archiso profile definition for RetroShell
+# archiso profile definition for SLOPOS-I
 
-iso_name="retroshell"
-iso_label="RETROSHELL"
-iso_publisher="RetroShell Contributors"
-iso_application="RetroShell Live Environment"
+iso_name="slopos-i"
+iso_label="SLOPOSI"
+iso_publisher="SLOPOS-I Contributors"
+iso_application="SLOPOS-I Live Environment"
 iso_version="0.1.0"
 install_dir="arch"
 bootmodes=('uefi-x64.systemd-boot.esp' 'uefi-ia32.systemd-boot.esp' 'bios.syslinux.mbr')
@@ -16,5 +16,5 @@ file_permissions=(
   ["/etc/shadow"]="0:0:400"
   ["/root"]="0:0:750"
   ["/root/.automated_script.sh"]="0:0:755"
-  ["/usr/local/bin/start-retroshell"]="0:0:755"
+  ["/usr/local/bin/start-slopos-i"]="0:0:755"
 )

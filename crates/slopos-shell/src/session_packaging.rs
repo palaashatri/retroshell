@@ -22,10 +22,10 @@ impl SessionPackagingLayout {
     pub fn under_prefix(prefix: impl AsRef<Path>) -> Self {
         let p = prefix.as_ref();
         Self {
-            wayland_session_desktop: p.join("share/wayland-sessions/retroshell.desktop"),
-            xsession_desktop: p.join("share/xsessions/retroshell.desktop"),
-            start_script: p.join("bin/start-retroshell"),
-            user_service: p.join("lib/systemd/user/retroshell.service"),
+            wayland_session_desktop: p.join("share/wayland-sessions/slopos-i.desktop"),
+            xsession_desktop: p.join("share/xsessions/slopos-i.desktop"),
+            start_script: p.join("bin/start-slopos-i"),
+            user_service: p.join("lib/systemd/user/slopos-i.service"),
         }
     }
 
@@ -33,10 +33,10 @@ impl SessionPackagingLayout {
     pub fn from_repo_packaging(repo_root: impl AsRef<Path>) -> Self {
         let r = repo_root.as_ref();
         Self {
-            wayland_session_desktop: r.join("packaging/retroshell-wayland.desktop"),
-            xsession_desktop: r.join("packaging/retroshell.desktop"),
-            start_script: r.join("scripts/start-retroshell"),
-            user_service: r.join("packaging/retroshell.service"),
+            wayland_session_desktop: r.join("packaging/slopos-i-wayland.desktop"),
+            xsession_desktop: r.join("packaging/slopos-i.desktop"),
+            start_script: r.join("scripts/start-slopos-i"),
+            user_service: r.join("packaging/slopos-i.service"),
         }
     }
 }
@@ -190,24 +190,24 @@ pub fn check_greeter_session_readiness(layout: &SessionPackagingLayout) -> Greet
         && desktop_names_present(&layout.xsession_desktop);
     if !desktop_names_ok {
         notes.push(
-            "DesktopNames=RetroShell required on both wayland-sessions and xsessions entries"
+            "DesktopNames=SLOPOS-I required on both wayland-sessions and xsessions entries"
                 .into(),
         );
     }
 
     let start_script_executable_bit = is_executable(&layout.start_script);
     if packaging.start_script_ok && !start_script_executable_bit {
-        notes.push("start-retroshell exists but executable bit not set".into());
+        notes.push("start-slopos-i exists but executable bit not set".into());
     }
 
-    // Systemd user unit sanity (ExecStart points at start-retroshell).
+    // Systemd user unit sanity (ExecStart points at start-slopos-i).
     if packaging.user_service_ok {
         match std::fs::read_to_string(&layout.user_service) {
             Ok(unit) => {
-                if !unit.contains("start-retroshell") {
-                    notes.push("user service unit does not reference start-retroshell".into());
+                if !unit.contains("start-slopos-i") {
+                    notes.push("user service unit does not reference start-slopos-i".into());
                 } else {
-                    notes.push("user service unit references start-retroshell".into());
+                    notes.push("user service unit references start-slopos-i".into());
                 }
             }
             Err(e) => notes.push(format!("cannot read user service: {e}")),
@@ -313,12 +313,12 @@ pub fn parse_desktop_keys(content: &str) -> HashMap<String, String> {
 ///
 /// Requires:
 /// - `Type=Application`
-/// - `Exec` containing `start-retroshell`
+/// - `Exec` containing `start-slopos-i`
 /// - `Name` non-empty
-/// - `DesktopNames` containing `RetroShell` (when present; recommended)
+/// - `DesktopNames` containing `SLOPOS-I` (when present; recommended)
 ///
 /// Soft checks (warnings via notes path, not hard errors unless absent on
-/// readiness probe): `TryExec` should also mention `start-retroshell`.
+/// readiness probe): `TryExec` should also mention `start-slopos-i`.
 ///
 /// Returns `Ok(())` on success, or `Err` with one message per failed rule.
 pub fn validate_session_desktop(content: &str) -> Result<(), Vec<String>> {
@@ -332,8 +332,8 @@ pub fn validate_session_desktop(content: &str) -> Result<(), Vec<String>> {
     }
 
     match keys.get("Exec").map(String::as_str) {
-        Some(exec) if exec.contains("start-retroshell") => {}
-        Some(exec) => errors.push(format!("Exec must contain start-retroshell (got '{exec}')")),
+        Some(exec) if exec.contains("start-slopos-i") => {}
+        Some(exec) => errors.push(format!("Exec must contain start-slopos-i (got '{exec}')")),
         None => errors.push("missing required key: Exec".to_string()),
     }
 
@@ -345,18 +345,18 @@ pub fn validate_session_desktop(content: &str) -> Result<(), Vec<String>> {
 
     // DesktopNames is required for install_ready greeter checklist.
     match keys.get("DesktopNames").map(String::as_str) {
-        Some(names) if names.split(';').any(|n| n.trim() == "RetroShell") => {}
+        Some(names) if names.split(';').any(|n| n.trim() == "SLOPOS-I") => {}
         Some(names) if !names.is_empty() => {
-            // Present but not RetroShell — still valid Type/Exec, note as error
-            // only when empty; non-RetroShell is a soft failure for readiness.
-            if !names.to_ascii_lowercase().contains("retro") {
+            // Present but not SLOPOS-I — still valid Type/Exec, note as error
+            // only when empty; non-SLOPOS-I is a soft failure for readiness.
+            if !names.to_ascii_lowercase().contains("slopos") {
                 errors.push(format!(
-                    "DesktopNames should include RetroShell (got '{names}')"
+                    "DesktopNames should include SLOPOS-I (got '{names}')"
                 ));
             }
         }
         Some(_) => errors.push("DesktopNames must be non-empty".to_string()),
-        None => errors.push("missing recommended key: DesktopNames=RetroShell".to_string()),
+        None => errors.push("missing recommended key: DesktopNames=SLOPOS-I".to_string()),
     }
 
     if errors.is_empty() {
@@ -372,7 +372,7 @@ mod tests {
     use std::fs;
 
     fn repo_root() -> PathBuf {
-        // Crate is crates/retro-shell → repo root is ../..
+        // Crate is crates/slopos-shell → repo root is ../..
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
 
@@ -393,8 +393,8 @@ mod tests {
         let l = SessionPackagingLayout::under_prefix("/usr");
         assert!(l
             .wayland_session_desktop
-            .ends_with("share/wayland-sessions/retroshell.desktop"));
-        assert!(l.start_script.ends_with("bin/start-retroshell"));
+            .ends_with("share/wayland-sessions/slopos-i.desktop"));
+        assert!(l.start_script.ends_with("bin/start-slopos-i"));
     }
 
     #[test]
@@ -402,21 +402,21 @@ mod tests {
         let content = "\
 [Desktop Entry]
 # a comment
-Name=RetroShell
-Exec=start-retroshell
+Name=SLOPOS-I
+Exec=start-slopos-i
 Type=Application
-DesktopNames=RetroShell
+DesktopNames=SLOPOS-I
 ";
         let keys = parse_desktop_keys(content);
-        assert_eq!(keys.get("Name").map(String::as_str), Some("RetroShell"));
+        assert_eq!(keys.get("Name").map(String::as_str), Some("SLOPOS-I"));
         assert_eq!(
             keys.get("Exec").map(String::as_str),
-            Some("start-retroshell")
+            Some("start-slopos-i")
         );
         assert_eq!(keys.get("Type").map(String::as_str), Some("Application"));
         assert_eq!(
             keys.get("DesktopNames").map(String::as_str),
-            Some("RetroShell")
+            Some("SLOPOS-I")
         );
         assert!(!keys.contains_key("# a comment"));
     }
@@ -432,10 +432,10 @@ DesktopNames=RetroShell
     fn validate_session_desktop_accepts_valid() {
         let content = "\
 [Desktop Entry]
-Name=RetroShell
-Exec=start-retroshell
+Name=SLOPOS-I
+Exec=start-slopos-i
 Type=Application
-DesktopNames=RetroShell
+DesktopNames=SLOPOS-I
 ";
         assert!(validate_session_desktop(content).is_ok());
     }
@@ -443,10 +443,10 @@ DesktopNames=RetroShell
     #[test]
     fn validate_session_desktop_accepts_absolute_exec() {
         let content = "\
-Name=RetroShell
-Exec=/usr/local/bin/start-retroshell
+Name=SLOPOS-I
+Exec=/usr/local/bin/start-slopos-i
 Type=Application
-DesktopNames=RetroShell
+DesktopNames=SLOPOS-I
 ";
         assert!(validate_session_desktop(content).is_ok());
     }
@@ -454,8 +454,8 @@ DesktopNames=RetroShell
     #[test]
     fn validate_session_desktop_requires_desktop_names() {
         let content = "\
-Name=RetroShell
-Exec=start-retroshell
+Name=SLOPOS-I
+Exec=start-slopos-i
 Type=Application
 ";
         let err = validate_session_desktop(content).unwrap_err();
@@ -464,7 +464,7 @@ Type=Application
 
     #[test]
     fn validate_session_desktop_rejects_bad_type() {
-        let content = "Name=X\nExec=start-retroshell\nType=Link\n";
+        let content = "Name=X\nExec=start-slopos-i\nType=Link\n";
         let err = validate_session_desktop(content).unwrap_err();
         assert!(err.iter().any(|e| e.contains("Type")));
     }
@@ -481,32 +481,32 @@ Type=Application
     fn validate_session_desktop_rejects_wrong_exec() {
         let content = "Name=X\nExec=gnome-session\nType=Application\n";
         let err = validate_session_desktop(content).unwrap_err();
-        assert!(err.iter().any(|e| e.contains("start-retroshell")));
+        assert!(err.iter().any(|e| e.contains("start-slopos-i")));
     }
 
     #[test]
-    fn packaging_retroshell_desktop_validates() {
-        let path = repo_root().join("packaging/retroshell.desktop");
+    fn packaging_slopos_i_desktop_validates() {
+        let path = repo_root().join("packaging/slopos-i.desktop");
         let content =
             fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         let keys = parse_desktop_keys(&content);
-        assert_eq!(keys.get("Name").map(String::as_str), Some("RetroShell"));
+        assert_eq!(keys.get("Name").map(String::as_str), Some("SLOPOS-I"));
         assert!(
             keys.get("Exec")
-                .is_some_and(|e| e.contains("start-retroshell")),
+                .is_some_and(|e| e.contains("start-slopos-i")),
             "Exec keys={keys:?}"
         );
         assert_eq!(keys.get("Type").map(String::as_str), Some("Application"));
-        validate_session_desktop(&content).expect("packaging/retroshell.desktop must validate");
+        validate_session_desktop(&content).expect("packaging/slopos-i.desktop must validate");
     }
 
     #[test]
-    fn packaging_retroshell_wayland_desktop_validates() {
-        let path = repo_root().join("packaging/retroshell-wayland.desktop");
+    fn packaging_slopos_i_wayland_desktop_validates() {
+        let path = repo_root().join("packaging/slopos-i-wayland.desktop");
         let content =
             fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
         validate_session_desktop(&content)
-            .expect("packaging/retroshell-wayland.desktop must validate");
+            .expect("packaging/slopos-i-wayland.desktop must validate");
     }
 
     #[test]
@@ -554,7 +554,7 @@ Type=Application
         );
         assert!(
             report.start_script_executable,
-            "start-retroshell must be executable in repo"
+            "start-slopos-i must be executable in repo"
         );
         assert!(
             report.desktop_names_ok,

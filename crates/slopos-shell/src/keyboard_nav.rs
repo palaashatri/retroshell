@@ -95,7 +95,7 @@ fn prev_chrome_focus(current: ChromeFocusTarget) -> ChromeFocusTarget {
 pub fn is_dismissable_window_title(title: &str) -> bool {
     matches!(
         title,
-        "Force Quit" | "About RetroShell" | "Help" | "Get Info"
+        "Force Quit" | "About SLOPOS-I" | "Help" | "Get Info"
     ) || title.starts_with("Status:")
         || title.starts_with("Dispatch:")
 }

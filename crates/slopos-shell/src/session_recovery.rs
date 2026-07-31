@@ -185,9 +185,9 @@ mod tests {
     use super::*;
 
     fn sample_checkpoint() -> SessionCheckpoint {
-        SessionCheckpoint::new("wayland-1", "/usr/bin/labwc", "/usr/bin/retro-shell")
-            .with_client("com.retro.finder", 1001)
-            .with_client("com.retro.terminal", 1002)
+        SessionCheckpoint::new("wayland-1", "/usr/bin/labwc", "/usr/bin/slopos-shell")
+            .with_client("com.slopos.finder", 1001)
+            .with_client("com.slopos.terminal", 1002)
     }
 
     #[test]
@@ -202,13 +202,13 @@ mod tests {
                     wayland_display: "wayland-1".into(),
                 },
                 RecoveryStep::RestartShell {
-                    bin: "/usr/bin/retro-shell".into(),
+                    bin: "/usr/bin/slopos-shell".into(),
                 },
                 RecoveryStep::RelaunchClient {
-                    bundle_id: "com.retro.finder".into(),
+                    bundle_id: "com.slopos.finder".into(),
                 },
                 RecoveryStep::RelaunchClient {
-                    bundle_id: "com.retro.terminal".into(),
+                    bundle_id: "com.slopos.terminal".into(),
                 },
             ]
         );
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn recovery_plan_empty_clients() {
-        let cp = SessionCheckpoint::new("wayland-0", "labwc", "retro-shell");
+        let cp = SessionCheckpoint::new("wayland-0", "labwc", "slopos-shell");
         let plan = recovery_plan(&cp);
         assert_eq!(plan.len(), 2);
         assert!(matches!(plan[0], RecoveryStep::RestartCompositor { .. }));
@@ -246,8 +246,8 @@ mod tests {
 wayland_display=wayland-2
 
 compositor_bin=labwc
-shell_bin=retro-shell
-client=com.retro.app\t42
+shell_bin=slopos-shell
+client=com.slopos.app\t42
 ";
         let cp = SessionCheckpoint::from_text(text).unwrap();
         assert_eq!(cp.wayland_display, "wayland-2");

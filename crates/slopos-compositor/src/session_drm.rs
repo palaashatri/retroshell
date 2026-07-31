@@ -2,7 +2,7 @@
 //!
 //! Selected when policy says [`CompositorBackendKind::SessionDrm`]. Docker-on-mac
 //! will not exercise seat/DRM privileges; the code still ships, compiles into
-//! `retro-compositor`, and runs when `/dev/dri` + seatd/logind are available.
+//! `slopos-compositor`, and runs when `/dev/dri` + seatd/logind are available.
 //!
 //! Bootstrap:
 //! - Open a libseat session
@@ -13,7 +13,7 @@
 //!
 //! Full multi-output scanout / pageflip is progressive: this path opens the
 //! primary card, advertises an output, and runs a real protocol loop. Connectors
-//! without modes fall back to env sizing (`RETROSHELL_COMPOSITOR_WIDTH/HEIGHT`).
+//! without modes fall back to env sizing (`SLOPOS_COMPOSITOR_WIDTH/HEIGHT`).
 
 #![cfg(target_os = "linux")]
 
@@ -325,14 +325,14 @@ fn arm_scanout_framebuffer(
 }
 
 fn w_from_env_or_default() -> i32 {
-    std::env::var("RETROSHELL_COMPOSITOR_WIDTH")
+    std::env::var("SLOPOS_COMPOSITOR_WIDTH")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_OUTPUT_W)
 }
 
 fn h_from_env_or_default() -> i32 {
-    std::env::var("RETROSHELL_COMPOSITOR_HEIGHT")
+    std::env::var("SLOPOS_COMPOSITOR_HEIGHT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_OUTPUT_H)
@@ -361,7 +361,7 @@ fn resolve_primary_drm_path(seat_name: &str) -> PathBuf {
 pub fn run_drm_session() -> Result<()> {
     tracing::info!("{}", session_mode_summary(CompositorBackendKind::SessionDrm));
     eprintln!(
-        "[retro-compositor] starting DRM/KMS session path ({})",
+        "[slopos-compositor] starting DRM/KMS session path ({})",
         session_mode_summary(CompositorBackendKind::SessionDrm)
     );
     // QA: SIGUSR1 → write a PNG of the next composited frame (see screenshot.rs).
@@ -377,7 +377,7 @@ pub fn run_drm_session() -> Result<()> {
         r => (r.as_hz() as i32) * 1000,
     };
     eprintln!(
-        "[retro-compositor] display policy: {}",
+        "[slopos-compositor] display policy: {}",
         display_policy.summary_line(hdr_caps.hdr_supported)
     );
 
@@ -385,7 +385,7 @@ pub fn run_drm_session() -> Result<()> {
     let (mut session, session_notifier) =
         LibSeatSession::new().context("LibSeatSession::new (need seatd/logind + privileges)")?;
     let seat_name = session.seat();
-    eprintln!("[retro-compositor] libseat seat={seat_name}");
+    eprintln!("[slopos-compositor] libseat seat={seat_name}");
 
     // ---- Event loop + Wayland display ----
     let mut event_loop: EventLoop<'static, DrmSessionState> =
@@ -418,7 +418,7 @@ pub fn run_drm_session() -> Result<()> {
     // ---- Open primary GPU via seat ----
     let primary = resolve_primary_drm_path(&seat_name);
     eprintln!(
-        "[retro-compositor] opening DRM node {}",
+        "[slopos-compositor] opening DRM node {}",
         primary.display()
     );
 
@@ -484,7 +484,7 @@ pub fn run_drm_session() -> Result<()> {
         refresh_mhz,
     );
     eprintln!(
-        "[retro-compositor] DRM modeset plan: connector={} {}x{}@{}mhz crtcs={} connectors={}",
+        "[slopos-compositor] DRM modeset plan: connector={} {}x{}@{}mhz crtcs={} connectors={}",
         modeset_plan.connector_name,
         modeset_plan.mode_w,
         modeset_plan.mode_h,
@@ -504,7 +504,7 @@ pub fn run_drm_session() -> Result<()> {
         match crate::drm_props::PropertyIndex::read(&drm, conn) {
             Ok(conn_props) => {
                 let caps = crate::drm_props::probe_hdr(&conn_props);
-                eprintln!("[retro-compositor] connector HDR: {}", caps.summary());
+                eprintln!("[slopos-compositor] connector HDR: {}", caps.summary());
                 tracing::info!(
                     hdr_metadata = caps.has_hdr_metadata,
                     bt2020 = caps.has_bt2020_colorspace,
@@ -526,7 +526,7 @@ pub fn run_drm_session() -> Result<()> {
                     .unwrap_or_default();
                 let vrr = crate::drm_props::probe_vrr(&conn_props, &crtc_props);
                 eprintln!(
-                    "[retro-compositor] connector VRR: capable={} controllable={} enabled={}",
+                    "[slopos-compositor] connector VRR: capable={} controllable={} enabled={}",
                     vrr.capable, vrr.controllable, vrr.enabled
                 );
 
@@ -535,13 +535,13 @@ pub fn run_drm_session() -> Result<()> {
                     let md = crate::drm_props::HdrOutputMetadata::hdr10(1000, 0.005, 1000, 400);
                     match crate::drm_props::apply_hdr10(&drm, conn, &conn_props, &md) {
                         Ok(Some(_blob)) => {
-                            eprintln!("[retro-compositor] HDR10 metadata applied to connector")
+                            eprintln!("[slopos-compositor] HDR10 metadata applied to connector")
                         }
                         Ok(None) => eprintln!(
-                            "[retro-compositor] HDR requested but connector is not HDR10-capable; staying SDR"
+                            "[slopos-compositor] HDR requested but connector is not HDR10-capable; staying SDR"
                         ),
                         Err(err) => {
-                            eprintln!("[retro-compositor] HDR apply failed: {err}")
+                            eprintln!("[slopos-compositor] HDR apply failed: {err}")
                         }
                     }
                 }
@@ -550,11 +550,11 @@ pub fn run_drm_session() -> Result<()> {
                         match crate::drm_props::set_vrr_enabled(
                             &drm, crtc, &crtc_props, vrr, true,
                         ) {
-                            Ok(true) => eprintln!("[retro-compositor] VRR_ENABLED set on CRTC"),
+                            Ok(true) => eprintln!("[slopos-compositor] VRR_ENABLED set on CRTC"),
                             Ok(false) => eprintln!(
-                                "[retro-compositor] VRR requested but connector is not vrr_capable; fixed refresh"
+                                "[slopos-compositor] VRR requested but connector is not vrr_capable; fixed refresh"
                             ),
-                            Err(err) => eprintln!("[retro-compositor] VRR apply failed: {err}"),
+                            Err(err) => eprintln!("[slopos-compositor] VRR apply failed: {err}"),
                         }
                     }
                 }
@@ -572,7 +572,7 @@ pub fn run_drm_session() -> Result<()> {
             match drm.create_surface(crtc, mode, &[conn]) {
                 Ok(surface) => {
                     eprintln!(
-                        "[retro-compositor] DRM scanout surface created (crtc+connector modeset)"
+                        "[slopos-compositor] DRM scanout surface created (crtc+connector modeset)"
                     );
                     tracing::info!(
                         stage = DrmPresentationStage::CreateDrmSurface.as_str(),
@@ -585,13 +585,13 @@ pub fn run_drm_session() -> Result<()> {
                         ?err,
                         "create_surface failed — continuing protocol loop without scanout"
                     );
-                    eprintln!("[retro-compositor] DRM create_surface failed: {err:?} (protocol-only fallback)");
+                    eprintln!("[slopos-compositor] DRM create_surface failed: {err:?} (protocol-only fallback)");
                 }
             }
         }
     } else {
         eprintln!(
-            "[retro-compositor] no connected connector; virtual mode {}x{}",
+            "[slopos-compositor] no connected connector; virtual mode {}x{}",
             modeset_plan.mode_w, modeset_plan.mode_h
         );
     }
@@ -611,7 +611,7 @@ pub fn run_drm_session() -> Result<()> {
             PhysicalProperties {
                 size: (0, 0).into(),
                 subpixel: Subpixel::Unknown,
-                make: "RetroShell".into(),
+                make: "SLOPOS-I".into(),
                 model: "DRM".into(),
             },
         );
@@ -647,7 +647,7 @@ pub fn run_drm_session() -> Result<()> {
         ) {
             Ok(comp) => {
                 eprintln!(
-                    "[retro-compositor] DRM GL compositor ready ({}x{}) — client surfaces will be composited",
+                    "[slopos-compositor] DRM GL compositor ready ({}x{}) — client surfaces will be composited",
                     modeset_plan.mode_w, modeset_plan.mode_h
                 );
                 tracing::info!(
@@ -658,7 +658,7 @@ pub fn run_drm_session() -> Result<()> {
             }
             Err(err) => {
                 eprintln!(
-                    "[retro-compositor] DrmCompositor init failed ({err}); falling back to solid dumb-buffer present"
+                    "[slopos-compositor] DrmCompositor init failed ({err}); falling back to solid dumb-buffer present"
                 );
                 tracing::warn!(error = %err, "DrmCompositor init failed");
             }
@@ -692,7 +692,7 @@ pub fn run_drm_session() -> Result<()> {
                         armed_fb = Some(handle);
                         _scanout_owners = Some((buffer, fb));
                         eprintln!(
-                            "[retro-compositor] DRM pageflip/commit present succeeded ({}x{})",
+                            "[slopos-compositor] DRM pageflip/commit present succeeded ({}x{})",
                             modeset_plan.mode_w, modeset_plan.mode_h
                         );
                         tracing::info!(
@@ -705,13 +705,13 @@ pub fn run_drm_session() -> Result<()> {
                             error = %err,
                             "DRM present path failed; surface kept for session, protocol continues"
                         );
-                        eprintln!("[retro-compositor] DRM present failed: {err:#}");
+                        eprintln!("[slopos-compositor] DRM present failed: {err:#}");
                     }
                 }
             }
             Err(err) => {
                 tracing::warn!(error = %err, "could not allocate scanout framebuffer");
-                eprintln!("[retro-compositor] scanout framebuffer alloc failed: {err:#}");
+                eprintln!("[slopos-compositor] scanout framebuffer alloc failed: {err:#}");
             }
         }
     }
@@ -726,7 +726,7 @@ pub fn run_drm_session() -> Result<()> {
     // Wayland socket
     let socket = ListeningSocketSource::new_auto().context("ListeningSocketSource")?;
     let socket_name = socket.socket_name().to_string_lossy().into_owned();
-    eprintln!("[retro-compositor] WAYLAND_DISPLAY={socket_name} (DRM session)");
+    eprintln!("[slopos-compositor] WAYLAND_DISPLAY={socket_name} (DRM session)");
     println!("WAYLAND_DISPLAY={socket_name}");
     if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
         let _ = std::fs::write(Path::new(&runtime).join("wayland-display"), &socket_name);
@@ -747,8 +747,8 @@ pub fn run_drm_session() -> Result<()> {
     // Advertise connector mode when known; else env/default virtual size.
     let w = modeset_plan.mode_w;
     let h = modeset_plan.mode_h;
-    std::env::set_var("RETROSHELL_COMPOSITOR_WIDTH", w.to_string());
-    std::env::set_var("RETROSHELL_COMPOSITOR_HEIGHT", h.to_string());
+    std::env::set_var("SLOPOS_COMPOSITOR_WIDTH", w.to_string());
+    std::env::set_var("SLOPOS_COMPOSITOR_HEIGHT", h.to_string());
     let out_refresh = if modeset_plan.refresh_mhz > 0 {
         modeset_plan.refresh_mhz
     } else {
@@ -759,7 +759,7 @@ pub fn run_drm_session() -> Result<()> {
         PhysicalProperties {
             size: (0, 0).into(),
             subpixel: Subpixel::Unknown,
-            make: "RetroShell".into(),
+            make: "SLOPOS-I".into(),
             model: "DRM Output".into(),
         },
     );
@@ -887,9 +887,9 @@ pub fn run_drm_session() -> Result<()> {
     };
 
     eprintln!(
-        "[retro-compositor] DRM session loop running (Wayland + seat + udev + libinput + layer-shell + foreign-toplevel; scanout_armed={scanout_armed})"
+        "[slopos-compositor] DRM session loop running (Wayland + seat + udev + libinput + layer-shell + foreign-toplevel; scanout_armed={scanout_armed})"
     );
-    crate::client_spawn::spawn_client(&state.wayland_socket_name, "retro-shell");
+    crate::client_spawn::spawn_client(&state.wayland_socket_name, "slopos-shell");
     let clock = Clock::<Monotonic>::new();
     let mut frame_i: u64 = 0;
     while state.running {
@@ -963,7 +963,7 @@ pub fn run_drm_session() -> Result<()> {
         frame_i = frame_i.wrapping_add(1);
 
         // Release frame callbacks every tick. Clients that throttle on
-        // wl_surface.frame (winit/wgpu — every RetroShell app) render one frame
+        // wl_surface.frame (winit/wgpu — every SLOPOS-I app) render one frame
         // and then wait forever without this. Note the DRM path does not yet
         // composite client buffers to scanout (see ROADMAP 1.2); callbacks are
         // still required so clients stay live and keep their content current.
@@ -1036,10 +1036,10 @@ struct ClientState {
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {
-        eprintln!("[retro-compositor/drm] client connected");
+        eprintln!("[slopos-compositor/drm] client connected");
     }
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {
-        eprintln!("[retro-compositor/drm] client disconnected");
+        eprintln!("[slopos-compositor/drm] client disconnected");
     }
 }
 
@@ -1104,9 +1104,9 @@ fn layer_geo_contains(geo: &Rectangle<i32, Logical>, pos: Point<f64, Logical>) -
 fn layer_configure_size(namespace: &str, output: (i32, i32)) -> (i32, i32) {
     let (ow, oh) = output;
     match namespace {
-        "retroshell-menu" | "menu-bar" => (ow, 24),
-        "retroshell-dock" | "dock" => (ow, 64),
-        "retroshell-menu-popup" => (1, 1),
+        "slopos-i-menu" | "menu-bar" => (ow, 24),
+        "slopos-i-dock" | "dock" => (ow, 64),
+        "slopos-i-menu-popup" => (1, 1),
         _ => (ow, oh),
     }
 }
@@ -1232,7 +1232,7 @@ impl DrmSessionState {
         self.workspace_state.cycle_next();
         self.request_full_redraw();
         eprintln!(
-            "[retro-compositor/drm] {}",
+            "[slopos-compositor/drm] {}",
             self.workspace_state.summary_line()
         );
         self.apply_focus_after_workspace_switch();
@@ -1243,7 +1243,7 @@ impl DrmSessionState {
         self.workspace_state.cycle_prev();
         self.request_full_redraw();
         eprintln!(
-            "[retro-compositor/drm] {}",
+            "[slopos-compositor/drm] {}",
             self.workspace_state.summary_line()
         );
         self.apply_focus_after_workspace_switch();
@@ -1255,7 +1255,7 @@ impl DrmSessionState {
             if self.workspace_state.activate(ws) {
                 self.request_full_redraw();
                 eprintln!(
-                    "[retro-compositor/drm] {}",
+                    "[slopos-compositor/drm] {}",
                     self.workspace_state.summary_line()
                 );
                 self.apply_focus_after_workspace_switch();
@@ -1322,7 +1322,7 @@ impl DrmSessionState {
                             return FilterResult::Intercept(());
                         }
                         if sym == Keysym::l || sym == Keysym::L {
-                            data.spawn_client("retro-lock");
+                            data.spawn_client("slopos-lock");
                             return FilterResult::Intercept(());
                         }
                         if sym == Keysym::Right || sym == Keysym::Page_Down {
@@ -1717,7 +1717,7 @@ impl XdgShellHandler for DrmSessionState {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         // Read app_id BEFORE the first configure so we can size the shell to fill
-        // the output. The RetroShell desktop (app_id "com.retro.shell") is the
+        // the output. The SLOPOS-I desktop (app_id "com.slopos.shell") is the
         // root session surface: it must span the whole output, anchored at (0,0),
         // not the cascaded 640×480 default used for ordinary app windows.
         let (title, app_id) = with_states(surface.wl_surface(), |states| {
@@ -1732,10 +1732,10 @@ impl XdgShellHandler for DrmSessionState {
             let app_id = data
                 .as_ref()
                 .and_then(|d| d.app_id.clone())
-                .unwrap_or_else(|| "retroshell.app".into());
+                .unwrap_or_else(|| "slopos-i.app".into());
             (title, app_id)
         });
-        let is_shell = app_id == "com.retro.shell" || app_id.starts_with("com.retro.shell");
+        let is_shell = app_id == "com.slopos.shell" || app_id.starts_with("com.slopos.shell");
 
         let (win_w, win_h) = if is_shell {
             self.output_size
@@ -1764,7 +1764,7 @@ impl XdgShellHandler for DrmSessionState {
             Point::from((64 + offset, 64 + offset))
         };
         eprintln!(
-            "[retro-compositor/drm] toplevel mapped at ({},{}) size={win_w}x{win_h} title={title} app_id={app_id} shell={is_shell}",
+            "[slopos-compositor/drm] toplevel mapped at ({},{}) size={win_w}x{win_h} title={title} app_id={app_id} shell={is_shell}",
             position.x, position.y
         );
 
@@ -1784,7 +1784,7 @@ impl XdgShellHandler for DrmSessionState {
         });
         // Listing/present filter: only active-workspace ids (client SHM composite TBD).
         eprintln!(
-            "[retro-compositor/drm] {} window_id={window_id} present={:?}",
+            "[slopos-compositor/drm] {} window_id={window_id} present={:?}",
             self.workspace_state.summary_line(),
             self.window_ids_for_present()
         );
@@ -1871,7 +1871,7 @@ impl WlrLayerShellHandler for DrmSessionState {
         namespace: String,
     ) {
         eprintln!(
-            "[retro-compositor/drm] layer-shell surface namespace={namespace} layer={layer:?}"
+            "[slopos-compositor/drm] layer-shell surface namespace={namespace} layer={layer:?}"
         );
         let (ow, oh) = self.output_size;
         let (w, h) = layer_configure_size(&namespace, (ow, oh));
@@ -1908,7 +1908,7 @@ impl SessionLockHandler for DrmSessionState {
         }
         self.request_full_redraw();
         tracing::info!("session locked");
-        eprintln!("[retro-compositor] session locked");
+        eprintln!("[slopos-compositor] session locked");
     }
 
     fn unlock(&mut self) {
@@ -1917,7 +1917,7 @@ impl SessionLockHandler for DrmSessionState {
         self.apply_focus_after_workspace_switch();
         self.request_full_redraw();
         tracing::info!("session unlocked");
-        eprintln!("[retro-compositor] session unlocked");
+        eprintln!("[slopos-compositor] session unlocked");
     }
 
     fn new_surface(

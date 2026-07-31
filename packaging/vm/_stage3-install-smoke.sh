@@ -3,13 +3,13 @@ set -euo pipefail
 mkdir -p "$HOME/store" "$HOME/Applications"
 rm -rf "$HOME/Applications/TextEdit.app"
 if [ ! -d /tmp/rs-apps/TextEdit.app ]; then
-  cd "$HOME/retroshell"
+  cd "$HOME/slopos-i"
   OUTDIR=/tmp/rs-apps bash packaging/apps/build-all-bundles.sh
 fi
 tar -C /tmp/rs-apps -czf "$HOME/store/TextEdit.app.tar.gz" TextEdit.app
 SHA=$(sha256sum "$HOME/store/TextEdit.app.tar.gz" | cut -d' ' -f1)
 cat > "$HOME/Applications/catalog.json" <<EOF
-[{"name":"TextEdit","bundle_id":"com.retro.textedit","version":"0.1.0","url":"$HOME/store/TextEdit.app.tar.gz","sha256":"$SHA","size":0}]
+[{"name":"TextEdit","bundle_id":"com.slopos.textedit","version":"0.1.0","url":"$HOME/store/TextEdit.app.tar.gz","sha256":"$SHA","size":0}]
 EOF
 python3 - <<'PY'
 import hashlib, json, shutil, tarfile
@@ -33,7 +33,7 @@ if dest.exists():
     shutil.rmtree(dest)
 apps[0].rename(dest)
 shutil.rmtree(staging)
-(install / ".retroshell-rescan").write_text("1\n")
+(install / ".slopos-rescan").write_text("1\n")
 assert (dest / "bin" / "textedit").exists()
 print("INSTALLED-VIA-STORE")
 print(dest)

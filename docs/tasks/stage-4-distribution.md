@@ -6,15 +6,15 @@
 > until its Acceptance passes and the transcript is in
 > [docs/qa/stage-4.md](../qa/stage-4.md).
 
-**Goal (spec §4 Stage 4):** RetroShell is a **desktop environment on a normal
+**Goal (spec §4 Stage 4):** SLOPOS-I is a **desktop environment on a normal
 Linux base**, so the **primary** delivery is layering it onto an existing distro;
 a **bootable ISO** is a secondary convenience built from the *same* session files
 so the two cannot drift.
 
 **Definition of done (spec §4):**
 1. On a **clean Arch VM** *and* a **clean Ubuntu-server VM**, the layered installer
-   produces a **login-selectable RetroShell session that reaches the desktop**.
-2. The **ISO boots** a fresh VM straight into RetroShell.
+   produces a **login-selectable SLOPOS-I session that reaches the desktop**.
+2. The **ISO boots** a fresh VM straight into SLOPOS-I.
 Transcripts + screenshots in [docs/qa/stage-4.md](../qa/stage-4.md).
 
 ## Grounding caveat (honesty contract)
@@ -48,17 +48,17 @@ no regression.
 
 - Binary install (fresh-Arch script): `packaging/vm/arch-install.sh:125-130` —
   `install -Dm755 target/release/<bin> /usr/local/bin/<bin>` for
-  `retro-compositor, retro-shell, finder, settings, textedit, terminal, appstore`
-  and `scripts/start-retroshell`.
+  `slopos-compositor, slopos-shell, finder, settings, textedit, terminal, appstore`
+  and `scripts/start-slopos-i`.
 - Session registration: `arch-install.sh:131` installs
-  `packaging/retroshell.desktop` → `/usr/share/wayland-sessions/retroshell.desktop`.
-- Session files in repo: `packaging/retroshell.desktop`,
-  `packaging/retroshell-wayland.desktop`, `packaging/retroshell.service`,
-  `scripts/start-retroshell` (232 lines; resolves binaries, prefers
-  `retro-compositor`, falls back to `labwc`).
+  `packaging/slopos-i.desktop` → `/usr/share/wayland-sessions/slopos-i.desktop`.
+- Session files in repo: `packaging/slopos-i.desktop`,
+  `packaging/slopos-i-wayland.desktop`, `packaging/slopos-i.service`,
+  `scripts/start-slopos-i` (232 lines; resolves binaries, prefers
+  `slopos-compositor`, falls back to `labwc`).
 - **Existing layered-install primitive:** `scripts/install-session-files.sh`
   installs (under `--prefix`, default `/usr/local`) the wayland-session, xsession,
-  `bin/start-retroshell`, and `lib/systemd/user/retroshell.service`. **Reuse it.**
+  `bin/start-slopos-i`, and `lib/systemd/user/slopos-i.service`. **Reuse it.**
 - No PKGBUILD, no `debian/`, no archiso profile, no non-VM `install.sh` exist yet
   (only the VM scripts + `install-session-files.sh`).
 - Runtime deps (Arch, verbatim): `arch-install.sh:37-55` — see Task 4.1.
@@ -85,8 +85,8 @@ git rev-parse --abbrev-ref HEAD
 Steps:
 1. Confirm the shared artifacts are present:
    ```bash
-   ls packaging/retroshell.desktop packaging/retroshell-wayland.desktop \
-      packaging/retroshell.service scripts/start-retroshell scripts/install-session-files.sh
+   ls packaging/slopos-i.desktop packaging/slopos-i-wayland.desktop \
+      packaging/slopos-i.service scripts/start-slopos-i scripts/install-session-files.sh
    ```
 2. Confirm the binary list the installer must copy:
    ```bash
@@ -95,8 +95,8 @@ Steps:
 
 Acceptance:
 ```bash
-test -f scripts/install-session-files.sh && test -f scripts/start-retroshell && \
-test -f packaging/retroshell-wayland.desktop && echo STAGE4-BASELINE-CONFIRMED
+test -f scripts/install-session-files.sh && test -f scripts/start-slopos-i && \
+test -f packaging/slopos-i-wayland.desktop && echo STAGE4-BASELINE-CONFIRMED
 ```
 → expect: `STAGE4-BASELINE-CONFIRMED`.
 
@@ -233,15 +233,15 @@ Steps:
 3. Unless `--no-build`: ensure a Rust toolchain (Arch: `pacman -S --needed rust`;
    Ubuntu: install via `rustup` if `cargo` absent), then
    `cargo build --release --workspace`.
-4. Install the 7 binaries + `start-retroshell` to `$PREFIX/bin` with
+4. Install the 7 binaries + `start-slopos-i` to `$PREFIX/bin` with
    `install -Dm755` (mirror `arch-install.sh:125-130`, but to `$PREFIX/bin`).
 5. Run `scripts/install-session-files.sh --prefix "$PREFIX"` to place the
    session/xsession/service files. (Reuse it — do not re-implement.)
 6. If `--with-greeter`: install `greetd tuigreet`, write `/etc/greetd/config.toml`
-   launching `tuigreet --time --cmd start-retroshell` (or listing
+   launching `tuigreet --time --cmd start-slopos-i` (or listing
    wayland-sessions), and `systemctl enable greetd`. Print a clear message that a
    reboot / DM restart is needed to see the session.
-7. Print a final summary: what was installed, where, and how to select RetroShell.
+7. Print a final summary: what was installed, where, and how to select SLOPOS-I.
 
 Acceptance (host dry-run of the parsing/lists; full run happens on the VMs):
 ```bash
@@ -269,18 +269,18 @@ test -s packaging/deps/arch.txt && echo ok
 Files: Create `packaging/arch/PKGBUILD`.
 
 Steps:
-1. `pkgname=retroshell`, `pkgver` from the workspace version, `arch=('x86_64')`,
+1. `pkgname=slopos-i`, `pkgver` from the workspace version, `arch=('x86_64')`,
    `depends=(...)` populated from `packaging/deps/arch.txt`,
    `makedepends=(cargo pkgconf)`.
 2. `build()`: `cargo build --release --workspace --locked`.
-3. `package()`: `install -Dm755` each of the 7 binaries + `start-retroshell` into
+3. `package()`: `install -Dm755` each of the 7 binaries + `start-slopos-i` into
    `$pkgdir/usr/bin`; install the session/xsession/service files into
    `$pkgdir/usr/share/wayland-sessions`, `.../xsessions`, `.../lib/systemd/user`
    (mirror `install-session-files.sh` targets, rooted at `$pkgdir/usr`).
 
 Acceptance:
 ```bash
-grep -q '^pkgname=retroshell' packaging/arch/PKGBUILD && \
+grep -q '^pkgname=slopos-i' packaging/arch/PKGBUILD && \
 grep -q 'cargo build --release --workspace' packaging/arch/PKGBUILD && echo PKGBUILD-OK
 # Full build (on the Arch VM): cd packaging/arch && makepkg -si --noconfirm
 ```
@@ -289,7 +289,7 @@ grep -q 'cargo build --release --workspace' packaging/arch/PKGBUILD && echo PKGB
 DO NOT:
 - Re-list dependencies by hand — derive `depends` from `packaging/deps/arch.txt`.
 
-Commit: `feat(packaging): AUR PKGBUILD for RetroShell`
+Commit: `feat(packaging): AUR PKGBUILD for SLOPOS-I`
 
 ---
 
@@ -304,17 +304,17 @@ Files: Create `packaging/debian/{control,rules,changelog,install}` (and
 `compat`/`source/format` as needed for `debhelper`).
 
 Steps:
-1. `debian/control`: `Package: retroshell`, `Depends:` populated from
+1. `debian/control`: `Package: slopos-i`, `Depends:` populated from
    `packaging/deps/ubuntu.txt` (comma-separated), `Build-Depends: debhelper,
    cargo | rustc, pkg-config, ...` (build deps from `ubuntu-build.txt`).
 2. `debian/rules`: build with `cargo build --release --workspace`; install the 7
-   binaries + `start-retroshell` to `/usr/bin` and the session files to their FHS
+   binaries + `start-slopos-i` to `/usr/bin` and the session files to their FHS
    paths (via `debian/install` entries).
 3. `debian/changelog`: one entry at the workspace version.
 
 Acceptance:
 ```bash
-grep -q '^Package: retroshell' packaging/debian/control && \
+grep -q '^Package: slopos-i' packaging/debian/control && \
 grep -q 'cargo build --release --workspace' packaging/debian/rules && echo DEB-OK
 # Full build (on the Ubuntu VM): dpkg-buildpackage -us -uc -b
 ```
@@ -331,26 +331,26 @@ Commit: `feat(packaging): Debian/Ubuntu .deb packaging`
 ### Task 4.5 — VM DoD 1a: layered install on a clean **Arch** VM   [UNVERIFIED]
 
 Precondition: a **fresh** Arch VM (VirtualBox, VMSVGA+3D for `vmwgfx` KMS — see
-[HANDOFF.md](../HANDOFF.md) §3), NOT the Stage-0/1 dev VM. SSH reachable.
+[SLOPOS-I.md](../SLOPOS-I.md) §3), NOT the Stage-0/1 dev VM. SSH reachable.
 
 Steps:
 1. Copy the repo in (`git clone` or `rsync`), then:
    ```bash
    sudo ./install.sh --with-greeter
    ```
-2. Reboot. At the greeter, select **RetroShell** and log in.
+2. Reboot. At the greeter, select **SLOPOS-I** and log in.
 3. Confirm the desktop appears (menu bar/dock or Finder), captured as a screenshot
    to `docs/screenshots/stage4-arch-desktop.png`.
 
 Acceptance:
 ```bash
 # over SSH after install, before reboot:
-test -f /usr/local/share/wayland-sessions/retroshell.desktop && \
-command -v retro-compositor && command -v retro-shell && echo ARCH-LAYERED-OK
+test -f /usr/local/share/wayland-sessions/slopos-i.desktop && \
+command -v slopos-compositor && command -v slopos-shell && echo ARCH-LAYERED-OK
 ls -l docs/screenshots/stage4-arch-desktop.png && file docs/screenshots/stage4-arch-desktop.png
 ```
 → expect: `ARCH-LAYERED-OK`, a real PNG, and a **visual** confirmation that
-selecting RetroShell at the greeter reaches the desktop. This is **DoD part 1a**.
+selecting SLOPOS-I at the greeter reaches the desktop. This is **DoD part 1a**.
 Record in `docs/qa/stage-4.md`.
 
 DO NOT:
@@ -373,13 +373,13 @@ Steps:
    ```
    Fix any `packaging/deps/ubuntu.txt` names that `apt-get` rejects, commit the
    correction, and re-run (idempotent).
-2. Reboot. At the `greetd`/`tuigreet` prompt, launch RetroShell.
+2. Reboot. At the `greetd`/`tuigreet` prompt, launch SLOPOS-I.
 3. Screenshot the desktop to `docs/screenshots/stage4-ubuntu-desktop.png`.
 
 Acceptance:
 ```bash
-test -f /usr/local/share/wayland-sessions/retroshell.desktop && \
-command -v retro-compositor && echo UBUNTU-LAYERED-OK
+test -f /usr/local/share/wayland-sessions/slopos-i.desktop && \
+command -v slopos-compositor && echo UBUNTU-LAYERED-OK
 ls -l docs/screenshots/stage4-ubuntu-desktop.png && file docs/screenshots/stage4-ubuntu-desktop.png
 ```
 → expect: `UBUNTU-LAYERED-OK`, a real PNG, and a **visual** desktop confirmation.
@@ -407,12 +407,12 @@ Files: Create `packaging/iso/` — an archiso profile (copy from
 Steps:
 1. `packaging/iso/packages.x86_64`: base live packages **plus** the contents of
    `packaging/deps/arch.txt` and `arch-build.txt` (so the image can build/run
-   RetroShell). Add `greetd tuigreet`.
-2. `packaging/iso/airootfs/`: overlay that installs RetroShell into the live root
+   SLOPOS-I). Add `greetd tuigreet`.
+2. `packaging/iso/airootfs/`: overlay that installs SLOPOS-I into the live root
    — either prebuild binaries into `/usr/local/bin` via a build hook, or ship the
    source and a first-boot build. Place the session files (reuse
    `install-session-files.sh` in a `customize_airootfs.sh` hook) and a greetd
-   config that autostarts RetroShell.
+   config that autostarts SLOPOS-I.
 3. A build script `packaging/iso/build-iso.sh` wrapping `mkarchiso -v .`.
 
 Acceptance:
@@ -421,32 +421,32 @@ test -f packaging/iso/packages.x86_64 && test -f packaging/iso/build-iso.sh && \
 grep -qFf packaging/deps/arch.txt packaging/iso/packages.x86_64 && echo ISO-PROFILE-OK
 # Full build (on an Arch host/VM with archiso): sudo bash packaging/iso/build-iso.sh
 ```
-→ expect: `ISO-PROFILE-OK`. The actual ISO build produces `retroshell-*.iso`,
+→ expect: `ISO-PROFILE-OK`. The actual ISO build produces `slopos-i-*.iso`,
 verified by booting it (Task 4.8).
 
 DO NOT:
 - Re-declare the dependency list — the profile must include
   `packaging/deps/arch.txt` so it cannot drift from the layered path.
 
-Commit: `feat(packaging): archiso profile for a bootable RetroShell ISO`
+Commit: `feat(packaging): archiso profile for a bootable SLOPOS-I ISO`
 
 ---
 
-### Task 4.8 — VM DoD 2: the ISO boots into RetroShell   [UNVERIFIED]
+### Task 4.8 — VM DoD 2: the ISO boots into SLOPOS-I   [UNVERIFIED]
 
-Precondition: `retroshell-*.iso` built from Task 4.7 on an Arch host/VM.
+Precondition: `slopos-i-*.iso` built from Task 4.7 on an Arch host/VM.
 
 Steps:
 1. Create a fresh VirtualBox VM (VMSVGA+3D, no disk needed for a live boot),
    attach the ISO, boot it.
-2. Confirm it boots to the RetroShell desktop (greeter auto-launch or direct).
+2. Confirm it boots to the SLOPOS-I desktop (greeter auto-launch or direct).
 3. Screenshot to `docs/screenshots/stage4-iso-boot.png`.
 
 Acceptance:
 ```bash
 ls -l docs/screenshots/stage4-iso-boot.png && file docs/screenshots/stage4-iso-boot.png
 ```
-→ expect: a real PNG showing RetroShell running from the booted ISO. This is
+→ expect: a real PNG showing SLOPOS-I running from the booted ISO. This is
 **DoD part 2**. Record in `docs/qa/stage-4.md` and mark Stage 4 VERIFIED once
 1a + 1b + 2 all have evidence.
 
@@ -454,4 +454,4 @@ DO NOT:
 - Mark Stage 4 VERIFIED on the ISO alone — the DoD requires the layered install on
   **both** clean Arch and clean Ubuntu-server *and* the ISO boot.
 
-Commit: `docs(qa): stage-4 DoD 2 — bootable ISO reaches RetroShell desktop`
+Commit: `docs(qa): stage-4 DoD 2 — bootable ISO reaches SLOPOS-I desktop`

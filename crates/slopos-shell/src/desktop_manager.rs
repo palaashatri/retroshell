@@ -1,4 +1,4 @@
-use retro_kit::{Color, Point, Rect};
+use slopos_kit::{Color, Point, Rect};
 
 #[derive(Debug, Clone)]
 pub struct DesktopIcon {
@@ -68,9 +68,9 @@ impl DesktopManager {
         self.background_color = color;
     }
 
-    pub fn render_desktop(&self) -> retro_render::RenderNode {
+    pub fn render_desktop(&self) -> slopos_render::RenderNode {
         let mut children = vec![];
-        children.push(retro_render::RenderNode::Rect {
+        children.push(slopos_render::RenderNode::Rect {
             x: 0.0,
             y: 0.0,
             width: 1920.0,
@@ -80,27 +80,27 @@ impl DesktopManager {
         });
 
         for icon in &self.icons {
-            children.push(retro_render::RenderNode::Rect {
+            children.push(slopos_render::RenderNode::Rect {
                 x: icon.rect.x,
                 y: icon.rect.y,
                 width: icon.rect.width,
                 height: icon.rect.height,
                 color: if icon.selected {
-                    retro_render::Color::new(0.4, 0.4, 0.8, 0.5)
+                    slopos_render::Color::new(0.4, 0.4, 0.8, 0.5)
                 } else {
-                    retro_render::Color::TRANSPARENT
+                    slopos_render::Color::TRANSPARENT
                 },
                 corner_radius: 4.0,
             });
-            children.push(retro_render::RenderNode::Text {
+            children.push(slopos_render::RenderNode::Text {
                 x: icon.rect.x + 5.0,
                 y: icon.rect.y + 70.0,
                 text: icon.label.clone(),
                 font_size: 11.0,
-                color: retro_render::Color::WHITE,
+                color: slopos_render::Color::WHITE,
             });
         }
 
-        retro_render::RenderNode::Group { children }
+        slopos_render::RenderNode::Group { children }
     }
 }

@@ -1,4 +1,4 @@
-# RetroShell Roadmap — Development Milestones
+# SLOPOS-I Roadmap — Development Milestones
 
 **Last updated:** 2026-07-31  
 **Status:** Stages 0-4 code-complete; Stage 4 VM tests pending
@@ -33,7 +33,7 @@
   - Validates install.sh, PKGBUILD, debian/*, archiso profile
 - **Task 4.5:** `install.sh --with-greeter` on fresh Arch VM → verify session reaches desktop
 - **Task 4.6:** Same on fresh Ubuntu-server VM (confirm Ubuntu package names)
-- **Task 4.8:** ISO boots on clean VM → RetroShell desktop appears
+- **Task 4.8:** ISO boots on clean VM → SLOPOS-I desktop appears
 
 **Owner:** User (requires VM access and manual testing)  
 **Timeline:** 1-2 days of VM time  
@@ -70,7 +70,7 @@
   - TextField for search input positioned at top of overlay
   - ListView for results with selected index tracking
   - TODO: Render scrim, search field text, results list items, selection highlight
-  - Rendering infrastructure complete; UI display pending retro-kit canvas integration
+  - Rendering infrastructure complete; UI display pending slopos-kit canvas integration
   - **Status:** 316 tests pass with no visible overlay (keyboard routing verified)
 - **B2d (✅ DONE):** Polish + integration (app launch/file open on Enter)
   - Enter key activates selected result
@@ -106,7 +106,7 @@ The button event handling works, but drawing may be missing or not wired. This b
 **Stages:**
 - Load theme manifest + colors at startup
 - Apply from Settings UI
-- Hot-swap via retro-bus (once defect H is fixed)
+- Hot-swap via slopos-bus (once defect H is fixed)
 
 ### C2: Animated desktop backgrounds (backlog #3)
 **Value:** Visual delight + system feel  
@@ -116,7 +116,7 @@ The button event handling works, but drawing may be missing or not wired. This b
 - Video support (optional Phase 1.5)
 - Settings UI wallpaper picker
 
-### C3: Fix defect H (retro-bus IPC)
+### C3: Fix defect H (slopos-bus IPC)
 **Value:** Event broadcast (theme changes, lock state, app state)  
 **Effort:** 1-2 weeks  
 **Blocker for:** Theme hot-swap, inter-app communication
@@ -137,7 +137,7 @@ The button event handling works, but drawing may be missing or not wired. This b
 - Error messages and diagnostics
 
 ### D3: Third-party app SDK stabilization
-- Finalize retro-sdk API (versioning)
+- Finalize slopos-sdk API (versioning)
 - Example third-party app (in separate repo)
 - App distribution guidelines
 
@@ -156,8 +156,8 @@ The button event handling works, but drawing may be missing or not wired. This b
 ### Risk: Defect J (buttons) is deeper than expected
 **Mitigation:** Start with keyboard-only workflows in new features. Once buttons work, add mouse support.
 
-### Risk: retro-bus is complex to fix
-**Mitigation:** Defer hot-swap features until retro-bus is proven. Single-process workflows (no inter-app events) work without it.
+### Risk: slopos-bus is complex to fix
+**Mitigation:** Defer hot-swap features until slopos-bus is proven. Single-process workflows (no inter-app events) work without it.
 
 ### Risk: Toolkit rendering doesn't scale to complex UIs
 **Mitigation:** The Settings app and theme browser are relatively simple. If performance is an issue, can defer to C2/C3.
@@ -174,7 +174,7 @@ The button event handling works, but drawing may be missing or not wired. This b
 ### Medium-term (by end of September 2026)
 - ✅ Themes + hot-swap functional
 - ✅ Animated backgrounds (GIF, optionally video)
-- ✅ Defect H (retro-bus) fixed
+- ✅ Defect H (slopos-bus) fixed
 - ✅ 50% of defect I (Terminal parser) fixed
 
 ### Long-term (by end of Q4 2026)
@@ -190,7 +190,7 @@ The button event handling works, but drawing may be missing or not wired. This b
 ### No breaking changes without cause
 - Single Cargo workspace (no repo split)
 - Core crates (renderer, kit, sdk, shell, compositor) stay together
-- Apps can peel off once retro-sdk API is stable
+- Apps can peel off once slopos-sdk API is stable
 
 ### Dependency minimalism
 - Prefer Rust crates (smithay, wgpu, serde)
@@ -218,7 +218,7 @@ See [PROGRAM.md](PROGRAM.md) for the honesty contract: **a feature is done when 
 
 ## Further Reading
 
-- **Specification:** [specs/2026-07-30-retroshell-de-program-design.md](specs/2026-07-30-retroshell-de-program-design.md)
+- **Specification:** [specs/2026-07-30-slopos-i-de-program-design.md](specs/2026-07-30-slopos-i-de-program-design.md)
 - **Current Tasks:** [tasks/](tasks/)
 - **QA Evidence:** [qa/](qa/)
 - **Design Backlog:** [FUTURE.md](FUTURE.md)

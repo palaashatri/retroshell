@@ -4,7 +4,7 @@
 **Last Updated:** 2026-07-31  
 **Scope:** Visual language only (kit + SDK canvas paint). Does **not** authorize regressing HDR/VRR, DRM, or compositor roadmap work.
 
-RetroShell’s UI must look as close as practical to Classic Mac / System 7 mockups and open reimplementations — **without** Apple trademarked logos or product names.
+SLOPOS-I’s UI must look as close as practical to Classic Mac / System 7 mockups and open reimplementations — **without** Apple trademarked logos or product names.
 
 ---
 
@@ -32,10 +32,10 @@ RetroShell’s UI must look as close as practical to Classic Mac / System 7 mock
 1. **No Apple trademarks in shipping UI**
    - No rainbow Apple menu mark
    - No “Macintosh”, “Mac OS”, “Finder” as product branding in user-facing strings where avoidable (existing shell names like the file manager app may remain functional labels; do not add Apple logos)
-   - Use Retro glyph / “Retro” system menu instead of Apple menu art
+   - Use SLOPOS glyph / “SLOPOS” system menu instead of Apple menu art
 
 2. **Polish stays in paint path**
-   - Implement look in `retro-kit` + `retro-sdk` canvas drawing
+   - Implement look in `slopos-kit` + `slopos-sdk` canvas drawing
    - Do not rip out HDR/VRR, adaptive sync, or compositor protocol work to chase pixels
 
 3. **Roadmap docs remain authoritative for non-UI systems**
@@ -69,7 +69,7 @@ From `Assets.xcassets/Colors` in System7Components:
 
 ## Port map (Swift → Rust)
 
-| System7Components | RetroShell |
+| System7Components | SLOPOS-I |
 |-------------------|------------|
 | `System7Border.system73DBorder` | `draw_system7_3d_border` |
 | `System73DButtonStyle` | multi-layer `draw_beveled_rect` |

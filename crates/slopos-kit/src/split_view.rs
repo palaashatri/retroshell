@@ -64,7 +64,7 @@ impl SplitView {
     }
 
     /// The divider's own hit rect, in the same coordinate space as
-    /// `self.rect()`. Matches the geometry `retro-sdk`'s painter already
+    /// `self.rect()`. Matches the geometry `slopos-sdk`'s painter already
     /// computes inline when drawing the divider.
     pub fn divider_rect(&self) -> Rect {
         let r = self.rect();

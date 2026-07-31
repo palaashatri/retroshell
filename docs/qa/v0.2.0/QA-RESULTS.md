@@ -3,9 +3,11 @@
 **Date:** 2026-07-31  
 **Environment:** UTM `Ubuntu` aarch64 @ 192.168.64.15 (Ubuntu 26.04)  
 **Capture method:** sway headless (`WLR_BACKENDS=headless`) + `grim`  
+**Product name:** SLOPOS-I (docs/crates may still show older “RetroShell” strings in
+archive only; living tree uses SLOPOS-I / `slopos-*` / `SLOPOS_*`).  
 **Honesty note:** Earlier `docs/qa/v0.2.0/01-desktop.png` (263 bytes, blank) and the previous
 QA write-up claiming “ready to release” without pixels are **invalid**. This file only
-claims what the screenshots below prove.
+claims what the screenshots below prove. Living status: [SLOPOS-I.md](../../SLOPOS-I.md).
 
 ## What was wrong before
 
@@ -18,9 +20,9 @@ claims what the screenshots below prove.
 ## Build / tests (VM)
 
 ```
-cargo test -p retro-kit -p retro-sdk -p retro-shell --lib --release
+cargo test -p slopos-kit -p slopos-sdk -p slopos-shell --lib --release
 → 317 passed; 0 failed
-cargo build --release -p retro-shell
+cargo build --release -p slopos-shell
 → success
 ```
 
@@ -30,10 +32,10 @@ All under `docs/qa/v0.2.0/`:
 
 | File | What it proves | Size |
 |------|----------------|------|
-| `01-desktop.png` | Desktop paints: menu bar, Finder (“Retro HD”), desktop icons, dock | ~42 KB |
+| `01-desktop.png` | Desktop paints: menu bar, Finder (“SLOPOS HD”), desktop icons, dock | ~42 KB |
 | `02-spotlight.png` | Spotlight visible with query `vol` → result **Volume — Sound** selected | ~39 KB |
 | `03-spotlight-empty.png` | Spotlight card + placeholder + app suggestions list | ~44 KB |
-| `04-desktop-dark.png` | `theme=dark` in `~/.config/retroshell/settings.conf` darkens chrome/backdrop | ~42 KB |
+| `04-desktop-dark.png` | `theme=dark` in `~/.config/slopos-i/settings.conf` darkens chrome/backdrop | ~42 KB |
 | `05-spotlight-settings.png` | Query `Settings` → Settings app + WiFi Settings result | ~42 KB |
 
 ### How Spotlight was opened for screenshots
@@ -41,7 +43,7 @@ All under `docs/qa/v0.2.0/`:
 No `wtype`/`ydotool` on this VM. Overlay was forced once at startup via:
 
 ```bash
-RETROSHELL_QA_SPOTLIGHT=vol ./target/release/retro-shell
+SLOPOS_QA_SPOTLIGHT=vol ./target/release/slopos-shell
 ```
 
 That env hook is a QA aid only; production toggle remains **Super+Space** (unit-tested).
@@ -52,10 +54,10 @@ That env hook is a QA aid only; production toggle remains **Super+Space** (unit-
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
 export WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1
 export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe
-export RETROSHELL_LAYER_SHELL_CHROME=1
+export SLOPOS_LAYER_SHELL_CHROME=1
 sway -c /tmp/sway-headless.conf &   # output * { resolution 1280x800 }
 export SWAYSOCK=... WAYLAND_DISPLAY=wayland-1
-./target/release/retro-shell &
+./target/release/slopos-shell &
 sleep 7
 grim docs/qa/v0.2.0/01-desktop.png
 ```

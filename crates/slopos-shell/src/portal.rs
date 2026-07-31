@@ -5,12 +5,12 @@
 //!
 //! # D-Bus well-known names / paths (impl side)
 //!
-//! RetroShell registers a simplified portal backend third parties can call directly:
+//! SLOPOS-I registers a simplified portal backend third parties can call directly:
 //!
 //! | Role | Value |
 //! |------|--------|
-//! | Bus name | [`PORTAL_BUS_NAME`] (`org.retroshell.Portal`) |
-//! | Object path | [`PORTAL_PATH`] (`/org/retroshell/portal`) |
+//! | Bus name | [`PORTAL_BUS_NAME`] (`org.slopos-i.Portal`) |
+//! | Object path | [`PORTAL_PATH`] (`/org/slopos-i/portal`) |
 //! | Screenshot iface | [`PORTAL_SCREENSHOT_INTERFACE`] (`org.freedesktop.impl.portal.Screenshot`) |
 //! | Settings iface | [`PORTAL_SETTINGS_INTERFACE`] (`org.freedesktop.impl.portal.Settings`) |
 //! | OpenURI iface | [`PORTAL_OPENURI_INTERFACE`] (`org.freedesktop.impl.portal.OpenURI`) |
@@ -36,10 +36,10 @@ use crate::capture::{take_screenshot, CaptureError};
 // D-Bus constants (session-bus portal backend)
 // ---------------------------------------------------------------------------
 
-/// Well-known session bus name for RetroShell portal handlers.
-pub const PORTAL_BUS_NAME: &str = "org.retroshell.Portal";
+/// Well-known session bus name for SLOPOS-I portal handlers.
+pub const PORTAL_BUS_NAME: &str = "org.slopos-i.Portal";
 /// Object path for portal interfaces.
-pub const PORTAL_PATH: &str = "/org/retroshell/portal";
+pub const PORTAL_PATH: &str = "/org/slopos-i/portal";
 /// FreeDesktop portal Screenshot implementation interface.
 pub const PORTAL_SCREENSHOT_INTERFACE: &str = "org.freedesktop.impl.portal.Screenshot";
 /// FreeDesktop portal Settings implementation interface.
@@ -88,9 +88,9 @@ pub struct PortalScreenshotResult {
 
 /// Build the default portal-style screenshot filename (pure helper for tests).
 ///
-/// Example: `RetroShell-Portal-Screenshot-1710000000.png`
+/// Example: `SLOPOS-I-Portal-Screenshot-1710000000.png`
 pub fn portal_screenshot_filename(now_unix_secs: u64) -> String {
-    format!("RetroShell-Portal-Screenshot-{now_unix_secs}.png")
+    format!("SLOPOS-I-Portal-Screenshot-{now_unix_secs}.png")
 }
 
 /// Pure: screenshots directory under a base path (typically `$HOME`).
@@ -152,7 +152,7 @@ pub fn take_portal_style_screenshot_with(
 // Settings
 // ---------------------------------------------------------------------------
 
-/// FreeDesktop Settings portal namespaces RetroShell exposes in the pure map.
+/// FreeDesktop Settings portal namespaces SLOPOS-I exposes in the pure map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PortalSettingsNamespace {
     /// `org.freedesktop.appearance` — color-scheme, accent-color, etc.
@@ -552,7 +552,7 @@ pub enum OpenUriAction {
 }
 
 /// Pure OpenURI plan: validate, then for `file://` build a MIME open plan
-/// using [`crate::mime_open::seed_retroshell_defaults`].
+/// using [`crate::mime_open::seed_slopos_defaults`].
 ///
 /// Live D-Bus OpenURI spawns [`OpenUriAction::MimeOpen`] via
 /// [`crate::session_clients::spawn_open_plan`].
@@ -567,7 +567,7 @@ pub fn plan_open_uri(uri: &str) -> Result<OpenUriAction, String> {
         return Ok(OpenUriAction::ValidatedRemote);
     }
     let mut reg = crate::mime_open::MimeOpenRegistry::new();
-    crate::mime_open::seed_retroshell_defaults(&mut reg);
+    crate::mime_open::seed_slopos_defaults(&mut reg);
     let plan = crate::mime_open::open_plan_for_file_uri(&reg, uri)?;
     Ok(OpenUriAction::MimeOpen(plan))
 }
@@ -580,15 +580,15 @@ mod tests {
     fn portal_screenshot_filename_pure() {
         assert_eq!(
             portal_screenshot_filename(123),
-            "RetroShell-Portal-Screenshot-123.png"
+            "SLOPOS-I-Portal-Screenshot-123.png"
         );
         assert_eq!(
             portal_screenshot_filename(0),
-            "RetroShell-Portal-Screenshot-0.png"
+            "SLOPOS-I-Portal-Screenshot-0.png"
         );
         assert_eq!(
             portal_screenshot_filename(1_710_000_000),
-            "RetroShell-Portal-Screenshot-1710000000.png"
+            "SLOPOS-I-Portal-Screenshot-1710000000.png"
         );
     }
 
@@ -631,12 +631,12 @@ mod tests {
         let result = handle_portal_screenshot_request(req, dir, 42);
         assert_eq!(
             result.path,
-            PathBuf::from("/tmp/Screenshots/RetroShell-Portal-Screenshot-42.png")
+            PathBuf::from("/tmp/Screenshots/SLOPOS-I-Portal-Screenshot-42.png")
         );
         assert_eq!(result.options, req);
         assert_eq!(
             portal_screenshot_uri_for(&result.path),
-            "file:///tmp/Screenshots/RetroShell-Portal-Screenshot-42.png"
+            "file:///tmp/Screenshots/SLOPOS-I-Portal-Screenshot-42.png"
         );
     }
 
@@ -704,7 +704,7 @@ mod tests {
     fn plan_open_uri_file_text_is_mime_open_textedit_spawn_argv() {
         match plan_open_uri("file:///tmp/hello.txt").unwrap() {
             OpenUriAction::MimeOpen(plan) => {
-                assert_eq!(plan.app_id, "com.retro.textedit");
+                assert_eq!(plan.app_id, "com.slopos.textedit");
                 assert_eq!(
                     crate::mime_open::spawn_argv(&plan),
                     vec!["textedit", "/tmp/hello.txt"]
@@ -722,8 +722,8 @@ mod tests {
 
     #[test]
     fn bus_constants_match_documented_names() {
-        assert_eq!(PORTAL_BUS_NAME, "org.retroshell.Portal");
-        assert_eq!(PORTAL_PATH, "/org/retroshell/portal");
+        assert_eq!(PORTAL_BUS_NAME, "org.slopos-i.Portal");
+        assert_eq!(PORTAL_PATH, "/org/slopos-i/portal");
         assert_eq!(
             PORTAL_SCREENSHOT_INTERFACE,
             "org.freedesktop.impl.portal.Screenshot"

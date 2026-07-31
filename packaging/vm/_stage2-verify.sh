@@ -9,21 +9,21 @@ exec > >(tee "$QA/run.log") 2>&1
 pkill -9 -f '[r]etro-compositor' 2>/dev/null || true
 pkill -9 -x foot 2>/dev/null || true
 pkill -9 -x finder 2>/dev/null || true
-pkill -9 -f retro-lock 2>/dev/null || true
+pkill -9 -f slopos-lock 2>/dev/null || true
 sleep 1
 
-export RETROSHELL_LOCK_PASSWORD=retroshell
+export SLOPOS_LOCK_PASSWORD=slopos-i
 export RUST_LOG=info
 export RUST_BACKTRACE=1
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
-unset DISPLAY WAYLAND_DISPLAY RETROSHELL_FORCE_LABWC RETROSHELL_COMPOSITOR
+unset DISPLAY WAYLAND_DISPLAY SLOPOS_FORCE_LABWC SLOPOS_COMPOSITOR
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 
-cd ~/retroshell
-setsid env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" ./target/release/retro-compositor \
+cd ~/slopos-i
+setsid env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" ./target/release/slopos-compositor \
   > "$QA/compositor.log" 2>&1 < /dev/null &
 COMP=$!
 

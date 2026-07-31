@@ -112,8 +112,8 @@ impl<'a> Perform for VtHandler<'a> {
                 while i < flat.len() {
                     match flat[i] {
                         0 => {
-                            self.term.current_fg = retro_kit::Color::WHITE;
-                            self.term.current_bg = retro_kit::Color::BLACK;
+                            self.term.current_fg = slopos_kit::Color::WHITE;
+                            self.term.current_bg = slopos_kit::Color::BLACK;
                             self.term.current_bold = false;
                             self.term.current_italic = false;
                             self.term.current_underline = false;
@@ -138,7 +138,7 @@ impl<'a> Perform for VtHandler<'a> {
                                 let r = flat[i + 2] as f32 / 255.0;
                                 let g = flat[i + 3] as f32 / 255.0;
                                 let b = flat[i + 4] as f32 / 255.0;
-                                self.term.current_fg = retro_kit::Color::new(r, g, b, 1.0);
+                                self.term.current_fg = slopos_kit::Color::new(r, g, b, 1.0);
                                 i += 4;
                             }
                         }
@@ -153,7 +153,7 @@ impl<'a> Perform for VtHandler<'a> {
                                 let r = flat[i + 2] as f32 / 255.0;
                                 let g = flat[i + 3] as f32 / 255.0;
                                 let b = flat[i + 4] as f32 / 255.0;
-                                self.term.current_bg = retro_kit::Color::new(r, g, b, 1.0);
+                                self.term.current_bg = slopos_kit::Color::new(r, g, b, 1.0);
                                 i += 4;
                             }
                         }
@@ -318,39 +318,39 @@ fn first_param_or(params: &Params, default: u16) -> u16 {
     }
 }
 
-fn map_ansi_color(code: u16) -> retro_kit::Color {
+fn map_ansi_color(code: u16) -> slopos_kit::Color {
     match code {
-        0 => retro_kit::Color::BLACK,
-        1 => retro_kit::Color::new(0.8, 0.0, 0.0, 1.0),
-        2 => retro_kit::Color::new(0.0, 0.8, 0.0, 1.0),
-        3 => retro_kit::Color::new(0.8, 0.8, 0.0, 1.0),
-        4 => retro_kit::Color::new(0.0, 0.0, 0.8, 1.0),
-        5 => retro_kit::Color::new(0.8, 0.0, 0.8, 1.0),
-        6 => retro_kit::Color::new(0.0, 0.8, 0.8, 1.0),
-        _ => retro_kit::Color::WHITE,
+        0 => slopos_kit::Color::BLACK,
+        1 => slopos_kit::Color::new(0.8, 0.0, 0.0, 1.0),
+        2 => slopos_kit::Color::new(0.0, 0.8, 0.0, 1.0),
+        3 => slopos_kit::Color::new(0.8, 0.8, 0.0, 1.0),
+        4 => slopos_kit::Color::new(0.0, 0.0, 0.8, 1.0),
+        5 => slopos_kit::Color::new(0.8, 0.0, 0.8, 1.0),
+        6 => slopos_kit::Color::new(0.0, 0.8, 0.8, 1.0),
+        _ => slopos_kit::Color::WHITE,
     }
 }
 
-fn map_256_color(idx: u16) -> retro_kit::Color {
+fn map_256_color(idx: u16) -> slopos_kit::Color {
     if idx < 8 {
         map_ansi_color(idx)
     } else if idx < 16 {
         match idx {
-            8 => retro_kit::Color::new(0.3, 0.3, 0.3, 1.0),
-            9 => retro_kit::Color::new(1.0, 0.3, 0.3, 1.0),
-            10 => retro_kit::Color::new(0.3, 1.0, 0.3, 1.0),
-            11 => retro_kit::Color::new(1.0, 1.0, 0.3, 1.0),
-            12 => retro_kit::Color::new(0.3, 0.3, 1.0, 1.0),
-            13 => retro_kit::Color::new(1.0, 0.3, 1.0, 1.0),
-            14 => retro_kit::Color::new(0.3, 1.0, 1.0, 1.0),
-            _ => retro_kit::Color::WHITE,
+            8 => slopos_kit::Color::new(0.3, 0.3, 0.3, 1.0),
+            9 => slopos_kit::Color::new(1.0, 0.3, 0.3, 1.0),
+            10 => slopos_kit::Color::new(0.3, 1.0, 0.3, 1.0),
+            11 => slopos_kit::Color::new(1.0, 1.0, 0.3, 1.0),
+            12 => slopos_kit::Color::new(0.3, 0.3, 1.0, 1.0),
+            13 => slopos_kit::Color::new(1.0, 0.3, 1.0, 1.0),
+            14 => slopos_kit::Color::new(0.3, 1.0, 1.0, 1.0),
+            _ => slopos_kit::Color::WHITE,
         }
     } else if idx < 232 {
         let cube_idx = idx - 16;
         let r = (cube_idx / 36) % 6;
         let g = (cube_idx / 6) % 6;
         let b = cube_idx % 6;
-        retro_kit::Color::new(
+        slopos_kit::Color::new(
             r as f32 / 5.0,
             g as f32 / 5.0,
             b as f32 / 5.0,
@@ -358,7 +358,7 @@ fn map_256_color(idx: u16) -> retro_kit::Color {
         )
     } else {
         let gray = (idx - 232) as f32 / 23.0;
-        retro_kit::Color::new(gray, gray, gray, 1.0)
+        slopos_kit::Color::new(gray, gray, gray, 1.0)
     }
 }
 

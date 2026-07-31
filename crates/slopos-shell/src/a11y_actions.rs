@@ -118,7 +118,7 @@ pub fn session_root_actions() -> Vec<AccessibleAction> {
 /// is auditable without spinning up a full desktop.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum A11yDispatchTarget {
-    /// Open the system/Retro menu via kit MenuBar `open_menu_at` / `open_first_menu`.
+    /// Open the system/SLOPOS menu via kit MenuBar `open_menu_at` / `open_first_menu`.
     ChromeMenuActivate,
     /// Launch or focus first dock item.
     ChromeDockActivate,
@@ -204,7 +204,7 @@ pub fn classify_a11y_invoke(invoke_id: &str) -> A11yDispatchTarget {
             if other.starts_with("shell.")
                 || other.starts_with("workspace.")
                 || other.starts_with("finder.")
-                || other.starts_with("com.retro.") =>
+                || other.starts_with("com.slopos.") =>
         {
             A11yDispatchTarget::MenuActionOwned(other.to_string())
         }
@@ -273,7 +273,7 @@ pub fn primary_invoke_for_chrome(target: ChromeFocusTarget) -> InvokePlan {
 
 /// Map an AT-SPI accessible path to a chrome focus target when it is a chrome region root.
 ///
-/// Indices match [`retro_kit::shell_chrome_accessibility_tree`]:
+/// Indices match [`slopos_kit::shell_chrome_accessibility_tree`]:
 /// menu bar `0`, desktop `1`, dock `2`, window frame `3`.
 pub fn chrome_target_for_atspi_path(path: &str) -> Option<ChromeFocusTarget> {
     let path = path.trim_end_matches('/');
@@ -303,8 +303,8 @@ pub fn invoke_id_for_object_name(name: &str) -> Option<&'static str> {
         "Force Quit..." | "Force Quit…" => Some("shell.force_quit"),
         "Notification Center..." | "Notification Center…" => Some("shell.notification_center"),
         "System Settings..." | "System Settings…" => Some("shell.settings"),
-        "About RetroShell" => Some("shell.about"),
-        "Quit RetroShell" => Some("shell.quit"),
+        "About SLOPOS-I" => Some("shell.about"),
+        "Quit SLOPOS-I" => Some("shell.quit"),
         "Next Workspace" | "next-workspace" => Some("workspace.next"),
         "Previous Workspace" | "previous-workspace" => Some("workspace.previous"),
         _ => None,

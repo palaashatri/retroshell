@@ -5,7 +5,7 @@
 ## What's Done (Tasks 3.0–3.8)
 
 All implementation is in place and tested:
-- ✅ Bundle parser (`crates/retro-shell/src/bundle.rs`) — parses `Resources/Info.toml`
+- ✅ Bundle parser (`crates/slopos-shell/src/bundle.rs`) — parses `Resources/Info.toml`
 - ✅ Disk scanner (`scan_applications()`) — reads `*.app` directories from `~/Applications` and `/Applications`
 - ✅ Launch resolver — execs `<path>/<entrypoint>` from AppBundle
 - ✅ Bundle packaging scripts — `packaging/apps/build-all-bundles.sh` packages 5 first-party apps
@@ -34,16 +34,16 @@ Ensure the code is synced to the VM:
 
 ```bash
 rsync -az --exclude target --exclude .git --exclude docs/screenshots \
-  -e "ssh -i ~/.ssh/retroshell_utm" ./ ubuntu@192.168.64.15:/home/ubuntu/retroshell/
+  -e "ssh -i ~/.ssh/slopos-i_utm" ./ ubuntu@192.168.64.15:/home/ubuntu/slopos-i/
 ```
 
 ### On the VM
 
 ```bash
-ssh -i ~/.ssh/retroshell_utm ubuntu@192.168.64.15
+ssh -i ~/.ssh/slopos-i_utm ubuntu@192.168.64.15
 
 # Inside the VM:
-cd ~/retroshell
+cd ~/slopos-i
 
 # Build the workspace (this takes ~2 min for code-only changes)
 cargo build --release --workspace
@@ -67,12 +67,12 @@ export XDG_RUNTIME_DIR=/run/user/1000 \
        LIBSEAT_BACKEND=seatd \
        LIBGL_ALWAYS_SOFTWARE=1 \
        GALLIUM_DRIVER=llvmpipe \
-       RETROSHELL_LAYER_SHELL_CHROME=1
+       SLOPOS_LAYER_SHELL_CHROME=1
 
-cd ~/retroshell
+cd ~/slopos-i
 
 # Run the compositor (it spawns the shell)
-./target/release/retro-compositor
+./target/release/slopos-compositor
 ```
 
 Once the shell is running:
@@ -90,13 +90,13 @@ After store install and app launch:
 **For Xvfb method (if running headless):**
 ```bash
 export DISPLAY=:99
-import -window root ~/retroshell/docs/screenshots/stage3-appstore-install.png
-import -window root ~/retroshell/docs/screenshots/stage3-textedit-launched.png
+import -window root ~/slopos-i/docs/screenshots/stage3-appstore-install.png
+import -window root ~/slopos-i/docs/screenshots/stage3-textedit-launched.png
 ```
 
 **For VirtualBox:**
 ```bash
-VBoxManage controlvm retroshell-arch screenshotpng ~/retroshell/docs/screenshots/stage3-appstore-install.png
+VBoxManage controlvm slopos-i-arch screenshotpng ~/slopos-i/docs/screenshots/stage3-appstore-install.png
 ```
 
 ### Verify Installation

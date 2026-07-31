@@ -151,7 +151,7 @@ pub fn evaluate_rules(rules: &[WindowRule], info: &WindowInfo) -> Option<WindowR
     None
 }
 
-/// Seed rules useful for a RetroShell session (terminals → workspace 1, etc.).
+/// Seed rules useful for a SLOPOS-I session (terminals → workspace 1, etc.).
 pub fn default_session_rules() -> Vec<WindowRule> {
     vec![
         WindowRule {
@@ -300,7 +300,7 @@ mod tests {
     fn terminal_rule_assigns_workspace() {
         let rules = default_session_rules();
         let info = WindowInfo {
-            app_id: "org.retroshell.Terminal".into(),
+            app_id: "org.slopos-i.Terminal".into(),
             title: "bash".into(),
             class: String::new(),
         };
@@ -313,7 +313,7 @@ mod tests {
     fn force_quit_skips_taskbar() {
         let rules = default_session_rules();
         let info = WindowInfo {
-            app_id: "retroshell".into(),
+            app_id: "slopos-i".into(),
             title: "Force Quit".into(),
             class: String::new(),
         };

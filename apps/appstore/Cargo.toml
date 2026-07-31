@@ -8,8 +8,8 @@ name = "appstore"
 path = "src/main.rs"
 
 [dependencies]
-retro-sdk = { path = "../../crates/retro-sdk" }
-retro-kit = { path = "../../crates/retro-kit" }
+slopos-sdk = { path = "../../crates/slopos-sdk" }
+slopos-kit = { path = "../../crates/slopos-kit" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 sha2 = "0.10"

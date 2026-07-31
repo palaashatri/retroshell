@@ -261,16 +261,16 @@ pub fn mime_from_path(path: impl AsRef<Path>) -> String {
     }
 }
 
-/// Seed built-in RetroShell handlers: TextEdit for `text/*`, Finder for directories.
-pub fn seed_retroshell_defaults(registry: &mut MimeOpenRegistry) {
+/// Seed built-in SLOPOS-I handlers: TextEdit for `text/*`, Finder for directories.
+pub fn seed_slopos_defaults(registry: &mut MimeOpenRegistry) {
     registry.register(DesktopAppEntry {
-        id: "com.retro.textedit".to_string(),
+        id: "com.slopos.textedit".to_string(),
         name: "TextEdit".to_string(),
         exec: "retro-textedit %f".to_string(),
         mimetypes: vec!["text/*".to_string(), "text/plain".to_string()],
     });
     registry.register(DesktopAppEntry {
-        id: "com.retro.finder".to_string(),
+        id: "com.slopos.finder".to_string(),
         name: "Finder".to_string(),
         exec: "retro-finder %f".to_string(),
         mimetypes: vec!["inode/directory".to_string()],
@@ -302,21 +302,21 @@ pub fn open_plan(registry: &MimeOpenRegistry, path: impl AsRef<Path>) -> Result<
     Ok(OpenPlan { app_id, argv })
 }
 
-/// First-party binary name for a RetroShell app id (spawn-ready, not Exec= name).
+/// First-party binary name for a SLOPOS-I app id (spawn-ready, not Exec= name).
 pub fn first_party_binary_for_app_id(app_id: &str) -> Option<&'static str> {
     match app_id {
-        "com.retro.textedit" => Some("textedit"),
-        "com.retro.finder" => Some("finder"),
-        "com.retro.settings" => Some("settings"),
-        "com.retro.terminal" => Some("terminal"),
-        "com.retro.appstore" => Some("appstore"),
+        "com.slopos.textedit" => Some("textedit"),
+        "com.slopos.finder" => Some("finder"),
+        "com.slopos.settings" => Some("settings"),
+        "com.slopos.terminal" => Some("terminal"),
+        "com.slopos.appstore" => Some("appstore"),
         _ => None,
     }
 }
 
 /// Pure spawn argv for an [`OpenPlan`].
 ///
-/// Remaps known RetroShell app ids to on-disk first-party binary names
+/// Remaps known SLOPOS-I app ids to on-disk first-party binary names
 /// (`retro-textedit` Exec → `textedit`). Unknown apps keep `plan.argv` as-is.
 pub fn spawn_argv(plan: &OpenPlan) -> Vec<String> {
     let mut argv = plan.argv.clone();
@@ -550,43 +550,43 @@ mod tests {
     #[test]
     fn seed_defaults_textedit_handles_text() {
         let mut reg = MimeOpenRegistry::new();
-        seed_retroshell_defaults(&mut reg);
+        seed_slopos_defaults(&mut reg);
 
         let handlers = reg.find_handlers("text/plain");
-        assert!(handlers.contains(&"com.retro.textedit".to_string()));
+        assert!(handlers.contains(&"com.slopos.textedit".to_string()));
         assert_eq!(
             reg.pick_default("text/plain").as_deref(),
-            Some("com.retro.textedit")
+            Some("com.slopos.textedit")
         );
         assert_eq!(
             reg.pick_default("text/html").as_deref(),
-            Some("com.retro.textedit")
+            Some("com.slopos.textedit")
         );
     }
 
     #[test]
     fn seed_defaults_finder_handles_directory() {
         let mut reg = MimeOpenRegistry::new();
-        seed_retroshell_defaults(&mut reg);
+        seed_slopos_defaults(&mut reg);
         assert_eq!(
             reg.pick_default("inode/directory").as_deref(),
-            Some("com.retro.finder")
+            Some("com.slopos.finder")
         );
     }
 
     #[test]
     fn open_plan_text_file_uses_textedit_argv() {
         let mut reg = MimeOpenRegistry::new();
-        seed_retroshell_defaults(&mut reg);
+        seed_slopos_defaults(&mut reg);
         let plan = open_plan(&reg, PathBuf::from("/tmp/hello.txt")).unwrap();
-        assert_eq!(plan.app_id, "com.retro.textedit");
+        assert_eq!(plan.app_id, "com.slopos.textedit");
         assert_eq!(plan.argv, vec!["retro-textedit", "/tmp/hello.txt"]);
     }
 
     #[test]
     fn open_plan_spawn_argv_text_file_is_first_party_binary() {
         let mut reg = MimeOpenRegistry::new();
-        seed_retroshell_defaults(&mut reg);
+        seed_slopos_defaults(&mut reg);
         let plan = open_plan(&reg, PathBuf::from("/tmp/hello.txt")).unwrap();
         // Pure spawn argv: Exec name remapped to on-disk binary (no process).
         assert_eq!(spawn_argv(&plan), vec!["textedit", "/tmp/hello.txt"]);
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn open_plan_spawn_argv_directory_is_finder() {
         let mut reg = MimeOpenRegistry::new();
-        seed_retroshell_defaults(&mut reg);
+        seed_slopos_defaults(&mut reg);
         let dir = std::env::temp_dir();
         let plan = open_plan(&reg, &dir).unwrap();
         let argv = spawn_argv(&plan);
@@ -610,10 +610,10 @@ mod tests {
     #[test]
     fn open_plan_directory_uses_finder() {
         let mut reg = MimeOpenRegistry::new();
-        seed_retroshell_defaults(&mut reg);
+        seed_slopos_defaults(&mut reg);
         let dir = std::env::temp_dir();
         let plan = open_plan(&reg, &dir).unwrap();
-        assert_eq!(plan.app_id, "com.retro.finder");
+        assert_eq!(plan.app_id, "com.slopos.finder");
         assert_eq!(plan.argv[0], "retro-finder");
         assert_eq!(plan.argv[1], dir.to_string_lossy().as_ref());
     }
@@ -654,9 +654,9 @@ mod tests {
     #[test]
     fn open_plan_for_file_uri_text_uses_textedit_spawn_argv() {
         let mut reg = MimeOpenRegistry::new();
-        seed_retroshell_defaults(&mut reg);
+        seed_slopos_defaults(&mut reg);
         let plan = open_plan_for_file_uri(&reg, "file:///tmp/notes.md").unwrap();
-        assert_eq!(plan.app_id, "com.retro.textedit");
+        assert_eq!(plan.app_id, "com.slopos.textedit");
         assert_eq!(spawn_argv(&plan), vec!["textedit", "/tmp/notes.md"]);
     }
 

@@ -5,7 +5,7 @@
 > Evidence in [docs/qa/stage-1.md](../qa/stage-1.md) and
 > [docs/screenshots/stage1-finder.png](../screenshots/stage1-finder.png).
 
-**Goal:** answer one question with evidence — *does `retro-compositor` actually
+**Goal:** answer one question with evidence — *does `slopos-compositor` actually
 paint a client window on real KMS?* (Originally written for virtio-gpu; this run
 used VirtualBox **`vmwgfx`**.) Per the QA report the compositor never ran on real
 KMS, so we do not assume; we observe.
@@ -14,13 +14,13 @@ KMS, so we do not assume; we observe.
 D (discarded libinput events), and #3 (missing frame callbacks) were **already
 fixed** in commit `868b9c5` (see spec §2.1). Writing tasks to "fix" them would be
 fabricated work. The one code comment that flags a *real* remaining gap is at
-`crates/retro-compositor/src/session_drm.rs:894`: "the DRM path does not yet
+`crates/slopos-compositor/src/session_drm.rs:894`: "the DRM path does not yet
 composite client buffers to scanout." **Observed on vmwgfx:** that comment is
 outdated — the GL `DrmCompositor` path ran and painted `foot` + Finder. Stage 1
 found out.
 
-**Definition of done (from PROGRAM.md):** either
-(a) a screenshot **captured on the VM** of Finder rendered by `retro-compositor`
+**Definition of done (from SLOPOS-I.md):** either
+(a) a screenshot **captured on the VM** of Finder rendered by `slopos-compositor`
 (not labwc), proving the path works end to end; or
 (b) an evidenced diagnosis that isolates exactly why it does not paint —
 sufficient to write the Stage-2 compositing spec.
@@ -33,9 +33,9 @@ sufficient to write the Stage-2 compositing spec.
   copied to the host with `scp`. A host screenshot of the VirtualBox/UTM window is
   a fallback, not the primary evidence. (**This run:** `grim` failed — no
   screencopy protocol — so VBox `screenshotpng` was used.)
-- Backend selection env vars (from `main.rs` `linux::run`): `RETROSHELL_PREFER_DRM`
-  (defaults on when `/dev/dri` exists), `RETROSHELL_FORCE_LABWC`,
-  `RETROSHELL_COMPOSITOR=labwc`. To test our own compositor on KMS we must **not**
+- Backend selection env vars (from `main.rs` `linux::run`): `SLOPOS_PREFER_DRM`
+  (defaults on when `/dev/dri` exists), `SLOPOS_FORCE_LABWC`,
+  `SLOPOS_COMPOSITOR=labwc`. To test our own compositor on KMS we must **not**
   force labwc.
 
 ---
@@ -45,7 +45,7 @@ sufficient to write the Stage-2 compositing spec.
 Precondition:
 ```bash
 ssh -i packaging/vm/qa_key -p 2222 retro@127.0.0.1 \
-  'ls ~/retroshell/target/release/retro-compositor && ls /dev/dri/card0'   # → both exist
+  'ls ~/slopos-i/target/release/slopos-compositor && ls /dev/dri/card0'   # → both exist
 ```
 
 Steps:
@@ -61,16 +61,16 @@ Steps:
    export RUST_LOG=debug
    export RUST_BACKTRACE=1
    # Do NOT force labwc — we want our own DRM backend.
-   unset RETROSHELL_FORCE_LABWC
-   unset RETROSHELL_COMPOSITOR
-   cd ~/retroshell
-   exec ./target/release/retro-compositor > ~/compositor.log 2>&1
+   unset SLOPOS_FORCE_LABWC
+   unset SLOPOS_COMPOSITOR
+   cd ~/slopos-i
+   exec ./target/release/slopos-compositor > ~/compositor.log 2>&1
    EOF
    ssh -i packaging/vm/qa_key -p 2222 retro@127.0.0.1 'chmod +x ~/run-compositor.sh'
    ```
 2. On the VM's tty1 (via the UTM console window, since it needs the seat), run
    `~/run-compositor.sh`. Let it run ~10 seconds, then switch back and stop it
-   (Ctrl-C on the console, or `pkill retro-compositor` over SSH).
+   (Ctrl-C on the console, or `pkill slopos-compositor` over SSH).
 3. Pull the log to the host:
    ```bash
    scp -i packaging/vm/qa_key -P 2222 retro@127.0.0.1:~/compositor.log ./stage1-bringup.log
@@ -92,7 +92,7 @@ See [qa/stage-1.md](../qa/stage-1.md).
 DO NOT:
 - Run the compositor over a plain SSH session expecting DRM master — it needs a
   seat/TTY. Use the console for the actual run.
-- Set `RETROSHELL_FORCE_LABWC` — that would test labwc, not our compositor.
+- Set `SLOPOS_FORCE_LABWC` — that would test labwc, not our compositor.
 
 Commit: _none (evidence goes in qa/stage-1.md)._
 
@@ -149,8 +149,8 @@ Steps:
    #!/usr/bin/env bash
    set -x
    export RUST_LOG=info
-   cd ~/retroshell
-   ./target/release/retro-compositor > ~/compositor.log 2>&1 &
+   cd ~/slopos-i
+   ./target/release/slopos-compositor > ~/compositor.log 2>&1 &
    COMP=$!
    sleep 3
    export WAYLAND_DISPLAY=$(ls "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/wayland-* 2>/dev/null | head -1 | xargs -n1 basename)
@@ -200,10 +200,10 @@ Steps:
 1. Replace `foot` with Finder in `~/run-with-client.sh`:
    ```bash
    ssh -i packaging/vm/qa_key -p 2222 retro@127.0.0.1 \
-     "sed -i 's#foot >> ~/client.log#~/retroshell/target/release/retro-shell >> ~/client.log#' ~/run-with-client.sh"
+     "sed -i 's#foot >> ~/client.log#~/slopos-i/target/release/slopos-shell >> ~/client.log#' ~/run-with-client.sh"
    ```
    (Finder is part of the shell; confirm the exact binary/subcommand from
-   `apps/finder` and `crates/retro-shell` if `retro-shell` alone does not open it.)
+   `apps/finder` and `crates/slopos-shell` if `slopos-shell` alone does not open it.)
 2. Run on tty1, capture `grim ~/screen.png`, pull it to the host as
    `docs/screenshots/stage1-finder.png` (this path is NOT gitignored).
 3. Visually confirm Finder rendered by our compositor.
@@ -218,7 +218,7 @@ VERIFIED in the QA doc and commit the screenshot.
 DO NOT:
 - Photoshop, upscale, or stage the screenshot. It must be `grim` output from the VM.
 
-Commit: `docs(qa): stage-1 DoD — Finder painted by retro-compositor on KMS`
+Commit: `docs(qa): stage-1 DoD — Finder painted by slopos-compositor on KMS`
 
 ---
 
@@ -258,4 +258,4 @@ DO NOT:
 - Start writing the fix here — Stage 1 ends at diagnosis; the fix is Stage 2, which
   gets its own spec→plan cycle grounded in this evidence.
 
-Commit: `docs(qa): stage-1 diagnosis — why retro-compositor does not paint on KMS`
+Commit: `docs(qa): stage-1 diagnosis — why slopos-compositor does not paint on KMS`

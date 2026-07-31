@@ -1,4 +1,4 @@
-# Session Summary — RetroShell Development (2026-07-31)
+# Session Summary — SLOPOS-I Development (2026-07-31)
 
 **Duration:** Full session continuation from previous context  
 **Branch:** `docs/program-design` (46 commits total, 10 new this session)  
@@ -40,7 +40,7 @@
 - **Layered installer** (install.sh): Multi-distro, idempotent, dependency management
 - **Arch User Repository** (PKGBUILD): Full package descriptor with canonical deps
 - **Debian packaging** (debian/*): control, rules, changelog, compat, source format
-- **Live ISO profile** (archiso): 57-package live environment with RetroShell
+- **Live ISO profile** (archiso): 57-package live environment with SLOPOS-I
 - **Automated test harness:**
   - `packaging/vm/stage-4-verify.sh` (319 lines): Single-VM validation
   - `packaging/vm/run-stage4-tests.sh` (187 lines): Multi-VM orchestrator with SSH + rsync
@@ -125,7 +125,7 @@ bash packaging/vm/run-stage4-tests.sh                 # Multi-VM orchestration
 4. **Update README:** Installation instructions from main
 
 ### Phase C — Defect Fixes (Medium Priority)
-1. **Defect H (retro-bus IPC):** Broadcast events for theme hot-swap
+1. **Defect H (slopos-bus IPC):** Broadcast events for theme hot-swap
 2. **Defect J (buttons):** Verify widget interaction works in real system
 3. **Defect I (Terminal parser):** ED/HT/scroll support
 
@@ -155,7 +155,7 @@ Created **integration tests in lib.rs** rather than separate test files. This en
 - **Fallback:** install.sh is idempotent; safe to iterate on actual VMs
 
 ### Spotlight Rendering
-- **Risk:** Complex to integrate with retro-kit canvas
+- **Risk:** Complex to integrate with slopos-kit canvas
 - **Mitigation:** Feature is functionally complete; rendering is UI polish, not blocking
 - **Approach:** Can ship v0.1.0 without visual overlay; add in v0.1.1
 
@@ -181,9 +181,9 @@ Created **integration tests in lib.rs** rather than separate test files. This en
 
 ## Files Ready for Production
 
-- ✅ `crates/retro-shell/src/lib.rs` — Core shell with Spotlight integrated
-- ✅ `crates/retro-shell/src/spotlight.rs` — Search backend
-- ✅ `crates/retro-shell/src/spotlight_ui.rs` — UI state
+- ✅ `crates/slopos-shell/src/lib.rs` — Core shell with Spotlight integrated
+- ✅ `crates/slopos-shell/src/spotlight.rs` — Search backend
+- ✅ `crates/slopos-shell/src/spotlight_ui.rs` — UI state
 - ✅ `install.sh` — Layered installer
 - ✅ `packaging/arch/PKGBUILD` — AUR descriptor
 - ✅ `packaging/debian/*` — Debian package
@@ -198,19 +198,19 @@ Created **integration tests in lib.rs** rather than separate test files. This en
 
 ### Compile
 ```bash
-cargo build --lib -p retro-shell
+cargo build --lib -p slopos-shell
 # Succeeds with no errors
 ```
 
 ### Test
 ```bash
-cargo test --lib -p retro-shell
+cargo test --lib -p slopos-shell
 # 316 tests pass, including 11 Spotlight-specific tests
 ```
 
 ### Verify Spotlight
 ```bash
-cargo test --lib -p retro-shell spotlight
+cargo test --lib -p slopos-shell spotlight
 # 11 tests: 6 unit + 5 integration
 # Tests cover: modal overlay, keyboard routing, search, launch
 ```

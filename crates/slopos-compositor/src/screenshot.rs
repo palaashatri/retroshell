@@ -33,7 +33,7 @@ pub fn install_signal_handler() {
 }
 
 fn shot_path() -> String {
-    std::env::var("RETROSHELL_SHOT_PATH").unwrap_or_else(|_| "/tmp/retroshell-shot.png".into())
+    std::env::var("SLOPOS_SHOT_PATH").unwrap_or_else(|_| "/tmp/slopos-i-shot.png".into())
 }
 
 /// If a screenshot was requested via SIGUSR1, capture the current frame to PNG.
@@ -50,11 +50,11 @@ pub fn capture_if_requested(
     match capture(renderer, elements, size, clear) {
         Ok(path) => {
             tracing::info!(path = %path, "screenshot written");
-            eprintln!("[retro-compositor] screenshot written: {path}");
+            eprintln!("[slopos-compositor] screenshot written: {path}");
         }
         Err(e) => {
             tracing::warn!(error = %e, "screenshot failed");
-            eprintln!("[retro-compositor] screenshot failed: {e:#}");
+            eprintln!("[slopos-compositor] screenshot failed: {e:#}");
         }
     }
 }

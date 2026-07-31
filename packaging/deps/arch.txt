@@ -1,4 +1,4 @@
-# RetroShell runtime dependencies for Arch Linux
+# SLOPOS-I runtime dependencies for Arch Linux
 wayland
 wayland-protocols
 libxkbcommon

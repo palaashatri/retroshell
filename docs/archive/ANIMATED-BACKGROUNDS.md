@@ -37,7 +37,7 @@
 
 ### Architecture
 
-#### Layer 1: Wallpaper decoder (`retro-shell/src/wallpaper.rs` — new)
+#### Layer 1: Wallpaper decoder (`slopos-shell/src/wallpaper.rs` — new)
 ```rust
 pub enum WallpaperSource {
     Static(Image),
@@ -68,7 +68,7 @@ impl Wallpaper {
 #### Layer 3: Settings UI
 - Settings app shows wallpaper browser
 - User selects from `~/.local/share/wallpapers/` or `/usr/share/wallpapers/`
-- Config stored in `~/.config/retroshell/wallpaper.toml`
+- Config stored in `~/.config/slopos-i/wallpaper.toml`
 
 ### Rendering
 
@@ -139,7 +139,7 @@ ShellDesktop::render_background():
 
 ## Dependencies
 
-- **retro-shell/src/wallpaper.rs** (new module)
+- **slopos-shell/src/wallpaper.rs** (new module)
 - **GIF decoder crate** (gif or image crate's gif feature)
 - **Video decoder** (ffmpeg-sys or gstreamer; check for OS availability)
 - **Settings app** needs wallpaper browser UI

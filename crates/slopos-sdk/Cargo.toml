@@ -1,12 +1,12 @@
 [package]
-name = "retro-sdk"
+name = "slopos-sdk"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-retro-kit = { path = "../retro-kit" }
-retro-bus = { path = "../retro-bus" }
-retro-render = { path = "../retro-render" }
+slopos-kit = { path = "../slopos-kit" }
+slopos-bus = { path = "../slopos-bus" }
+slopos-render = { path = "../slopos-render" }
 bytemuck = { workspace = true }
 futures = { workspace = true }
 wgpu = { workspace = true }

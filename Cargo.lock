@@ -115,11 +115,11 @@ name = "appstore"
 version = "0.1.0"
 dependencies = [
  "flate2",
- "retro-kit",
- "retro-sdk",
  "serde",
  "serde_json",
  "sha2",
+ "slopos-kit",
+ "slopos-sdk",
  "tar",
  "tracing",
  "tracing-subscriber",
@@ -1031,9 +1031,9 @@ name = "finder"
 version = "0.1.0"
 dependencies = [
  "log",
- "retro-kit",
- "retro-sdk",
  "serde",
+ "slopos-kit",
+ "slopos-sdk",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2791,119 +2791,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
-name = "retro-bus"
-version = "0.1.0"
-dependencies = [
- "futures",
- "log",
- "parking_lot",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "uuid",
- "zbus",
-]
-
-[[package]]
-name = "retro-compositor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "image",
- "input",
- "libc",
- "smithay",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "retro-kit"
-version = "0.1.0"
-dependencies = [
- "log",
- "parking_lot",
- "retro-render",
- "serde",
- "thiserror 1.0.69",
- "tracing",
- "zbus",
-]
-
-[[package]]
-name = "retro-render"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "bitflags 2.13.1",
- "bytemuck",
- "cosmic-text",
- "fontdb",
- "image",
- "log",
- "parking_lot",
- "serde",
- "thiserror 1.0.69",
- "tracing",
- "wgpu",
- "winit",
-]
-
-[[package]]
-name = "retro-sdk"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "futures",
- "log",
- "parking_lot",
- "raw-window-handle",
- "retro-bus",
- "retro-kit",
- "retro-render",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "wgpu",
- "winit",
-]
-
-[[package]]
-name = "retro-shell"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "calloop 0.13.0",
- "calloop-wayland-source",
- "futures",
- "log",
- "parking_lot",
- "retro-bus",
- "retro-kit",
- "retro-render",
- "retro-sdk",
- "serde",
- "serde_json",
- "smithay-client-toolkit",
- "thiserror 1.0.69",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols",
- "wayland-protocols-wlr",
- "winit",
- "zbus",
-]
-
-[[package]]
 name = "rgb"
 version = "0.8.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3093,10 +2980,10 @@ name = "settings"
 version = "0.1.0"
 dependencies = [
  "log",
- "retro-kit",
- "retro-sdk",
- "retro-shell",
  "serde",
+ "slopos-kit",
+ "slopos-sdk",
+ "slopos-shell",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -3195,6 +3082,119 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "slopos-bus"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "log",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zbus",
+]
+
+[[package]]
+name = "slopos-compositor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "image",
+ "input",
+ "libc",
+ "smithay",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "slopos-kit"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "parking_lot",
+ "serde",
+ "slopos-render",
+ "thiserror 1.0.69",
+ "tracing",
+ "zbus",
+]
+
+[[package]]
+name = "slopos-render"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "bitflags 2.13.1",
+ "bytemuck",
+ "cosmic-text",
+ "fontdb",
+ "image",
+ "log",
+ "parking_lot",
+ "serde",
+ "thiserror 1.0.69",
+ "tracing",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "slopos-sdk"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "futures",
+ "log",
+ "parking_lot",
+ "raw-window-handle",
+ "serde",
+ "serde_json",
+ "slopos-bus",
+ "slopos-kit",
+ "slopos-render",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "slopos-shell"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "calloop 0.13.0",
+ "calloop-wayland-source",
+ "futures",
+ "log",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "slopos-bus",
+ "slopos-kit",
+ "slopos-render",
+ "slopos-sdk",
+ "smithay-client-toolkit",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
+ "winit",
+ "zbus",
+]
 
 [[package]]
 name = "slotmap"
@@ -3423,9 +3423,9 @@ dependencies = [
  "libc",
  "log",
  "nix 0.27.1",
- "retro-kit",
- "retro-sdk",
  "serde",
+ "slopos-kit",
+ "slopos-sdk",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -3437,9 +3437,9 @@ name = "textedit"
 version = "0.1.0"
 dependencies = [
  "log",
- "retro-kit",
- "retro-sdk",
  "serde",
+ "slopos-kit",
+ "slopos-sdk",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -4555,9 +4555,9 @@ dependencies = [
 
 [[package]]
 name = "xcursor"
-version = "0.3.10"
+version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bec9e4a500ca8864c5b47b8b482a73d62e4237670e5b5f1d6b9e3cae50f28f2b"
+checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 
 [[package]]
 name = "xdg-home"

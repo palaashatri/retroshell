@@ -3,7 +3,7 @@
 //! # Honest contract
 //! - **In-process always works**: every event is pushed onto a process-local
 //!   [`AccessibilityEventBus`] for toolkit consumers and tests.
-//! - **D-Bus is best-effort**: when `retro_kit` holds an AT-SPI registration
+//! - **D-Bus is best-effort**: when `slopos_kit` holds an AT-SPI registration
 //!   connection (see `register_at_spi_shell_chrome` in `main`), events are also
 //!   signalled via zbus (`org.a11y.atspi.Event.Focus` / `Event.Object`). If no
 //!   connection exists (macOS CI, no session bus, register skipped), D-Bus
@@ -15,7 +15,7 @@
 
 use std::sync::{Mutex, OnceLock};
 
-use retro_kit::{
+use slopos_kit::{
     at_spi_connection_available, atspi_object_path, serialize_event_for_dbus,
     try_emit_atspi_dbus_event, AccessibilityEventBus, AccessibleEvent, AccessibleEventKind,
     SerializedAtspiEvent,
@@ -45,7 +45,7 @@ pub fn atspi_dbus_connection_available() -> bool {
 
 /// Map shell chrome focus targets to structural shell AT-SPI object paths.
 ///
-/// Indices match [`retro_kit::shell_chrome_accessibility_tree`]:
+/// Indices match [`slopos_kit::shell_chrome_accessibility_tree`]:
 /// menu bar `0`, desktop `1`, dock `2`, window frame `3`.
 pub fn chrome_focus_atspi_path(target: ChromeFocusTarget) -> String {
     let index = match target {
@@ -129,7 +129,7 @@ pub fn in_process_event_count() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use retro_kit::{ATSPI_EVENT_FOCUS_IFACE, ATSPI_EVENT_OBJECT_IFACE};
+    use slopos_kit::{ATSPI_EVENT_FOCUS_IFACE, ATSPI_EVENT_OBJECT_IFACE};
 
     #[test]
     fn chrome_focus_paths_match_shell_tree_indices() {

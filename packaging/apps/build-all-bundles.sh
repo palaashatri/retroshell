@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package the five first-party RetroShell apps as .app bundles.
+# Package the five first-party SLOPOS-I apps as .app bundles.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -18,14 +18,14 @@ build() {
   fi
 }
 
-build finder "Finder" com.retro.finder "themes/platinum/icons/finder.png"
-build settings "Settings" com.retro.settings "themes/platinum/icons/settings.png"
-build textedit "TextEdit" com.retro.textedit "themes/platinum/icons/textedit.png"
-build terminal "Terminal" com.retro.terminal "themes/platinum/icons/terminal.png"
+build finder "Finder" com.slopos.finder "themes/platinum/icons/finder.png"
+build settings "Settings" com.slopos.settings "themes/platinum/icons/settings.png"
+build textedit "TextEdit" com.slopos.textedit "themes/platinum/icons/textedit.png"
+build terminal "Terminal" com.slopos.terminal "themes/platinum/icons/terminal.png"
 if [ -f "$ROOT/themes/platinum/icons/appstore.png" ]; then
-  build appstore "App Store" com.retro.appstore "themes/platinum/icons/appstore.png"
+  build appstore "App Store" com.slopos.appstore "themes/platinum/icons/appstore.png"
 else
-  build appstore "App Store" com.retro.appstore ""
+  build appstore "App Store" com.slopos.appstore ""
 fi
 
 echo "Bundles in $OUTDIR:"

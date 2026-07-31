@@ -1,15 +1,15 @@
-﻿use retro_kit::button::Button;
-use retro_kit::event::{KeyCode, Modifiers};
-use retro_kit::label::Label;
-use retro_kit::list_view::ListView;
-use retro_kit::progress_bar::ProgressBar;
-use retro_kit::text_field::TextField;
-use retro_kit::window::Window;
-use retro_kit::{
+﻿use slopos_kit::button::Button;
+use slopos_kit::event::{KeyCode, Modifiers};
+use slopos_kit::label::Label;
+use slopos_kit::list_view::ListView;
+use slopos_kit::progress_bar::ProgressBar;
+use slopos_kit::text_field::TextField;
+use slopos_kit::window::Window;
+use slopos_kit::{
     widget_by_id, AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint,
     PointerDispatcher, Rect, Size, ThemeContext, Widget, WidgetState,
 };
-use retro_sdk::{build_menu, Application};
+use slopos_sdk::{build_menu, Application};
 use std::path::PathBuf;
 
 mod bundle_install;
@@ -33,7 +33,7 @@ const CATEGORIES: &[(&str, &[&str])] = &[
 fn main() {
     let _ = tracing_subscriber::fmt::try_init();
 
-    let mut app = Application::new("App Store", "com.retro.appstore");
+    let mut app = Application::new("App Store", "com.slopos.appstore");
 
     let mut store_menu = build_menu("Store");
     store_menu.add_action("Refresh").with_shortcut(
@@ -176,7 +176,7 @@ impl CatalogStore {
         AppDetails {
             name: name.to_string(),
             version: "0.1.0".to_string(),
-            description: "RetroShell application bundle.".to_string(),
+            description: "SLOPOS-I application bundle.".to_string(),
             state: AppInstallState::Available,
         }
     }
@@ -193,7 +193,7 @@ fn default_install_dir() -> PathBuf {
 }
 
 fn catalog_path() -> PathBuf {
-    if let Ok(path) = std::env::var("RETROSHELL_APPSTORE_CATALOG") {
+    if let Ok(path) = std::env::var("SLOPOS_APPSTORE_CATALOG") {
         return PathBuf::from(path);
     }
     default_install_dir().join("catalog.json")
@@ -211,7 +211,7 @@ fn resolve_archive_url(url: &str) -> PathBuf {
 fn request_shell_rescan() {
     let dir = default_install_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let _ = std::fs::write(dir.join(".retroshell-rescan"), b"1\n");
+    let _ = std::fs::write(dir.join(".slopos-rescan"), b"1\n");
 }
 
 // ── Domain types ─────────────────────────────────────────────────────────────
@@ -384,7 +384,7 @@ impl AppStoreView {
 
     /// Focus `id` through the real focus system (sets `WidgetState.focused`
     /// on exactly that widget, clears it everywhere else in the tree).
-    fn focus_widget(&mut self, id: retro_kit::WidgetId) {
+    fn focus_widget(&mut self, id: slopos_kit::WidgetId) {
         let mut focus = std::mem::take(&mut self.focus);
         focus.focus(self, id);
         self.focus = focus;
@@ -555,7 +555,7 @@ impl AppStoreView {
 
     /// React to a list selection made by a press the dispatcher attributed
     /// to one of the two lists.
-    fn react_to_list_press(&mut self, pressed: retro_kit::WidgetId) {
+    fn react_to_list_press(&mut self, pressed: slopos_kit::WidgetId) {
         if pressed == self.category_list.id() {
             if let Some(idx) = self.category_list.selected_index {
                 if idx < CATEGORIES.len() && idx != self.category_index {
@@ -929,8 +929,8 @@ impl Widget for AppStoreView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use retro_kit::event::MouseButton;
-    use retro_kit::Point;
+    use slopos_kit::event::MouseButton;
+    use slopos_kit::Point;
 
     fn click(view: &mut AppStoreView, point: Point) -> EventResult {
         let down = view.handle_event(&Event::MouseDown {

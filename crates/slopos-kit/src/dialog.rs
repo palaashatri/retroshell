@@ -70,7 +70,7 @@ impl Dialog {
     }
 
     /// `Enter` activates this button: the last one added. `draw_dialog` in
-    /// `retro-sdk` lays buttons out back-to-front from the last, so the last
+    /// `slopos-sdk` lays buttons out back-to-front from the last, so the last
     /// button is rightmost — the conventional default/affirmative slot.
     fn default_button(&self) -> Option<usize> {
         self.buttons.len().checked_sub(1)
@@ -133,7 +133,7 @@ impl Widget for Dialog {
             size.height,
         ));
 
-        // Mirror `retro-sdk`'s `draw_dialog` button geometry exactly (right
+        // Mirror `slopos-sdk`'s `draw_dialog` button geometry exactly (right
         // aligned, 24px tall, 10px inset from the edge, 8px gaps, laid out
         // back-to-front starting from the last button) so hit-testing lines
         // up with what is actually painted.

@@ -54,7 +54,13 @@ Commit: <conventional-commit message>
 
 ## A note on the VM tasks
 
-Stage 0's VM tasks are **UNVERIFIED** until someone runs them on a real UTM VM.
-aarch64 Arch package names and boot specifics can differ from x86 Arch; where a
-value must be confirmed at runtime, the task says **CONFIRM AT RUNTIME** and
-tells you how. Do not guess — run the check the task gives you.
+Stages **0–3** are **VERIFIED** on real VMs (see `docs/qa/stage-*.md` and
+[`docs/SLOPOS-I.md`](../SLOPOS-I.md) §4). Stage **4** packaging is authored;
+clean-install / ISO DoD rows remain **UNVERIFIED** until transcripts land in
+`docs/qa/stage-4.md`.
+
+Where a value must be confirmed at runtime, the task says **CONFIRM AT RUNTIME**
+and tells you how. Do not guess — run the check the task gives you.
+
+Product / crate names are **SLOPOS-I** / `slopos-*` (formerly RetroShell /
+`retro-*`). VM loop: [`docs/SLOPOS-I.md`](../SLOPOS-I.md) §§7–8.

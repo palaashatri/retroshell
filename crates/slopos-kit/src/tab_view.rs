@@ -7,7 +7,7 @@ use crate::{
 use std::any::Any;
 
 /// Height of the tab-header strip. Must match `draw_tab_view` in
-/// `retro-sdk/src/lib.rs`, which paints the header at this same height and is
+/// `slopos-sdk/src/lib.rs`, which paints the header at this same height and is
 /// the reason `layout()` cannot simply pick whatever number it likes.
 const HEADER_HEIGHT: f32 = 30.0;
 

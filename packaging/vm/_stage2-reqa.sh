@@ -10,28 +10,28 @@ exec > >(tee "$QA/run.log") 2>&1
 pkill -9 -f '[r]etro-compositor' 2>/dev/null || true
 pkill -9 -x foot 2>/dev/null || true
 pkill -9 -x finder 2>/dev/null || true
-pkill -9 -f retro-lock 2>/dev/null || true
-pkill -9 -f retro-shell 2>/dev/null || true
+pkill -9 -f slopos-lock 2>/dev/null || true
+pkill -9 -f slopos-shell 2>/dev/null || true
 sleep 2
 
-export RETROSHELL_LOCK_PASSWORD=retroshell
-export RETROSHELL_LAYER_SHELL_CHROME=1
+export SLOPOS_LOCK_PASSWORD=slopos-i
+export SLOPOS_LAYER_SHELL_CHROME=1
 export RUST_LOG=info
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
-unset DISPLAY WAYLAND_DISPLAY RETROSHELL_FORCE_LABWC RETROSHELL_COMPOSITOR
+unset DISPLAY WAYLAND_DISPLAY SLOPOS_FORCE_LABWC SLOPOS_COMPOSITOR
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 
-cd "${HOME}/retroshell"
+cd "${HOME}/slopos-i"
 setsid env \
   XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-  RETROSHELL_LAYER_SHELL_CHROME=1 \
-  RETROSHELL_LOCK_PASSWORD=retroshell \
+  SLOPOS_LAYER_SHELL_CHROME=1 \
+  SLOPOS_LOCK_PASSWORD=slopos-i \
   RUST_LOG=info \
   LANG=C.UTF-8 LC_ALL=C.UTF-8 \
-  ./target/release/retro-compositor \
+  ./target/release/slopos-compositor \
   > "$QA/compositor.log" 2>&1 < /dev/null &
 
 SOCK=""
@@ -52,7 +52,7 @@ fi
 
 echo "COMPOSITOR_UP=YES socket=$SOCK" > "$QA/STATUS"
 sleep 8
-pgrep -af retro-shell || true
+pgrep -af slopos-shell || true
 grep -E 'layer-shell surface|spawned client' "$QA/compositor.log" | tail -20 || true
 echo "SESSION_READY" | tee -a "$QA/STATUS"
 
@@ -74,7 +74,7 @@ pgrep -xc finder && echo "FINDER_AFTER_SUPER_O=YES" >> "$QA/STATUS" || echo "FIN
 
 marker WAIT_SUPER_L
 sleep 2
-pgrep -af retro-lock && echo "LOCK_CLIENT=YES" >> "$QA/STATUS" || echo "LOCK_CLIENT=NO" >> "$QA/STATUS"
+pgrep -af slopos-lock && echo "LOCK_CLIENT=YES" >> "$QA/STATUS" || echo "LOCK_CLIENT=NO" >> "$QA/STATUS"
 
 marker WAIT_LOCK_BYPASS
 sleep 2
@@ -84,7 +84,7 @@ echo "FINDER_WHILE_LOCKED=$FINDER_N" >> "$QA/STATUS"
 
 marker WAIT_UNLOCK
 sleep 3
-pgrep -af retro-lock && echo "LOCK_AFTER_UNLOCK=STILL" >> "$QA/STATUS" || echo "LOCK_AFTER_UNLOCK=GONE" >> "$QA/STATUS"
+pgrep -af slopos-lock && echo "LOCK_AFTER_UNLOCK=STILL" >> "$QA/STATUS" || echo "LOCK_AFTER_UNLOCK=GONE" >> "$QA/STATUS"
 
 echo "STAGE2_REQA_DONE" | tee -a "$QA/STATUS"
 sleep 30

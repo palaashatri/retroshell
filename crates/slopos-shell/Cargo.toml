@@ -1,21 +1,21 @@
 [package]
-name = "retro-shell"
+name = "slopos-shell"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "retro-shell"
+name = "slopos-shell"
 path = "src/main.rs"
 
 [[bin]]
-name = "retro-lock"
-path = "src/bin/retro-lock.rs"
+name = "slopos-lock"
+path = "src/bin/slopos-lock.rs"
 
 [dependencies]
-retro-kit = { path = "../retro-kit" }
-retro-render = { path = "../retro-render" }
-retro-bus = { path = "../retro-bus" }
-retro-sdk = { path = "../retro-sdk" }
+slopos-kit = { path = "../slopos-kit" }
+slopos-render = { path = "../slopos-render" }
+slopos-bus = { path = "../slopos-bus" }
+slopos-sdk = { path = "../slopos-sdk" }
 winit = "0.30"
 serde = { workspace = true }
 

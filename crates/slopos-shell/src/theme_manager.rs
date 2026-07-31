@@ -1,10 +1,10 @@
 use crate::a11y_prefs::{apply_a11y_prefs_to_theme_name, A11yPrefs};
-use retro_kit::theme::{ThemeContext, ThemePalette, ThemeToken, ThemeValue};
-use retro_kit::Color;
+use slopos_kit::theme::{ThemeContext, ThemePalette, ThemeToken, ThemeValue};
+use slopos_kit::Color;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Named retro color themes available in RetroShell.
+/// Named retro color themes available in SLOPOS-I.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThemeName {
     #[default]
@@ -203,7 +203,7 @@ impl ThemeManager {
             ThemeValue::new(Color::new(1.0, 1.0, 1.0, 1.0)),
         );
         // Desktop background: classic gray desktop
-        // Original Mac had medium gray; RetroShell variant is slightly warmer
+        // Original Mac had medium gray; SLOPOS-I variant is slightly warmer
         tokens.insert(
             ThemeToken::DesktopBackground,
             ThemeValue::new(Color::new(0.5, 0.5, 0.5, 1.0))
@@ -704,14 +704,14 @@ impl ThemeManager {
 }
 
 fn settings_conf_path() -> PathBuf {
-    std::env::var_os("RETROSHELL_CONFIG_DIR")
+    std::env::var_os("SLOPOS_CONFIG_DIR")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME")
                 .map(PathBuf::from)
-                .map(|home| home.join(".config/retroshell"))
+                .map(|home| home.join(".config/slopos-i"))
         })
-        .unwrap_or_else(|| PathBuf::from("/tmp/retroshell"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/slopos-i"))
         .join("settings.conf")
 }
 

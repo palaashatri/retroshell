@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use retro_compositor::frame_timing::RefreshRate;
-use retro_compositor::hdr::ColorSpace;
-use retro_compositor::{
+use slopos_compositor::frame_timing::RefreshRate;
+use slopos_compositor::hdr::ColorSpace;
+use slopos_compositor::{
     cascade_position, layout_outputs_side_by_side, move_to_top, next_cascade_offset,
     outputs_from_env_values, parse_key_value_conf, parse_outputs_spec,
     selection_bytes_for_mime, selection_bytes_for_mime_with_text_fallback, topmost_window_at,
@@ -155,10 +155,10 @@ fn display_policy_env_overrides_and_vrr() {
     assert_eq!(policy.effective_refresh_rate(), RefreshRate::Adaptive);
 
     let mut env = HashMap::new();
-    env.insert("RETROSHELL_VRR".into(), "0".into());
-    env.insert("RETROSHELL_REFRESH".into(), "120".into());
-    env.insert("RETROSHELL_COLOR_SPACE".into(), "rec2020".into());
-    env.insert("RETROSHELL_HDR".into(), "yes".into());
+    env.insert("SLOPOS_VRR".into(), "0".into());
+    env.insert("SLOPOS_REFRESH".into(), "120".into());
+    env.insert("SLOPOS_COLOR_SPACE".into(), "rec2020".into());
+    env.insert("SLOPOS_HDR".into(), "yes".into());
     policy.apply_env_map(env);
     assert!(policy.hdr_requested);
     assert!(!policy.vrr_adaptive);

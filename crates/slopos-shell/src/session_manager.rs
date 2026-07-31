@@ -130,7 +130,7 @@ impl SessionManager {
 
     pub fn save_state(&mut self) {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let config_dir = std::path::PathBuf::from(home).join(".config/retroshell");
+        let config_dir = std::path::PathBuf::from(home).join(".config/slopos-i");
         let _ = std::fs::create_dir_all(&config_dir);
         let path = config_dir.join("session.toml");
 
@@ -154,7 +154,7 @@ impl SessionManager {
 
     pub fn restore_state(&mut self) {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let path = std::path::PathBuf::from(home).join(".config/retroshell/session.toml");
+        let path = std::path::PathBuf::from(home).join(".config/slopos-i/session.toml");
         if let Ok(content) = std::fs::read_to_string(path) {
             for line in content.lines() {
                 if let Some(pos) = line.find('=') {
@@ -210,13 +210,13 @@ pub fn is_on_battery() -> bool {
     crate::power::is_on_battery()
 }
 
-/// Returns the machine hostname, falling back to `"retroshell"` if unavailable.
+/// Returns the machine hostname, falling back to `"slopos-i"` if unavailable.
 pub fn hostname() -> String {
     std::fs::read_to_string("/etc/hostname")
         .ok()
         .map(|h| h.trim().to_string())
         .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| "retroshell".to_string())
+        .unwrap_or_else(|| "slopos-i".to_string())
 }
 
 /// Returns the system uptime in whole seconds by reading `/proc/uptime`.

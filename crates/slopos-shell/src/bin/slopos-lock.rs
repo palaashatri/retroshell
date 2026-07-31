@@ -1,7 +1,7 @@
-//! `ext-session-lock-v1` lock client for RetroShell.
+//! `ext-session-lock-v1` lock client for SLOPOS-I.
 //!
-//! Password auth uses `RETROSHELL_LOCK_PASSWORD` or `lock_password` in
-//! `~/.config/retroshell/settings.conf` only — no PAM in this cycle.
+//! Password auth uses `SLOPOS_LOCK_PASSWORD` or `lock_password` in
+//! `~/.config/slopos-i/settings.conf` only — no PAM in this cycle.
 
 #![cfg(target_os = "linux")]
 
@@ -52,10 +52,10 @@ impl LockApp {
         globals: &wayland_client::globals::GlobalList,
         qh: &QueueHandle<Self>,
     ) -> Self {
-        let expected_password = std::env::var("RETROSHELL_LOCK_PASSWORD")
+        let expected_password = std::env::var("SLOPOS_LOCK_PASSWORD")
             .ok()
             .or_else(read_settings_password)
-            .unwrap_or_else(|| "retroshell".to_string());
+            .unwrap_or_else(|| "slopos-i".to_string());
         Self {
             conn,
             compositor_state: CompositorState::bind(globals, qh).expect("wl_compositor"),
@@ -107,7 +107,7 @@ fn keysym_to_char(keysym: Keysym) -> Option<char> {
 
 fn read_settings_password() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
-    let path = std::path::Path::new(&home).join(".config/retroshell/settings.conf");
+    let path = std::path::Path::new(&home).join(".config/slopos-i/settings.conf");
     let text = std::fs::read_to_string(path).ok()?;
     text.lines()
         .find_map(|line| line.strip_prefix("lock_password=").map(str::trim))

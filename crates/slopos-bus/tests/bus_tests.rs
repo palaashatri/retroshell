@@ -1,5 +1,5 @@
-use retro_bus::transport::LocalTransport;
-use retro_bus::{BusMessage, Command, Event, MessageKind, Query, ServiceRegistry, Transport};
+use slopos_bus::transport::LocalTransport;
+use slopos_bus::{BusMessage, Command, Event, MessageKind, Query, ServiceRegistry, Transport};
 
 #[test]
 fn test_message_creation() {

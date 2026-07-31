@@ -1,18 +1,18 @@
-//! wlr-layer-shell exclusive chrome driver for RetroShell (Phase 3).
+//! wlr-layer-shell exclusive chrome driver for SLOPOS-I (Phase 3).
 //!
 //! Three surfaces:
 //! - **Background** — wallpaper + icons + in-shell windows
 //! - **Top** menu bar — `exclusive_zone = menu_h`
 //! - **Bottom** dock — `exclusive_zone = dock_h`
 //!
-//! Gated behind `RETROSHELL_LAYER_SHELL_CHROME`. Linux only.
+//! Gated behind `SLOPOS_LAYER_SHELL_CHROME`. Linux only.
 
 #![cfg(target_os = "linux")]
 
 use anyhow::anyhow;
-use retro_kit::event::{KeyCode, MouseButton};
-use retro_kit::{Event, Widget};
-use retro_sdk::{RawSurfaceRenderer, UiRuntime};
+use slopos_kit::event::{KeyCode, MouseButton};
+use slopos_kit::{Event, Widget};
+use slopos_sdk::{RawSurfaceRenderer, UiRuntime};
 use std::ffi::c_void;
 use std::time::{SystemTime, UNIX_EPOCH};
 use wayland_client::{
@@ -183,8 +183,8 @@ fn char_from_keycode(code: KeyCode, shift: bool) -> Option<char> {
 }
 
 /// Decode wl_keyboard mods_depressed (standard xkb mask) into kit Modifiers.
-fn modifiers_from_xkb_mask(depressed: u32) -> retro_kit::event::Modifiers {
-    retro_kit::event::Modifiers {
+fn modifiers_from_xkb_mask(depressed: u32) -> slopos_kit::event::Modifiers {
+    slopos_kit::event::Modifiers {
         shift: depressed & (1 << 0) != 0,
         control: depressed & (1 << 2) != 0,
         alt: depressed & (1 << 3) != 0,
@@ -224,7 +224,7 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         running: true,
         last_pointer: (0.0, 0.0),
         pointer_kind: ChromeSurfaceKind::Background,
-        modifiers: retro_kit::event::Modifiers::NONE,
+        modifiers: slopos_kit::event::Modifiers::NONE,
         popup_origin: (0.0, 0.0),
     };
 
@@ -247,7 +247,7 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         &bg_wl,
         None,
         Layer::Background,
-        "retroshell-desktop".into(),
+        "slopos-i-desktop".into(),
         &qh,
         ChromeSurfaceKind::Background,
     );
@@ -263,7 +263,7 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         &menu_wl,
         None,
         Layer::Top,
-        "retroshell-menu".into(),
+        "slopos-i-menu".into(),
         &qh,
         ChromeSurfaceKind::Menu,
     );
@@ -279,7 +279,7 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         &dock_wl,
         None,
         Layer::Bottom,
-        "retroshell-dock".into(),
+        "slopos-i-dock".into(),
         &qh,
         ChromeSurfaceKind::Dock,
     );
@@ -295,7 +295,7 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         &popup_wl,
         None,
         Layer::Overlay,
-        "retroshell-menu-popup".into(),
+        "slopos-i-menu-popup".into(),
         &qh,
         ChromeSurfaceKind::MenuPopup,
     );
@@ -621,7 +621,7 @@ struct LayerDesktopState {
     last_pointer: (f64, f64),
     pointer_kind: ChromeSurfaceKind,
     /// Current keyboard modifiers from wl_keyboard::Modifiers (xkb mask).
-    modifiers: retro_kit::event::Modifiers,
+    modifiers: slopos_kit::event::Modifiers,
     /// Output-local origin of the menu Overlay popup surface.
     popup_origin: (f32, f32),
 }

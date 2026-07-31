@@ -5,7 +5,7 @@
 ## Current state
 
 - **Hardcoded themes:** `themes/{graphite,platinum,oled-graphite,high-contrast}/`
-- **Selection:** `retro_sdk::render_dark_mode()` returns a bool; no UI to change it
+- **Selection:** `slopos_sdk::render_dark_mode()` returns a bool; no UI to change it
 - **Scope:** colors, typography, icons; not window decorations or layer chrome
 
 ## Goals
@@ -37,7 +37,7 @@ id = "graphite"
 name = "Graphite"
 description = "Classic Mac gray"
 category = "light"
-author = "RetroShell Contributors"
+author = "SLOPOS-I Contributors"
 
 [[theme]]
 id = "platinum"
@@ -56,7 +56,7 @@ category = "light"
 #### Phase 1: Load & enumerate themes
 - Scan `themes/` directory
 - Parse manifest + color files
-- Store active theme in `~/.config/retroshell/theme.toml`
+- Store active theme in `~/.config/slopos-i/theme.toml`
 
 #### Phase 2: Apply at startup
 - Read `theme.toml` on shell startup
@@ -64,7 +64,7 @@ category = "light"
 - Fallback to "graphite" if config missing
 
 #### Phase 3: Hot-swap
-- Settings app calls shell via IPC (retro-bus)
+- Settings app calls shell via IPC (slopos-bus)
 - Shell updates all rendering contexts
 - Clients (apps) receive a signal to re-render
 
@@ -77,7 +77,7 @@ category = "light"
 - Colors loaded from TOML (or JSON) at startup
 - Icons loaded into texture atlas
 - Hot-swap requires re-uploading wgpu textures + broadcasting event
-- retro-bus may need to work first (defect H) for app notification
+- slopos-bus may need to work first (defect H) for app notification
 
 ## Acceptance criteria
 
@@ -103,13 +103,13 @@ category = "light"
 
 ## Dependencies
 
-- **retro-bus** (defect H) needs to work for client notification
-- **retro-kit** color/styling system needs flexibility for theme swaps
+- **slopos-bus** (defect H) needs to work for client notification
+- **slopos-kit** color/styling system needs flexibility for theme swaps
 - **Settings app** needs a preferences UI panel
 
 ## Timeline estimate
 - **Phase 1:** 1-2 days (manifest + loader)
 - **Phase 2:** 1 day (startup integration)
-- **Phase 3:** 2-3 days (hot-swap via retro-bus)
+- **Phase 3:** 2-3 days (hot-swap via slopos-bus)
 
 **Total:** 1 week for basic functionality.

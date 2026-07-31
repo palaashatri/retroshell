@@ -98,8 +98,8 @@ impl PolkitAgentState {
 }
 
 /// Well-known path/name constants for the session agent.
-pub const POLKIT_AGENT_BUS_NAME: &str = "org.retroshell.PolicyKit1.AuthenticationAgent";
-pub const POLKIT_AGENT_PATH: &str = "/org/retroshell/PolicyKit1/AuthenticationAgent";
+pub const POLKIT_AGENT_BUS_NAME: &str = "org.slopos-i.PolicyKit1.AuthenticationAgent";
+pub const POLKIT_AGENT_PATH: &str = "/org/slopos-i/PolicyKit1/AuthenticationAgent";
 pub const POLKIT_AGENT_INTERFACE: &str = "org.freedesktop.PolicyKit1.AuthenticationAgent";
 
 /// Best-effort register polkit agent on the session bus (Linux).

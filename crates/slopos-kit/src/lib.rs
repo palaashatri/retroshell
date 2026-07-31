@@ -69,7 +69,7 @@ pub use monospace_view::{MonospaceCell, MonospaceView};
 pub use panel::Panel;
 pub use popup_button::PopupButton;
 pub use progress_bar::ProgressBar;
-pub use retro_render::Color;
+pub use slopos_render::Color;
 pub use scroll_view::ScrollView;
 pub use slider::Slider;
 pub use split_view::SplitView;

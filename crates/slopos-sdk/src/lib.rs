@@ -1,29 +1,29 @@
 use parking_lot::Mutex;
-use retro_bus::RetroBus;
-use retro_kit::button::Button;
-use retro_kit::dialog::Dialog;
-use retro_kit::dock_view::DockView;
-use retro_kit::event::{KeyCode, Modifiers, MouseButton};
-use retro_kit::icon_view::{IconItem, IconView};
-use retro_kit::label::Label;
-use retro_kit::layout::{Layout, LayoutView};
-use retro_kit::list_view::ListView;
-use retro_kit::menu::{Menu, MenuItem, MenuItemKind};
-use retro_kit::menu_bar::MenuBar;
-use retro_kit::panel::Panel;
-use retro_kit::popup_button::PopupButton;
-use retro_kit::progress_bar::ProgressBar;
-use retro_kit::scroll_view::ScrollView;
-use retro_kit::slider::Slider;
-use retro_kit::split_view::SplitView;
-use retro_kit::status_bar::StatusBar;
-use retro_kit::tab_view::TabView;
-use retro_kit::text_field::TextField;
-use retro_kit::toolbar::Toolbar;
-use retro_kit::tree_view::{TreeNode, TreeView};
-use retro_kit::window::Window;
-use retro_kit::workspace_grid_view::WorkspaceGridView;
-use retro_kit::{Color, LayoutConstraint, MonospaceView, Point, Rect, Size, Widget};
+use slopos_bus::RetroBus;
+use slopos_kit::button::Button;
+use slopos_kit::dialog::Dialog;
+use slopos_kit::dock_view::DockView;
+use slopos_kit::event::{KeyCode, Modifiers, MouseButton};
+use slopos_kit::icon_view::{IconItem, IconView};
+use slopos_kit::label::Label;
+use slopos_kit::layout::{Layout, LayoutView};
+use slopos_kit::list_view::ListView;
+use slopos_kit::menu::{Menu, MenuItem, MenuItemKind};
+use slopos_kit::menu_bar::MenuBar;
+use slopos_kit::panel::Panel;
+use slopos_kit::popup_button::PopupButton;
+use slopos_kit::progress_bar::ProgressBar;
+use slopos_kit::scroll_view::ScrollView;
+use slopos_kit::slider::Slider;
+use slopos_kit::split_view::SplitView;
+use slopos_kit::status_bar::StatusBar;
+use slopos_kit::tab_view::TabView;
+use slopos_kit::text_field::TextField;
+use slopos_kit::toolbar::Toolbar;
+use slopos_kit::tree_view::{TreeNode, TreeView};
+use slopos_kit::window::Window;
+use slopos_kit::workspace_grid_view::WorkspaceGridView;
+use slopos_kit::{Color, LayoutConstraint, MonospaceView, Point, Rect, Size, Widget};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -171,7 +171,7 @@ pub mod theme_accents {
     pub const BLUEBERRY: [f32; 4] = [0.15, 0.25, 0.62, 1.0];
     /// Strawberry — red-pink
     pub const STRAWBERRY: [f32; 4] = [0.82, 0.23, 0.28, 1.0];
-    /// Solarized — #268bd2 (matches ThemeName::Solarized in retro-shell)
+    /// Solarized — #268bd2 (matches ThemeName::Solarized in slopos-shell)
     pub const SOLARIZED: [f32; 4] = [0.15, 0.55, 0.82, 1.0];
     /// Dracula — #bd93f9
     pub const DRACULA: [f32; 4] = [0.74, 0.58, 0.98, 1.0];
@@ -181,14 +181,14 @@ pub mod theme_accents {
 
 /// Read settings.conf and return (is_dark, accent_color) for the current theme.
 fn load_theme_preference() -> (bool, [f32; 4]) {
-    let config_dir = std::env::var_os("RETROSHELL_CONFIG_DIR")
+    let config_dir = std::env::var_os("SLOPOS_CONFIG_DIR")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME")
                 .map(PathBuf::from)
-                .map(|home| home.join(".config/retroshell"))
+                .map(|home| home.join(".config/slopos-i"))
         })
-        .unwrap_or_else(|| PathBuf::from("/tmp/retroshell"));
+        .unwrap_or_else(|| PathBuf::from("/tmp/slopos-i"));
     let path = config_dir.join("settings.conf");
     let Ok(content) = std::fs::read_to_string(path) else {
         return (false, theme_accents::CLASSIC);
@@ -211,7 +211,7 @@ fn parse_theme_preference(content: &str) -> (bool, [f32; 4]) {
     }
     // Named theme takes precedence over appearance
     if let Some(name) = theme_name {
-        // Must stay in sync with retro_shell::theme_manager::ThemeName
+        // Must stay in sync with slopos_shell::theme_manager::ThemeName
         // (accent + is_dark); a name missing here silently renders as Classic.
         return match name.as_str() {
             "grape" => (true, theme_accents::GRAPE),
@@ -235,16 +235,16 @@ fn parse_theme_preference(content: &str) -> (bool, [f32; 4]) {
 }
 
 pub fn menu_manifest_dir() -> Option<PathBuf> {
-    std::env::var_os("RETROSHELL_MENU_MANIFEST_DIR")
+    std::env::var_os("SLOPOS_MENU_MANIFEST_DIR")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("XDG_RUNTIME_DIR")
-                .map(|runtime| PathBuf::from(runtime).join("retroshell").join("menus"))
+                .map(|runtime| PathBuf::from(runtime).join("slopos-i").join("menus"))
         })
 }
 
 pub fn global_menu_mode_enabled() -> bool {
-    std::env::var_os("RETROSHELL_GLOBAL_MENU")
+    std::env::var_os("SLOPOS_GLOBAL_MENU")
         .and_then(|value| value.into_string().ok())
         .map(|value| {
             matches!(
@@ -371,7 +371,7 @@ impl Application {
         self.running = true;
         tracing::info!("Application '{}' started", self.name);
 
-        let event_loop = match retro_render::event_loop::RetroEventLoop::new() {
+        let event_loop = match slopos_render::event_loop::RetroEventLoop::new() {
             Ok(event_loop) => event_loop,
             Err(err) => {
                 tracing::error!(
@@ -409,11 +409,11 @@ impl Application {
                 modifiers_from_winit(self.modifiers)
             }
 
-            fn dispatch(&mut self, event: retro_kit::Event) -> retro_kit::EventResult {
+            fn dispatch(&mut self, event: slopos_kit::Event) -> slopos_kit::EventResult {
                 let result = if let Some(ref mut win) = self.window {
                     win.handle_event(&event)
                 } else {
-                    retro_kit::EventResult::Ignored
+                    slopos_kit::EventResult::Ignored
                 };
                 self.dirty = true;
                 if let Some(window) = &self.platform_window {
@@ -465,11 +465,11 @@ impl Application {
             }
         }
 
-        impl retro_render::event_loop::RetroAppHandler for AppHandler {
+        impl slopos_render::event_loop::RetroAppHandler for AppHandler {
             fn init(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
                 let initial_size = self.initial_size;
                 // No winit/Adwaita CSD — classic Mac chrome is drawn by the kit
-                // (title bar) and the global menu lives in retro-shell layer-shell.
+                // (title bar) and the global menu lives in slopos-shell layer-shell.
                 let attrs = winit::window::Window::default_attributes()
                     .with_title(&self.name)
                     .with_inner_size(winit::dpi::LogicalSize::new(
@@ -541,16 +541,16 @@ impl Application {
                         let scale = self.scale;
                         self.cursor_position =
                             Point::new(position.x as f32 / scale, position.y as f32 / scale);
-                        let _ = self.dispatch(retro_kit::Event::MouseMove {
+                        let _ = self.dispatch(slopos_kit::Event::MouseMove {
                             point: self.cursor_position,
                             modifiers: self.modifiers(),
                         });
                     }
                     winit::event::WindowEvent::CursorEntered { .. } => {
-                        let _ = self.dispatch(retro_kit::Event::MouseEnter);
+                        let _ = self.dispatch(slopos_kit::Event::MouseEnter);
                     }
                     winit::event::WindowEvent::CursorLeft { .. } => {
-                        let _ = self.dispatch(retro_kit::Event::MouseLeave);
+                        let _ = self.dispatch(slopos_kit::Event::MouseLeave);
                     }
                     winit::event::WindowEvent::MouseInput { state, button, .. } => {
                         if let Some(button) = winit_to_retro_mouse_button(button) {
@@ -572,20 +572,20 @@ impl Application {
                                         .unwrap_or(false);
                                     self.last_click = Some((button, self.cursor_position, now));
                                     if is_double_click {
-                                        retro_kit::Event::DoubleClick {
+                                        slopos_kit::Event::DoubleClick {
                                             button,
                                             point: self.cursor_position,
                                             modifiers: self.modifiers(),
                                         }
                                     } else {
-                                        retro_kit::Event::MouseDown {
+                                        slopos_kit::Event::MouseDown {
                                             button,
                                             point: self.cursor_position,
                                             modifiers: self.modifiers(),
                                         }
                                     }
                                 }
-                                winit::event::ElementState::Released => retro_kit::Event::MouseUp {
+                                winit::event::ElementState::Released => slopos_kit::Event::MouseUp {
                                     button,
                                     point: self.cursor_position,
                                     modifiers: self.modifiers(),
@@ -596,16 +596,16 @@ impl Application {
                     }
                     winit::event::WindowEvent::MouseWheel { delta, .. } => {
                         let delta = winit_to_retro_scroll_delta(delta);
-                        let _ = self.dispatch(retro_kit::Event::Scroll {
+                        let _ = self.dispatch(slopos_kit::Event::Scroll {
                             delta,
                             modifiers: self.modifiers(),
                         });
                     }
                     winit::event::WindowEvent::Focused(true) => {
-                        let _ = self.dispatch(retro_kit::Event::FocusIn);
+                        let _ = self.dispatch(slopos_kit::Event::FocusIn);
                     }
                     winit::event::WindowEvent::Focused(false) => {
-                        let _ = self.dispatch(retro_kit::Event::FocusOut);
+                        let _ = self.dispatch(slopos_kit::Event::FocusOut);
                     }
                     winit::event::WindowEvent::KeyboardInput {
                         event: key_event, ..
@@ -616,13 +616,13 @@ impl Application {
                             if let Some(rkey) = winit_to_retro_key(phys_key) {
                                 let retro_event = match key_event.state {
                                     winit::event::ElementState::Pressed => {
-                                        retro_kit::Event::KeyDown {
+                                        slopos_kit::Event::KeyDown {
                                             key: rkey,
                                             modifiers: self.modifiers(),
                                         }
                                     }
                                     winit::event::ElementState::Released => {
-                                        retro_kit::Event::KeyUp {
+                                        slopos_kit::Event::KeyUp {
                                             key: rkey,
                                             modifiers: self.modifiers(),
                                         }
@@ -630,8 +630,8 @@ impl Application {
                                 };
                                 handled = matches!(
                                     self.dispatch(retro_event),
-                                    retro_kit::EventResult::Handled
-                                        | retro_kit::EventResult::StopPropagation
+                                    slopos_kit::EventResult::Handled
+                                        | slopos_kit::EventResult::StopPropagation
                                 );
                             }
                         }
@@ -639,7 +639,7 @@ impl Application {
                             if let Some(ref text) = key_event.text {
                                 for character in text.chars() {
                                     if !character.is_control() {
-                                        let _ = self.dispatch(retro_kit::Event::Char { character });
+                                        let _ = self.dispatch(slopos_kit::Event::Char { character });
                                     }
                                 }
                             }
@@ -779,10 +779,10 @@ impl Vertex {
     }
 }
 
-/// Build a [`retro_render::DisplayRenderPolicy`] from env and optional settings.conf.
-fn display_render_policy_from_env() -> retro_render::DisplayRenderPolicy {
-    let mut hdr_enabled = env_flag_true("RETROSHELL_HDR");
-    let mut vrr_adaptive = env_flag_true("RETROSHELL_VRR");
+/// Build a [`slopos_render::DisplayRenderPolicy`] from env and optional settings.conf.
+fn display_render_policy_from_env() -> slopos_render::DisplayRenderPolicy {
+    let mut hdr_enabled = env_flag_true("SLOPOS_HDR");
+    let mut vrr_adaptive = env_flag_true("SLOPOS_VRR");
 
     if let Some(path) = dirs_settings_conf() {
         if let Ok(content) = fs::read_to_string(path) {
@@ -803,7 +803,7 @@ fn display_render_policy_from_env() -> retro_render::DisplayRenderPolicy {
         }
     }
 
-    retro_render::DisplayRenderPolicy {
+    slopos_render::DisplayRenderPolicy {
         hdr_enabled,
         vrr_adaptive,
     }
@@ -826,11 +826,11 @@ fn parse_conf_bool(value: &str, fallback: bool) -> bool {
 fn dirs_settings_conf() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
-        .map(|home| home.join(".config/retroshell/settings.conf"))
+        .map(|home| home.join(".config/slopos-i/settings.conf"))
         .or_else(|| {
             std::env::var_os("XDG_CONFIG_HOME")
                 .map(PathBuf::from)
-                .map(|base| base.join("retroshell/settings.conf"))
+                .map(|base| base.join("slopos-i/settings.conf"))
         })
 }
 
@@ -843,7 +843,7 @@ pub struct WgpuPresenter {
 }
 
 /// Renders immediate-mode UI onto a Wayland surface created outside winit
-/// (e.g. a wlr-layer-shell surface owned by retro-shell).
+/// (e.g. a wlr-layer-shell surface owned by slopos-shell).
 pub struct RawSurfaceRenderer {
     presenter: WgpuPresenter,
 }
@@ -882,7 +882,7 @@ impl RawSurfaceRenderer {
 /// Backend-agnostic UI runtime: owns a Window's widget tree, lays it out,
 /// paints it via a RawSurfaceRenderer, and accepts neutral input events.
 /// Mirrors the logic of the winit `AppHandler` without any winit dependency,
-/// so a wlr-layer-shell driver (retro-shell) can drive the same UI.
+/// so a wlr-layer-shell driver (slopos-shell) can drive the same UI.
 pub struct UiRuntime {
     window: Option<Window>,
     scale: f32,
@@ -900,15 +900,15 @@ impl UiRuntime {
     /// Create a new UI runtime with the given widget tree, sized in physical pixels.
     /// The widget is wrapped in a Window and laid out at the logical size (px / scale).
     pub fn new(
-        content: Box<dyn retro_kit::Widget>,
+        content: Box<dyn slopos_kit::Widget>,
         width_px: u32,
         height_px: u32,
         scale: f32,
     ) -> Self {
-        // NOTE: the title MUST be "RetroShell Desktop" — draw_window special-cases
+        // NOTE: the title MUST be "SLOPOS-I Desktop" — draw_window special-cases
         // that exact title to render chromeless (no titlebar, no content clip), so
         // the menu bar sits at y=0 and the dock reaches the bottom edge.
-        let mut window = Window::new("RetroShell Desktop");
+        let mut window = Window::new("SLOPOS-I Desktop");
         window.set_content(content);
 
         let mut rt = Self {
@@ -976,7 +976,7 @@ impl UiRuntime {
     /// Handle pointer movement at logical coordinates.
     pub fn pointer_moved(&mut self, x: f32, y: f32) {
         self.cursor_position = Point::new(x, y);
-        let _ = self.dispatch(retro_kit::Event::MouseMove {
+        let _ = self.dispatch(slopos_kit::Event::MouseMove {
             point: self.cursor_position,
             modifiers: self.modifiers,
         });
@@ -991,7 +991,7 @@ impl UiRuntime {
         button: MouseButton,
         pressed: bool,
         time_ms: u128,
-    ) -> retro_kit::EventResult {
+    ) -> slopos_kit::EventResult {
         if pressed {
             let is_double_click = self
                 .last_click
@@ -1004,20 +1004,20 @@ impl UiRuntime {
                 .unwrap_or(false);
             self.last_click = Some((button, self.cursor_position, time_ms));
             if is_double_click {
-                self.dispatch(retro_kit::Event::DoubleClick {
+                self.dispatch(slopos_kit::Event::DoubleClick {
                     button,
                     point: self.cursor_position,
                     modifiers: self.modifiers,
                 })
             } else {
-                self.dispatch(retro_kit::Event::MouseDown {
+                self.dispatch(slopos_kit::Event::MouseDown {
                     button,
                     point: self.cursor_position,
                     modifiers: self.modifiers,
                 })
             }
         } else {
-            self.dispatch(retro_kit::Event::MouseUp {
+            self.dispatch(slopos_kit::Event::MouseUp {
                 button,
                 point: self.cursor_position,
                 modifiers: self.modifiers,
@@ -1027,23 +1027,23 @@ impl UiRuntime {
 
     /// Handle mouse wheel scroll.
     pub fn wheel(&mut self, delta_x: f32, delta_y: f32) {
-        let _ = self.dispatch(retro_kit::Event::Scroll {
+        let _ = self.dispatch(slopos_kit::Event::Scroll {
             delta: Point::new(delta_x, delta_y),
             modifiers: self.modifiers,
         });
     }
 
     /// Handle a keyboard event (caller builds the neutral Event).
-    pub fn key(&mut self, event: retro_kit::Event) {
+    pub fn key(&mut self, event: slopos_kit::Event) {
         let _ = self.dispatch(event);
     }
 
     /// Set window focus state.
     pub fn set_focus(&mut self, focused: bool) {
         if focused {
-            let _ = self.dispatch(retro_kit::Event::FocusIn);
+            let _ = self.dispatch(slopos_kit::Event::FocusIn);
         } else {
-            let _ = self.dispatch(retro_kit::Event::FocusOut);
+            let _ = self.dispatch(slopos_kit::Event::FocusOut);
         }
     }
 
@@ -1096,7 +1096,7 @@ impl UiRuntime {
     /// Access the root content widget (under the chromeless Window).
     pub fn with_root_content_mut<R>(
         &mut self,
-        f: impl FnOnce(&mut dyn retro_kit::Widget) -> R,
+        f: impl FnOnce(&mut dyn slopos_kit::Widget) -> R,
     ) -> Option<R> {
         let win = self.window.as_mut()?;
         let content = win.content.as_mut()?;
@@ -1109,11 +1109,11 @@ impl UiRuntime {
     }
 
     /// Dispatch an event to the window and mark as dirty on any result.
-    fn dispatch(&mut self, event: retro_kit::Event) -> retro_kit::EventResult {
+    fn dispatch(&mut self, event: slopos_kit::Event) -> slopos_kit::EventResult {
         let result = if let Some(ref mut win) = self.window {
             win.handle_event(&event)
         } else {
-            retro_kit::EventResult::Ignored
+            slopos_kit::EventResult::Ignored
         };
         self.dirty = true;
         result
@@ -1202,8 +1202,8 @@ impl WgpuPresenter {
 
         let caps = surface.get_capabilities(&adapter);
         let policy = display_render_policy_from_env();
-        let format = retro_render::select_surface_format(&caps.formats, policy);
-        let present_mode = retro_render::select_present_mode(&caps.present_modes, policy);
+        let format = slopos_render::select_surface_format(&caps.formats, policy);
+        let present_mode = slopos_render::select_present_mode(&caps.present_modes, policy);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -1436,7 +1436,7 @@ impl<'a> Canvas<'a> {
     }
 
     fn glyph(&mut self, ch: char, x: f32, y: f32, color: [f32; 4]) -> f32 {
-        if let Some(glyph) = retro_render::rasterize_char(ch, 13.0) {
+        if let Some(glyph) = slopos_render::rasterize_char(ch, 13.0) {
             // Position glyph on a shared baseline. Callers pass `y` as the top of
             // the text line, so the baseline sits `ascent` px below it. `glyph.top`
             // (bounds.min.y) is negative for ink above the baseline, so a capital
@@ -1588,7 +1588,7 @@ fn draw_desktop_backdrop(canvas: &mut Canvas<'_>) {
 
 fn draw_window(canvas: &mut Canvas<'_>, window: &Window) {
     let rect = window.rect();
-    if window.title() == "RetroShell Desktop" {
+    if window.title() == "SLOPOS-I Desktop" {
         canvas.rect(rect, rgb(152, 152, 148));
         draw_desktop_backdrop(canvas);
         for child in window.children() {
@@ -1930,13 +1930,13 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
         canvas.rect(rect, split_bg);
         if let Some(split) = widget.as_any().downcast_ref::<SplitView>() {
             let divider = match split.direction {
-                retro_kit::split_view::SplitDirection::Horizontal => Rect::new(
+                slopos_kit::split_view::SplitDirection::Horizontal => Rect::new(
                     rect.x + rect.width * split.divider_position,
                     rect.y,
                     split.divider_size,
                     rect.height,
                 ),
-                retro_kit::split_view::SplitDirection::Vertical => Rect::new(
+                slopos_kit::split_view::SplitDirection::Vertical => Rect::new(
                     rect.x,
                     rect.y + rect.height * split.divider_position,
                     rect.width,
@@ -3606,7 +3606,7 @@ pub fn winit_to_retro_scroll_delta(delta: winit::event::MouseScrollDelta) -> Poi
 }
 
 pub fn winit_to_retro_key(key: winit::keyboard::KeyCode) -> Option<KeyCode> {
-    use retro_kit::event::KeyCode as RKey;
+    use slopos_kit::event::KeyCode as RKey;
     use winit::keyboard::KeyCode as WKey;
 
     match key {

@@ -1,7 +1,7 @@
 use crate::pty::Pty;
 use crate::terminal::Terminal;
 use nix::unistd::Pid;
-use retro_kit::{
+use slopos_kit::{
     AccessibilityNode, Event, EventResult, LayoutConstraint, Rect, Size, ThemeContext, Widget,
     WidgetState,
 };
@@ -170,26 +170,26 @@ impl Widget for TabManager {
         if let Event::KeyDown { key, modifiers } = event {
             if modifiers.meta {
                 match key {
-                    retro_kit::event::KeyCode::T => {
+                    slopos_kit::event::KeyCode::T => {
                         let _ = self.open_tab(80, 24);
                         return EventResult::Handled;
                     }
-                    retro_kit::event::KeyCode::W if modifiers.shift => {
+                    slopos_kit::event::KeyCode::W if modifiers.shift => {
                         if !self.tabs.is_empty() {
                             let idx = self.active_tab_index;
                             self.close_tab(idx);
                         }
                         return EventResult::Handled;
                     }
-                    retro_kit::event::KeyCode::Key1 => { self.switch_tab(0); return EventResult::Handled; }
-                    retro_kit::event::KeyCode::Key2 => { self.switch_tab(1); return EventResult::Handled; }
-                    retro_kit::event::KeyCode::Key3 => { self.switch_tab(2); return EventResult::Handled; }
-                    retro_kit::event::KeyCode::Key4 => { self.switch_tab(3); return EventResult::Handled; }
-                    retro_kit::event::KeyCode::Key5 => { self.switch_tab(4); return EventResult::Handled; }
-                    retro_kit::event::KeyCode::Key6 => { self.switch_tab(5); return EventResult::Handled; }
-                    retro_kit::event::KeyCode::Key7 => { self.switch_tab(6); return EventResult::Handled; }
-                    retro_kit::event::KeyCode::Key8 => { self.switch_tab(7); return EventResult::Handled; }
-                    retro_kit::event::KeyCode::Key9 => { self.switch_tab(8); return EventResult::Handled; }
+                    slopos_kit::event::KeyCode::Key1 => { self.switch_tab(0); return EventResult::Handled; }
+                    slopos_kit::event::KeyCode::Key2 => { self.switch_tab(1); return EventResult::Handled; }
+                    slopos_kit::event::KeyCode::Key3 => { self.switch_tab(2); return EventResult::Handled; }
+                    slopos_kit::event::KeyCode::Key4 => { self.switch_tab(3); return EventResult::Handled; }
+                    slopos_kit::event::KeyCode::Key5 => { self.switch_tab(4); return EventResult::Handled; }
+                    slopos_kit::event::KeyCode::Key6 => { self.switch_tab(5); return EventResult::Handled; }
+                    slopos_kit::event::KeyCode::Key7 => { self.switch_tab(6); return EventResult::Handled; }
+                    slopos_kit::event::KeyCode::Key8 => { self.switch_tab(7); return EventResult::Handled; }
+                    slopos_kit::event::KeyCode::Key9 => { self.switch_tab(8); return EventResult::Handled; }
                     _ => {}
                 }
             }

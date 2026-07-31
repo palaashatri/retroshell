@@ -164,7 +164,7 @@ mod tests {
         fs::create_dir_all(app_dir.join("Resources")).unwrap();
         fs::write(
             app_dir.join("Resources").join("Info.toml"),
-            "bundle_id=\"com.retro.tiny\"\nname=\"TinyApp\"\nversion=\"0.1.0\"\nentrypoint=\"bin/tiny\"\n",
+            "bundle_id=\"com.slopos.tiny\"\nname=\"TinyApp\"\nversion=\"0.1.0\"\nentrypoint=\"bin/tiny\"\n",
         )
         .unwrap();
 
@@ -225,7 +225,7 @@ mod tests {
         let json = r#"[
             {
                 "name": "TextEdit",
-                "bundle_id": "com.retro.textedit",
+                "bundle_id": "com.slopos.textedit",
                 "version": "0.1.0",
                 "url": "/tmp/TextEdit.app.tar.gz",
                 "sha256": "abc123",
@@ -235,7 +235,7 @@ mod tests {
         let entries = parse_catalog(json.as_bytes()).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "TextEdit");
-        assert_eq!(entries[0].bundle_id, "com.retro.textedit");
+        assert_eq!(entries[0].bundle_id, "com.slopos.textedit");
         assert_eq!(entries[0].size, 42);
     }
 }

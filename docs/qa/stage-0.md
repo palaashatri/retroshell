@@ -2,11 +2,11 @@
 
 > **This doc holds evidence, not claims.** Every row is filled from a real command
 > transcript or screenshot captured on the VM. A row with no transcript is `PENDING`,
-> never `PASS`. See the honesty contract in [../PROGRAM.md](../PROGRAM.md).
+> never `PASS`. See the honesty contract in [../SLOPOS-I.md](../SLOPOS-I.md).
 
 **Tasks under test:** [tasks/stage-0-vm-foundation.md](../tasks/stage-0-vm-foundation.md)
 (Mac/UTM Path A/B in that doc are **dormant**; this run used the Windows +
-VirtualBox pipeline from [HANDOFF.md](../HANDOFF.md) §3.)
+VirtualBox pipeline from [SLOPOS-I.md](../SLOPOS-I.md) §3.)
 
 **Stage 0 definition of done:** over SSH from the host,
 `ls /dev/dri/card0` succeeds **and** `cargo build --release --workspace` succeeds
@@ -18,7 +18,7 @@ inside the VM (prints `STAGE0-DOD-PASS`).
 
 | Check | What it proves | Status | Evidence |
 |---|---|---|---|
-| VM exists | `retroshell-arch` with EFI, VMSVGA+3D, NAT `:2222→22` | VERIFIED | VBoxManage showvminfo (below) |
+| VM exists | `slopos-i-arch` with EFI, VMSVGA+3D, NAT `:2222→22` | VERIFIED | VBoxManage showvminfo (below) |
 | Autologin | boots to `retro` on tty1 | VERIFIED | screenshot + `whoami` |
 | SSH key | host reaches guest with `qa_key`, no password | VERIFIED | `uname -m` → `x86_64` |
 | KMS | `/dev/dri/card0` + `vmwgfx` | VERIFIED | transcript below |
@@ -45,7 +45,7 @@ full output. Do not summarize — the raw transcript is the evidence._
 
 ```text
 $ ssh -i packaging/vm/qa_key -p 2222 retro@127.0.0.1 \
-    'ls /dev/dri/card0 && lsmod | grep vmwgfx | head -1 && cd ~/retroshell && cargo build --release --workspace && echo STAGE0-DOD-PASS'
+    'ls /dev/dri/card0 && lsmod | grep vmwgfx | head -1 && cd ~/slopos-i && cargo build --release --workspace && echo STAGE0-DOD-PASS'
 /dev/dri/card0
 vmwgfx                491520  0
 … (crate downloads + compile) …
@@ -57,13 +57,13 @@ Follow-up probe:
 
 ```text
 $ ssh -i packaging/vm/qa_key -p 2222 retro@127.0.0.1 \
-    'ls /dev/dri/card0 && lsmod | grep vmwgfx; ls -1 ~/retroshell/target/release/retro-compositor ~/retroshell/target/release/retro-shell; uname -m; whoami; systemctl is-active sshd'
+    'ls /dev/dri/card0 && lsmod | grep vmwgfx; ls -1 ~/slopos-i/target/release/slopos-compositor ~/slopos-i/target/release/slopos-shell; uname -m; whoami; systemctl is-active sshd'
 /dev/dri/card0
 vmwgfx                491520  0
 drm_ttm_helper         20480  2 vmwgfx
 ttm                   151552  2 vmwgfx,drm_ttm_helper
-/home/retro/retroshell/target/release/retro-compositor
-/home/retro/retroshell/target/release/retro-shell
+/home/retro/slopos-i/target/release/slopos-compositor
+/home/retro/slopos-i/target/release/slopos-shell
 x86_64
 retro
 active
@@ -72,7 +72,7 @@ active
 ### VM hardware (host)
 
 ```text
-name="retroshell-arch"
+name="slopos-i-arch"
 memory=8192
 firmware="EFI"
 cpus=4

@@ -50,15 +50,15 @@ impl LaunchServices {
 
     fn setup_default_associations(&mut self) {
         let defaults = vec![
-            ("txt", "com.retro.textedit"),
-            ("rtf", "com.retro.textedit"),
-            ("md", "com.retro.textedit"),
-            ("png", "com.retro.imageviewer"),
-            ("jpg", "com.retro.imageviewer"),
-            ("jpeg", "com.retro.imageviewer"),
-            ("gif", "com.retro.imageviewer"),
-            ("zip", "com.retro.archiveutility"),
-            ("pdf", "com.retro.textedit"),
+            ("txt", "com.slopos.textedit"),
+            ("rtf", "com.slopos.textedit"),
+            ("md", "com.slopos.textedit"),
+            ("png", "com.slopos.imageviewer"),
+            ("jpg", "com.slopos.imageviewer"),
+            ("jpeg", "com.slopos.imageviewer"),
+            ("gif", "com.slopos.imageviewer"),
+            ("zip", "com.slopos.archiveutility"),
+            ("pdf", "com.slopos.textedit"),
         ];
         for (ext, app) in defaults {
             self.associations.insert(
@@ -145,7 +145,7 @@ mod tests {
         std::fs::create_dir_all(&res).unwrap();
         std::fs::write(
             res.join("Info.toml"),
-            "bundle_id = \"com.retro.foo\"\nname = \"Foo\"\nversion = \"0.1.0\"\nentrypoint = \"bin/foo\"\n",
+            "bundle_id = \"com.slopos.foo\"\nname = \"Foo\"\nversion = \"0.1.0\"\nentrypoint = \"bin/foo\"\n",
         )
         .unwrap();
 
@@ -156,7 +156,7 @@ mod tests {
         };
         services.scan_applications();
 
-        let bundle = services.bundle_for_id("com.retro.foo").expect("registered");
+        let bundle = services.bundle_for_id("com.slopos.foo").expect("registered");
         assert_eq!(bundle.name, "Foo");
         assert_eq!(bundle.entrypoint, "bin/foo");
         assert!(bundle.path.ends_with("Foo.app"));

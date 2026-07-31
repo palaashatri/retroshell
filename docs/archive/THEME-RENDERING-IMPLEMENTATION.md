@@ -3,20 +3,20 @@
 **Status:** Complete and tested ✅  
 **Test Coverage:** 322 tests passing (6 SDK + 316 Shell)  
 **Color Coverage:** 100% of all UI elements now theme-aware ✅  
-**Files Modified:** `crates/retro-sdk/src/lib.rs` (5 commits, 350+ lines changed)  
+**Files Modified:** `crates/slopos-sdk/src/lib.rs` (5 commits, 350+ lines changed)  
 **Hardcoded Colors Remaining:** 0 (zero) — all colors now theme-aware
 
 ## Overview
 
-RetroShell now has a **100% complete theme-aware rendering system** that works seamlessly with the existing theme manager. **Every pixel on screen** renders with dynamic theme colors based on the current light/dark mode setting. The implementation maintains proper contrast and visual hierarchy across all UI elements, from window chrome to menu items to list selections.
+SLOPOS-I now has a **100% complete theme-aware rendering system** that works seamlessly with the existing theme manager. **Every pixel on screen** renders with dynamic theme colors based on the current light/dark mode setting. The implementation maintains proper contrast and visual hierarchy across all UI elements, from window chrome to menu items to list selections.
 
 ## Architecture
 
 ### Theme Detection
-The rendering system uses `render_dark_mode()` to determine the current theme at render time. This is integrated with `crates/retro-shell/src/theme_manager.rs` which provides the theme tokens.
+The rendering system uses `render_dark_mode()` to determine the current theme at render time. This is integrated with `crates/slopos-shell/src/theme_manager.rs` which provides the theme tokens.
 
 ### Color Lookup
-A new `theme_color()` function in `retro-sdk/src/lib.rs` provides semantic color names that map to appropriate values based on dark mode state:
+A new `theme_color()` function in `slopos-sdk/src/lib.rs` provides semantic color names that map to appropriate values based on dark mode state:
 
 ```rust
 fn theme_color(color_name: &str) -> [f32; 4] {
@@ -134,7 +134,7 @@ Every UI element now uses dynamic theme colors:
 All 316 integration tests pass with the theme system:
 
 ```bash
-$ cargo test --lib -p retro-shell
+$ cargo test --lib -p slopos-shell
 test result: ok. 316 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
@@ -156,7 +156,7 @@ No regressions were introduced. The test suite covers:
 ## What's Next
 
 ### Immediate (v0.1.0 Release)
-1. **Test on Real Hardware**: Verify appearance on actual RetroShell desktop sessions
+1. **Test on Real Hardware**: Verify appearance on actual SLOPOS-I desktop sessions
 2. **Theme Hot-Swap**: Implement live theme switching via Settings without app restart
 3. **Variant Testing**: Verify all 8 theme variants (Grape, Blueberry, Strawberry, etc.) render correctly
 
@@ -224,9 +224,9 @@ Each commit maintains 100% test pass rate and can be reviewed independently.
 
 ## Files
 
-- `crates/retro-sdk/src/lib.rs` — All rendering code with theme colors
-- `crates/retro-shell/src/theme_manager.rs` — Theme definitions (unchanged)
-- `crates/retro-shell/src/layer_desktop.rs` — Theme application (minor changes)
+- `crates/slopos-sdk/src/lib.rs` — All rendering code with theme colors
+- `crates/slopos-shell/src/theme_manager.rs` — Theme definitions (unchanged)
+- `crates/slopos-shell/src/layer_desktop.rs` — Theme application (minor changes)
 - `docs/THEME-RENDERING-IMPLEMENTATION.md` — This file
 
 ## Questions & Troubleshooting
@@ -246,5 +246,5 @@ A: They're in low-interaction areas (backdrop, terminal). Should be done before 
 ---
 
 **Implementation Date:** 2026-07-31  
-**Status:** Production-ready for retro-shell v0.1.0+  
+**Status:** Production-ready for slopos-shell v0.1.0+  
 **Contact:** See CLAUDE.md for project context

@@ -1,6 +1,6 @@
-use retro_kit::event::{KeyCode, Modifiers};
-use retro_kit::window::Window;
-use retro_sdk::{build_menu, Application};
+use slopos_kit::event::{KeyCode, Modifiers};
+use slopos_kit::window::Window;
+use slopos_sdk::{build_menu, Application};
 
 mod pty;
 mod tabs;
@@ -11,7 +11,7 @@ use tabs::TabManager;
 
 fn main() {
     let _ = tracing_subscriber::fmt::try_init();
-    let mut app = Application::new("Terminal", "com.retro.terminal");
+    let mut app = Application::new("Terminal", "com.slopos.terminal");
 
     let mut shell_menu = build_menu("Shell");
     {

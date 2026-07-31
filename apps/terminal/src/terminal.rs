@@ -1,9 +1,9 @@
 use crate::vt_parser::VtHandler;
-use retro_kit::clipboard::Clipboard;
-use retro_kit::event::{KeyCode, MouseButton};
-use retro_kit::theme::ThemeContext;
-use retro_kit::Color;
-use retro_kit::{
+use slopos_kit::clipboard::Clipboard;
+use slopos_kit::event::{KeyCode, MouseButton};
+use slopos_kit::theme::ThemeContext;
+use slopos_kit::Color;
+use slopos_kit::{
     AccessibilityNode, AccessibilityRole, Event, EventResult, LayoutConstraint, MonospaceCell,
     MonospaceView, Rect, Size, Widget, WidgetState,
 };
@@ -614,7 +614,7 @@ impl Widget for Terminal {
 }
 
 impl Terminal {
-    fn point_to_cell(&self, point: retro_kit::Point) -> Option<GridPoint> {
+    fn point_to_cell(&self, point: slopos_kit::Point) -> Option<GridPoint> {
         let rect = self.rect();
         if !rect.contains(point) {
             return None;
@@ -844,7 +844,7 @@ mod tests {
 
         let result = term.handle_event(&Event::KeyDown {
             key: KeyCode::C,
-            modifiers: retro_kit::event::Modifiers {
+            modifiers: slopos_kit::event::Modifiers {
                 shift: false,
                 control: false,
                 alt: false,
@@ -870,7 +870,7 @@ mod tests {
 
         let result = term.handle_event(&Event::KeyDown {
             key: KeyCode::C,
-            modifiers: retro_kit::event::Modifiers {
+            modifiers: slopos_kit::event::Modifiers {
                 shift: false,
                 control: false,
                 alt: false,
@@ -892,17 +892,17 @@ mod tests {
 
         let down = term.handle_event(&Event::MouseDown {
             button: MouseButton::Left,
-            point: retro_kit::Point::new(0.0, 0.0),
-            modifiers: retro_kit::event::Modifiers::NONE,
+            point: slopos_kit::Point::new(0.0, 0.0),
+            modifiers: slopos_kit::event::Modifiers::NONE,
         });
         let drag = term.handle_event(&Event::MouseMove {
-            point: retro_kit::Point::new(47.0, 0.0),
-            modifiers: retro_kit::event::Modifiers::NONE,
+            point: slopos_kit::Point::new(47.0, 0.0),
+            modifiers: slopos_kit::event::Modifiers::NONE,
         });
         let up = term.handle_event(&Event::MouseUp {
             button: MouseButton::Left,
-            point: retro_kit::Point::new(47.0, 0.0),
-            modifiers: retro_kit::event::Modifiers::NONE,
+            point: slopos_kit::Point::new(47.0, 0.0),
+            modifiers: slopos_kit::event::Modifiers::NONE,
         });
 
         assert!(matches!(down, EventResult::Handled));
@@ -922,7 +922,7 @@ mod tests {
 
         let result = term.handle_event(&Event::KeyDown {
             key: KeyCode::A,
-            modifiers: retro_kit::event::Modifiers {
+            modifiers: slopos_kit::event::Modifiers {
                 shift: false,
                 control: false,
                 alt: false,

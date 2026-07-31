@@ -20,7 +20,7 @@ KMS." Nothing downstream is meaningful until this VM exists and builds the tree.
 - Boot is **UEFI** (UTM ships edk2/AAVMF). aarch64 EFI binary is `BOOTAA64.EFI`.
 - GPU is **virtio-gpu**; the kernel module is **`virtio_gpu`**. There is no
   `vmwgfx`.
-- Repo: `https://github.com/palaashatri/retroshell.git`, branch `main`.
+- Repo: `https://github.com/palaashatri/slopos-i.git`, branch `main`.
 
 ## Two paths to the VM — pick one
 
@@ -117,7 +117,7 @@ Steps:
 ```bash
 #!/usr/bin/env bash
 # Provision an ALREADY-INSTALLED Arch Linux ARM VM (e.g. the UTM gallery image)
-# with RetroShell's build + runtime deps, the host SSH key, tty1 autologin, and a
+# with SLOPOS-I's build + runtime deps, the host SSH key, tty1 autologin, and a
 # built workspace. Run INSIDE the VM as a sudo-capable user:
 #   curl -sL http://10.0.2.2:8000/provision-arm64.sh | bash
 #
@@ -127,7 +127,7 @@ Steps:
 set -euxo pipefail
 
 USERNAME="${SUDO_USER:-$(whoami)}"
-REPO_URL="${REPO_URL:-https://github.com/palaashatri/retroshell.git}"
+REPO_URL="${REPO_URL:-https://github.com/palaashatri/slopos-i.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 HOST_HTTP="${HOST_HTTP:-http://10.0.2.2:8000}"
 
@@ -176,18 +176,18 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin $USERNAME --noclear %I \$TERM
 EOF
 
-echo "=== clone + build RetroShell ==="
-if [ ! -d "$HOME/retroshell" ]; then
-  git clone --branch "$REPO_BRANCH" "$REPO_URL" "$HOME/retroshell" \
-    || git clone "$REPO_URL" "$HOME/retroshell"
+echo "=== clone + build SLOPOS-I ==="
+if [ ! -d "$HOME/slopos-i" ]; then
+  git clone --branch "$REPO_BRANCH" "$REPO_URL" "$HOME/slopos-i" \
+    || git clone "$REPO_URL" "$HOME/slopos-i"
 fi
-mkdir -p "$HOME/.config/retroshell"
-cat > "$HOME/.config/retroshell/settings.conf" <<EOF
+mkdir -p "$HOME/.config/slopos-i"
+cat > "$HOME/.config/slopos-i/settings.conf" <<EOF
 theme=classic
 appearance=light
-lock_password=retroshell
+lock_password=slopos-i
 EOF
-cd "$HOME/retroshell"
+cd "$HOME/slopos-i"
 cargo build --release --workspace
 
 echo "=== done; reboot so virtio_gpu + group membership take effect ==="
@@ -240,7 +240,7 @@ Steps:
 Acceptance (in the VM after reboot):
 ```bash
 systemctl is-active sshd                 # → active
-ls ~/retroshell/target/release/retro-compositor ~/retroshell/target/release/retro-shell
+ls ~/slopos-i/target/release/slopos-compositor ~/slopos-i/target/release/slopos-shell
 groups | grep -o 'seat\|video\|input'    # → video input (seat if present)
 ```
 → expect: `active`, both release binaries present, and `video`+`input` groups.
@@ -315,7 +315,7 @@ cd "$(git rev-parse --show-toplevel)" && test -d packaging/vm && echo ok   # →
 Steps:
 1. Generate a dedicated keypair (no passphrase, for automation):
    ```bash
-   ssh-keygen -t ed25519 -N "" -f packaging/vm/qa_key -C retroshell-vm
+   ssh-keygen -t ed25519 -N "" -f packaging/vm/qa_key -C slopos-i-vm
    ```
    (`packaging/vm/qa_key*` is already gitignored — see `.gitignore`.)
 2. From the repo root, serve the `packaging/vm` directory so the VM can fetch the
@@ -358,20 +358,20 @@ Steps:
 
 ```bash
 #!/usr/bin/env bash
-# Unattended Arch (aarch64) install for the RetroShell UTM verification VM.
+# Unattended Arch (aarch64) install for the SLOPOS-I UTM verification VM.
 #
 # Run from the aarch64 Arch/archboot live environment:
 #   curl -sL http://10.0.2.2:8000/arch-install-arm64.sh | bash
 #
 # Produces a machine that boots to an autologin TTY with sshd + the host's key,
-# on real virtio-gpu DRM/KMS — the environment RetroShell has never been run on.
+# on real virtio-gpu DRM/KMS — the environment SLOPOS-I has never been run on.
 set -euxo pipefail
 
 DISK=/dev/vda                       # virtio-blk (NOT /dev/sda)
-HOSTNAME=retroshell-vm
+HOSTNAME=slopos-i-vm
 USERNAME=retro
 PASSWORD=retro
-REPO_URL="${REPO_URL:-https://github.com/palaashatri/retroshell.git}"
+REPO_URL="${REPO_URL:-https://github.com/palaashatri/slopos-i.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 HOST_HTTP="${HOST_HTTP:-http://10.0.2.2:8000}"   # host file server (Task 0.2)
 
@@ -397,7 +397,7 @@ mount "${DISK}2" /mnt
 mkdir -p /mnt/boot
 mount "${DISK}1" /mnt/boot
 
-echo "=== pacstrap base + RetroShell build/runtime deps (aarch64) ==="
+echo "=== pacstrap base + SLOPOS-I build/runtime deps (aarch64) ==="
 pacstrap -K /mnt \
   base "$KERNEL_PKG" linux-firmware \
   networkmanager sudo vim nano git curl wget \
@@ -466,16 +466,16 @@ chown $USERNAME:$USERNAME /home/$USERNAME/.ssh/authorized_keys
 chmod 600 /home/$USERNAME/.ssh/authorized_keys
 CHROOT
 
-echo "=== clone + build RetroShell as $USERNAME ==="
+echo "=== clone + build SLOPOS-I as $USERNAME ==="
 arch-chroot /mnt /bin/bash -euxo pipefail <<CHROOT
 su - $USERNAME -c '
   set -euxo pipefail
-  git clone --branch "$REPO_BRANCH" "$REPO_URL" ~/retroshell || git clone "$REPO_URL" ~/retroshell
-  mkdir -p ~/.config/retroshell
-  cat > ~/.config/retroshell/settings.conf <<EOF
+  git clone --branch "$REPO_BRANCH" "$REPO_URL" ~/slopos-i || git clone "$REPO_URL" ~/slopos-i
+  mkdir -p ~/.config/slopos-i
+  cat > ~/.config/slopos-i/settings.conf <<EOF
 theme=classic
 appearance=light
-lock_password=retroshell
+lock_password=slopos-i
 EOF
 '
 CHROOT
@@ -526,7 +526,7 @@ Steps:
    curl -sL http://10.0.2.2:8000/arch-install-arm64.sh | bash
    ```
 2. The script partitions `/dev/vda`, installs, configures, clones+configures
-   RetroShell, then **reboots**. After reboot the VM autologs in as `retro` on
+   SLOPOS-I, then **reboots**. After reboot the VM autologs in as `retro` on
    tty1. In UTM, detach the ISO (or set disk first in boot order) so it boots
    from `/dev/vda`.
 
@@ -587,7 +587,7 @@ tree over SSH.
 
 Precondition:
 ```bash
-ssh -i packaging/vm/qa_key -p 2222 retro@127.0.0.1 'test -d ~/retroshell && echo ok'  # → ok
+ssh -i packaging/vm/qa_key -p 2222 retro@127.0.0.1 'test -d ~/slopos-i && echo ok'  # → ok
 ```
 
 Steps:
@@ -596,21 +596,21 @@ Steps:
    rsync -az --delete \
      --exclude target/ --exclude target-docker/ --exclude .git/ \
      -e "ssh -i packaging/vm/qa_key -p 2222" \
-     ./ retro@127.0.0.1:~/retroshell/
+     ./ retro@127.0.0.1:~/slopos-i/
    ```
 2. Build the release workspace in the VM:
    ```bash
    ssh -i packaging/vm/qa_key -p 2222 retro@127.0.0.1 \
-     'cd ~/retroshell && cargo build --release --workspace 2>&1 | tail -20'
+     'cd ~/slopos-i && cargo build --release --workspace 2>&1 | tail -20'
    ```
 
 Acceptance:
 ```bash
 ssh -i packaging/vm/qa_key -p 2222 retro@127.0.0.1 \
-  'ls -1 ~/retroshell/target/release/retro-compositor ~/retroshell/target/release/retro-shell'
+  'ls -1 ~/slopos-i/target/release/slopos-compositor ~/slopos-i/target/release/slopos-shell'
 # → both paths printed (binaries exist)
 ```
-→ expect: both `retro-compositor` and `retro-shell` release binaries exist.
+→ expect: both `slopos-compositor` and `slopos-shell` release binaries exist.
 
 DO NOT:
 - Rsync the `target/` directory (huge; and host artifacts are x86 — wrong arch).
@@ -641,12 +641,12 @@ Steps:
 Acceptance:
 ```bash
 ssh -i packaging/vm/qa_key -p 2222 retro@127.0.0.1 \
-  'ls /dev/dri/card0 && cargo build --release --workspace --manifest-path ~/retroshell/Cargo.toml >/dev/null 2>&1 && echo STAGE0-DOD-PASS'
+  'ls /dev/dri/card0 && cargo build --release --workspace --manifest-path ~/slopos-i/Cargo.toml >/dev/null 2>&1 && echo STAGE0-DOD-PASS'
 # → /dev/dri/card0
 # → STAGE0-DOD-PASS
 ```
 → expect: `card0` exists AND the workspace builds — the exact Stage 0 DoD from
-`PROGRAM.md`. Paste this transcript into `docs/qa/stage-0.md` and mark Stage 0
+`SLOPOS-I.md`. Paste this transcript into `docs/qa/stage-0.md` and mark Stage 0
 tasks VERIFIED.
 
 DO NOT:

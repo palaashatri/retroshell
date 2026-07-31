@@ -5,11 +5,11 @@
 //! `Widget::draw` stubs are intentionally unused.
 
 use crate::spotlight::{SearchResult, Spotlight};
-use retro_kit::event::{KeyCode, Modifiers};
-use retro_kit::list_view::ListView;
-use retro_kit::panel::Panel;
-use retro_kit::text_field::TextField;
-use retro_kit::{EventResult, Rect, Widget};
+use slopos_kit::event::{KeyCode, Modifiers};
+use slopos_kit::list_view::ListView;
+use slopos_kit::panel::Panel;
+use slopos_kit::text_field::TextField;
+use slopos_kit::{EventResult, Rect, Widget};
 
 /// Spotlight search UI state — owns the spotlight logic + drawable widgets.
 pub struct SpotlightUI {
