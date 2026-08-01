@@ -36,6 +36,9 @@ use slopos_kit::tree_view::{TreeNode, TreeView};
 use slopos_kit::window::{hit_test_window_chrome, Window, WindowChromeHit};
 use slopos_kit::workspace_grid_view::WorkspaceGridView;
 use slopos_kit::{Color, LayoutConstraint, MonospaceView, Point, Rect, Size, Widget};
+use slopos_render::font::{
+    ellipsize_text as render_ellipsize_text, shape_text, ShapedGlyph, TextLayout, TextLayoutOptions,
+};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -1773,108 +1776,109 @@ impl<'a> Canvas<'a> {
     }
 
     pub fn measure_text(&self, text: &str) -> f32 {
-        let scale = self.pixel_scale.max(1.0);
-        let mut width = 0.0;
-        for ch in text.chars() {
-            if ch == '\n' {
-                break;
-            }
-            if let Some(glyph) = slopos_render::rasterize_char(ch, 13.0 * scale) {
-                width += glyph.advance / scale;
-            } else {
-                width += 6.0;
-            }
-        }
-        width
+        shape_text(text, TextLayoutOptions::new(13.0, self.pixel_scale)).first_line_width()
     }
 
     /// Return text that fits the requested logical width, adding a measured
     /// ellipsis when truncation is required.
     pub fn ellipsize_text(&self, text: &str, max_width: f32) -> String {
-        if max_width <= 0.0 {
-            return String::new();
-        }
-        if self.measure_text(text) <= max_width {
-            return text.to_owned();
-        }
-        let ellipsis = "...";
-        let ellipsis_width = self.measure_text(ellipsis);
-        if ellipsis_width >= max_width {
-            return ellipsis.to_owned();
-        }
-        let mut out = String::new();
-        for ch in text.chars() {
-            let mut candidate = out.clone();
-            candidate.push(ch);
-            candidate.push_str(ellipsis);
-            if self.measure_text(&candidate) > max_width {
-                break;
-            }
-            out.push(ch);
-        }
-        out.push_str(ellipsis);
-        out
+        render_ellipsize_text(
+            text,
+            max_width,
+            TextLayoutOptions::new(13.0, self.pixel_scale),
+        )
     }
 
     pub fn text(&mut self, text: &str, x: f32, y: f32, color: [f32; 4]) {
-        let mut cursor_x = x;
-        let mut cursor_y = y;
-        for ch in text.chars() {
-            if ch == '\n' {
-                cursor_x = x;
-                cursor_y += 14.0;
-                continue;
-            }
-            cursor_x += self.glyph(ch, cursor_x, cursor_y, color);
-        }
+        let layout = shape_text(text, TextLayoutOptions::new(13.0, self.pixel_scale));
+        self.draw_text_layout(&layout, x, y, color);
     }
 
     fn glyph(&mut self, ch: char, x: f32, y: f32, color: [f32; 4]) -> f32 {
         let scale = self.pixel_scale.max(1.0);
-        if let Some(glyph) = slopos_render::rasterize_char(ch, 13.0 * scale) {
-            let baseline_y_px = y * scale + glyph.ascent;
-            let start_x_px = x * scale + glyph.bearing_x;
-            let start_y_px = baseline_y_px + glyph.bearing_y;
-            let logical_pixel = 1.0 / scale;
+        let text = ch.to_string();
+        let layout = shape_text(&text, TextLayoutOptions::new(13.0, scale));
+        let advance = layout.first_line_width();
+        self.draw_text_layout(&layout, x, y, color);
+        advance
+    }
 
-            for row in 0..glyph.height {
-                for col in 0..glyph.width {
-                    let idx = (row * glyph.width + col) as usize;
-                    let alpha = glyph.data[idx] as f32 / 255.0;
-                    if alpha > 0.05 {
-                        let mut c = color;
-                        c[3] *= alpha;
-                        self.rect(
-                            Rect::new(
-                                (start_x_px + col as f32).round() / scale,
-                                (start_y_px + row as f32).round() / scale,
-                                logical_pixel,
-                                logical_pixel,
-                            ),
-                            c,
-                        );
-                    }
+    fn draw_text_layout(&mut self, layout: &TextLayout, x: f32, y: f32, color: [f32; 4]) {
+        let scale = layout.scale();
+        for glyph in layout.glyphs() {
+            self.draw_shaped_glyph(glyph, x, y, scale, color);
+        }
+    }
+
+    fn draw_shaped_glyph(
+        &mut self,
+        glyph: &ShapedGlyph,
+        x: f32,
+        y: f32,
+        scale: f32,
+        color: [f32; 4],
+    ) {
+        let origin_x_px = (x + glyph.x) * scale;
+        let baseline_y_px = (y + glyph.baseline_y) * scale;
+        if let Some(raster) = glyph.raster() {
+            self.draw_raster_glyph(raster, origin_x_px, baseline_y_px, scale, color);
+        } else if let Some(ch) = glyph.fallback_char() {
+            self.draw_bitmap_glyph(ch, origin_x_px, baseline_y_px - 9.0 * scale, scale, color);
+        }
+    }
+
+    fn draw_raster_glyph(
+        &mut self,
+        glyph: &slopos_render::font::RasterGlyph,
+        origin_x_px: f32,
+        baseline_y_px: f32,
+        scale: f32,
+        color: [f32; 4],
+    ) {
+        let start_x_px = origin_x_px + glyph.bearing_x;
+        let start_y_px = baseline_y_px + glyph.bearing_y;
+        let logical_pixel = 1.0 / scale;
+
+        for row in 0..glyph.height {
+            for col in 0..glyph.width {
+                let idx = (row * glyph.width + col) as usize;
+                let Some(&coverage) = glyph.data.get(idx) else {
+                    continue;
+                };
+                let alpha = coverage as f32 / 255.0;
+                if alpha > 0.05 {
+                    let mut c = color;
+                    c[3] *= alpha;
+                    self.rect(
+                        Rect::new(
+                            (start_x_px + col as f32).round() / scale,
+                            (start_y_px + row as f32).round() / scale,
+                            logical_pixel,
+                            logical_pixel,
+                        ),
+                        c,
+                    );
                 }
             }
-            glyph.advance / scale
-        } else {
-            let logical_pixel = 1.0 / scale;
-            for (row, bits) in glyph_pattern(ch).iter().enumerate() {
-                for col in 0..5 {
-                    if bits & (1 << (4 - col)) != 0 {
-                        self.rect(
-                            Rect::new(
-                                (x * scale + col as f32).round() / scale,
-                                (y * scale + row as f32).round() / scale,
-                                logical_pixel,
-                                logical_pixel,
-                            ),
-                            color,
-                        );
-                    }
+        }
+    }
+
+    fn draw_bitmap_glyph(&mut self, ch: char, x_px: f32, y_px: f32, scale: f32, color: [f32; 4]) {
+        let logical_pixel = 1.0 / scale;
+        for (row, bits) in glyph_pattern(ch).iter().enumerate() {
+            for col in 0..5 {
+                if bits & (1 << (4 - col)) != 0 {
+                    self.rect(
+                        Rect::new(
+                            (x_px + col as f32).round() / scale,
+                            (y_px + row as f32).round() / scale,
+                            logical_pixel,
+                            logical_pixel,
+                        ),
+                        color,
+                    );
                 }
             }
-            7.0
         }
     }
 
@@ -4432,8 +4436,9 @@ fn distance_squared(a: Point, b: Point) -> f32 {
 mod tests {
     use super::{
         format_clock_from_seconds, is_application_menu_action, parse_theme_preference,
-        publish_bytes_atomically, theme_accents, ApplicationMenuAction,
+        publish_bytes_atomically, theme_accents, ApplicationMenuAction, Canvas,
     };
+    use slopos_render::font::{shape_text, TextLayoutOptions};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -4534,5 +4539,38 @@ mod tests {
         );
 
         fs::remove_dir_all(directory).expect("remove manifest test directory");
+    }
+
+    #[test]
+    fn canvas_measurement_uses_the_shared_shaped_layout() {
+        let canvas = Canvas::new(320.0, 100.0);
+        let text = "Aé e\u{301} fi 日本語";
+        let expected =
+            shape_text(text, TextLayoutOptions::new(13.0, canvas.pixel_scale())).first_line_width();
+
+        assert!(
+            (canvas.measure_text(text) - expected).abs() < 0.01,
+            "Canvas measurement {} differs from shaped width {}",
+            canvas.measure_text(text),
+            expected
+        );
+    }
+
+    #[test]
+    fn canvas_text_draws_the_cached_shaped_raster_glyphs() {
+        let text = "fi";
+        let layout = shape_text(text, TextLayoutOptions::new(13.0, 1.0));
+        let expected_pixels = layout
+            .glyphs()
+            .iter()
+            .filter_map(|glyph| glyph.raster())
+            .flat_map(|glyph| glyph.data.iter())
+            .filter(|coverage| **coverage as f32 / 255.0 > 0.05)
+            .count();
+        let mut canvas = Canvas::new(320.0, 100.0);
+
+        canvas.text(text, 10.0, 10.0, [0.0, 0.0, 0.0, 1.0]);
+
+        assert_eq!(canvas.vertices.len(), expected_pixels * 6);
     }
 }
