@@ -704,12 +704,8 @@ fn wait_for_private_socket(
 
         if let Some(readiness_value) = read_private_file(&readiness)? {
             if let Some(client_display_value) = read_private_file(&client_display)? {
-                match validate_readiness(
-                    &readiness_value,
-                    child.id(),
-                    token,
-                    &client_display_value,
-                ) {
+                match validate_readiness(&readiness_value, child.id(), token, &client_display_value)
+                {
                     Ok(private_display) => {
                         let socket_path = runtime.join(&private_display.socket_name);
                         match fs::symlink_metadata(&socket_path) {
@@ -1116,10 +1112,7 @@ mod tests {
 
     #[test]
     fn dropping_an_unowned_runtime_path_does_not_remove_it() {
-        let path = env::temp_dir().join(format!(
-            "slopos-session-unowned-{}",
-            session_nonce()
-        ));
+        let path = env::temp_dir().join(format!("slopos-session-unowned-{}", session_nonce()));
         fs::create_dir(&path).unwrap();
         fs::write(path.join("keep"), b"not ours").unwrap();
 
