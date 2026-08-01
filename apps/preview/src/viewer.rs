@@ -13,18 +13,25 @@ use slopos_vision_protocol::{
     LiftSubjectOptions, PixelSize, SubmitJobRequest, VisionJob, VisionResult, MAX_FILE_STEM_LEN,
 };
 use std::ffi::OsString;
-use std::fs;
-use std::io::Cursor;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Cursor, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_ENCODED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SOURCE_PIXELS: u64 = 40_000_000;
+const MAX_EXTRACTED_TEXT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_OUTPUT_COLLISION_ATTEMPTS: usize = 32;
+const MAX_ARTIFACT_STEM_BYTES: usize = 96;
 const THUMBNAIL_MAX_WIDTH: u32 = 96;
 const THUMBNAIL_MAX_HEIGHT: u32 = 64;
 const MIN_ZOOM: f32 = 0.01;
 const MAX_ZOOM: f32 = 8.0;
 const SCROLLBAR_WIDTH: f32 = 12.0;
+
+static ARTIFACT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ZoomMode {
@@ -630,13 +637,26 @@ impl PreviewView {
             return;
         }
 
+        let source_path = self.image_canvas_image().map(|image| image.path.clone());
         match (action, job.result) {
             (VisionAction::ExtractText, Some(VisionResult::ExtractText(result))) => {
-                self.set_status(format!(
-                    "Extract Text completed: {} characters across {} lines.",
-                    result.full_text.chars().count(),
-                    result.lines.len()
-                ));
+                let Some(source_path) = source_path.as_deref() else {
+                    self.set_status(
+                        "Extract Text completed but no source image is loaded; no output produced.",
+                    );
+                    return;
+                };
+                match persist_extracted_text(source_path, &result.full_text) {
+                    Ok(path) => self.set_status(format!(
+                        "Extract Text completed: {} characters across {} lines. Saved to {}.",
+                        result.full_text.chars().count(),
+                        result.lines.len(),
+                        path.display()
+                    )),
+                    Err(error) => self.set_status(format!(
+                        "Extract Text completed but its output could not be saved: {error}; no output produced."
+                    )),
+                }
             }
             (VisionAction::LiftSubject, Some(VisionResult::LiftSubject(result))) => {
                 if result.cutout.role != ArtifactRole::LiftedSubject {
@@ -645,14 +665,22 @@ impl PreviewView {
                     );
                     return;
                 }
+                let Some(source_path) = source_path.as_deref() else {
+                    self.set_status(
+                        "Lift Subject completed but no source image is loaded; no output produced.",
+                    );
+                    return;
+                };
                 match client.get_asset(result.cutout.image.asset_id.clone()) {
-                    Ok(asset) => match validate_asset_response(&asset) {
-                        Ok(()) => self.set_status(format!(
-                            "Lift Subject completed: received {} bytes in memory; no file was written.",
-                            asset.bytes.len()
+                    Ok(asset) => match persist_lifted_subject(source_path, &asset) {
+                        Ok((path, dimensions)) => self.set_status(format!(
+                            "Lift Subject completed: {} x {} PNG saved to {}.",
+                            dimensions.width,
+                            dimensions.height,
+                            path.display()
                         )),
                         Err(error) => self.set_status(format!(
-                            "Lift Subject returned an invalid asset: {error}; no output produced."
+                            "Lift Subject returned an invalid or unsaved asset: {error}; no output produced."
                         )),
                     },
                     Err(error) => self.set_status(format!(
@@ -1040,23 +1068,229 @@ fn safe_file_label(path: &Path) -> Option<FileLabel> {
     label.validate().ok().map(|_| label)
 }
 
-fn validate_asset_response(asset: &AssetDataResponse) -> Result<(), String> {
+fn safe_artifact_stem(source: &Path) -> String {
+    let raw = source
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "image".to_string());
+    let mut stem = String::new();
+    for character in raw.chars() {
+        let safe_character = if character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+        {
+            character
+        } else {
+            '_'
+        };
+        if stem.len() + safe_character.len_utf8() > MAX_ARTIFACT_STEM_BYTES {
+            break;
+        }
+        stem.push(safe_character);
+    }
+    if stem.is_empty() {
+        "image".to_string()
+    } else {
+        stem
+    }
+}
+
+fn preview_output_root_from_base(base: &Path) -> Result<PathBuf, String> {
+    if !base.is_absolute() {
+        return Err("Preview output base must be an absolute path".to_string());
+    }
+    Ok(base.join("slopos-i").join("preview").join("vision"))
+}
+
+fn preview_output_root() -> Result<PathBuf, String> {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .or_else(|| std::env::var_os("XDG_CACHE_HOME"))
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join(".local/share").into_os_string())
+        })
+        .ok_or_else(|| "no XDG data/cache base is available for Preview output".to_string())?;
+    preview_output_root_from_base(Path::new(&base))
+}
+
+fn validate_artifact_component(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(format!("invalid artifact {label}"));
+    }
+    Ok(())
+}
+
+fn artifact_file_name(
+    source: &Path,
+    kind: &str,
+    extension: &str,
+    nonce: &str,
+) -> Result<String, String> {
+    validate_artifact_component(kind, "kind")?;
+    validate_artifact_component(extension, "extension")?;
+    validate_artifact_component(nonce, "nonce")?;
+
+    let file_name = format!(
+        "{}-vision-{kind}-{nonce}.{extension}",
+        safe_artifact_stem(source)
+    );
+    if Path::new(&file_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some(file_name.as_str())
+    {
+        return Err("artifact name must remain a single path component".to_string());
+    }
+    Ok(file_name)
+}
+
+fn next_artifact_nonce() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = ARTIFACT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{timestamp}-{sequence}", std::process::id())
+}
+
+fn ensure_output_dir(root: &Path) -> Result<(), String> {
+    if !root.is_absolute() {
+        return Err("Preview output directory must be absolute".to_string());
+    }
+    fs::create_dir_all(root)
+        .map_err(|error| format!("cannot create Preview output directory: {error}"))?;
+    let metadata = fs::symlink_metadata(root)
+        .map_err(|error| format!("cannot inspect Preview output directory: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("Preview output directory is not an owned regular directory".to_string());
+    }
+    Ok(())
+}
+
+fn atomic_write_bytes_at(
+    root: &Path,
+    source: &Path,
+    kind: &str,
+    extension: &str,
+    bytes: &[u8],
+    max_bytes: u64,
+) -> Result<PathBuf, String> {
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!(
+            "artifact is too large ({} bytes; limit is {} bytes)",
+            bytes.len(),
+            max_bytes
+        ));
+    }
+    ensure_output_dir(root)?;
+
+    for _ in 0..MAX_OUTPUT_COLLISION_ATTEMPTS {
+        let nonce = next_artifact_nonce();
+        let file_name = artifact_file_name(source, kind, extension, &nonce)?;
+        let destination = root.join(&file_name);
+        let temporary = root.join(format!(".{file_name}.tmp"));
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!("cannot create atomic Preview output: {error}"));
+            }
+        };
+
+        let write_result = file.write_all(bytes).and_then(|()| file.sync_all());
+        drop(file);
+        if let Err(error) = write_result {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("cannot flush atomic Preview output: {error}"));
+        }
+
+        // Linking a complete, synced temporary file creates the final name
+        // atomically without replacing an existing artifact on collision.
+        match fs::hard_link(&temporary, &destination) {
+            Ok(()) => {
+                let _ = fs::remove_file(&temporary);
+                return Ok(destination);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&temporary);
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temporary);
+                return Err(format!("cannot commit atomic Preview output: {error}"));
+            }
+        }
+    }
+
+    Err("could not allocate a collision-free Preview output name".to_string())
+}
+
+fn persist_extracted_text_at(root: &Path, source: &Path, text: &str) -> Result<PathBuf, String> {
+    atomic_write_bytes_at(
+        root,
+        source,
+        "text",
+        "txt",
+        text.as_bytes(),
+        MAX_EXTRACTED_TEXT_BYTES as u64,
+    )
+}
+
+fn persist_extracted_text(source: &Path, text: &str) -> Result<PathBuf, String> {
+    let root = preview_output_root()?;
+    persist_extracted_text_at(&root, source, text)
+}
+
+fn persist_lifted_subject_at(
+    root: &Path,
+    source: &Path,
+    asset: &AssetDataResponse,
+) -> Result<(PathBuf, PixelSize), String> {
+    let dimensions = validate_asset_response(asset)?;
+    let path = atomic_write_bytes_at(
+        root,
+        source,
+        "subject",
+        "png",
+        &asset.bytes,
+        MAX_OUTPUT_BYTES,
+    )?;
+    Ok((path, dimensions))
+}
+
+fn persist_lifted_subject(
+    source: &Path,
+    asset: &AssetDataResponse,
+) -> Result<(PathBuf, PixelSize), String> {
+    let root = preview_output_root()?;
+    persist_lifted_subject_at(&root, source, asset)
+}
+
+fn validate_asset_response(asset: &AssetDataResponse) -> Result<PixelSize, String> {
     asset
         .asset
-        .validate(MAX_ENCODED_BYTES, MAX_SOURCE_PIXELS)
+        .validate(MAX_OUTPUT_BYTES, MAX_SOURCE_PIXELS)
         .map_err(|error| format!("asset metadata validation failed: {error:?}"))?;
     if asset.bytes.len() as u64 != asset.asset.metadata.encoded_bytes {
         return Err("asset byte count does not match its metadata".to_string());
+    }
+    if asset.asset.metadata.media_type != ImageMediaType::Png {
+        return Err("lifted-subject asset is not declared as PNG".to_string());
     }
     let (decoded, media_type) = decode_encoded_image_limited(&asset.bytes)?;
     let dimensions = asset.asset.metadata.dimensions;
     if decoded.width() != dimensions.width || decoded.height() != dimensions.height {
         return Err("asset dimensions do not match its metadata".to_string());
     }
-    if media_type != Some(asset.asset.metadata.media_type) {
+    if media_type != Some(ImageMediaType::Png) {
         return Err("asset format does not match its metadata".to_string());
     }
-    Ok(())
+    Ok(dimensions)
 }
 
 #[cfg(test)]
@@ -1064,6 +1298,7 @@ mod tests {
     use super::*;
     use image::codecs::png::PngEncoder;
     use image::ImageEncoder;
+    use slopos_vision_protocol::{AssetId, StoredImage};
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {
         let image = image::RgbaImage::from_pixel(width, height, image::Rgba([10, 20, 30, 255]));
@@ -1125,5 +1360,99 @@ mod tests {
             (image.pixel_width * image.pixel_height) as usize
         );
         assert_eq!(image.path, path);
+    }
+
+    #[test]
+    fn preview_output_names_are_flat_and_rooted() {
+        let source = Path::new("../../unsafe name/subject?.png");
+        let file_name = artifact_file_name(source, "text", "txt", "nonce_1").unwrap();
+        assert_eq!(file_name, "subject_-vision-text-nonce_1.txt");
+        assert!(!file_name.contains(".."));
+        assert!(!file_name.contains('/'));
+
+        let root = Path::new("/tmp/slopos-preview-output");
+        let output = root.join(&file_name);
+        assert_eq!(output.parent(), Some(root));
+        assert!(artifact_file_name(source, "../escape", "txt", "nonce").is_err());
+        assert!(preview_output_root_from_base(Path::new("relative")).is_err());
+        assert_eq!(
+            preview_output_root_from_base(root).unwrap(),
+            root.join("slopos-i/preview/vision")
+        );
+    }
+
+    #[test]
+    fn atomic_output_is_bounded_collision_free_and_complete() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = Path::new("photo.png");
+        let first =
+            atomic_write_bytes_at(directory.path(), source, "text", "txt", b"first", 64).unwrap();
+        let second =
+            atomic_write_bytes_at(directory.path(), source, "text", "txt", b"second", 64).unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(fs::read(&first).unwrap(), b"first");
+        assert_eq!(fs::read(&second).unwrap(), b"second");
+        assert!(fs::read_dir(directory.path()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with('.')));
+        assert!(
+            atomic_write_bytes_at(directory.path(), source, "text", "txt", &[0; 65], 64,)
+                .unwrap_err()
+                .contains("too large")
+        );
+    }
+
+    #[test]
+    fn lifted_subject_validates_png_metadata_and_dimensions_before_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let bytes = png_bytes(4, 3);
+        let asset = AssetDataResponse {
+            asset: StoredImage {
+                asset_id: AssetId("asset-test".to_string()),
+                metadata: ImageMetadata {
+                    media_type: ImageMediaType::Png,
+                    encoded_bytes: bytes.len() as u64,
+                    dimensions: PixelSize {
+                        width: 4,
+                        height: 3,
+                    },
+                    sha256: None,
+                    label: None,
+                },
+            },
+            bytes,
+        };
+
+        let (path, dimensions) =
+            persist_lifted_subject_at(directory.path(), Path::new("subject.png"), &asset).unwrap();
+        assert_eq!(
+            dimensions,
+            PixelSize {
+                width: 4,
+                height: 3
+            }
+        );
+        assert_eq!(fs::read(path).unwrap(), asset.bytes);
+
+        let mut invalid = asset.clone();
+        invalid.asset.metadata.dimensions = PixelSize {
+            width: 8,
+            height: 3,
+        };
+        assert!(
+            persist_lifted_subject_at(directory.path(), Path::new("subject.png"), &invalid)
+                .unwrap_err()
+                .contains("dimensions")
+        );
+
+        invalid.asset.metadata.media_type = ImageMediaType::Jpeg;
+        assert!(
+            persist_lifted_subject_at(directory.path(), Path::new("subject.png"), &invalid)
+                .unwrap_err()
+                .contains("PNG")
+        );
     }
 }

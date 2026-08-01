@@ -6,8 +6,8 @@ the next acceptance gate. Product requirements live in `AGENTS.md`.
 
 **Original snapshot audited:** `retroshell(2).zip`
 **Original archive Git HEAD:** `5ed6f74f700ead25ccfbd4a9c81ef3226ae73203`
-**Current Git HEAD:** `afef105d2b2dd0c45bc269a16930ad04d3185b56` on `docs/program-design`
-**Current working tree:** uncommitted compositor/session/shell architecture fix
+**Current Git HEAD:** r16 evidence commit on `docs/program-design` (resolve the exact hash with `git log -1`)
+**Current working tree:** clean after the r16 Spaces, font-discovery, Preview-output, and QA-evidence commit
 **Audit date:** 2026-08-01  
 **Audit type:** source review plus Ubuntu Server VM build/test/runtime verification and UTM visual QA.
 
@@ -92,7 +92,7 @@ Largest current blockers:
 
 | Component | Status | Evidence and current truth |
 |---|---|---|
-| Workspace/build | **BUILD VERIFIED, TEST VERIFIED (scoped)** | The UTM r15 guest built and tested the compositor/session targets and focused packages. Current-source focused Vision/Preview checks, 26 package tests, 63 Vision-core tests, and targeted Clippy passed on the host. A current full-workspace check/test result is not available; an earlier broad guest attempt hit `No space left on device`. |
+| Workspace/build | **BUILD VERIFIED, TEST VERIFIED** | Fresh current-source host verification for the r16 slice ran `cargo check --workspace --all-targets` with 0 errors, `cargo test --workspace` with 834 passed across 37 suites, and all-features Clippy with 0 errors. `cargo deny` is unavailable (`no such command: deny`). |
 | `slopos-session` | **RUNTIME OBSERVED** | DRM session published a per-session runtime directory, readiness token, actual `1280x800` output dimensions, and private client socket; exact session termination removed its runtime directory and left no SLOPOS processes. |
 | Private socket routing | **RUNTIME OBSERVED** | Compositor owned private `wayland-1`; shell and first-party clients were launched from readiness-provided private runtime variables. The artifact records the socket inode/owner and process tree. |
 | Visible cursor | **RUNTIME OBSERVED** | UTM captures show a visible cursor over application content. |
@@ -104,20 +104,20 @@ Largest current blockers:
 | XDG popups | **SOURCE PRESENT, partial runtime** | Popup handling and shell popup overlay paths are present; the QA compositor mapped the popup overlay layer. Full third-party popup grabs/repositioning remain unverified. |
 | Layer shell | **RUNTIME OBSERVED** | DRM logs show compositor-owned desktop background, full-width menu, Dock, and overlay surfaces; the output was `1280x800` and the UTM canvas had no surrounding shell window. |
 | XWayland | **SOURCE PRESENT, TEST VERIFIED; runtime unverified** | The nested XWayland move/resize bridge and Linux edge-mapping regression test exist; no real X11 client exercised the bridge in UTM. |
-| SLOPOS Spaces | **SOURCE PRESENT, prototype** | Fixed `WORKSPACE_COUNT = 8`, switch/filter mapping. No dynamic model, overview, names, assignment, fullscreen Spaces, gestures or Settings. |
+| SLOPOS Spaces | **BUILD VERIFIED, TEST VERIFIED, model expanded** | The model now persists per-Space output metadata, supports shared-span versus independent-per-display policy, deterministic output restore/migration, and safe removal fallback. Shell/compositor overview UI, gestures, fullscreen Space policy, and live Settings integration remain open. |
 | Renderer | **SOURCE PRESENT, immature** | wgpu/immediate drawing exists. Text still expands glyph coverage into many rectangles; expensive and not shaped. |
 | Text platform | **PLANNED** | No end-to-end shaping, bidi, fallback, glyph atlas, IME or production selection geometry in the visible SDK path. |
-| `slopos-fonts` | **SOURCE PRESENT, disconnected** | Profiles/discovery structures exist. No consumers; discovery is non-recursive; no font database/installation/Settings/render integration. |
+| `slopos-fonts` | **BUILD VERIFIED, TEST VERIFIED, disconnected** | Discovery now recursively walks regular directories, preserves search-root precedence, skips symlinked files/directories, and canonical-path deduplicates overlapping roots. Font metadata, installation, role resolution, renderer integration and Settings remain open. |
 | Shell | **RUNTIME OBSERVED** | Shell painted only shell chrome/overlays; no production fake Finder window was started. Global menu content followed the focused real client. |
 | Finder | **RUNTIME OBSERVED** | `SLOPOS_START_APP=finder` launched the real Finder client; the UTM capture shows the Finder window on the compositor-owned desktop. |
 | Settings | **RUNTIME OBSERVED, partial** | Settings rendered as a separate client in the multi-window UTM capture; live font, Spaces, zoom-policy, and complete display/color controls remain incomplete. |
 | TextEdit | **RUNTIME OBSERVED, partial** | A separate TextEdit client was visible in the multi-window UTM capture; production text/editing/save/recovery remains incomplete. |
 | Terminal | **RUNTIME OBSERVED, partial** | A separate Terminal client rendered and took focus in UTM; PTY, resize, Unicode, selection and lifecycle still need dedicated QA. |
 | App Store | **RUNTIME OBSERVED, prototype** | A separate App Store client was visible in UTM; update/remove/confirm/signing/trust/atomic replacement remain incomplete. |
-| Preview | **BUILD VERIFIED, TEST VERIFIED; RUNTIME OBSERVED, partial** | Current-source Preview check and 6 tests pass. The r14 guest snapshot started Preview and dispatched Extract Text, but no successful model output, save/clipboard result, or complete overlay flow was observed; r14 runtime provenance is older than the current viewer source. |
+| Preview | **BUILD VERIFIED, TEST VERIFIED; RUNTIME OBSERVED, partial** | Current-source Preview is covered by the fresh workspace run and now bounds/sanitizes atomic Vision output persistence under SLOPOS-owned XDG storage. The r16 UTM Preview action was accepted through the exact app-control socket and visibly remained `Running`; no successful model output or saved artifact was observed. |
 | Vision core | **BUILD VERIFIED, substantial V1** | Real PP-OCRv4/U2Netp inference path, decoding, mask processing and hashing compiled in the workspace; model inference output was not exercised in this QA run. |
 | Vision protocol/client | **BUILD VERIFIED, TEST VERIFIED** | Current-source focused check and Clippy pass; protocol 8 tests and client 9 tests pass. The typed local-only job/asset/error path is source-backed, but no successful model job was observed through the daemon in this run. |
-| `slopos-visiond` | **BUILD VERIFIED, TEST VERIFIED; RUNTIME OBSERVED, startup only** | Current-source daemon check, Clippy, and 3 tests pass. The r15 guest session launched a session-scoped daemon process, but the guest snapshot did not produce successful OCR/segmentation output. |
+| `slopos-visiond` | **BUILD VERIFIED, TEST VERIFIED; RUNTIME OBSERVED, startup and active job** | Current-source daemon check, Clippy, and 3 tests pass. The r16 guest launched a session-scoped daemon, loaded the OCR engine, and kept the small Preview job active; the runtime `vision-artifacts` directory remained empty, so successful inference is not claimed. |
 | Finder/Preview Vision UX | **SOURCE PRESENT, partial** | Preview contains native Vision request/result paths, but Finder context integration, successful inference display, clipboard/save output, packaged model import, and complete UX remain open. |
 | Packaging | **SOURCE PRESENT, unverified** | Arch, Debian, session and ISO artifacts exist; clean install/login/ISO boot are not verified for current HEAD. |
 | HDR/VRR | **PLANNED / hooks only** | No current physical-hardware evidence. Do not advertise as working. |
@@ -733,7 +733,8 @@ explicit DRM backend, `Virtual-1` at `1280x800`, seatd, and llvmpipe/virgl.
 The guest runtime source tree was `/home/ubuntu/qa/2026-08-01-vision-session-r14`.
 Its session/compositor snapshot predates the current `slopos-visiond` and
 Preview viewer hashes, so the current-source Vision checks below are distinct
-from the guest runtime claims. The working tree remains uncommitted.
+from the guest runtime claims. The r15 source snapshot was recorded before the
+r16 integration; current working-tree status is recorded in section 18.
 
 Current-source commands and raw evidence:
 `artifacts/qa/2026-08-01-utm-pointer-r15/evidence/` contains
@@ -796,3 +797,63 @@ workspace verification, real Vision inference, model-pack import, Finder
 Vision integration, production text/fonts, dynamic Spaces, and later P2–P10
 requirements remain open. SLOPOS-I remains experimental/developing rather than
 a complete daily-driver desktop.
+
+## 18. 2026-08-01 — current-source P2/P4/P9 slice and fresh UTM r16 Preview QA
+
+Environment: current host source checks used macOS with Rust 1.97.1 / Cargo
+1.97.1. Runtime QA used an Ubuntu 26.04 aarch64 UTM guest with the explicit DRM
+backend, `Virtual-1` at `1280x800`, and llvmpipe. The guest source snapshot was
+`/home/ubuntu/qa/2026-08-01-luna-max-r16`; its hashes matched the host for the
+three edited source files and `Cargo.lock` before runtime launch.
+
+Source changes in this slice:
+
+- `slopos-fonts` now recursively discovers regular font files, keeps search
+  root ordering, skips symlinked files/directories, and deduplicates overlapping
+  roots by canonical path.
+- `SpacesModel` now retains stable output assignment metadata, validates output
+  identifiers, models shared-span versus independent-per-display policy, and
+  provides deterministic restore, migration, and removal fallback APIs.
+- Preview bounds and sanitizes Vision text/PNG persistence beneath an absolute
+  SLOPOS-owned XDG data/cache directory, uses collision-free atomic writes, and
+  validates encoded size, PNG metadata, dimensions, and media type before save.
+
+Raw current-source evidence is under
+`artifacts/qa/2026-08-01-luna-max-r16/evidence/`: host check, test, format,
+Clippy, syntax, diff, environment, and cargo-deny logs; guest Preview/session
+logs; process tree; private-runtime file listing; Vision-artifact listing; and
+shutdown record. Fresh UTM captures are
+`utm-desktop-initial-r16.png`, `utm-preview-open-r16.png`,
+`utm-preview-vision-running-r16.png`, and
+`utm-preview-vision-small-input-r16.png`; the last capture was visually
+inspected from disk and shows the real Preview window, desktop menu/Dock, and
+the visible `Extract Text submitted (Running); no output is available yet.`
+status.
+
+Result: **BUILD VERIFIED**, **TEST VERIFIED**, and **RUNTIME OBSERVED** for the
+scoped claims below.
+
+- Fresh host `cargo check --workspace --all-targets` completed with 0 errors;
+  `cargo test --workspace` reported 834 passed across 37 suites; and
+  all-features Clippy reported 0 errors. `cargo deny` was attempted and is not
+  installed in the host environment.
+- The DRM session published a unique readiness-bound private `wayland-1` and
+  launched session, compositor, shell, Vision daemon, and Preview processes.
+  The process/runtime evidence records the exact session directory and socket;
+  the session was terminated with SIGTERM and the post-run check reports
+  `runtime_exists=no` with no matching SLOPOS/Preview process.
+- The namespaced `com.slopos.preview.vision.extract_text` request was sent
+  through the exact Preview app-control socket. Preview visibly accepted it as
+  `Running`, the Vision daemon log recorded `OCR engine loaded`, and no file
+  appeared in the session `vision-artifacts` directory during the observation.
+  Successful OCR inference, saved text, clipboard output, and lifted-subject
+  output are therefore not claimed.
+
+Known limitations: UTM input capture stayed enabled and the Computer Use
+service could not synthesize the modifier-only release chord, so pointer-driven
+move/resize, popup grabs/repositioning, and Dock-click behavior remain
+unverified. Mesa/DRI warnings were present in the guest logs but the explicit
+DRM/llvmpipe session rendered the fresh captures. This run does not elevate
+SLOPOS-I beyond an experimental/developing desktop or prove physical hardware,
+true fractional rasterization, production text/font integration, dynamic
+Spaces UI, or complete Vision inference.

@@ -80,6 +80,9 @@ pub enum SpacesError {
     InvalidWindowId(String),
     DuplicateWindowId(String),
     InvalidMetadata { field: &'static str, value: String },
+    InvalidOutputId(String),
+    OutputAssignmentNotAllowedInSharedSpan { space: SpaceId, output_id: String },
+    OutputMigrationToSameOutput(String),
     SpaceIdExhausted,
     InvalidPath(PathBuf),
     Io { path: PathBuf, source: io::Error },
@@ -121,6 +124,15 @@ impl fmt::Display for SpacesError {
             Self::InvalidMetadata { field, value } => {
                 write!(formatter, "invalid {field} value {value:?}")
             }
+            Self::InvalidOutputId(id) => write!(formatter, "invalid output ID {id:?}"),
+            Self::OutputAssignmentNotAllowedInSharedSpan { space, output_id } => write!(
+                formatter,
+                "Space {space} cannot be assigned to output {output_id:?} in shared-span mode"
+            ),
+            Self::OutputMigrationToSameOutput(output_id) => write!(
+                formatter,
+                "output migration source and destination are both {output_id:?}"
+            ),
             Self::SpaceIdExhausted => write!(formatter, "no stable Space IDs remain"),
             Self::InvalidPath(path) => {
                 write!(formatter, "path has no file name: {}", path.display())
@@ -155,6 +167,8 @@ pub struct Space {
     wallpaper: Option<String>,
     appearance: Option<String>,
     classification: FullscreenClassification,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_id: Option<String>,
     windows: Vec<String>,
 }
 
@@ -166,6 +180,7 @@ impl Space {
             wallpaper: None,
             appearance: None,
             classification: FullscreenClassification::Normal,
+            output_id: None,
             windows: Vec::new(),
         };
         space.validate()?;
@@ -192,6 +207,18 @@ impl Space {
         self.classification
     }
 
+    /// Return the stable compositor output identifier assigned to this Space.
+    /// The identifier is metadata only; geometry and output capabilities remain
+    /// authoritative in the compositor.
+    pub fn output_id(&self) -> Option<&str> {
+        self.output_id.as_deref()
+    }
+
+    /// Display terminology alias for [`Self::output_id`].
+    pub fn display_id(&self) -> Option<&str> {
+        self.output_id()
+    }
+
     pub fn windows(&self) -> &[String] {
         &self.windows
     }
@@ -203,6 +230,9 @@ impl Space {
         validate_space_name(&self.name)?;
         validate_metadata("wallpaper", self.wallpaper.as_deref())?;
         validate_metadata("appearance", self.appearance.as_deref())?;
+        if let Some(output_id) = self.output_id.as_deref() {
+            validate_output_id(output_id)?;
+        }
 
         let mut seen = BTreeSet::new();
         for window in &self.windows {
@@ -226,6 +256,8 @@ struct RawSpace {
     #[serde(default)]
     classification: FullscreenClassification,
     #[serde(default)]
+    output_id: Option<String>,
+    #[serde(default)]
     windows: Vec<String>,
 }
 
@@ -240,6 +272,7 @@ impl TryFrom<RawSpace> for Space {
             wallpaper: raw.wallpaper,
             appearance: raw.appearance,
             classification: raw.classification,
+            output_id: raw.output_id,
             windows: raw.windows,
         };
         space.validate()?;
@@ -316,7 +349,212 @@ impl SpacesModel {
     }
 
     pub fn set_multi_monitor_policy(&mut self, policy: MultiMonitorPolicy) {
+        if policy == MultiMonitorPolicy::SharedSpan {
+            // Display partitioning has no meaning in shared-span mode. Clear
+            // only the assignment metadata while preserving Space IDs, order,
+            // windows, and presentation metadata for a stable state model.
+            for space in &mut self.spaces {
+                space.output_id = None;
+            }
+        }
         self.multi_monitor_policy = policy;
+    }
+
+    /// Return the output assignment for a Space, if that Space exists and has
+    /// an assignment.
+    pub fn output_for_space(&self, id: SpaceId) -> Option<&str> {
+        self.space(id).and_then(Space::output_id)
+    }
+
+    /// Display terminology alias for [`Self::output_for_space`].
+    pub fn display_for_space(&self, id: SpaceId) -> Option<&str> {
+        self.output_for_space(id)
+    }
+
+    /// Set or clear a Space's output assignment.
+    ///
+    /// Shared-span mode intentionally rejects a concrete assignment: all
+    /// outputs observe the one ordered Space set. Switching into shared-span
+    /// mode through [`Self::set_multi_monitor_policy`] clears existing
+    /// assignments safely.
+    pub fn set_space_output(
+        &mut self,
+        id: SpaceId,
+        output_id: Option<String>,
+    ) -> Result<(), SpacesError> {
+        self.space(id).ok_or(SpacesError::SpaceNotFound(id))?;
+        if let Some(output_id) = output_id.as_deref() {
+            validate_output_id(output_id)?;
+            if self.multi_monitor_policy == MultiMonitorPolicy::SharedSpan {
+                return Err(SpacesError::OutputAssignmentNotAllowedInSharedSpan {
+                    space: id,
+                    output_id: output_id.to_owned(),
+                });
+            }
+        }
+        self.space_mut(id)?.output_id = output_id;
+        Ok(())
+    }
+
+    /// Assign a Space to one output in independent-per-display mode.
+    pub fn assign_space_to_output(
+        &mut self,
+        id: SpaceId,
+        output_id: impl Into<String>,
+    ) -> Result<(), SpacesError> {
+        self.set_space_output(id, Some(output_id.into()))
+    }
+
+    /// Display terminology alias for [`Self::assign_space_to_output`].
+    pub fn assign_space_to_display(
+        &mut self,
+        id: SpaceId,
+        display_id: impl Into<String>,
+    ) -> Result<(), SpacesError> {
+        self.assign_space_to_output(id, display_id)
+    }
+
+    /// Clear a Space's output assignment without changing its identity or
+    /// ordering. This is the safe destination for a disconnected output.
+    pub fn clear_space_output(&mut self, id: SpaceId) -> Result<(), SpacesError> {
+        self.set_space_output(id, None)
+    }
+
+    /// Display terminology alias for [`Self::clear_space_output`].
+    pub fn clear_space_display(&mut self, id: SpaceId) -> Result<(), SpacesError> {
+        self.clear_space_output(id)
+    }
+
+    /// Return Spaces visible on an output under the active policy.
+    ///
+    /// Shared-span mode returns the complete ordered set. Independent mode
+    /// returns only Spaces explicitly assigned to `output_id`; unassigned
+    /// Spaces are retained for deterministic restore fallback.
+    pub fn spaces_for_output(&self, output_id: &str) -> Result<Vec<SpaceId>, SpacesError> {
+        validate_output_id(output_id)?;
+        if self.multi_monitor_policy == MultiMonitorPolicy::SharedSpan {
+            return Ok(self.space_ids());
+        }
+        Ok(self
+            .spaces
+            .iter()
+            .filter(|space| space.output_id.as_deref() == Some(output_id))
+            .map(Space::id)
+            .collect())
+    }
+
+    /// Display terminology alias for [`Self::spaces_for_output`].
+    pub fn spaces_for_display(&self, display_id: &str) -> Result<Vec<SpaceId>, SpacesError> {
+        self.spaces_for_output(display_id)
+    }
+
+    /// Select a stable Space when restoring a display layout.
+    ///
+    /// In shared-span mode, an existing preferred Space wins and the active
+    /// Space is the fallback. In independent mode, a preferred Space already
+    /// assigned to the requested output (or still unassigned after a display
+    /// change) wins; then the first assigned Space, the first unassigned Space,
+    /// and finally the active Space are considered. The method selects state;
+    /// it does not alter compositor geometry or claim an output.
+    pub fn restore_space_for_output(
+        &self,
+        output_id: Option<&str>,
+        preferred: Option<SpaceId>,
+    ) -> Result<SpaceId, SpacesError> {
+        if let Some(output_id) = output_id {
+            validate_output_id(output_id)?;
+        }
+
+        let preferred = preferred.filter(|id| self.space(*id).is_some());
+        if self.multi_monitor_policy == MultiMonitorPolicy::SharedSpan {
+            return Ok(preferred.unwrap_or(self.active_space));
+        }
+
+        if let Some(output_id) = output_id {
+            if let Some(id) = preferred {
+                let matches_output = self
+                    .space(id)
+                    .map(|space| {
+                        space.output_id.is_none() || space.output_id.as_deref() == Some(output_id)
+                    })
+                    .unwrap_or(false);
+                if matches_output {
+                    return Ok(id);
+                }
+            }
+            if let Some(space) = self
+                .spaces
+                .iter()
+                .find(|space| space.output_id.as_deref() == Some(output_id))
+            {
+                return Ok(space.id);
+            }
+            if let Some(space) = self.spaces.iter().find(|space| space.output_id.is_none()) {
+                return Ok(space.id);
+            }
+            return Ok(self.active_space);
+        }
+
+        if let Some(id) = preferred {
+            if self
+                .space(id)
+                .map(|space| space.output_id.is_none())
+                .unwrap_or(false)
+            {
+                return Ok(id);
+            }
+        }
+        if let Some(space) = self.spaces.iter().find(|space| space.output_id.is_none()) {
+            return Ok(space.id);
+        }
+        Ok(preferred.unwrap_or(self.active_space))
+    }
+
+    /// Display terminology alias for [`Self::restore_space_for_output`].
+    pub fn restore_space_for_display(
+        &self,
+        display_id: Option<&str>,
+        preferred: Option<SpaceId>,
+    ) -> Result<SpaceId, SpacesError> {
+        self.restore_space_for_output(display_id, preferred)
+    }
+
+    /// Migrate every Space assigned to `source_output` to another output or
+    /// leave it unassigned when the source output disappeared. Space IDs,
+    /// ordering, window membership, and other metadata remain unchanged.
+    pub fn migrate_output(
+        &mut self,
+        source_output: &str,
+        replacement_output: Option<&str>,
+    ) -> Result<Vec<SpaceId>, SpacesError> {
+        validate_output_id(source_output)?;
+        if let Some(replacement_output) = replacement_output {
+            validate_output_id(replacement_output)?;
+            if replacement_output == source_output {
+                return Err(SpacesError::OutputMigrationToSameOutput(
+                    source_output.to_owned(),
+                ));
+            }
+        }
+
+        if self.multi_monitor_policy == MultiMonitorPolicy::SharedSpan {
+            return Ok(Vec::new());
+        }
+
+        let mut migrated = Vec::new();
+        for space in &mut self.spaces {
+            if space.output_id.as_deref() == Some(source_output) {
+                space.output_id = replacement_output.map(str::to_owned);
+                migrated.push(space.id);
+            }
+        }
+        Ok(migrated)
+    }
+
+    /// Remove an output assignment while preserving the affected Spaces for a
+    /// later restore decision.
+    pub fn remove_output(&mut self, output_id: &str) -> Result<Vec<SpaceId>, SpacesError> {
+        self.migrate_output(output_id, None)
     }
 
     pub fn create_space(&mut self, name: impl Into<String>) -> Result<SpaceId, SpacesError> {
@@ -367,25 +605,18 @@ impl SpacesModel {
         Ok(())
     }
 
-    /// Remove a Space and return the active fallback. The following ordered
-    /// Space is preferred for an active removal, then the preceding one. Any
-    /// window that would otherwise lose all membership is moved to that
-    /// fallback so the model never strands a window.
+    /// Remove a Space and return the active fallback. Independent-per-display
+    /// mode first prefers another Space on the removed Space's output; for an
+    /// active removal, the following ordered Space is then preferred, followed
+    /// by the preceding one. Any window that would otherwise lose all
+    /// membership is moved to that fallback so the model never strands it.
     pub fn remove_space(&mut self, id: SpaceId) -> Result<SpaceId, SpacesError> {
         let index = self.position_of(id).ok_or(SpacesError::SpaceNotFound(id))?;
         if self.spaces.len() == 1 {
             return Err(SpacesError::CannotRemoveLastSpace);
         }
-        let fallback = if id == self.active_space {
-            let fallback_index = if index + 1 < self.spaces.len() {
-                index + 1
-            } else {
-                index - 1
-            };
-            self.spaces[fallback_index].id
-        } else {
-            self.active_space
-        };
+        let removed_output = self.spaces[index].output_id.clone();
+        let fallback = self.fallback_space_for_removal(id, removed_output.as_deref());
         let removed = self.spaces.remove(index);
         if id == self.active_space {
             self.active_space = fallback;
@@ -526,6 +757,14 @@ impl SpacesModel {
         if !ids.contains(&self.active_space) {
             return Err(SpacesError::ActiveSpaceMissing(self.active_space));
         }
+        if self.multi_monitor_policy == MultiMonitorPolicy::SharedSpan {
+            if let Some(space) = self.spaces.iter().find(|space| space.output_id.is_some()) {
+                return Err(SpacesError::OutputAssignmentNotAllowedInSharedSpan {
+                    space: space.id,
+                    output_id: space.output_id.clone().expect("checked above"),
+                });
+            }
+        }
         if self.next_space_id.get() <= maximum_existing {
             return Err(SpacesError::NextSpaceIdNotAfterExisting {
                 next: self.next_space_id.get(),
@@ -580,6 +819,39 @@ impl SpacesModel {
             .find(|space| space.id == id)
             .ok_or(SpacesError::SpaceNotFound(id))
     }
+
+    fn fallback_space_for_removal(&self, id: SpaceId, output_id: Option<&str>) -> SpaceId {
+        let index = self
+            .position_of(id)
+            .expect("removal fallback requires an existing Space");
+
+        if self.multi_monitor_policy == MultiMonitorPolicy::IndependentPerDisplay {
+            if let Some(output_id) = output_id {
+                if let Some((_, space)) = self
+                    .spaces
+                    .iter()
+                    .enumerate()
+                    .filter(|(candidate_index, space)| {
+                        *candidate_index != index && space.output_id.as_deref() == Some(output_id)
+                    })
+                    .min_by_key(|(candidate_index, _)| (*candidate_index).abs_diff(index))
+                {
+                    return space.id;
+                }
+            }
+        }
+
+        if id == self.active_space {
+            let fallback_index = if index + 1 < self.spaces.len() {
+                index + 1
+            } else {
+                index - 1
+            };
+            self.spaces[fallback_index].id
+        } else {
+            self.active_space
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -624,6 +896,18 @@ fn validate_space_name(name: &str) -> Result<(), SpacesError> {
 
 fn normalize_name(name: &str) -> String {
     name.to_lowercase()
+}
+
+fn validate_output_id(output_id: &str) -> Result<(), SpacesError> {
+    if output_id.is_empty()
+        || output_id.trim() != output_id
+        || output_id
+            .chars()
+            .any(|character| character == '\0' || character.is_control())
+    {
+        return Err(SpacesError::InvalidOutputId(output_id.to_owned()));
+    }
+    Ok(())
 }
 
 fn validate_window_id(window: &str) -> Result<(), SpacesError> {
@@ -877,6 +1161,142 @@ mod tests {
     }
 
     #[test]
+    fn output_assignment_defaults_for_legacy_state_and_round_trips() {
+        let legacy = r#"{
+            "spaces": [{"id": 1, "name": "Main", "windows": []}],
+            "active_space": 1,
+            "next_space_id": 2
+        }"#;
+        let mut model: SpacesModel = serde_json::from_str(legacy).expect("legacy Spaces state");
+        let first = model.active_space();
+
+        assert_eq!(model.multi_monitor_policy(), MultiMonitorPolicy::SharedSpan);
+        assert_eq!(model.space(first).expect("legacy Space").output_id(), None);
+
+        model.set_multi_monitor_policy(MultiMonitorPolicy::IndependentPerDisplay);
+        model
+            .assign_space_to_output(first, "DP-1")
+            .expect("assign legacy Space");
+        let encoded = serde_json::to_string(&model).expect("serialize output assignment");
+        let decoded: SpacesModel = serde_json::from_str(&encoded).expect("deserialize assignment");
+
+        assert_eq!(decoded, model);
+        assert_eq!(decoded.output_for_space(first), Some("DP-1"));
+    }
+
+    #[test]
+    fn policy_controls_output_visibility_and_clears_shared_assignments() {
+        let mut model = SpacesModel::new();
+        let first = model.active_space();
+        let second = model.create_space("Work").expect("work");
+
+        model.set_multi_monitor_policy(MultiMonitorPolicy::IndependentPerDisplay);
+        model
+            .assign_space_to_display(first, "DP-1")
+            .expect("assign first output");
+        model
+            .assign_space_to_output(second, "DP-2")
+            .expect("assign second output");
+        assert_eq!(
+            model.spaces_for_output("DP-1").expect("DP-1 Spaces"),
+            vec![first]
+        );
+
+        model.set_multi_monitor_policy(MultiMonitorPolicy::SharedSpan);
+        assert_eq!(model.output_for_space(first), None);
+        assert_eq!(model.output_for_space(second), None);
+        assert_eq!(
+            model.spaces_for_display("DP-2").expect("shared Spaces"),
+            vec![first, second]
+        );
+        model.validate().expect("shared policy remains valid");
+        assert!(matches!(
+            model.assign_space_to_output(first, "DP-3"),
+            Err(SpacesError::OutputAssignmentNotAllowedInSharedSpan { .. })
+        ));
+    }
+
+    #[test]
+    fn independent_restore_and_output_migration_are_deterministic() {
+        let mut model = SpacesModel::new();
+        let first = model.active_space();
+        let second = model.create_space("Work").expect("work");
+        let third = model.create_space("Play").expect("play");
+
+        model.set_multi_monitor_policy(MultiMonitorPolicy::IndependentPerDisplay);
+        model
+            .assign_space_to_output(first, "DP-1")
+            .expect("assign first output");
+        model
+            .assign_space_to_output(second, "DP-2")
+            .expect("assign second output");
+
+        assert_eq!(
+            model
+                .restore_space_for_output(Some("DP-1"), Some(second))
+                .expect("restore DP-1"),
+            first
+        );
+        assert_eq!(
+            model
+                .restore_space_for_output(Some("DP-2"), Some(second))
+                .expect("restore DP-2"),
+            second
+        );
+        assert_eq!(
+            model
+                .restore_space_for_output(Some("DP-3"), Some(second))
+                .expect("restore new output"),
+            third
+        );
+
+        model
+            .assign_window("editor", SpaceTarget::Named("Space 1".into()))
+            .expect("assign window");
+        let migrated = model
+            .migrate_output("DP-1", Some("DP-3"))
+            .expect("migrate output");
+        assert_eq!(migrated, vec![first]);
+        assert_eq!(model.output_for_space(first), Some("DP-3"));
+        assert_eq!(model.window_spaces("editor"), vec![first]);
+
+        let removed = model.remove_output("DP-3").expect("remove output");
+        assert_eq!(removed, vec![first]);
+        assert_eq!(model.output_for_space(first), None);
+        assert!(matches!(
+            model.migrate_output("DP-2", Some("DP-2")),
+            Err(SpacesError::OutputMigrationToSameOutput(_))
+        ));
+    }
+
+    #[test]
+    fn independent_space_removal_prefers_same_output_fallback() {
+        let mut model = SpacesModel::new();
+        let first = model.active_space();
+        let second = model.create_space("Second").expect("second");
+        let third = model.create_space("Third").expect("third");
+
+        model.set_multi_monitor_policy(MultiMonitorPolicy::IndependentPerDisplay);
+        model
+            .assign_space_to_output(first, "DP-1")
+            .expect("assign first output");
+        model
+            .assign_space_to_output(second, "DP-1")
+            .expect("assign second output");
+        model
+            .assign_space_to_output(third, "DP-2")
+            .expect("assign third output");
+        model
+            .assign_window("terminal", SpaceTarget::Current)
+            .expect("assign terminal");
+
+        let fallback = model.remove_space(first).expect("remove first");
+        assert_eq!(fallback, second);
+        assert_eq!(model.window_spaces("terminal"), vec![second]);
+        assert_eq!(model.output_for_space(second), Some("DP-1"));
+    }
+
+    #[test]
     fn serde_rejects_zero_or_duplicate_ids_and_duplicate_names() {
         let zero_id = r#"{
             "spaces": [{"id": 0, "name": "Main", "windows": []}],
@@ -907,6 +1327,32 @@ mod tests {
             "multi_monitor_policy": "shared_span"
         }"#;
         assert!(serde_json::from_str::<SpacesModel>(duplicate_name).is_err());
+
+        let output_in_shared_span = r#"{
+            "spaces": [{
+                "id": 1,
+                "name": "Main",
+                "output_id": "DP-1",
+                "windows": []
+            }],
+            "active_space": 1,
+            "next_space_id": 2,
+            "multi_monitor_policy": "shared_span"
+        }"#;
+        assert!(serde_json::from_str::<SpacesModel>(output_in_shared_span).is_err());
+
+        let invalid_output = r#"{
+            "spaces": [{
+                "id": 1,
+                "name": "Main",
+                "output_id": "",
+                "windows": []
+            }],
+            "active_space": 1,
+            "next_space_id": 2,
+            "multi_monitor_policy": "independent_per_display"
+        }"#;
+        assert!(serde_json::from_str::<SpacesModel>(invalid_output).is_err());
     }
 
     #[test]

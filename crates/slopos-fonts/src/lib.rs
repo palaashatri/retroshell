@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -508,15 +508,23 @@ impl FontDiscoveryService {
     /// Discover available font files (`.ttf`, `.otf`, `.ttc`).
     pub fn discover_font_files(&self) -> Vec<PathBuf> {
         let mut files = Vec::new();
+        let mut seen_paths = HashSet::new();
         for base_path in &self.search_paths {
-            discover_font_files_in_dir(base_path, &mut files);
+            discover_font_files_in_dir(base_path, &mut files, &mut seen_paths);
         }
         files
     }
 }
 
-fn discover_font_files_in_dir(base_path: &std::path::Path, files: &mut Vec<PathBuf>) {
-    if !base_path.exists() || !base_path.is_dir() {
+fn discover_font_files_in_dir(
+    base_path: &Path,
+    files: &mut Vec<PathBuf>,
+    seen_paths: &mut HashSet<PathBuf>,
+) {
+    let Ok(metadata) = fs::symlink_metadata(base_path) else {
+        return;
+    };
+    if !metadata.file_type().is_dir() {
         return;
     }
 
@@ -531,16 +539,28 @@ fn discover_font_files_in_dir(base_path: &std::path::Path, files: &mut Vec<PathB
     paths.sort();
 
     for path in paths {
-        if path.is_dir() {
-            discover_font_files_in_dir(&path, files);
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        let file_type = metadata.file_type();
+
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            discover_font_files_in_dir(&path, files, seen_paths);
             continue;
         }
 
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            let ext_lower = ext.to_ascii_lowercase();
-            if ext_lower == "ttf" || ext_lower == "otf" || ext_lower == "ttc" {
-                files.push(path);
-            }
+        if !file_type.is_file() || !is_font_extension(&path) {
+            continue;
+        }
+
+        let Ok(canonical_path) = fs::canonicalize(&path) else {
+            continue;
+        };
+        if seen_paths.insert(canonical_path) {
+            files.push(path);
         }
     }
 }
@@ -631,6 +651,60 @@ mod tests {
         assert!(!discovered.contains(&ignored));
 
         fs::remove_dir_all(&temp_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn font_discovery_preserves_root_precedence_and_deduplicates_overlapping_roots() {
+        let temp_dir = make_temp_dir("overlap");
+        let root_font = temp_dir.join("00-root.ttf");
+        let nested_dir = temp_dir.join("01-nested");
+        let shared_font = nested_dir.join("00-shared.otf");
+        let later_font = nested_dir.join("01-later.ttc");
+
+        write_font_file(&root_font);
+        write_font_file(&shared_font);
+        write_font_file(&later_font);
+
+        let service = FontDiscoveryService {
+            search_paths: vec![temp_dir.clone(), nested_dir.clone()],
+        };
+        let discovered = service.discover_font_files();
+
+        assert_eq!(discovered, vec![root_font, shared_font, later_font]);
+
+        fs::remove_dir_all(&temp_dir).expect("cleanup overlap temp dir");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn font_discovery_skips_symlinked_fonts_and_directories() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = make_temp_dir("symlinks");
+        let real_font = temp_dir.join("real.ttf");
+        let nested_dir = temp_dir.join("nested");
+        let nested_font = nested_dir.join("nested.otf");
+        let linked_font = temp_dir.join("linked.ttc");
+        let linked_dir = temp_dir.join("linked-directory");
+        let cycle = nested_dir.join("cycle");
+
+        write_font_file(&real_font);
+        write_font_file(&nested_font);
+        symlink(&real_font, &linked_font).expect("create symlinked font");
+        symlink(&nested_dir, &linked_dir).expect("create symlinked directory");
+        symlink(&temp_dir, &cycle).expect("create directory cycle");
+
+        let service = FontDiscoveryService {
+            search_paths: vec![temp_dir.clone()],
+        };
+        let discovered = service.discover_font_files();
+
+        assert_eq!(discovered, vec![nested_font, real_font]);
+        assert!(!discovered.contains(&linked_font));
+        assert!(!discovered.contains(&linked_dir));
+        assert!(!discovered.iter().any(|path| path.starts_with(&cycle)));
+
+        fs::remove_dir_all(&temp_dir).expect("cleanup symlink temp dir");
     }
 
     #[cfg(unix)]
