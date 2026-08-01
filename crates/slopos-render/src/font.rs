@@ -46,18 +46,13 @@ const MAX_LAYOUT_WIDTH: f32 = 1_000_000.0;
 const MAX_TEXT_SCALE: f32 = 8.0;
 
 /// Wrapping policy used by the shared shaped-text layout service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum TextWrap {
     None,
     Glyph,
     Word,
+    #[default]
     WordOrGlyph,
-}
-
-impl Default for TextWrap {
-    fn default() -> Self {
-        Self::WordOrGlyph
-    }
 }
 
 impl TextWrap {
@@ -889,7 +884,8 @@ mod tests {
         let text = "e\u{301}";
         let layout = cache.layout(text, TextLayoutOptions::new(13.0, 1.0));
 
-        assert_eq!(layout.cluster_ranges(), &[0..text.len()]);
+        assert_eq!(layout.cluster_ranges().len(), 1);
+        assert_eq!(layout.cluster_ranges()[0], 0..text.len());
         assert!(layout.glyphs().len() <= text.chars().count());
     }
 

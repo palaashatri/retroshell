@@ -530,12 +530,12 @@ fn parse_toml_string(value: &str) -> Option<String> {
             }
         }
         None
-    } else if value.starts_with('\'') {
-        let end = value[1..].find('\'')? + 1;
+    } else if let Some(value) = value.strip_prefix('\'') {
+        let end = value.find('\'')?;
         if !value[end + 1..].trim().is_empty() {
             return None;
         }
-        Some(value[1..end].to_string())
+        Some(value[..end].to_string())
     } else {
         None
     }
