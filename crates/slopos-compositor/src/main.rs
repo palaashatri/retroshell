@@ -252,7 +252,11 @@ mod linux {
             event: &RelativeMotionEvent,
         ) {
             if !data.update_interactive_grab() {
-                handle.unset_grab(self, data, event.serial, 0, true);
+                let serial = data.next_serial();
+                let time = u32::try_from(event.utime / 1_000)
+                    .unwrap_or(u32::MAX)
+                    .max(1);
+                handle.unset_grab(self, data, serial, time, true);
                 return;
             }
             handle.relative_motion(data, self.start_data.focus.clone(), event);
@@ -1103,7 +1107,8 @@ mod linux {
         fn cancel_interactive_grab(&mut self) {
             if self.interactive_grab.is_some() {
                 if let Some(pointer) = self.seat.get_pointer() {
-                    pointer.unset_grab(self, self.next_serial(), 0);
+                    let serial = self.next_serial();
+                    pointer.unset_grab(self, serial, 0);
                 } else {
                     self.finish_interactive_grab();
                 }
