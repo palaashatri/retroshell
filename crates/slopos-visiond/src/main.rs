@@ -23,6 +23,7 @@ use slopos_vision_protocol::{
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, OpenOptions};
+use std::future::Future;
 use std::io::{self, Cursor, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
@@ -32,7 +33,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 const DEFAULT_MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
@@ -474,7 +475,7 @@ struct DaemonInner {
     engine: Arc<VisionEngine>,
     artifacts: ArtifactStore,
     jobs: Mutex<HashMap<String, JobRecord>>,
-    job_tasks: Mutex<Vec<JoinHandle<()>>>,
+    tasks: Mutex<JoinSet<()>>,
     next_job: AtomicU64,
     shutting_down: AtomicBool,
     shutdown: watch::Sender<bool>,
@@ -515,7 +516,7 @@ impl Daemon {
                 engine: Arc::new(engine),
                 artifacts,
                 jobs: Mutex::new(HashMap::new()),
-                job_tasks: Mutex::new(Vec::new()),
+                tasks: Mutex::new(JoinSet::new()),
                 next_job: AtomicU64::new(1),
                 shutting_down: AtomicBool::new(false),
                 shutdown,
@@ -536,13 +537,8 @@ impl Daemon {
                 }
             }
         }
-        let tasks = std::mem::take(&mut *self.inner.job_tasks.lock());
-        let _ = tokio::time::timeout(SHUTDOWN_GRACE, async move {
-            for task in tasks {
-                let _ = task.await;
-            }
-        })
-        .await;
+        let tasks = std::mem::replace(&mut *self.inner.tasks.lock(), JoinSet::new());
+        wait_for_tracked_tasks(tasks).await;
     }
 
     pub async fn handle_request(
@@ -636,7 +632,7 @@ impl Daemon {
 
         let daemon = self.clone();
         let queued_job_id = job_id.clone();
-        let task = tokio::spawn(async move {
+        let task = async move {
             daemon.set_status(&queued_job_id, JobStatus::Running);
             let worker_daemon = daemon.clone();
             let worker_job_id = queued_job_id.clone();
@@ -657,8 +653,15 @@ impl Daemon {
                     }),
                 ),
             }
-        });
-        self.inner.job_tasks.lock().push(task);
+        };
+        if !self.spawn_tracked(task) {
+            let mut jobs = self.inner.jobs.lock();
+            if let Some(job) = jobs.get_mut(&job_id.0) {
+                if matches!(job.status, JobStatus::Queued | JobStatus::Running) {
+                    mark_cancelled(job);
+                }
+            }
+        }
 
         VisionResponse::Accepted(AcceptedResponse {
             job_id,
@@ -668,15 +671,20 @@ impl Daemon {
     }
 
     fn reap_finished_job_tasks(&self) {
-        let mut tasks = self.inner.job_tasks.lock();
-        let mut index = 0;
-        while index < tasks.len() {
-            if tasks[index].is_finished() {
-                tasks.swap_remove(index);
-            } else {
-                index += 1;
-            }
+        let mut tasks = self.inner.tasks.lock();
+        while tasks.try_join_next().is_some() {}
+    }
+
+    fn spawn_tracked<F>(&self, task: F) -> bool
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let mut tasks = self.inner.tasks.lock();
+        if self.inner.shutting_down.load(Ordering::Acquire) {
+            return false;
         }
+        tasks.spawn(task);
+        true
     }
 
     fn set_status(&self, job_id: &JobId, status: JobStatus) {
@@ -961,16 +969,31 @@ impl Daemon {
         }
     }
 
-    async fn handle_connection(&self, stream: UnixStream) -> Result<(), String> {
+    async fn handle_connection(
+        &self,
+        stream: UnixStream,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> Result<(), String> {
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
         loop {
+            if *shutdown.borrow() {
+                return Ok(());
+            }
             let mut frame = Vec::new();
-            let read = (&mut reader)
-                .take((self.inner.config.max_frame_bytes + 1) as u64)
-                .read_until(b'\n', &mut frame)
-                .await
-                .map_err(|error| format!("Vision request read failed: {error}"))?;
+            let mut limited_reader =
+                (&mut reader).take((self.inner.config.max_frame_bytes + 1) as u64);
+            let read = tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() {
+                        return Ok(());
+                    }
+                    return Ok(());
+                }
+                read = limited_reader.read_until(b'\n', &mut frame) => {
+                    read.map_err(|error| format!("Vision request read failed: {error}"))?
+                }
+            };
             if read == 0 {
                 return Ok(());
             }
@@ -998,10 +1021,17 @@ impl Daemon {
                 return Err("Vision response exceeded the frame bound".to_string());
             }
             output.push(b'\n');
-            write_half
-                .write_all(&output)
-                .await
-                .map_err(|error| format!("Vision response write failed: {error}"))?;
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() {
+                        return Ok(());
+                    }
+                    return Ok(());
+                }
+                result = write_half.write_all(&output) => {
+                    result.map_err(|error| format!("Vision response write failed: {error}"))?;
+                }
+            }
         }
     }
 
@@ -1020,21 +1050,52 @@ impl Daemon {
         fs::set_permissions(&self.inner.config.socket_path, permissions)
             .map_err(|error| format!("cannot secure Vision socket: {error}"))?;
         let _cleanup = SocketCleanup(self.inner.config.socket_path.clone());
+        let mut shutdown = self.inner.shutdown.subscribe();
         loop {
             if self.inner.shutting_down.load(Ordering::Acquire) {
                 return Ok(());
             }
             tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() {
+                        return Ok(());
+                    }
+                    return Ok(());
+                }
                 accepted = listener.accept() => {
                     let (stream, _) = accepted.map_err(|error| format!("Vision accept failed: {error}"))?;
                     let daemon = self.clone();
-                    tokio::spawn(async move {
-                        if let Err(error) = daemon.handle_connection(stream).await {
+                    let connection_shutdown = daemon.inner.shutdown.subscribe();
+                    let connection_daemon = daemon.clone();
+                    let task = async move {
+                        if let Err(error) = connection_daemon
+                            .handle_connection(stream, connection_shutdown)
+                            .await
+                        {
                             log::debug!("Vision client connection closed: {error}");
                         }
-                    });
+                    };
+                    daemon.spawn_tracked(task);
                 }
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+        }
+    }
+}
+
+async fn wait_for_tracked_tasks(mut tasks: JoinSet<()>) {
+    let grace = tokio::time::sleep(SHUTDOWN_GRACE);
+    tokio::pin!(grace);
+    loop {
+        tokio::select! {
+            result = tasks.join_next() => {
+                if result.is_none() {
+                    return;
+                }
+            }
+            _ = &mut grace => {
+                tasks.abort_all();
+                while tasks.join_next().await.is_some() {}
+                return;
             }
         }
     }
@@ -1181,6 +1242,67 @@ pub fn map_vision_error(error: &EngineError, operation: Option<VisionOperation>)
     }
 }
 
+#[cfg(unix)]
+async fn wait_for_shutdown_signal() -> Result<&'static str, String> {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigint = signal(SignalKind::interrupt())
+        .map_err(|error| format!("cannot install SIGINT handler: {error}"))?;
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|error| format!("cannot install SIGTERM handler: {error}"))?;
+    let mut sighup = signal(SignalKind::hangup())
+        .map_err(|error| format!("cannot install SIGHUP handler: {error}"))?;
+
+    tokio::select! {
+        received = sigint.recv() => received
+            .map(|_| "SIGINT")
+            .ok_or_else(|| "SIGINT handler closed unexpectedly".to_string()),
+        received = sigterm.recv() => received
+            .map(|_| "SIGTERM")
+            .ok_or_else(|| "SIGTERM handler closed unexpectedly".to_string()),
+        received = sighup.recv() => received
+            .map(|_| "SIGHUP")
+            .ok_or_else(|| "SIGHUP handler closed unexpectedly".to_string()),
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown_signal() -> Result<&'static str, String> {
+    tokio::signal::ctrl_c()
+        .await
+        .map(|_| "Ctrl-C")
+        .map_err(|error| format!("cannot install Ctrl-C handler: {error}"))
+}
+
+async fn run(daemon: Daemon) -> Result<(), String> {
+    let serving = daemon.clone();
+    let mut server = tokio::spawn(async move { serving.serve().await });
+    tokio::select! {
+        result = &mut server => result
+            .map_err(|error| format!("Vision server task failed: {error}"))?,
+        signal = wait_for_shutdown_signal() => {
+            let signal_error = match signal {
+                Ok(name) => {
+                    log::info!("Vision daemon received {name}; shutting down");
+                    None
+                }
+                Err(error) => {
+                    log::error!("Vision daemon signal handler failed: {error}");
+                    Some(error)
+                }
+            };
+            daemon.shutdown().await;
+            let result = server
+                .await
+                .map_err(|error| format!("Vision server task failed: {error}"))?;
+            if let Some(error) = signal_error {
+                return Err(error);
+            }
+            result
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let _ = env_logger::try_init();
@@ -1198,21 +1320,9 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let serving = daemon.clone();
-    let server = tokio::spawn(async move { serving.serve().await });
-    tokio::select! {
-        result = server => {
-            if let Ok(Err(error)) = result {
-                eprintln!("slopos-visiond: {error}");
-                std::process::exit(1);
-            }
-        }
-        signal = tokio::signal::ctrl_c() => {
-            if let Err(error) = signal {
-                eprintln!("slopos-visiond: Ctrl-C handler failed: {error}");
-            }
-            daemon.shutdown().await;
-        }
+    if let Err(error) = run(daemon).await {
+        eprintln!("slopos-visiond: {error}");
+        std::process::exit(1);
     }
 }
 
@@ -1264,6 +1374,7 @@ mod tests {
     };
     use std::io::Cursor;
     use tempfile::tempdir;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn socket_and_artifact_paths_reject_unsafe_components() {
@@ -1371,6 +1482,89 @@ mod tests {
         assert_eq!(error.code, ErrorCode::ModelUnavailable);
         assert!(!error.message.contains(&models_dir.display().to_string()));
         daemon.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_closes_connections_and_cleans_the_exact_socket() {
+        let root = tempdir().unwrap();
+        let models_dir = root.path().join("models");
+        std::fs::create_dir(&models_dir).unwrap();
+        std::fs::write(models_dir.join("manifest.toml"), "models = []").unwrap();
+        let socket_path = root.path().join("runtime").join("vision.sock");
+        let daemon = Daemon::new(DaemonConfig::for_test(
+            socket_path.clone(),
+            models_dir,
+            root.path().join("artifacts"),
+        ))
+        .unwrap();
+        let serving = daemon.clone();
+        let server = tokio::spawn(async move { serving.serve().await });
+
+        let mut client = None;
+        for _ in 0..100 {
+            match UnixStream::connect(&socket_path).await {
+                Ok(stream) => {
+                    client = Some(stream);
+                    break;
+                }
+                Err(_) => tokio::task::yield_now().await,
+            }
+        }
+        let mut client = BufReader::new(client.expect("Vision socket should become connectable"));
+        let request =
+            serde_json::to_vec(&ProtocolEnvelope::new(VisionRequest::Probe(ProbeRequest))).unwrap();
+        client.get_mut().write_all(&request).await.unwrap();
+        client.get_mut().write_all(b"\n").await.unwrap();
+        let mut response = Vec::new();
+        client.read_until(b'\n', &mut response).await.unwrap();
+        assert!(matches!(
+            serde_json::from_slice::<ProtocolEnvelope<VisionResponse>>(
+                response.strip_suffix(b"\n").unwrap()
+            )
+            .unwrap()
+            .payload,
+            VisionResponse::Capabilities(_)
+        ));
+
+        daemon.shutdown().await;
+        tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .expect("serve should terminate after shutdown")
+            .unwrap()
+            .unwrap();
+        let mut trailing = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut trailing))
+            .await
+            .expect("accepted connection should be closed during shutdown")
+            .unwrap();
+        assert_eq!(read, 0);
+        assert!(daemon.inner.tasks.lock().is_empty());
+        assert!(!socket_path.exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_state_is_idempotent_and_wakes_waiters() {
+        let root = tempdir().unwrap();
+        let models_dir = root.path().join("models");
+        std::fs::create_dir(&models_dir).unwrap();
+        std::fs::write(models_dir.join("manifest.toml"), "models = []").unwrap();
+        let daemon = Daemon::new(DaemonConfig::for_test(
+            root.path().join("runtime").join("vision.sock"),
+            models_dir,
+            root.path().join("artifacts"),
+        ))
+        .unwrap();
+        let mut wake = daemon.inner.shutdown.subscribe();
+
+        assert!(!daemon.inner.shutting_down.load(Ordering::Acquire));
+        daemon.shutdown().await;
+        assert!(daemon.inner.shutting_down.load(Ordering::Acquire));
+        assert!(wake.has_changed().unwrap());
+        assert!(*wake.borrow_and_update());
+        assert!(!wake.has_changed().unwrap());
+
+        daemon.shutdown().await;
+        assert!(!wake.has_changed().unwrap());
     }
 
     fn one_pixel_png() -> Vec<u8> {
