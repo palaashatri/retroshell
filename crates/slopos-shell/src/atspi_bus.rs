@@ -206,7 +206,7 @@ mod tests {
                 && e.detail1 == 1
         }));
 
-        // Pure serialize of companion StateChanged for docs/contract.
+        // Pure serialization of companion StateChanged for the accessibility contract.
         let state = AccessibleEvent::state_changed(&path, "focused", true);
         let s = serialize_event_for_dbus(&state);
         assert_eq!(s.interface, ATSPI_EVENT_OBJECT_IFACE);

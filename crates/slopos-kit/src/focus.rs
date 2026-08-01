@@ -1,7 +1,7 @@
 //! Keyboard focus over a `Widget` tree.
 //!
 //! `WidgetState.focused` has existed since the beginning and nothing ever set
-//! it (see `docs/TOOLKIT_REMEDIATION.md` section 2.2). `FocusManager` is the
+//! it (see `AGENTS.md`, P2/P5). `FocusManager` is the
 //! thing that drives it: it owns exactly one notion of "which widget has
 //! focus" and is responsible for keeping `WidgetState.focused` in sync with
 //! that single value everywhere in the tree. That one invariant — `focus()`

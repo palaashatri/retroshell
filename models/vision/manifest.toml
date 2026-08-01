@@ -2,8 +2,9 @@
 #
 # Describes every model (and model-support) file the vision subsystem can
 # load. A file is only loaded after it has been verified against the SHA-256
-# and size recorded here. Weights are downloaded by scripts into this
-# directory for local development; they are never fetched at runtime.
+# and size recorded here. Weights are supplied by an explicit model pack
+# or local development import; runtime auto-download is forbidden. The
+# model-pack installer/import flow is not implemented in the audited snapshot.
 #
 # input_shape uses -1 for dynamic dimensions.
 #

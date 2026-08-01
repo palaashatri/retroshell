@@ -123,7 +123,7 @@ impl Widget for TextField {
 
     // Was: no override, so every `TextField` was focusable-in-spirit but
     // never actually joined the tab order and nothing ever gated input on
-    // it (see docs/TOOLKIT_REMEDIATION.md). Text input is exactly the case
+    // it (see AGENTS.md, P2). Text input is exactly the case
     // `focusable()` exists for. Hidden or disabled fields (e.g. a closed
     // find bar) stay out of the tab order.
     fn focusable(&self) -> bool {
@@ -159,7 +159,7 @@ impl Widget for TextField {
 
     // Was: `Char`/`Backspace` mutated `text` unconditionally, with no rect
     // check and no focus gate at all — every `TextField` in the tree
-    // consumed every keystroke (see docs/TOOLKIT_REMEDIATION.md). Now:
+    // consumed every keystroke (see AGENTS.md, P2). Now:
     // `MouseDown` inside the rect click-to-focuses (and only this field —
     // nothing else on the tree loses focus here, that's `FocusManager`'s
     // job once an app wires it up), and every keyboard branch refuses to

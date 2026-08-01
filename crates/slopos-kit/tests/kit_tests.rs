@@ -59,7 +59,7 @@ fn test_text_field_set_text_places_cursor_at_end() {
     let mut field = TextField::new();
     field.set_text("abc");
     // `TextField` now gates keyboard input on focus (see
-    // docs/TOOLKIT_REMEDIATION.md section 2.3 / `text_field.rs`) — this test
+    // AGENTS.md P2 / `text_field.rs`) — this test
     // predates that fix and simulates an already-focused field the way a real
     // `MouseDown` or `FocusManager::focus()` would leave it.
     field.widget_state_mut().focused = true;

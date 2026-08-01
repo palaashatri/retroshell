@@ -72,6 +72,9 @@ package() {
   install -Dm644 packaging/slopos-i-wayland.desktop "$pkgdir/usr/share/wayland-sessions/slopos-i.desktop"
   install -Dm644 packaging/slopos-i.service "$pkgdir/usr/lib/systemd/user/slopos-i.service"
 
-  # Install documentation
-  install -Dm644 docs/PROGRAM.md "$pkgdir/usr/share/doc/$pkgname/PROGRAM.md"
+  # Install the three canonical project documents and legal notices.
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 AGENTS.md "$pkgdir/usr/share/doc/$pkgname/AGENTS.md"
+  install -Dm644 TRUTH.md "$pkgdir/usr/share/doc/$pkgname/TRUTH.md"
+  install -Dm644 THIRD_PARTY_LICENSES.txt "$pkgdir/usr/share/doc/$pkgname/THIRD_PARTY_LICENSES.txt"
 }

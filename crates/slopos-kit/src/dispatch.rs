@@ -1,7 +1,7 @@
 //! Generic hit-test and pointer-event dispatch over a `Widget` tree.
 //!
 //! This is additive infrastructure: nothing in the toolkit or the apps calls
-//! it yet (see `docs/TOOLKIT_REMEDIATION.md` section 2.1 and the migration
+//! it yet (see `AGENTS.md`, P2/P5, and the migration
 //! order in section 4). It exists so containers (`Toolbar`, `Layout`,
 //! `SplitView`, `Window`) can stop forwarding positional events to every
 //! child unconditionally — the bug that lets one `Button` swallow every left

@@ -7,7 +7,7 @@ param(
 $VBox = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
 $SshKey = Join-Path $RepoRoot "packaging/vm/qa_key"
 $KnownHosts = Join-Path $RepoRoot "packaging/vm/known_hosts"
-$ScDir = Join-Path $RepoRoot "docs/screenshots"
+$ScDir = Join-Path $RepoRoot "artifacts/qa/screenshots"
 New-Item -ItemType Directory -Force -Path $ScDir | Out-Null
 
 function Invoke-Ssh([string]$Cmd) {

@@ -62,7 +62,7 @@ pub fn snap_stroke_1px(val: f32) -> f32 {
 }
 
 // System 7 Classic palette — aligned to Calculable/System7Components Assets.xcassets
-// See docs/UI-REFERENCES.md
+// See AGENTS.md, section 4 (Product and visual doctrine).
 const S7_BG: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // Background #FFFFFF
 const S7_FG: [f32; 4] = [0.0, 0.0, 0.0, 1.0]; // Foreground #000000
 const S7_GRAY100: [f32; 4] = [0.937, 0.937, 0.937, 1.0]; // #EFEFEF

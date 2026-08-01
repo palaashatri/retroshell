@@ -6,7 +6,7 @@
 //! this module draws a classic arrow procedurally: a filled-black shape with a
 //! white outline, so a client that leaves the cursor `Named` (never sets its
 //! own surface, see `session_drm.rs`'s `CursorImageStatus::Surface` handling)
-//! still has a visible pointer. See `docs/ROADMAP.md` 1.3.
+//! still has a visible pointer. See `AGENTS.md`, phase P1 (Cursor).
 //!
 //! Wiring this into the DRM render-element list is a later step; this module
 //! only produces the pixels.

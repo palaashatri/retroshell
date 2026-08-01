@@ -1470,7 +1470,7 @@ impl ShellDesktop {
     /// Topmost window on the active workspace whose frame contains `point`.
     ///
     /// This is window-manager geometry, not widget hit-testing, and it stays
-    /// geometric by design (the `TOOLKIT_REMEDIATION.md` §3 escape hatch):
+    /// geometric by design (the AGENTS.md P2/P5 remediation path):
     /// z-order lives in `self.windows` order and workspace membership lives in
     /// `ShellWindow.workspace` — neither is knowable from the widget tree,
     /// which is exactly why generic dispatch must not make this call.
@@ -1862,7 +1862,7 @@ impl ShellDesktop {
                 "Help",
                 [
                     "Help search is not indexed yet.".to_string(),
-                    "Use the README and docs/implementation_plan.md for current status."
+                    "Use README.md for setup, AGENTS.md for the development plan, and TRUTH.md for current status."
                         .to_string(),
                 ],
             ),
@@ -2100,7 +2100,7 @@ impl ShellDesktop {
                 self.locked = true;
                 self.lock_password_field.set_text("");
                 // `TextField` now gates keyboard input on focus (see
-                // docs/TOOLKIT_REMEDIATION.md); the lock screen has no other
+                // AGENTS.md P2/P5); the lock screen has no other
                 // widget to hand focus to, so it is always the one focused
                 // widget while locked.
                 self.lock_password_field.widget_state_mut().focused = true;

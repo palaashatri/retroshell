@@ -92,7 +92,7 @@ impl Widget for Toolbar {
     // Was: forwarded every event to every item in reverse with no rect
     // check, so — combined with `Button` returning `Handled` unconditionally
     // — the last toolbar item swallowed every left click in the window (see
-    // docs/TOOLKIT_REMEDIATION.md section 3). `dispatch_positional` gates on
+    // AGENTS.md P2/P5). `dispatch_positional` gates on
     // each item's own rect (and visibility/enabled) before it is ever asked
     // to handle the event.
     fn handle_event(&mut self, event: &Event) -> EventResult {

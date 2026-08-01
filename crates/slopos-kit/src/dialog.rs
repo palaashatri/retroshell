@@ -161,7 +161,7 @@ impl Widget for Dialog {
 
     // Was: no override at all, inheriting the `Widget` trait default
     // (`Ignored`) — no button was ever clickable and Enter/Escape did
-    // nothing (see docs/TOOLKIT_REMEDIATION.md). Enter/Escape resolve to the
+    // nothing (see AGENTS.md, P2/P5). Enter/Escape resolve to the
     // default/cancel button; positional events are hit-tested against
     // `buttons` via the same `dispatch_positional` helper `Toolbar` and
     // `SplitView` use, then `take_clicked()` (Button's own polling lever)
