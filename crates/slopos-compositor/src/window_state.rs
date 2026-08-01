@@ -69,13 +69,16 @@ pub fn transition_presentation_state(
     output_id: impl Into<String>,
     space_id: usize,
 ) -> PresentationTransition {
-    let mut restore_state = current_restore_state.cloned();
+    // A normal window has no active restore record.  Dropping a stale record
+    // here prevents a repeated Normal transition from unexpectedly replacing
+    // a user-resized geometry with an old presentation snapshot.
+    let mut restore_state = if current_state == WindowPresentationState::Normal {
+        None
+    } else {
+        current_restore_state.cloned()
+    };
 
-    if !matches!(
-        target_state,
-        WindowPresentationState::Normal | WindowPresentationState::Minimized
-    ) && restore_state.is_none()
-    {
+    if target_state != WindowPresentationState::Normal && restore_state.is_none() {
         restore_state = Some(WindowRestoreState::new(
             current_geometry,
             current_state,
@@ -85,10 +88,14 @@ pub fn transition_presentation_state(
     }
 
     if target_state == WindowPresentationState::Normal {
-        let geometry = restore_state
-            .as_ref()
-            .map(|restore| restore.normal_geometry)
-            .unwrap_or(current_geometry);
+        let geometry = if current_state == WindowPresentationState::Normal {
+            current_geometry
+        } else {
+            restore_state
+                .as_ref()
+                .map(|restore| restore.normal_geometry)
+                .unwrap_or(current_geometry)
+        };
         return PresentationTransition {
             state: WindowPresentationState::Normal,
             geometry,
@@ -253,61 +260,78 @@ pub fn calculate_presentation_geometry(
     match state {
         WindowPresentationState::Normal => normal_geometry,
         WindowPresentationState::Minimized => normal_geometry,
-        WindowPresentationState::Filled | WindowPresentationState::Fullscreen => work_area,
+        WindowPresentationState::Filled | WindowPresentationState::Fullscreen => {
+            normalize_area(work_area, 1, 1)
+        }
         WindowPresentationState::SmartZoomed => {
+            let work_area = normalize_area(work_area, 1, 1);
             if let Some((pref_w, pref_h)) = preferred_size {
-                let area_width = work_area.width.max(1);
-                let area_height = work_area.height.max(1);
-                let min_width = 200.min(area_width);
-                let min_height = 150.min(area_height);
-                let target_w = pref_w.clamp(min_width, area_width);
-                let target_h = pref_h.clamp(min_height, area_height);
-                let target_x = work_area.x + (work_area.width - target_w) / 2;
-                let target_y = work_area.y + (work_area.height - target_h) / 2;
+                let min_width = 200.min(work_area.width);
+                let min_height = 150.min(work_area.height);
+                let target_w = pref_w.clamp(min_width, work_area.width);
+                let target_h = pref_h.clamp(min_height, work_area.height);
+                let target_x = work_area.x.saturating_add((work_area.width - target_w) / 2);
+                let target_y = work_area
+                    .y
+                    .saturating_add((work_area.height - target_h) / 2);
                 WindowGeometry::new(target_x, target_y, target_w, target_h)
             } else {
                 work_area
             }
         }
-        WindowPresentationState::Tiled(placement) => match placement {
-            TilePlacement::Left => WindowGeometry::new(
-                work_area.x,
-                work_area.y,
-                work_area.width / 2,
-                work_area.height,
-            ),
-            TilePlacement::Right => WindowGeometry::new(
-                work_area.x + work_area.width / 2,
-                work_area.y,
-                work_area.width / 2,
-                work_area.height,
-            ),
-            TilePlacement::TopLeft => WindowGeometry::new(
-                work_area.x,
-                work_area.y,
-                work_area.width / 2,
-                work_area.height / 2,
-            ),
-            TilePlacement::TopRight => WindowGeometry::new(
-                work_area.x + work_area.width / 2,
-                work_area.y,
-                work_area.width / 2,
-                work_area.height / 2,
-            ),
-            TilePlacement::BottomLeft => WindowGeometry::new(
-                work_area.x,
-                work_area.y + work_area.height / 2,
-                work_area.width / 2,
-                work_area.height / 2,
-            ),
-            TilePlacement::BottomRight => WindowGeometry::new(
-                work_area.x + work_area.width / 2,
-                work_area.y + work_area.height / 2,
-                work_area.width / 2,
-                work_area.height / 2,
-            ),
-        },
+        WindowPresentationState::Tiled(placement) => {
+            // A split needs two addressable columns/rows.  A degenerate
+            // work area is therefore widened or heightened only for the
+            // affected axis so no tiled configure has a zero/negative size.
+            let (minimum_width, minimum_height) = match placement {
+                TilePlacement::Left | TilePlacement::Right => (2, 1),
+                TilePlacement::TopLeft
+                | TilePlacement::TopRight
+                | TilePlacement::BottomLeft
+                | TilePlacement::BottomRight => (2, 2),
+            };
+            let work_area = normalize_area(work_area, minimum_width, minimum_height);
+            let (left_width, right_width) = split_extent(work_area.width);
+            let (top_height, bottom_height) = split_extent(work_area.height);
+            let right_x = work_area.x.saturating_add(left_width);
+            let bottom_y = work_area.y.saturating_add(top_height);
+
+            match placement {
+                TilePlacement::Left => {
+                    WindowGeometry::new(work_area.x, work_area.y, left_width, work_area.height)
+                }
+                TilePlacement::Right => {
+                    WindowGeometry::new(right_x, work_area.y, right_width, work_area.height)
+                }
+                TilePlacement::TopLeft => {
+                    WindowGeometry::new(work_area.x, work_area.y, left_width, top_height)
+                }
+                TilePlacement::TopRight => {
+                    WindowGeometry::new(right_x, work_area.y, right_width, top_height)
+                }
+                TilePlacement::BottomLeft => {
+                    WindowGeometry::new(work_area.x, bottom_y, left_width, bottom_height)
+                }
+                TilePlacement::BottomRight => {
+                    WindowGeometry::new(right_x, bottom_y, right_width, bottom_height)
+                }
+            }
+        }
     }
+}
+
+fn normalize_area(area: WindowGeometry, minimum_width: i32, minimum_height: i32) -> WindowGeometry {
+    WindowGeometry::new(
+        area.x,
+        area.y,
+        area.width.max(minimum_width),
+        area.height.max(minimum_height),
+    )
+}
+
+fn split_extent(extent: i32) -> (i32, i32) {
+    let first = extent / 2;
+    (first, extent - first)
 }
 
 #[cfg(test)]
@@ -485,5 +509,199 @@ mod tests {
         );
         assert_eq!(transition.state, WindowPresentationState::Minimized);
         assert_eq!(transition.geometry, normal);
+    }
+
+    #[test]
+    fn transition_minimize_captures_restore_metadata_and_restores_normal_geometry() {
+        let normal = WindowGeometry::new(30, 40, 640, 420);
+        let work_area = WindowGeometry::new(0, 24, 1280, 712);
+        let output = WindowGeometry::new(0, 0, 1280, 800);
+
+        let minimized = transition_presentation_state(
+            WindowPresentationState::Normal,
+            normal,
+            None,
+            WindowPresentationState::Minimized,
+            work_area,
+            output,
+            None,
+            "output-a",
+            7,
+        );
+        let restore = minimized.restore_state.as_ref().expect("restore record");
+        assert_eq!(restore.normal_geometry, normal);
+        assert_eq!(restore.previous_state, WindowPresentationState::Normal);
+        assert_eq!(restore.output_id, "output-a");
+        assert_eq!(restore.space_id, 7);
+
+        let minimized_again = transition_presentation_state(
+            minimized.state,
+            minimized.geometry,
+            minimized.restore_state.as_ref(),
+            WindowPresentationState::Minimized,
+            WindowGeometry::new(100, 200, 320, 240),
+            WindowGeometry::new(100, 180, 400, 300),
+            None,
+            "output-b",
+            99,
+        );
+        assert_eq!(minimized_again.restore_state, minimized.restore_state);
+
+        let restored = transition_presentation_state(
+            minimized_again.state,
+            minimized_again.geometry,
+            minimized_again.restore_state.as_ref(),
+            WindowPresentationState::Normal,
+            WindowGeometry::new(100, 200, 320, 240),
+            WindowGeometry::new(100, 180, 400, 300),
+            None,
+            "output-b",
+            99,
+        );
+        assert_eq!(restored.state, WindowPresentationState::Normal);
+        assert_eq!(restored.geometry, normal);
+        assert_eq!(restored.restore_state, None);
+    }
+
+    #[test]
+    fn transition_preserves_first_restore_record_through_all_presentation_states() {
+        let normal = WindowGeometry::new(120, 88, 640, 420);
+        let work_area = WindowGeometry::new(0, 24, 1280, 712);
+        let output = WindowGeometry::new(0, 0, 1280, 800);
+
+        let smart_zoomed = transition_presentation_state(
+            WindowPresentationState::Normal,
+            normal,
+            None,
+            WindowPresentationState::SmartZoomed,
+            work_area,
+            output,
+            Some((800, 500)),
+            "output-a",
+            3,
+        );
+        let restore = smart_zoomed.restore_state.clone();
+
+        let filled = transition_presentation_state(
+            smart_zoomed.state,
+            smart_zoomed.geometry,
+            smart_zoomed.restore_state.as_ref(),
+            WindowPresentationState::Filled,
+            WindowGeometry::new(10, 40, 1100, 600),
+            WindowGeometry::new(10, 0, 1100, 700),
+            None,
+            "output-b",
+            8,
+        );
+        let tiled = transition_presentation_state(
+            filled.state,
+            filled.geometry,
+            filled.restore_state.as_ref(),
+            WindowPresentationState::Tiled(TilePlacement::BottomRight),
+            work_area,
+            output,
+            None,
+            "output-c",
+            12,
+        );
+        let fullscreen = transition_presentation_state(
+            tiled.state,
+            tiled.geometry,
+            tiled.restore_state.as_ref(),
+            WindowPresentationState::Fullscreen,
+            WindowGeometry::new(20, 30, 900, 500),
+            WindowGeometry::new(20, 0, 900, 650),
+            None,
+            "output-d",
+            16,
+        );
+        let minimized = transition_presentation_state(
+            fullscreen.state,
+            fullscreen.geometry,
+            fullscreen.restore_state.as_ref(),
+            WindowPresentationState::Minimized,
+            work_area,
+            output,
+            None,
+            "output-e",
+            20,
+        );
+
+        assert_eq!(filled.restore_state, restore);
+        assert_eq!(tiled.restore_state, restore);
+        assert_eq!(fullscreen.restore_state, restore);
+        assert_eq!(minimized.restore_state, restore);
+
+        let restored = transition_presentation_state(
+            minimized.state,
+            minimized.geometry,
+            minimized.restore_state.as_ref(),
+            WindowPresentationState::Normal,
+            work_area,
+            output,
+            None,
+            "output-f",
+            24,
+        );
+        assert_eq!(restored.geometry, normal);
+        assert_eq!(restored.restore_state, None);
+    }
+
+    #[test]
+    fn presentation_geometry_sanitizes_invalid_work_areas() {
+        let invalid_area = WindowGeometry::new(-40, 18, -801, -601);
+        let normal = WindowGeometry::new(20, 30, 640, 420);
+        let states = [
+            WindowPresentationState::SmartZoomed,
+            WindowPresentationState::Filled,
+            WindowPresentationState::Fullscreen,
+            WindowPresentationState::Tiled(TilePlacement::Left),
+            WindowPresentationState::Tiled(TilePlacement::BottomRight),
+        ];
+
+        for state in states {
+            let geometry =
+                calculate_presentation_geometry(invalid_area, state, Some((800, 500)), normal);
+            assert!(geometry.width >= 1, "{state:?} has invalid width");
+            assert!(geometry.height >= 1, "{state:?} has invalid height");
+        }
+    }
+
+    #[test]
+    fn tiled_geometry_partitions_odd_work_area_without_gaps() {
+        let work_area = WindowGeometry::new(11, 23, 801, 601);
+        let normal = WindowGeometry::new(20, 30, 640, 420);
+
+        let left = calculate_presentation_geometry(
+            work_area,
+            WindowPresentationState::Tiled(TilePlacement::Left),
+            None,
+            normal,
+        );
+        let right = calculate_presentation_geometry(
+            work_area,
+            WindowPresentationState::Tiled(TilePlacement::Right),
+            None,
+            normal,
+        );
+        let top_left = calculate_presentation_geometry(
+            work_area,
+            WindowPresentationState::Tiled(TilePlacement::TopLeft),
+            None,
+            normal,
+        );
+        let bottom_right = calculate_presentation_geometry(
+            work_area,
+            WindowPresentationState::Tiled(TilePlacement::BottomRight),
+            None,
+            normal,
+        );
+
+        assert_eq!(left.width + right.width, work_area.width);
+        assert_eq!(right.x, left.x + left.width);
+        assert_eq!(top_left.height + bottom_right.height, work_area.height);
+        assert_eq!(bottom_right.y, top_left.y + top_left.height);
+        assert_eq!(right.width, 401);
+        assert_eq!(bottom_right.height, 301);
     }
 }

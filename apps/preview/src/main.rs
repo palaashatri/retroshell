@@ -29,9 +29,6 @@ fn main() {
         }
     };
 
-    let view = PreviewView::new(image_path);
-    let window_title = view.window_title();
-
     let mut app = Application::new("Preview", BUNDLE_ID);
     app.set_initial_size(Size::new(960.0, 700.0));
     app.set_menus(preview_menus());
@@ -45,6 +42,9 @@ fn main() {
         view.handle_action(action);
     });
 
+    let mut view = PreviewView::new(image_path);
+    view.set_event_loop_waker(app.event_waker());
+    let window_title = view.window_title();
     let mut window = Window::new(window_title);
     window.set_content(Box::new(view));
     app.set_main_window(window);

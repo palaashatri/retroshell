@@ -6,18 +6,22 @@ use slopos_kit::theme::ThemeContext;
 use slopos_kit::widget::{Widget, WidgetState};
 use slopos_kit::{AccessibilityNode, AccessibilityRole, Button, EventResult, Label};
 use slopos_kit::{LayoutConstraint, Rect, Size};
+use slopos_sdk::EventLoopWaker;
 use slopos_vision_client::{VisionClient, VisionClientConfig};
 use slopos_vision_protocol::{
     ArtifactRole, AssetDataResponse, ClientRequestId, ExtractTextJob, ExtractTextOptions,
-    FileLabel, ImageMediaType, ImageMetadata, ImageSource, InlineImage, JobStatus, LiftSubjectJob,
-    LiftSubjectOptions, PixelSize, SubmitJobRequest, VisionJob, VisionResult, MAX_FILE_STEM_LEN,
+    FileLabel, ImageMediaType, ImageMetadata, ImageSource, InlineImage, JobId, JobResultResponse,
+    JobStatus, LiftSubjectJob, LiftSubjectOptions, PixelSize, SubmitJobRequest, VisionJob,
+    VisionResult, MAX_FILE_STEM_LEN,
 };
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_ENCODED_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SOURCE_PIXELS: u64 = 40_000_000;
@@ -30,6 +34,12 @@ const THUMBNAIL_MAX_HEIGHT: u32 = 64;
 const MIN_ZOOM: f32 = 0.01;
 const MAX_ZOOM: f32 = 8.0;
 const SCROLLBAR_WIDTH: f32 = 12.0;
+const VISION_POLL_INTERVAL: Duration = Duration::from_millis(250);
+// CPU-only OCR/segmentation can take several minutes on the supported UTM
+// guest. Keep the watcher bounded, but allow a legitimate local job to reach
+// its terminal event instead of abandoning it before the daemon completes.
+const VISION_JOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const VISION_EVENT_QUEUE_CAPACITY: usize = 8;
 
 static ARTIFACT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -373,6 +383,11 @@ pub struct PreviewView {
     scrollbar: Panel,
     status_label: Label,
     status_text: String,
+    vision_event_tx: mpsc::SyncSender<VisionJobEvent>,
+    vision_event_rx: mpsc::Receiver<VisionJobEvent>,
+    vision_event_waker: EventLoopWaker,
+    vision_submission_generation: Arc<AtomicU64>,
+    active_vision_submission: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -399,6 +414,235 @@ impl VisionAction {
             Self::LiftSubject => "Lift Subject",
         }
     }
+}
+
+#[derive(Debug)]
+struct VisionJobTerminal {
+    action: VisionAction,
+    job_id: JobId,
+    job: JobResultResponse,
+    asset: Option<AssetDataResponse>,
+    asset_error: Option<String>,
+}
+
+#[derive(Debug)]
+enum VisionJobEvent {
+    Status {
+        submission_id: u64,
+        action: VisionAction,
+        status: JobStatus,
+    },
+    Terminal {
+        submission_id: u64,
+        result: Box<VisionJobTerminal>,
+    },
+    Timeout {
+        submission_id: u64,
+        action: VisionAction,
+        elapsed: Duration,
+        last_error: Option<String>,
+    },
+}
+
+impl VisionJobEvent {
+    fn submission_id(&self) -> u64 {
+        match self {
+            Self::Status { submission_id, .. }
+            | Self::Terminal { submission_id, .. }
+            | Self::Timeout { submission_id, .. } => *submission_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisionPollState {
+    Pending,
+    Terminal,
+    TimedOut,
+}
+
+fn vision_poll_state(
+    status: JobStatus,
+    started_at: Instant,
+    now: Instant,
+    timeout: Duration,
+) -> VisionPollState {
+    if matches!(
+        status,
+        JobStatus::Succeeded | JobStatus::Failed | JobStatus::Cancelled | JobStatus::Rejected
+    ) {
+        VisionPollState::Terminal
+    } else if now.saturating_duration_since(started_at) >= timeout {
+        VisionPollState::TimedOut
+    } else {
+        VisionPollState::Pending
+    }
+}
+
+struct VisionJobWatch {
+    submission_id: u64,
+    action: VisionAction,
+    job_id: JobId,
+}
+
+fn vision_submission_is_current(generation: &AtomicU64, submission_id: u64) -> bool {
+    generation.load(Ordering::Acquire) == submission_id
+}
+
+fn send_vision_timeout(
+    event_tx: &mpsc::SyncSender<VisionJobEvent>,
+    event_waker: &EventLoopWaker,
+    generation: &AtomicU64,
+    watch: &VisionJobWatch,
+    started_at: Instant,
+    last_error: Option<String>,
+) {
+    if !vision_submission_is_current(generation, watch.submission_id) {
+        return;
+    }
+    if event_tx
+        .send(VisionJobEvent::Timeout {
+            submission_id: watch.submission_id,
+            action: watch.action,
+            elapsed: started_at.elapsed().min(VISION_JOB_TIMEOUT),
+            last_error,
+        })
+        .is_ok()
+    {
+        event_waker.wake();
+    }
+}
+
+fn sleep_until_next_vision_poll(started_at: Instant) {
+    let elapsed = started_at.elapsed();
+    if elapsed < VISION_JOB_TIMEOUT {
+        thread::sleep(VISION_POLL_INTERVAL.min(VISION_JOB_TIMEOUT - elapsed));
+    }
+}
+
+fn retrieve_lifted_subject_asset(
+    client: &VisionClient,
+    job: &JobResultResponse,
+) -> (Option<AssetDataResponse>, Option<String>) {
+    let Some(VisionResult::LiftSubject(result)) = job.result.as_ref() else {
+        return (None, None);
+    };
+    if result.cutout.role != ArtifactRole::LiftedSubject {
+        return (None, None);
+    }
+    match client.get_asset(result.cutout.image.asset_id.clone()) {
+        Ok(asset) => (Some(asset), None),
+        Err(error) => (None, Some(error.to_string())),
+    }
+}
+
+fn watch_vision_job(
+    client: VisionClient,
+    event_tx: mpsc::SyncSender<VisionJobEvent>,
+    event_waker: EventLoopWaker,
+    generation: Arc<AtomicU64>,
+    watch: VisionJobWatch,
+) {
+    let started_at = Instant::now();
+    let mut last_status = None;
+    let mut last_error = None;
+
+    loop {
+        if !vision_submission_is_current(&generation, watch.submission_id) {
+            return;
+        }
+        if started_at.elapsed() >= VISION_JOB_TIMEOUT {
+            send_vision_timeout(
+                &event_tx,
+                &event_waker,
+                &generation,
+                &watch,
+                started_at,
+                last_error,
+            );
+            return;
+        }
+
+        match client.get_result(watch.job_id.clone()) {
+            Ok(job) => {
+                last_error = None;
+                match vision_poll_state(job.status, started_at, Instant::now(), VISION_JOB_TIMEOUT)
+                {
+                    VisionPollState::Pending => {
+                        if last_status != Some(job.status) {
+                            last_status = Some(job.status);
+                            if event_tx
+                                .try_send(VisionJobEvent::Status {
+                                    submission_id: watch.submission_id,
+                                    action: watch.action,
+                                    status: job.status,
+                                })
+                                .is_ok()
+                            {
+                                event_waker.wake();
+                            }
+                        }
+                        sleep_until_next_vision_poll(started_at);
+                    }
+                    VisionPollState::Terminal => {
+                        let (asset, asset_error) = if job.status == JobStatus::Succeeded {
+                            retrieve_lifted_subject_asset(&client, &job)
+                        } else {
+                            (None, None)
+                        };
+                        if !vision_submission_is_current(&generation, watch.submission_id) {
+                            return;
+                        }
+                        if event_tx
+                            .send(VisionJobEvent::Terminal {
+                                submission_id: watch.submission_id,
+                                result: Box::new(VisionJobTerminal {
+                                    action: watch.action,
+                                    job_id: watch.job_id.clone(),
+                                    job,
+                                    asset,
+                                    asset_error,
+                                }),
+                            })
+                            .is_ok()
+                        {
+                            event_waker.wake();
+                        }
+                        return;
+                    }
+                    VisionPollState::TimedOut => {
+                        send_vision_timeout(
+                            &event_tx,
+                            &event_waker,
+                            &generation,
+                            &watch,
+                            started_at,
+                            None,
+                        );
+                        return;
+                    }
+                }
+            }
+            Err(error) => {
+                last_error = Some(error.to_string());
+                sleep_until_next_vision_poll(started_at);
+            }
+        }
+    }
+}
+
+fn spawn_vision_job_watcher(
+    client: VisionClient,
+    event_tx: mpsc::SyncSender<VisionJobEvent>,
+    event_waker: EventLoopWaker,
+    generation: Arc<AtomicU64>,
+    watch: VisionJobWatch,
+) -> Result<(), String> {
+    thread::Builder::new()
+        .name("preview-vision-watch".to_string())
+        .spawn(move || watch_vision_job(client, event_tx, event_waker, generation, watch))
+        .map(|_| ())
+        .map_err(|error| format!("cannot start Vision job watcher: {error}"))
 }
 
 impl PreviewView {
@@ -431,6 +675,7 @@ impl PreviewView {
         image_scroll.scrollable_x = true;
         image_scroll.scrollable_y = true;
         image_scroll.set_content(Box::new(canvas));
+        let (vision_event_tx, vision_event_rx) = mpsc::sync_channel(VISION_EVENT_QUEUE_CAPACITY);
 
         let mut view = Self {
             state: WidgetState::new(),
@@ -456,9 +701,21 @@ impl PreviewView {
             scrollbar: solid_panel([0.50, 0.50, 0.48, 1.0]),
             status_label: Label::new(status.clone()),
             status_text: status,
+            vision_event_tx,
+            vision_event_rx,
+            vision_event_waker: EventLoopWaker::default(),
+            vision_submission_generation: Arc::new(AtomicU64::new(0)),
+            active_vision_submission: None,
         };
         view.update_labels();
         view
+    }
+
+    /// Install the SDK wake handle after the application has been created.
+    /// Vision watcher threads use it to wake the event loop when a result is
+    /// ready, while the default handle keeps isolated widget tests inert.
+    pub fn set_event_loop_waker(&mut self, waker: EventLoopWaker) {
+        self.vision_event_waker = waker;
     }
 
     pub fn window_title(&self) -> String {
@@ -516,9 +773,11 @@ impl PreviewView {
     }
 
     fn submit_vision_job(&mut self, action: VisionAction) {
+        let submission_id = self.begin_vision_submission();
         let request = match self.build_vision_request(action) {
             Ok(request) => request,
             Err(error) => {
+                self.active_vision_submission = None;
                 self.set_status(format!("Vision unavailable: {error}; no output produced."));
                 return;
             }
@@ -527,6 +786,7 @@ impl PreviewView {
         let mut config = match VisionClientConfig::from_environment() {
             Ok(config) => config,
             Err(error) => {
+                self.active_vision_submission = None;
                 self.set_status(format!("Vision unavailable: {error}; no output produced."));
                 return;
             }
@@ -539,6 +799,7 @@ impl PreviewView {
         let client = match VisionClient::with_config(config) {
             Ok(client) => client,
             Err(error) => {
+                self.active_vision_submission = None;
                 self.set_status(format!("Vision unavailable: {error}; no output produced."));
                 return;
             }
@@ -547,13 +808,103 @@ impl PreviewView {
         let operation_name = action.label();
         match client.submit(request) {
             Ok(accepted) => {
-                self.resolve_vision_job(&client, action, accepted.job_id, operation_name);
+                let watch = VisionJobWatch {
+                    submission_id,
+                    action,
+                    job_id: accepted.job_id.clone(),
+                };
+                self.set_status(format!(
+                    "{operation_name} submitted ({:?}); waiting for result.",
+                    accepted.status
+                ));
+                if let Err(error) = spawn_vision_job_watcher(
+                    client,
+                    self.vision_event_tx.clone(),
+                    self.vision_event_waker.clone(),
+                    Arc::clone(&self.vision_submission_generation),
+                    watch,
+                ) {
+                    self.active_vision_submission = None;
+                    self.set_status(format!(
+                        "{operation_name} accepted ({:?}) but could not be watched: {error}; no output produced.",
+                        accepted.status
+                    ));
+                }
             }
             Err(error) => {
+                self.active_vision_submission = None;
                 self.set_status(format!(
                     "{operation_name} unavailable: {error}; no output produced."
                 ));
             }
+        }
+    }
+
+    fn begin_vision_submission(&mut self) -> u64 {
+        let submission_id = self
+            .vision_submission_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        self.active_vision_submission = Some(submission_id);
+        submission_id
+    }
+
+    fn invalidate_vision_submission(&mut self) {
+        self.vision_submission_generation
+            .fetch_add(1, Ordering::AcqRel);
+        self.active_vision_submission = None;
+    }
+
+    fn handle_vision_event(&mut self, event: VisionJobEvent) {
+        if self.active_vision_submission != Some(event.submission_id()) {
+            return;
+        }
+
+        match event {
+            VisionJobEvent::Status { action, status, .. } => self.set_status(format!(
+                "{} submitted ({status:?}); waiting for result.",
+                action.label()
+            )),
+            VisionJobEvent::Terminal { result, .. } => {
+                let VisionJobTerminal {
+                    action,
+                    job_id,
+                    job,
+                    asset,
+                    asset_error,
+                } = *result;
+                self.active_vision_submission = None;
+                if job.job_id != job_id {
+                    self.set_status(format!(
+                        "{} returned a result for an unexpected job; no output produced.",
+                        action.label()
+                    ));
+                    return;
+                }
+                self.resolve_vision_job(action, job, asset, asset_error);
+            }
+            VisionJobEvent::Timeout {
+                action,
+                elapsed,
+                last_error,
+                ..
+            } => {
+                self.active_vision_submission = None;
+                let detail = last_error
+                    .map(|error| format!("; last poll error: {error}"))
+                    .unwrap_or_default();
+                self.set_status(format!(
+                    "{} timed out after {} seconds while waiting for the daemon{detail}; no output produced.",
+                    action.label(),
+                    elapsed.as_secs().max(1)
+                ));
+            }
+        }
+    }
+
+    fn poll_vision_events(&mut self) {
+        while let Ok(event) = self.vision_event_rx.try_recv() {
+            self.handle_vision_event(event);
         }
     }
 
@@ -607,34 +958,51 @@ impl PreviewView {
 
     fn resolve_vision_job(
         &mut self,
-        client: &VisionClient,
         action: VisionAction,
-        job_id: slopos_vision_protocol::JobId,
-        operation_name: &str,
+        job: JobResultResponse,
+        asset: Option<AssetDataResponse>,
+        asset_error: Option<String>,
     ) {
-        let job = match client.get_result(job_id.clone()) {
-            Ok(job) => job,
-            Err(error) => {
-                self.set_status(format!(
-                    "{operation_name} submitted ({job_id:?}); result not available: {error}."
-                ));
-                return;
-            }
-        };
-
-        if let Some(error) = job.error {
+        let operation_name = action.label();
+        if let Some(error) = job.error.as_ref() {
+            let state = match job.status {
+                JobStatus::Cancelled => "cancelled",
+                JobStatus::Rejected => "rejected",
+                _ => "failed",
+            };
             self.set_status(format!(
-                "{operation_name} failed: {}; no output produced.",
+                "{operation_name} {state}: {}; no output produced.",
                 error.message
             ));
             return;
         }
-        if job.status != JobStatus::Succeeded {
-            self.set_status(format!(
-                "{operation_name} submitted ({:?}); no output is available yet.",
-                job.status
-            ));
-            return;
+        match job.status {
+            JobStatus::Failed => {
+                self.set_status(format!(
+                    "{operation_name} failed (daemon reported Failed); no output produced."
+                ));
+                return;
+            }
+            JobStatus::Cancelled => {
+                self.set_status(format!(
+                    "{operation_name} cancelled by the daemon; no output produced."
+                ));
+                return;
+            }
+            JobStatus::Rejected => {
+                self.set_status(format!(
+                    "{operation_name} was rejected by the daemon; no output produced."
+                ));
+                return;
+            }
+            JobStatus::Queued | JobStatus::Running => {
+                self.set_status(format!(
+                    "{operation_name} submitted ({:?}); waiting for result.",
+                    job.status
+                ));
+                return;
+            }
+            JobStatus::Succeeded => {}
         }
 
         let source_path = self.image_canvas_image().map(|image| image.path.clone());
@@ -671,20 +1039,24 @@ impl PreviewView {
                     );
                     return;
                 };
-                match client.get_asset(result.cutout.image.asset_id.clone()) {
-                    Ok(asset) => match persist_lifted_subject(source_path, &asset) {
-                        Ok((path, dimensions)) => self.set_status(format!(
-                            "Lift Subject completed: {} x {} PNG saved to {}.",
-                            dimensions.width,
-                            dimensions.height,
-                            path.display()
-                        )),
-                        Err(error) => self.set_status(format!(
-                            "Lift Subject returned an invalid or unsaved asset: {error}; no output produced."
-                        )),
-                    },
+                let Some(asset) = asset else {
+                    let detail = asset_error.unwrap_or_else(|| {
+                        "the daemon did not return the lifted-subject asset".to_string()
+                    });
+                    self.set_status(format!(
+                        "Lift Subject completed but its asset could not be retrieved: {detail}; no output produced."
+                    ));
+                    return;
+                };
+                match persist_lifted_subject(source_path, &asset) {
+                    Ok((path, dimensions)) => self.set_status(format!(
+                        "Lift Subject completed: {} x {} PNG saved to {}.",
+                        dimensions.width,
+                        dimensions.height,
+                        path.display()
+                    )),
                     Err(error) => self.set_status(format!(
-                        "Lift Subject completed but its asset could not be retrieved: {error}; no output produced."
+                        "Lift Subject returned an invalid or unsaved asset: {error}; no output produced."
                     )),
                 }
             }
@@ -711,6 +1083,7 @@ impl PreviewView {
     }
 
     fn load_path(&mut self, path: PathBuf) {
+        self.invalidate_vision_submission();
         let filename = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -989,6 +1362,7 @@ impl Widget for PreviewView {
     }
 
     fn update(&mut self) {
+        self.poll_vision_events();
         self.image_scroll.update();
         self.update_labels();
         self.sync_scrollbar();
@@ -1048,6 +1422,13 @@ impl Widget for PreviewView {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+impl Drop for PreviewView {
+    fn drop(&mut self) {
+        self.vision_submission_generation
+            .fetch_add(1, Ordering::AcqRel);
     }
 }
 
@@ -1312,6 +1693,65 @@ mod tests {
             )
             .unwrap();
         bytes
+    }
+
+    #[test]
+    fn vision_poll_state_keeps_nonterminal_jobs_pending() {
+        let started_at = Instant::now();
+        let now = started_at + Duration::from_secs(1);
+
+        assert_eq!(
+            vision_poll_state(JobStatus::Queued, started_at, now, VISION_JOB_TIMEOUT),
+            VisionPollState::Pending
+        );
+        assert_eq!(
+            vision_poll_state(JobStatus::Running, started_at, now, VISION_JOB_TIMEOUT),
+            VisionPollState::Pending
+        );
+    }
+
+    #[test]
+    fn vision_poll_state_recognizes_terminal_success_failure_and_cancellation() {
+        let started_at = Instant::now();
+        let now = started_at + VISION_JOB_TIMEOUT;
+
+        for status in [
+            JobStatus::Succeeded,
+            JobStatus::Failed,
+            JobStatus::Cancelled,
+            JobStatus::Rejected,
+        ] {
+            assert_eq!(
+                vision_poll_state(status, started_at, now, VISION_JOB_TIMEOUT),
+                VisionPollState::Terminal
+            );
+        }
+    }
+
+    #[test]
+    fn vision_poll_state_times_out_nonterminal_jobs_at_the_bound() {
+        let started_at = Instant::now();
+        let before_timeout = started_at + VISION_JOB_TIMEOUT - Duration::from_millis(1);
+        let at_timeout = started_at + VISION_JOB_TIMEOUT;
+
+        assert_eq!(
+            vision_poll_state(
+                JobStatus::Running,
+                started_at,
+                before_timeout,
+                VISION_JOB_TIMEOUT
+            ),
+            VisionPollState::Pending
+        );
+        assert_eq!(
+            vision_poll_state(
+                JobStatus::Running,
+                started_at,
+                at_timeout,
+                VISION_JOB_TIMEOUT
+            ),
+            VisionPollState::TimedOut
+        );
     }
 
     #[test]

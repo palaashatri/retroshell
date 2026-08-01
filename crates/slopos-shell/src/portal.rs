@@ -23,10 +23,11 @@
 //!
 //! [`ScreencastStream`] values are **protocol-level stubs**. `node_id` fields are placeholders
 //! for a future PipeWire graph — this code does **not** create live PipeWire nodes or streams.
-//! Sessions carry an honest [`PortalScreencastSession::backend_note`]
-//! (`backend=portal_stub` or `backend=pipewire_socket_present`) from readiness probe.
+//! Sessions expose a typed [`PortalScreencastCapability`] so a PipeWire socket being present is
+//! distinguishable from a live stream. The existing
+//! [`PortalScreencastSession::backend_note`] remains available for the portal wire result.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -329,6 +330,63 @@ pub struct ScreencastStream {
     pub source_type: u32,
 }
 
+/// Media capability represented by the pure portal path.
+///
+/// `PipeWireReady` means that readiness probing observed the PipeWire socket. It does not mean
+/// that this module connected to PipeWire or exported a stream. `PipeWireLive` is reserved for a
+/// future implementation that has attached a real graph node; no current constructor or Start
+/// path returns it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortalScreencastCapability {
+    /// No usable screencast capability is represented by the current session data.
+    Unavailable,
+    /// The portal protocol can be answered, but streams are placeholders only.
+    PortalStub,
+    /// A PipeWire socket is present, but no live graph or stream is attached here.
+    PipeWireReady,
+    /// A real PipeWire graph and stream are attached (not implemented in this module).
+    PipeWireLive,
+}
+
+impl PortalScreencastCapability {
+    /// Stable label for diagnostics and structured portal-adjacent logs.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::PortalStub => "portal_stub",
+            Self::PipeWireReady => "pipewire_ready",
+            Self::PipeWireLive => "pipewire_live",
+        }
+    }
+
+    /// Whether this capability permits a live media claim.
+    pub const fn is_live(self) -> bool {
+        matches!(self, Self::PipeWireLive)
+    }
+}
+
+/// Lifecycle state exposed by the pure ScreenCast handlers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortalScreencastState {
+    /// CreateSession completed; the default placeholder may still be replaced.
+    Created,
+    /// SelectSources completed successfully.
+    SourcesSelected,
+    /// Start completed successfully.
+    Started,
+}
+
+impl PortalScreencastState {
+    /// Stable label for diagnostics and focused state assertions.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::SourcesSelected => "sources_selected",
+            Self::Started => "started",
+        }
+    }
+}
+
 /// ScreenCast session state held by pure handlers (and by the D-Bus session map).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortalScreencastSession {
@@ -349,10 +407,56 @@ pub struct PortalScreencastSession {
     pub backend_note: String,
 }
 
+impl PortalScreencastSession {
+    /// Return the lifecycle state derived from the existing public flags.
+    pub const fn state(&self) -> PortalScreencastState {
+        if self.started {
+            PortalScreencastState::Started
+        } else if self.sources_selected {
+            PortalScreencastState::SourcesSelected
+        } else {
+            PortalScreencastState::Created
+        }
+    }
+
+    /// Return the typed capability without upgrading socket readiness to live streaming.
+    pub fn capability(&self) -> PortalScreencastCapability {
+        capability_from_backend_note(&self.backend_note, &self.streams)
+    }
+}
+
 /// Portal Start / CreateSession `note` when only protocol stubs are available.
 pub const SCREENCAST_NOTE_PORTAL_STUB: &str = "backend=portal_stub";
 /// Portal note when the PipeWire socket exists (still not a live stream claim).
 pub const SCREENCAST_NOTE_PIPEWIRE_SOCKET: &str = "backend=pipewire_socket_present";
+
+/// Map a readiness probe to the typed capability boundary.
+///
+/// The normal probe produces `PortalStub` without a socket and `PipeWireReady` with one. An
+/// explicitly unavailable backend stays unavailable, even if a malformed readiness value also
+/// reports a socket. Neither readiness result is sufficient to claim `PipeWireLive`.
+pub fn screencast_capability_from_readiness(
+    ready: &crate::screencast_pw::ScreencastReadiness,
+) -> PortalScreencastCapability {
+    use crate::screencast_pw::ScreencastBackend;
+
+    if ready.backend == ScreencastBackend::Unavailable {
+        PortalScreencastCapability::Unavailable
+    } else if ready.pipewire_socket_present {
+        PortalScreencastCapability::PipeWireReady
+    } else {
+        PortalScreencastCapability::PortalStub
+    }
+}
+
+/// Pure map from socket presence alone to the typed capability boundary.
+pub const fn screencast_capability_from_socket(socket_present: bool) -> PortalScreencastCapability {
+    if socket_present {
+        PortalScreencastCapability::PipeWireReady
+    } else {
+        PortalScreencastCapability::PortalStub
+    }
+}
 
 /// Pure map from screencast readiness → honest backend note string.
 ///
@@ -372,6 +476,21 @@ pub fn screencast_backend_note_from_socket(socket_present: bool) -> String {
         SCREENCAST_NOTE_PIPEWIRE_SOCKET.to_string()
     } else {
         SCREENCAST_NOTE_PORTAL_STUB.to_string()
+    }
+}
+
+fn capability_from_backend_note(
+    backend_note: &str,
+    streams: &[ScreencastStream],
+) -> PortalScreencastCapability {
+    if streams.is_empty() {
+        return PortalScreencastCapability::Unavailable;
+    }
+
+    match backend_note {
+        SCREENCAST_NOTE_PORTAL_STUB => PortalScreencastCapability::PortalStub,
+        SCREENCAST_NOTE_PIPEWIRE_SOCKET => PortalScreencastCapability::PipeWireReady,
+        _ => PortalScreencastCapability::Unavailable,
     }
 }
 
@@ -436,10 +555,24 @@ pub fn apply_screencast_readiness(
     session.backend_note = screencast_backend_note(ready);
 }
 
+fn validate_screencast_source_ids(source_ids: &[u32]) -> Result<(), String> {
+    let mut seen = HashSet::with_capacity(source_ids.len());
+    for &source_id in source_ids {
+        if source_id == 0 {
+            return Err("invalid source id 0".into());
+        }
+        if !seen.insert(source_id) {
+            return Err(format!("duplicate source id: {source_id}"));
+        }
+    }
+    Ok(())
+}
+
 /// Pure ScreenCast SelectSources: bind `source_ids` as stream node_id placeholders.
 ///
 /// Empty `source_ids` is an error (cancelled / nothing selected). When `multiple` is
-/// false, more than one id is rejected. Does not talk to PipeWire.
+/// false, more than one id is rejected. Zero and duplicate ids are rejected before the session
+/// is mutated. Does not talk to PipeWire.
 pub fn select_screencast_sources(
     session: &mut PortalScreencastSession,
     source_ids: &[u32],
@@ -453,6 +586,7 @@ pub fn select_screencast_sources(
     if !session.multiple && source_ids.len() > 1 {
         return Err("multiple sources not allowed".into());
     }
+    validate_screencast_source_ids(source_ids)?;
     let source_type = default_source_type(session.types);
     session.streams = source_ids
         .iter()
@@ -470,6 +604,13 @@ pub fn select_screencast_sources(
 pub struct ScreencastStartOutcome {
     pub streams: Vec<ScreencastStream>,
     pub note: String,
+}
+
+impl ScreencastStartOutcome {
+    /// Return the typed capability represented by the Start result.
+    pub fn capability(&self) -> PortalScreencastCapability {
+        capability_from_backend_note(&self.note, &self.streams)
+    }
 }
 
 /// Pure ScreenCast Start: requires at least one stream (protocol-level stubs only).
@@ -764,6 +905,74 @@ mod tests {
     }
 
     #[test]
+    fn screencast_capability_does_not_promote_socket_to_live() {
+        let stub_ready =
+            crate::screencast_pw::probe_screencast_readiness(Some("/run/user/1000"), false, false);
+        assert_eq!(
+            screencast_capability_from_readiness(&stub_ready),
+            PortalScreencastCapability::PortalStub
+        );
+        assert_eq!(
+            screencast_capability_from_socket(false),
+            PortalScreencastCapability::PortalStub
+        );
+
+        let unavailable = crate::screencast_pw::ScreencastReadiness {
+            backend: crate::screencast_pw::ScreencastBackend::Unavailable,
+            pipewire_socket_present: true,
+            pw_cli_present: false,
+            xdg_runtime_dir: None,
+            notes: vec!["capture backend unavailable".into()],
+        };
+        assert_eq!(
+            screencast_capability_from_readiness(&unavailable),
+            PortalScreencastCapability::Unavailable
+        );
+
+        let pipewire_ready =
+            crate::screencast_pw::probe_screencast_readiness(Some("/run/user/1000"), true, false);
+        assert_eq!(
+            screencast_capability_from_readiness(&pipewire_ready),
+            PortalScreencastCapability::PipeWireReady
+        );
+        assert!(!PortalScreencastCapability::PipeWireReady.is_live());
+        assert!(PortalScreencastCapability::PipeWireLive.is_live());
+
+        let mut session = create_screencast_session(PortalScreencastRequest::default());
+        let outcome = start_screencast_with_readiness(&mut session, &pipewire_ready).unwrap();
+        assert_eq!(
+            session.capability(),
+            PortalScreencastCapability::PipeWireReady
+        );
+        assert_eq!(
+            outcome.capability(),
+            PortalScreencastCapability::PipeWireReady
+        );
+        assert!(!outcome.capability().is_live());
+    }
+
+    #[test]
+    fn screencast_lifecycle_exposes_create_select_start_transitions() {
+        let mut session = create_screencast_session(PortalScreencastRequest {
+            types: SCREENCAST_SOURCE_TYPE_MONITOR,
+            multiple: false,
+            cursor_mode: 0,
+        });
+        assert_eq!(session.state(), PortalScreencastState::Created);
+        assert_eq!(session.state().as_str(), "created");
+
+        select_screencast_sources(&mut session, &[7]).unwrap();
+        assert_eq!(session.state(), PortalScreencastState::SourcesSelected);
+        assert_eq!(session.state().as_str(), "sources_selected");
+
+        start_screencast(&mut session).unwrap();
+        assert_eq!(session.state(), PortalScreencastState::Started);
+        assert_eq!(session.state().as_str(), "started");
+        assert!(start_screencast(&mut session).is_err());
+        assert_eq!(session.state(), PortalScreencastState::Started);
+    }
+
+    #[test]
     fn select_screencast_sources_updates_streams() {
         let mut session = create_screencast_session(PortalScreencastRequest {
             types: SCREENCAST_SOURCE_TYPE_MONITOR | SCREENCAST_SOURCE_TYPE_WINDOW,
@@ -786,6 +995,33 @@ mod tests {
             cursor_mode: 0,
         });
         assert!(select_screencast_sources(&mut session, &[1, 2]).is_err());
+    }
+
+    #[test]
+    fn select_screencast_sources_rejects_invalid_ids_without_mutating() {
+        let mut session = create_screencast_session(PortalScreencastRequest {
+            types: SCREENCAST_SOURCE_TYPE_MONITOR,
+            multiple: true,
+            cursor_mode: 0,
+        });
+        let original_streams = session.streams.clone();
+
+        assert_eq!(
+            select_screencast_sources(&mut session, &[0]).unwrap_err(),
+            "invalid source id 0"
+        );
+        assert_eq!(session.streams, original_streams);
+        assert_eq!(session.state(), PortalScreencastState::Created);
+
+        assert_eq!(
+            select_screencast_sources(&mut session, &[7, 7]).unwrap_err(),
+            "duplicate source id: 7"
+        );
+        assert_eq!(session.streams, original_streams);
+        assert_eq!(session.state(), PortalScreencastState::Created);
+
+        select_screencast_sources(&mut session, &[7, 9]).unwrap();
+        assert_eq!(session.state(), PortalScreencastState::SourcesSelected);
     }
 
     #[test]

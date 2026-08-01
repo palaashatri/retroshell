@@ -2,6 +2,7 @@ use ab_glyph::{Font as AbFont, FontArc, PxScale, ScaleFont};
 use cosmic_text::{Family, FontSystem};
 use fontdb::{Query, Stretch, Style, Weight};
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, OnceLock};
 
@@ -86,12 +87,78 @@ pub struct RasterGlyph {
     pub descent: f32,
 }
 
+/// The cache key uses the exact physical pixel size used by `ab_glyph`.
+/// Keeping the float bits avoids rounding two nearby scales into the same
+/// raster while still giving the hash map a stable, comparable key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct GlyphCacheKey {
+    ch: char,
+    font_size_bits: u32,
+}
+
+impl GlyphCacheKey {
+    fn new(ch: char, font_size: f32) -> Option<Self> {
+        if !font_size.is_finite() || font_size <= 0.0 {
+            return None;
+        }
+
+        Some(Self {
+            ch,
+            font_size_bits: font_size.to_bits(),
+        })
+    }
+}
+
+const GLYPH_CACHE_CAPACITY: usize = 4096;
+
+#[derive(Default)]
+struct GlyphCache {
+    entries: HashMap<GlyphCacheKey, Option<RasterGlyph>>,
+}
+
+impl GlyphCache {
+    fn lookup(&self, key: GlyphCacheKey) -> Option<Option<RasterGlyph>> {
+        self.entries.get(&key).cloned()
+    }
+
+    fn insert(&mut self, key: GlyphCacheKey, glyph: Option<RasterGlyph>) {
+        if !self.entries.contains_key(&key) && self.entries.len() >= GLYPH_CACHE_CAPACITY {
+            // Clearing at a fixed entry count keeps memory bounded without
+            // depending on hash-map iteration order for eviction.
+            self.entries.clear();
+        }
+        self.entries.insert(key, glyph);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+static RASTER_CACHE: OnceLock<Mutex<GlyphCache>> = OnceLock::new();
+
+fn raster_cache() -> &'static Mutex<GlyphCache> {
+    RASTER_CACHE.get_or_init(|| Mutex::new(GlyphCache::default()))
+}
+
 pub fn rasterize_char(ch: char, font_size: f32) -> Option<RasterGlyph> {
-    let font = AB_FONT.get_or_init(load_ab_font).as_ref()?;
-    let glyph_id = AbFont::glyph_id(font, ch);
     if ch.is_control() {
         return None;
     }
+    let key = GlyphCacheKey::new(ch, font_size)?;
+    if let Some(cached) = raster_cache().lock().lookup(key) {
+        return cached;
+    }
+
+    let glyph = rasterize_char_uncached(ch, font_size);
+    raster_cache().lock().insert(key, glyph.clone());
+    glyph
+}
+
+fn rasterize_char_uncached(ch: char, font_size: f32) -> Option<RasterGlyph> {
+    let font = AB_FONT.get_or_init(load_ab_font).as_ref()?;
+    let glyph_id = AbFont::glyph_id(font, ch);
     if glyph_id.0 == 0 && !ch.is_control() {
         return None;
     }
@@ -152,4 +219,87 @@ pub fn rasterize_char(ch: char, font_size: f32) -> Option<RasterGlyph> {
         ascent,
         descent,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_glyph() -> RasterGlyph {
+        RasterGlyph {
+            data: vec![255],
+            width: 1,
+            height: 1,
+            advance: 1.0,
+            bearing_x: 0.0,
+            bearing_y: 0.0,
+            top: 0.0,
+            ascent: 1.0,
+            descent: 0.0,
+        }
+    }
+
+    #[test]
+    fn cache_key_is_stable_and_scale_sensitive() {
+        let base = GlyphCacheKey::new('A', 13.0).expect("valid size");
+
+        assert_eq!(base, GlyphCacheKey::new('A', 13.0).expect("valid size"));
+        assert_ne!(base, GlyphCacheKey::new('A', 13.25).expect("valid size"));
+        assert_ne!(base, GlyphCacheKey::new('B', 13.0).expect("valid size"));
+    }
+
+    #[test]
+    fn cache_reuses_hits_and_preserves_missing_glyphs() {
+        let mut cache = GlyphCache::default();
+        let present_key = GlyphCacheKey::new('A', 13.0).expect("valid size");
+        let missing_key = GlyphCacheKey::new('\u{1f600}', 13.0).expect("valid size");
+        let glyph = sample_glyph();
+
+        cache.insert(present_key, Some(glyph.clone()));
+        cache.insert(missing_key, None);
+
+        let Some(Some(cached)) = cache.lookup(present_key) else {
+            panic!("present glyph was not cached");
+        };
+        assert_eq!(cached.data, glyph.data);
+        assert_eq!(cached.advance, glyph.advance);
+        assert!(matches!(cache.lookup(missing_key), Some(None)));
+        assert!(cache
+            .lookup(GlyphCacheKey::new('A', 13.25).expect("valid size"))
+            .is_none());
+    }
+
+    #[test]
+    fn rasterize_char_populates_each_exact_scale_entry() {
+        let first_key = GlyphCacheKey::new('Q', 13.0).expect("valid size");
+        let second_key = GlyphCacheKey::new('Q', 13.25).expect("valid size");
+
+        let _ = rasterize_char('Q', 13.0);
+        assert!(raster_cache().lock().lookup(first_key).is_some());
+
+        let _ = rasterize_char('Q', 13.25);
+        assert!(raster_cache().lock().lookup(second_key).is_some());
+    }
+
+    #[test]
+    fn cache_capacity_is_bounded() {
+        let mut cache = GlyphCache::default();
+        let glyph = sample_glyph();
+
+        for index in 0..=GLYPH_CACHE_CAPACITY {
+            let ch = char::from_u32(0x1000 + index as u32).expect("test character");
+            let key = GlyphCacheKey::new(ch, 13.0).expect("valid size");
+            cache.insert(key, Some(glyph.clone()));
+        }
+
+        assert!(cache.len() <= GLYPH_CACHE_CAPACITY);
+    }
+
+    #[test]
+    fn invalid_font_sizes_are_rejected_before_font_lookup() {
+        for size in [0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(GlyphCacheKey::new('A', size).is_none());
+            assert!(rasterize_char('A', size).is_none());
+        }
+    }
 }

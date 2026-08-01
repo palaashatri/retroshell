@@ -857,3 +857,83 @@ DRM/llvmpipe session rendered the fresh captures. This run does not elevate
 SLOPOS-I beyond an experimental/developing desktop or prove physical hardware,
 true fractional rasterization, production text/font integration, dynamic
 Spaces UI, or complete Vision inference.
+
+## 19. 2026-08-01 — current-source parallel slices and UTM r17 Vision wake QA
+
+Environment: host verification used macOS with Rust 1.97.1 / Cargo 1.97.1.
+Runtime verification used the Ubuntu aarch64 UTM guest at `192.168.64.15`,
+explicit DRM backend, `Virtual-1` at `1280x800`, and llvmpipe. The guest source
+snapshot was `/home/ubuntu/qa/2026-08-01-luna-max-r16`. The SDK and Preview
+source files used for this run have matching host/guest SHA-256 values recorded
+in `artifacts/qa/2026-08-01-luna-max-r17/evidence/source-hashes-r17.txt`.
+The compositor, shell, and session binaries were the already-built r17 guest
+snapshot; this is not a claim that every guest source file was re-copied during
+this run.
+
+Current source changes in this slice include:
+
+- `slopos-sdk` now exposes a thread-safe `EventLoopWaker`; application-owned
+  background work wakes the Winit loop, and user events mark one redraw dirty
+  without introducing an idle polling loop.
+- Preview Vision watcher events now wake the SDK for status, terminal, and
+  timeout events; stale submissions remain generation-scoped and watcher
+  threads are invalidated when the view is replaced or dropped.
+- Preview keeps a finite ten-minute local Vision deadline. The longer bound is
+  required for real CPU OCR on this UTM guest; it remains bounded and does not
+  block the UI thread.
+- The parallel implementation slices added bounded XCursor theme resolution,
+  exact-scale glyph caching, truthful portal capability/lifecycle state,
+  and TextEdit atomic-save/recovery handling. Their targeted agent evidence was
+  independently checked in the current worktree before integration.
+
+Raw host and guest evidence is under
+`artifacts/qa/2026-08-01-luna-max-r17/evidence/`. Fresh UTM captures are
+`utm-preview-wake-vision-missing-r17.jpeg`,
+`utm-preview-wake-baseline-r17.jpeg`,
+`utm-preview-wake-running-10m-r17.jpeg`,
+`utm-preview-wake-timeout-r17.jpeg`, and
+`utm-preview-wake-completed-10m-r17.jpeg`; the baseline, running, timeout, and
+completed images were visually inspected from the UTM window. They show the
+SLOPOS global menu, patterned desktop, desktop icons, real Preview chrome, and
+Dock. The first missing-daemon capture is retained as a diagnostic, not as a
+pass claim.
+
+Result: **BUILD VERIFIED**, **TEST VERIFIED**, and **RUNTIME OBSERVED** for the
+scoped claims below.
+
+- Fresh `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`,
+  `cargo test --workspace`, all-features workspace Clippy, shell/Python syntax,
+  and `git diff --check` completed without errors. Workspace tests reported
+  `860 passed` across 37 suites. The existing `block v0.1.6`
+  future-incompatibility warning remains. `cargo deny check licenses advisories
+  bans sources` was attempted and is unavailable in this host environment.
+- The exact namespaced request
+  `com.slopos.preview.vision.extract_text` was sent through the unique
+  per-session Preview control socket. The first rebuilt run proved the wake
+  path through the visible timeout transition, but its 60-second bound expired
+  before the slow daemon job finished. The raw daemon result later reported
+  `job-1` succeeded with two OCR lines, so the bound was extended to ten
+  minutes and the run was repeated.
+- In the final run the session launched `slopos-session`, `slopos-compositor`,
+  `slopos-shell`, `slopos-visiond`, and Preview. The exact runtime was
+  `/run/user/1000/slopos-i/session-18c7bfb950aa2b32-365227`, with private
+  `wayland-1`, Preview control socket, and Vision socket. The daemon result
+  recorded `full_text` as `日且\n1` across two lines. Preview visibly reached
+  `Extract Text completed: 4 characters across 2 lines` and saved
+  `/home/ubuntu/.local/share/slopos-i/preview/vision/input-small-vision-text-365735-1785606794752521726-0.txt`,
+  whose captured contents are the same two OCR lines.
+- The session was terminated with SIGTERM. Post-run process inspection found no
+  matching SLOPOS, Preview, or Vision process, and no readiness file remained
+  under `/run/user/1000/slopos-i`; the shared menu directory remained as
+  expected session-scoped shared state.
+
+Remaining risk: UTM input capture still could not produce a human pointer press
+through drag, valid serial, geometry delta, and release sequence; pointer-driven
+move/resize, popup grabs/repositioning, Dock clicks, and true input-driven focus
+changes remain unverified. The ten-minute deadline reflects measured slow CPU
+inference on this VM and is not a performance claim. Nested mode,
+display-manager login, physical hardware, XWayland clients, clean idle
+profiling, true fractional rasterization, production text/font integration,
+dynamic Spaces UI, Lift Subject UI, Finder Vision integration, and later P2–P10
+requirements remain open. SLOPOS-I remains experimental/developing rather than
+a complete daily-driver desktop.

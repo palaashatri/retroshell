@@ -10,8 +10,9 @@ use slopos_kit::{
     PointerDispatcher, Rect, Size, ThemeContext, Visibility, Widget, WidgetState,
 };
 use slopos_sdk::{build_menu, Application};
-use std::fs;
 use std::path::{Path, PathBuf};
+
+mod save;
 
 /// Returns the default file path: $TEXTEDIT_FILE env var or /tmp/slopos-i-textedit.txt.
 fn default_file_path() -> PathBuf {
@@ -248,15 +249,20 @@ struct TextEditView {
 
 impl TextEditView {
     fn open(document_path: Option<PathBuf>) -> Self {
-        let (text, error) = match document_path.as_deref() {
-            Some(path) => match fs::read_to_string(path) {
-                Ok(text) => (text, None),
-                Err(err) => (String::new(), Some(format!("Could not open: {err}"))),
+        let (text, saved_text, error, recovered) = match document_path.as_deref() {
+            Some(path) => match save::open_document(path) {
+                Ok(document) => (document.text, document.saved_text, None, document.recovered),
+                Err(err) => (
+                    String::new(),
+                    String::new(),
+                    Some(format!("Could not open: {err}")),
+                    false,
+                ),
             },
-            None => (
-                "Untitled Document\n\nWelcome to TextEdit. Start typing...".to_string(),
-                None,
-            ),
+            None => {
+                let text = "Untitled Document\n\nWelcome to TextEdit. Start typing...".to_string();
+                (text.clone(), text, None, false)
+            }
         };
 
         let mut toolbar = Toolbar::new();
@@ -292,8 +298,8 @@ impl TextEditView {
             editor,
             status: Label::new(""),
             document_path,
-            saved_text: text,
-            dirty: false,
+            saved_text,
+            dirty: recovered,
             last_error: error,
             notification: None,
             undo_stack: Vec::new(),
@@ -307,6 +313,11 @@ impl TextEditView {
         let editor_id = view.editor.id();
         view.focus_widget(editor_id);
         view.refresh_status();
+        if recovered {
+            if let Some(path) = view.document_path.as_deref() {
+                view.notify(format!("Recovered unsaved changes from {}", path.display()));
+            }
+        }
         view
     }
 
@@ -506,17 +517,21 @@ impl TextEditView {
     }
 
     fn open_path(&mut self, path: PathBuf) -> bool {
-        match fs::read_to_string(&path) {
-            Ok(text) => {
+        match save::open_document(&path) {
+            Ok(document) => {
                 self.push_undo_snapshot();
                 self.document_path = Some(path.clone());
                 self.sync_path_field();
-                self.editor.set_text(text.clone());
-                self.saved_text = text;
-                self.dirty = false;
+                self.editor.set_text(document.text);
+                self.saved_text = document.saved_text;
+                self.dirty = document.recovered;
                 self.last_error = None;
                 self.redo_stack.clear();
-                self.notify(format!("Opened {}", path.display()));
+                if document.recovered {
+                    self.notify(format!("Recovered unsaved changes from {}", path.display()));
+                } else {
+                    self.notify(format!("Opened {}", path.display()));
+                }
                 true
             }
             Err(err) => {
@@ -536,12 +551,13 @@ impl TextEditView {
     fn save_document(&mut self) -> bool {
         // Use the set document path, or fall back to TEXTEDIT_FILE / /tmp default.
         let path = self.document_path.clone().unwrap_or_else(default_file_path);
+        let text = self.editor.text().to_string();
 
-        match fs::write(&path, self.editor.text()) {
+        match save::save_document(&path, &text) {
             Ok(()) => {
                 self.document_path = Some(path.clone());
                 self.sync_path_field();
-                self.saved_text = self.editor.text().to_string();
+                self.saved_text = text;
                 self.dirty = false;
                 self.last_error = None;
                 self.notify(format!("Saved to {}", path.display()));
@@ -557,11 +573,12 @@ impl TextEditView {
 
     fn save_as_from_path_field(&mut self) -> bool {
         let path = self.path_from_field_or_default();
-        match fs::write(&path, self.editor.text()) {
+        let text = self.editor.text().to_string();
+        match save::save_document(&path, &text) {
             Ok(()) => {
                 self.document_path = Some(path.clone());
                 self.sync_path_field();
-                self.saved_text = self.editor.text().to_string();
+                self.saved_text = text;
                 self.dirty = false;
                 self.last_error = None;
                 self.notify(format!("Saved to {}", path.display()));
@@ -976,6 +993,7 @@ mod tests {
     use super::*;
     use slopos_kit::event::MouseButton;
     use slopos_kit::Point;
+    use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 

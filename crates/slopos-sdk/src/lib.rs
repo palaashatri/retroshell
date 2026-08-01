@@ -40,9 +40,10 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use wgpu::util::DeviceExt;
+use winit::event_loop::EventLoopProxy;
 
 #[cfg(target_os = "linux")]
 use winit::platform::wayland::WindowAttributesExtWayland;
@@ -357,6 +358,27 @@ fn ui(light: [f32; 4], dark: [f32; 4]) -> [f32; 4] {
 
 pub type MenuActionHandler = Box<dyn FnMut(&str, &mut Window)>;
 
+/// A thread-safe wake handle for work that arrives outside the Winit event
+/// loop. Applications use this for bounded background work such as Vision
+/// job completion; the SDK installs the concrete event-loop proxy when
+/// [`Application::run`] starts.
+#[derive(Clone, Default)]
+pub struct EventLoopWaker(Arc<OnceLock<EventLoopProxy<()>>>);
+
+impl EventLoopWaker {
+    /// Wake the application event loop if it is running. Calling this before
+    /// `run` is harmless, which lets a view be constructed before startup.
+    pub fn wake(&self) {
+        if let Some(proxy) = self.0.get() {
+            let _ = proxy.send_event(());
+        }
+    }
+
+    fn install(&self, proxy: EventLoopProxy<()>) {
+        let _ = self.0.set(proxy);
+    }
+}
+
 pub struct Application {
     pub name: String,
     pub bundle_id: String,
@@ -366,6 +388,7 @@ pub struct Application {
     pub bus: Option<SloposBus>,
     pub running: bool,
     menu_action_handler: Option<MenuActionHandler>,
+    event_waker: EventLoopWaker,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -387,7 +410,15 @@ impl Application {
             bus: None,
             running: false,
             menu_action_handler: None,
+            event_waker: EventLoopWaker::default(),
         }
+    }
+
+    /// Return a cloneable handle that wakes this application's event loop.
+    /// The handle is useful to views that complete work on a background
+    /// thread and must request a single redraw without polling while idle.
+    pub fn event_waker(&self) -> EventLoopWaker {
+        self.event_waker.clone()
     }
 
     pub fn with_bus(mut self, bus: SloposBus) -> Self {
@@ -487,6 +518,7 @@ impl Application {
                 std::process::exit(1);
             }
         };
+        self.event_waker.install(event_loop.proxy());
         let main_window = self.main_window.take();
 
         struct AppHandler {
@@ -891,6 +923,10 @@ impl Application {
             }
 
             fn user_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+                // User events are the wake path for menu requests and
+                // application-owned background work. The next update may
+                // consume state from either queue, so ensure it is painted.
+                self.dirty = true;
                 self.drain_menu_actions(event_loop);
             }
         }

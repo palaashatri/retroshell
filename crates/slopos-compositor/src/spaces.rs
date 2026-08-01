@@ -280,6 +280,93 @@ impl TryFrom<RawSpace> for Space {
     }
 }
 
+/// The compositor-owned, shell-facing row for a Space overview.
+///
+/// This is deliberately a projection: it includes membership count rather
+/// than ordinary window records or geometry. `order` is the zero-based order
+/// in the compositor's authoritative Space list.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SpaceOverview {
+    id: SpaceId,
+    order: usize,
+    name: String,
+    #[serde(rename = "active", alias = "is_active")]
+    active: bool,
+    classification: FullscreenClassification,
+    output_id: Option<String>,
+    window_count: usize,
+}
+
+impl SpaceOverview {
+    fn from_space(space: &Space, order: usize, active: bool) -> Self {
+        Self {
+            id: space.id(),
+            order,
+            name: space.name().to_owned(),
+            active,
+            classification: space.classification(),
+            output_id: space.output_id().map(str::to_owned),
+            window_count: space.windows().len(),
+        }
+    }
+
+    pub const fn id(&self) -> SpaceId {
+        self.id
+    }
+
+    pub const fn order(&self) -> usize {
+        self.order
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub const fn active(&self) -> bool {
+        self.active
+    }
+
+    pub const fn is_active(&self) -> bool {
+        self.active()
+    }
+
+    pub const fn classification(&self) -> FullscreenClassification {
+        self.classification
+    }
+
+    pub fn output_id(&self) -> Option<&str> {
+        self.output_id.as_deref()
+    }
+
+    pub fn display_id(&self) -> Option<&str> {
+        self.output_id()
+    }
+
+    pub const fn window_count(&self) -> usize {
+        self.window_count
+    }
+}
+
+/// Deterministic mutations exposed to a shell-owned overview controller.
+///
+/// Applying a command changes only the Spaces model. Ordinary window
+/// geometry remains compositor-owned elsewhere.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub enum SpacesCommand {
+    Select { id: SpaceId },
+    Create { name: String },
+    Rename { id: SpaceId, name: String },
+    Reorder { id: SpaceId, order: usize },
+    Remove { id: SpaceId },
+}
+
+/// Compatibility aliases for callers that name the command after the
+/// overview surface rather than the underlying Spaces model.
+pub type SpaceOverviewEntry = SpaceOverview;
+pub type SpaceOverviewCommand = SpacesCommand;
+pub type SpacesOverviewCommand = SpacesCommand;
+
 /// Pure, serializable dynamic Spaces state. Window IDs are opaque strings; the
 /// compositor remains the owner of actual window geometry and protocol state.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -321,6 +408,25 @@ impl SpacesModel {
 
     pub fn space_ids(&self) -> Vec<SpaceId> {
         self.spaces.iter().map(Space::id).collect()
+    }
+
+    /// Return the ordered overview projection owned by the compositor.
+    ///
+    /// The projection intentionally contains no ordinary window geometry or
+    /// records. It is safe to serialize and hand to a shell overview.
+    pub fn overview(&self) -> Vec<SpaceOverview> {
+        self.spaces
+            .iter()
+            .enumerate()
+            .map(|(order, space)| {
+                SpaceOverview::from_space(space, order, space.id() == self.active_space)
+            })
+            .collect()
+    }
+
+    /// Alias that makes the projection boundary explicit to callers.
+    pub fn overview_projection(&self) -> Vec<SpaceOverview> {
+        self.overview()
     }
 
     pub const fn active_space(&self) -> SpaceId {
@@ -446,6 +552,25 @@ impl SpacesModel {
     /// Display terminology alias for [`Self::spaces_for_output`].
     pub fn spaces_for_display(&self, display_id: &str) -> Result<Vec<SpaceId>, SpacesError> {
         self.spaces_for_output(display_id)
+    }
+
+    /// Return the ordered overview rows visible on an output under the active
+    /// multi-monitor policy.
+    pub fn overview_for_output(&self, output_id: &str) -> Result<Vec<SpaceOverview>, SpacesError> {
+        let visible = self.spaces_for_output(output_id)?;
+        Ok(self
+            .overview()
+            .into_iter()
+            .filter(|space| visible.contains(&space.id()))
+            .collect())
+    }
+
+    /// Display terminology alias for [`Self::overview_for_output`].
+    pub fn overview_for_display(
+        &self,
+        display_id: &str,
+    ) -> Result<Vec<SpaceOverview>, SpacesError> {
+        self.overview_for_output(display_id)
     }
 
     /// Select a stable Space when restoring a display layout.
@@ -592,6 +717,12 @@ impl SpacesModel {
         Ok(())
     }
 
+    /// Select a Space for the overview without exposing mutable Space state.
+    pub fn select_space(&mut self, id: SpaceId) -> Result<SpaceId, SpacesError> {
+        self.activate_space(id)?;
+        Ok(id)
+    }
+
     pub fn reorder_space(&mut self, id: SpaceId, new_index: usize) -> Result<(), SpacesError> {
         if new_index >= self.spaces.len() {
             return Err(SpacesError::InvalidOrderIndex {
@@ -603,6 +734,34 @@ impl SpacesModel {
         let space = self.spaces.remove(old_index);
         self.spaces.insert(new_index, space);
         Ok(())
+    }
+
+    /// Apply one overview command and return its deterministic affected or
+    /// selected Space ID. The command path delegates to the existing model
+    /// operations so their validation, output policy, and safe removal
+    /// fallback remain authoritative.
+    pub fn apply_command(&mut self, command: SpacesCommand) -> Result<SpaceId, SpacesError> {
+        match command {
+            SpacesCommand::Select { id } => self.select_space(id),
+            SpacesCommand::Create { name } => self.create_space(name),
+            SpacesCommand::Rename { id, name } => {
+                self.rename_space(id, name)?;
+                Ok(id)
+            }
+            SpacesCommand::Reorder { id, order } => {
+                self.reorder_space(id, order)?;
+                Ok(id)
+            }
+            SpacesCommand::Remove { id } => self.remove_space(id),
+        }
+    }
+
+    /// Alias for callers dispatching commands from a Spaces overview.
+    pub fn apply_overview_command(
+        &mut self,
+        command: SpacesOverviewCommand,
+    ) -> Result<SpaceId, SpacesError> {
+        self.apply_command(command)
     }
 
     /// Remove a Space and return the active fallback. Independent-per-display
@@ -1294,6 +1453,159 @@ mod tests {
         assert_eq!(fallback, second);
         assert_eq!(model.window_spaces("terminal"), vec![second]);
         assert_eq!(model.output_for_space(second), Some("DP-1"));
+    }
+
+    #[test]
+    fn overview_projection_preserves_order_and_only_exposes_window_counts() {
+        let mut model = SpacesModel::new();
+        let first = model.active_space();
+        let work = model.create_space("Work").expect("work");
+        let fullscreen = model.create_space("Video").expect("video");
+
+        model
+            .assign_window("finder", SpaceTarget::Named("Work".into()))
+            .expect("assign finder");
+        model
+            .assign_window("terminal", SpaceTarget::Named("Video".into()))
+            .expect("assign terminal");
+        model
+            .set_classification(fullscreen, FullscreenClassification::Fullscreen)
+            .expect("classify fullscreen");
+
+        let overview = model.overview();
+        assert_eq!(
+            overview.iter().map(SpaceOverview::id).collect::<Vec<_>>(),
+            vec![first, work, fullscreen]
+        );
+        assert_eq!(
+            overview
+                .iter()
+                .map(SpaceOverview::order)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(overview[0].name(), "Space 1");
+        assert!(overview[0].is_active());
+        assert!(!overview[1].is_active());
+        assert_eq!(overview[1].window_count(), 1);
+        assert_eq!(
+            overview[2].classification(),
+            FullscreenClassification::Fullscreen
+        );
+
+        let encoded = serde_json::to_value(&overview).expect("serialize overview");
+        assert_eq!(encoded[0]["active"], true);
+        assert_eq!(encoded[1]["window_count"], 1);
+        assert!(encoded[1].get("windows").is_none());
+    }
+
+    #[test]
+    fn overview_selection_marks_exactly_one_active_space() {
+        let mut model = SpacesModel::new();
+        let first = model.active_space();
+        let work = model.create_space("Work").expect("work");
+
+        assert_eq!(model.select_space(work).expect("select work"), work);
+        let active = model
+            .overview()
+            .into_iter()
+            .filter(SpaceOverview::is_active)
+            .map(|space| space.id())
+            .collect::<Vec<_>>();
+
+        assert_eq!(active, vec![work]);
+        assert_eq!(model.active_space(), work);
+        assert_ne!(first, work);
+    }
+
+    #[test]
+    fn independent_overview_filters_assigned_output_in_model_order() {
+        let mut model = SpacesModel::new();
+        let first = model.active_space();
+        let second = model.create_space("Work").expect("work");
+        let third = model.create_space("Play").expect("play");
+        model.set_multi_monitor_policy(MultiMonitorPolicy::IndependentPerDisplay);
+        model
+            .assign_space_to_output(third, "DP-1")
+            .expect("assign third");
+        model
+            .assign_space_to_output(first, "DP-1")
+            .expect("assign first");
+        model
+            .assign_space_to_output(second, "DP-2")
+            .expect("assign second");
+
+        let dp1_overview = model.overview_for_output("DP-1").expect("DP-1 overview");
+        let dp2 = model
+            .overview_for_display("DP-2")
+            .expect("DP-2 overview")
+            .into_iter()
+            .map(|space| space.id())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            dp1_overview
+                .iter()
+                .map(SpaceOverview::id)
+                .collect::<Vec<_>>(),
+            vec![first, third]
+        );
+        assert_eq!(
+            dp1_overview
+                .iter()
+                .map(SpaceOverview::output_id)
+                .collect::<Vec<_>>(),
+            vec![Some("DP-1"), Some("DP-1")]
+        );
+        assert_eq!(dp2, vec![second]);
+    }
+
+    #[test]
+    fn overview_commands_mutate_safely_and_keep_window_membership() {
+        let mut model = SpacesModel::new();
+        let first = model.active_space();
+        let second = model
+            .apply_command(SpacesCommand::Create {
+                name: "Work".into(),
+            })
+            .expect("create work");
+        model
+            .apply_command(SpacesCommand::Select { id: second })
+            .expect("select work");
+        model
+            .assign_window_to_current("terminal")
+            .expect("assign terminal");
+        model
+            .apply_command(SpacesCommand::Rename {
+                id: second,
+                name: "Projects".into(),
+            })
+            .expect("rename work");
+        model
+            .apply_command(SpacesCommand::Reorder {
+                id: second,
+                order: 0,
+            })
+            .expect("reorder work");
+
+        assert_eq!(model.space_ids(), vec![second, first]);
+        assert_eq!(model.active_space(), second);
+        assert_eq!(model.space(second).expect("projects").name(), "Projects");
+
+        let fallback = model
+            .apply_command(SpacesCommand::Remove { id: second })
+            .expect("remove projects");
+        assert_eq!(fallback, first);
+        assert_eq!(model.active_space(), first);
+        assert_eq!(model.window_spaces("terminal"), vec![first]);
+        assert_eq!(model.space_ids(), vec![first]);
+
+        assert!(matches!(
+            model.apply_command(SpacesCommand::Remove { id: first }),
+            Err(SpacesError::CannotRemoveLastSpace)
+        ));
+        assert_eq!(model.space_ids(), vec![first]);
+        assert_eq!(model.active_space(), first);
     }
 
     #[test]

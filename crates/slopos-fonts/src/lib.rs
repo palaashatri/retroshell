@@ -5,13 +5,22 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 const MAX_FONT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const DISABLED_MARKER_DIR: &str = ".disabled";
+
+/// Smallest size emitted by the profile resolver, in logical points.
+pub const MIN_FONT_SIZE: u32 = 8;
+/// Largest size emitted by the profile resolver, in logical points.
+pub const MAX_FONT_SIZE: u32 = 72;
+/// Smallest accepted display scale for profile resolution.
+pub const MIN_FONT_SCALE: f32 = 0.5;
+/// Largest accepted display scale for profile resolution.
+pub const MAX_FONT_SCALE: f32 = 4.0;
 
 fn is_font_extension(path: &Path) -> bool {
     path.extension()
@@ -281,7 +290,7 @@ fn validate_font_source(source: &Path) -> Result<(String, u64), FontManagerError
 }
 
 /// Standard typography roles across the SLOPOS-I desktop environment.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FontRole {
     SystemUi,
@@ -315,6 +324,15 @@ impl FontRole {
             Self::Small => 11.0,
             Self::Monospace => 12.0,
             Self::DocumentDefault => 14.0,
+        }
+    }
+
+    /// Generic family alias used when no requested or safe available family
+    /// can be selected. These aliases are not bundled-font declarations.
+    pub fn generic_fallback_family(self) -> &'static str {
+        match self {
+            Self::Monospace => "Monospace",
+            _ => "Sans-Serif",
         }
     }
 
@@ -366,7 +384,7 @@ impl FontRoleSpec {
     pub fn new(family: impl Into<String>, size: u32, weight: u16) -> Self {
         Self {
             family: family.into(),
-            size: size.clamp(8, 72),
+            size: size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE),
             weight: weight.clamp(100, 900),
         }
     }
@@ -446,19 +464,222 @@ impl FontProfileConfig {
                     FontRoleSpec::new("Atkinson Hyperlegible", 16, 400),
                 );
             }
-            FontProfile::Custom => {
-                return Self::for_profile(FontProfile::Modern);
-            }
+            FontProfile::Custom => {}
         }
         Self { profile, roles }
     }
 
     pub fn get_spec(&self, role: FontRole) -> FontRoleSpec {
+        self.roles.get(&role).cloned().unwrap_or_else(|| {
+            FontRoleSpec::new(
+                role.generic_fallback_family(),
+                role.default_size() as u32,
+                400,
+            )
+        })
+    }
+
+    /// Resolve every role against an explicit set of available family names.
+    ///
+    /// Profile names are preferences only. In particular, Classic's
+    /// historical Chicago/Geneva/Monaco names are never treated as bundled
+    /// fonts: they are selected only when the caller reports a matching
+    /// family in `available_families`.
+    pub fn resolve<I, S>(&self, available_families: I, scale: f32) -> ResolvedFontProfile
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        FontProfileResolver::new(available_families).resolve(self, scale)
+    }
+}
+
+/// A resolved role after availability, fallback, and display-scale policy is
+/// applied.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedFontRole {
+    /// The normalized configured family name, before fallback selection.
+    pub requested_family: String,
+    /// The selected family, or a generic alias when no safe available family
+    /// matched. This is not a claim that the family is bundled by SLOPOS-I.
+    pub family: String,
+    /// The clamped logical size after applying the display scale.
+    pub size: u32,
+    /// The clamped font weight.
+    pub weight: u16,
+    /// Whether the configured family was unavailable or malformed.
+    pub used_fallback: bool,
+}
+
+impl ResolvedFontRole {
+    pub fn as_spec(&self) -> FontRoleSpec {
+        FontRoleSpec::new(self.family.clone(), self.size, self.weight)
+    }
+}
+
+/// Fully resolved typography profile with deterministic role ordering.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedFontProfile {
+    pub profile: FontProfile,
+    pub roles: BTreeMap<FontRole, ResolvedFontRole>,
+}
+
+impl ResolvedFontProfile {
+    pub fn get_role(&self, role: FontRole) -> Option<&ResolvedFontRole> {
+        self.roles.get(&role)
+    }
+
+    pub fn get_spec(&self, role: FontRole) -> FontRoleSpec {
         self.roles
             .get(&role)
-            .cloned()
-            .unwrap_or_else(|| FontRoleSpec::new("Sans-Serif", role.default_size() as u32, 400))
+            .map(ResolvedFontRole::as_spec)
+            .unwrap_or_else(|| {
+                FontRoleSpec::new(
+                    role.generic_fallback_family(),
+                    role.default_size() as u32,
+                    400,
+                )
+            })
     }
+}
+
+/// Authoritative resolver for profile roles.
+///
+/// The available-family set is explicit and normalized once at construction,
+/// so resolution never scans the filesystem or depends on `HashSet` order.
+/// No family is considered bundled; a family is selected by name only when it
+/// is present in this set, otherwise a safe generic alias is the final result.
+#[derive(Clone, Debug, Default)]
+pub struct FontProfileResolver {
+    available_families: HashSet<String>,
+}
+
+impl FontProfileResolver {
+    pub fn new<I, S>(available_families: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self {
+            available_families: available_families
+                .into_iter()
+                .map(|family| normalize_family_name(family.as_ref()))
+                .filter(|family| !family.is_empty())
+                .collect(),
+        }
+    }
+
+    pub fn resolve(&self, config: &FontProfileConfig, scale: f32) -> ResolvedFontProfile {
+        let roles = FontRole::all()
+            .iter()
+            .copied()
+            .map(|role| {
+                let configured = config.get_spec(role);
+                let requested_family = canonical_family_name(&configured.family);
+                let (family, used_fallback) = resolve_family(
+                    config.profile,
+                    role,
+                    &requested_family,
+                    &self.available_families,
+                );
+                let size = scaled_font_size(configured.size, scale);
+                let weight = configured.weight.clamp(100, 900);
+
+                (
+                    role,
+                    ResolvedFontRole {
+                        requested_family,
+                        family,
+                        size,
+                        weight,
+                        used_fallback,
+                    },
+                )
+            })
+            .collect();
+
+        ResolvedFontProfile {
+            profile: config.profile,
+            roles,
+        }
+    }
+}
+
+const SAFE_SANS_FALLBACKS: &[&str] = &["Noto Sans", "DejaVu Sans", "Liberation Sans", "Sans-Serif"];
+
+const SAFE_ACCESSIBLE_SANS_FALLBACKS: &[&str] = &[
+    "Atkinson Hyperlegible",
+    "Noto Sans",
+    "DejaVu Sans",
+    "Liberation Sans",
+    "Sans-Serif",
+];
+
+const SAFE_MONOSPACE_FALLBACKS: &[&str] = &[
+    "Noto Sans Mono",
+    "DejaVu Sans Mono",
+    "Liberation Mono",
+    "Monospace",
+];
+
+fn fallback_families(profile: FontProfile, role: FontRole) -> &'static [&'static str] {
+    if role == FontRole::Monospace {
+        SAFE_MONOSPACE_FALLBACKS
+    } else if profile == FontProfile::Accessible {
+        SAFE_ACCESSIBLE_SANS_FALLBACKS
+    } else {
+        SAFE_SANS_FALLBACKS
+    }
+}
+
+fn canonical_family_name(family: &str) -> String {
+    family
+        .chars()
+        .map(|character| match character {
+            '-' | '_' => ' ',
+            _ => character,
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Normalize family names for case-, separator-, and whitespace-insensitive
+/// matching while retaining a stable display spelling separately.
+pub fn normalize_family_name(family: &str) -> String {
+    canonical_family_name(family).to_lowercase()
+}
+
+fn resolve_family(
+    profile: FontProfile,
+    role: FontRole,
+    requested_family: &str,
+    available_families: &HashSet<String>,
+) -> (String, bool) {
+    let requested_key = normalize_family_name(requested_family);
+    if !requested_key.is_empty() && available_families.contains(&requested_key) {
+        return (requested_family.to_string(), false);
+    }
+
+    for fallback in fallback_families(profile, role) {
+        let fallback_name = canonical_family_name(fallback);
+        if available_families.contains(&normalize_family_name(&fallback_name)) {
+            return (fallback_name, true);
+        }
+    }
+
+    (role.generic_fallback_family().to_string(), true)
+}
+
+fn scaled_font_size(size: u32, scale: f32) -> u32 {
+    let scale = if scale.is_finite() {
+        scale.clamp(MIN_FONT_SCALE, MAX_FONT_SCALE)
+    } else {
+        1.0
+    };
+    ((size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE) as f32 * scale).round() as u32)
+        .clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
 }
 
 /// Font discovery service searching user and system directories.
@@ -614,6 +835,169 @@ mod tests {
             accessible.get_spec(FontRole::SystemUi).family,
             "Atkinson Hyperlegible"
         );
+
+        let custom = FontProfileConfig::for_profile(FontProfile::Custom);
+        assert_eq!(custom.profile, FontProfile::Custom);
+        assert!(custom.roles.is_empty());
+    }
+
+    #[test]
+    fn font_profile_resolver_resolves_classic_modern_accessible_and_custom_profiles() {
+        let classic = FontProfileConfig::for_profile(FontProfile::Classic)
+            .resolve(["chicago", "geneva", "monaco"], 1.0);
+        assert_eq!(classic.profile, FontProfile::Classic);
+        assert_eq!(classic.get_spec(FontRole::SystemUi).family, "Chicago");
+        assert_eq!(classic.get_spec(FontRole::Body).family, "Geneva");
+        assert_eq!(classic.get_spec(FontRole::Monospace).family, "Monaco");
+
+        let modern = FontProfileConfig::for_profile(FontProfile::Modern)
+            .resolve([" INTER ", "jetbrains-mono"], 1.0);
+        assert_eq!(modern.get_spec(FontRole::SystemUi).family, "Inter");
+        assert_eq!(
+            modern.get_spec(FontRole::Monospace).family,
+            "JetBrains Mono"
+        );
+
+        let accessible = FontProfileConfig::for_profile(FontProfile::Accessible)
+            .resolve(["atkinson hyperlegible", "JETBRAINS MONO"], 1.0);
+        assert_eq!(
+            accessible.get_spec(FontRole::SystemUi).family,
+            "Atkinson Hyperlegible"
+        );
+        assert_eq!(
+            accessible.get_spec(FontRole::Monospace).family,
+            "JetBrains Mono"
+        );
+
+        let mut custom = FontProfileConfig::for_profile(FontProfile::Custom);
+        custom.roles.insert(
+            FontRole::SystemUi,
+            FontRoleSpec::new("  Nimbus   Sans ", 20, 500),
+        );
+        custom
+            .roles
+            .insert(FontRole::Monospace, FontRoleSpec::new("My_Mono", 10, 300));
+        let custom = custom.resolve(["nImBuS sAnS", "my mono"], 1.25);
+        assert_eq!(custom.profile, FontProfile::Custom);
+        assert_eq!(custom.get_spec(FontRole::SystemUi).family, "Nimbus Sans");
+        assert_eq!(custom.get_spec(FontRole::SystemUi).size, 25);
+        assert_eq!(custom.get_spec(FontRole::Monospace).family, "My Mono");
+        assert_eq!(custom.get_spec(FontRole::Monospace).size, 13);
+    }
+
+    #[test]
+    fn font_profile_resolver_uses_safe_fallbacks_for_unavailable_families() {
+        let classic = FontProfileConfig::for_profile(FontProfile::Classic)
+            .resolve(["Noto Sans", "Noto Sans Mono"], 1.0);
+
+        assert_eq!(classic.get_spec(FontRole::SystemUi).family, "Noto Sans");
+        assert_eq!(classic.get_spec(FontRole::Body).family, "Noto Sans");
+        assert_eq!(
+            classic.get_spec(FontRole::Monospace).family,
+            "Noto Sans Mono"
+        );
+        assert!(
+            classic
+                .get_role(FontRole::SystemUi)
+                .expect("system UI role")
+                .used_fallback
+        );
+        assert!(!["Chicago", "Geneva", "Monaco"]
+            .contains(&classic.get_spec(FontRole::SystemUi).family.as_str()));
+
+        let mut custom = FontProfileConfig::for_profile(FontProfile::Custom);
+        custom.roles.insert(
+            FontRole::Body,
+            FontRoleSpec::new("Unavailable Family", 13, 400),
+        );
+        let custom = custom.resolve(["DejaVu Sans"], 1.0);
+        assert_eq!(custom.get_spec(FontRole::Body).family, "DejaVu Sans");
+        assert!(
+            custom
+                .get_role(FontRole::Body)
+                .expect("body role")
+                .used_fallback
+        );
+
+        let empty = FontProfileConfig::for_profile(FontProfile::Classic)
+            .resolve(std::iter::empty::<&str>(), 1.0);
+        assert_eq!(empty.get_spec(FontRole::SystemUi).family, "Sans-Serif");
+        assert_eq!(empty.get_spec(FontRole::Monospace).family, "Monospace");
+    }
+
+    #[test]
+    fn font_profile_resolver_has_stable_fallback_order_and_matching() {
+        let config = FontProfileConfig::for_profile(FontProfile::Modern);
+        let first = config.resolve(
+            [
+                "Liberation Sans",
+                "DejaVu Sans",
+                "Noto Sans",
+                "Liberation Mono",
+                "DejaVu Sans Mono",
+            ],
+            1.0,
+        );
+        let second = config.resolve(
+            [
+                "DejaVu Sans Mono",
+                "Noto Sans",
+                "Liberation Mono",
+                "DejaVu Sans",
+                "Liberation Sans",
+            ],
+            1.0,
+        );
+
+        assert_eq!(first, second);
+        assert_eq!(first.get_spec(FontRole::SystemUi).family, "Noto Sans");
+        assert_eq!(
+            first.get_spec(FontRole::Monospace).family,
+            "DejaVu Sans Mono"
+        );
+        assert_eq!(
+            normalize_family_name("  JetBrains-MONO  "),
+            "jetbrains mono"
+        );
+    }
+
+    #[test]
+    fn font_profile_resolver_sanitizes_malformed_profile_values() {
+        assert_eq!(FontProfile::parse("  ACCESSIBLE "), FontProfile::Accessible);
+        assert_eq!(FontProfile::parse("unknown-profile"), FontProfile::Modern);
+        assert_eq!(FontProfile::parse(""), FontProfile::Modern);
+
+        let mut malformed = FontProfileConfig::for_profile(FontProfile::Custom);
+        malformed.roles.insert(
+            FontRole::SystemUi,
+            FontRoleSpec {
+                family: " \t".to_string(),
+                size: u32::MAX,
+                weight: u16::MAX,
+            },
+        );
+        let resolved = malformed.resolve(std::iter::empty::<&str>(), f32::NAN);
+        let system_ui = resolved
+            .get_role(FontRole::SystemUi)
+            .expect("system UI role");
+        assert_eq!(system_ui.requested_family, "");
+        assert_eq!(system_ui.family, "Sans-Serif");
+        assert_eq!(system_ui.size, MAX_FONT_SIZE);
+        assert_eq!(system_ui.weight, 900);
+        assert!(system_ui.used_fallback);
+
+        malformed.roles.insert(
+            FontRole::Body,
+            FontRoleSpec {
+                family: "Inter".to_string(),
+                size: 0,
+                weight: 0,
+            },
+        );
+        let body = malformed.resolve(["Inter"], 2.0).get_spec(FontRole::Body);
+        assert_eq!(body.family, "Inter");
+        assert_eq!(body.size, MIN_FONT_SIZE * 2);
+        assert_eq!(body.weight, 100);
     }
 
     #[test]
