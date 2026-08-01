@@ -205,7 +205,12 @@ pub use window_rules::{
 pub use workspace_manager::{WorkspaceManager, COMPOSITOR_WORKSPACE_COUNT, SHELL_DESKTOP_COUNT};
 
 use parking_lot::RwLock;
+use slopos_bus::{
+    send_application_menu_action, send_session_control, SessionControlRequest,
+    WindowPresentationAction,
+};
 use slopos_kit::button::Button;
+use slopos_kit::design_tokens::{MENU_BAR_HEIGHT, MENU_BAR_HEIGHT_PX, WINDOW_TITLE_BAR_HEIGHT};
 use slopos_kit::dispatch::{for_each_widget_mut, hit_test};
 use slopos_kit::event::MouseButton;
 use slopos_kit::icon_view::{IconItem, IconView};
@@ -336,14 +341,18 @@ impl SloposI {
     ///
     /// Call after `WAYLAND_DISPLAY` is set (compositor/labwc running). Non-fatal.
     pub(crate) fn attach_wayland_session_protocols(desktop: &mut ShellDesktop) {
-        // When SLOPOS_LAYER_SHELL_CHROME is set, `layer_desktop` owns exclusive
-        // Top/Bottom/Background surfaces. The gray PoC bind path is gone.
-        if std::env::var_os("SLOPOS_LAYER_SHELL_CHROME").is_some() {
-            tracing::debug!("layer_desktop owns exclusive chrome surfaces");
-            desktop.layer_shell_bound = true;
-        } else {
-            tracing::debug!("layer-shell chrome unset; kit menu bar + dock paint active");
+        // Linux session chrome is compositor-owned by construction. The old
+        // opt-in environment gate let production silently fall back to a
+        // 640x480 ordinary XDG desktop window, which violated the session
+        // topology and made the menu bar local to that fake window.
+        #[cfg(target_os = "linux")]
+        {
+            tracing::debug!(
+                "layer_desktop will bind exclusive chrome surfaces after protocol discovery"
+            );
         }
+        #[cfg(not(target_os = "linux"))]
+        tracing::debug!("layer-shell chrome unavailable on this host");
         if let Some(n) =
             foreign_toplevel_client::try_sync_foreign_toplevels(&mut desktop.foreign_toplevels)
         {
@@ -354,43 +363,50 @@ impl SloposI {
 
     pub fn run(&self) -> Result<()> {
         let (out_w, out_h) = session_output_size();
-
-        // Branch: if SLOPOS_LAYER_SHELL_CHROME is set, use wlr-layer-shell background surface
-        #[cfg(target_os = "linux")]
-        if std::env::var_os("SLOPOS_LAYER_SHELL_CHROME").is_some() {
-            let content = Box::new(ShellDesktop::new(
-                self.menu_server.clone(),
-                self.launch_services.clone(),
-                self.window_manager.clone(),
-                self.notification_center.clone(),
-                self.workspace_manager.clone(),
-                self.dock.clone(),
-                self.session_manager.clone(),
-            ));
-            return crate::layer_desktop::run_layer_desktop(content, out_w as u32, out_h as u32)
-                .map_err(|e| ShellError::Window(format!("layer-shell desktop: {}", e)));
-        }
-
-        // Otherwise: use the default winit xdg-toplevel path
-        let mut app = slopos_sdk::Application::new("SLOPOS-I", "com.slopos.shell");
-        app.set_initial_size(Size::new(out_w as f32, out_h as f32));
-
-        let desktop_view = ShellDesktop::new(
-            self.menu_server.clone(),
-            self.launch_services.clone(),
-            self.window_manager.clone(),
-            self.notification_center.clone(),
-            self.workspace_manager.clone(),
-            self.dock.clone(),
-            self.session_manager.clone(),
-        );
-
-        let mut window = Window::new("SLOPOS-I Desktop");
-        window.set_content(Box::new(desktop_view));
-        app.set_main_window(window);
-        app.run();
-        Ok(())
+        run_platform(self, out_w, out_h)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn run_platform(shell: &SloposI, out_w: i32, out_h: i32) -> Result<()> {
+    // Linux production uses the real compositor-owned shell surfaces. The
+    // desktop background, global menu, dock, and menu overlays are separate
+    // layer-shell surfaces spanning the compositor output; ordinary apps
+    // remain independent XDG toplevel clients underneath/above them.
+    let content = Box::new(ShellDesktop::new(
+        shell.menu_server.clone(),
+        shell.launch_services.clone(),
+        shell.window_manager.clone(),
+        shell.notification_center.clone(),
+        shell.workspace_manager.clone(),
+        shell.dock.clone(),
+        shell.session_manager.clone(),
+    ));
+    crate::layer_desktop::run_layer_desktop(content, out_w as u32, out_h as u32)
+        .map_err(|e| ShellError::Window(format!("layer-shell desktop: {}", e)))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_platform(shell: &SloposI, out_w: i32, out_h: i32) -> Result<()> {
+    // Non-Linux development fallback: use the default winit xdg-toplevel path.
+    let mut app = slopos_sdk::Application::new("SLOPOS-I", "com.slopos.shell");
+    app.set_initial_size(Size::new(out_w as f32, out_h as f32));
+
+    let desktop_view = ShellDesktop::new(
+        shell.menu_server.clone(),
+        shell.launch_services.clone(),
+        shell.window_manager.clone(),
+        shell.notification_center.clone(),
+        shell.workspace_manager.clone(),
+        shell.dock.clone(),
+        shell.session_manager.clone(),
+    );
+
+    let mut window = Window::new("SLOPOS-I Desktop");
+    window.set_content(Box::new(desktop_view));
+    app.set_main_window(window);
+    app.run();
+    Ok(())
 }
 
 struct ShellDesktop {
@@ -454,14 +470,16 @@ struct ShellDesktop {
     last_mime_open: Option<OpenPlan>,
     /// Last menu-bar status refresh (battery / volume / network).
     last_status_refresh: std::time::Instant,
-    /// Throttle foreign-toplevel → global menu sync for compositor-spawned clients.
-    last_foreign_menu_sync: std::time::Instant,
     /// Last network connect attempt outcome (tests + status UI).
     last_network_connect: Option<std::result::Result<String, String>>,
     /// When false, network connect validates/plans only (unit tests; no nmcli spawn).
     network_connect_spawn: bool,
     /// Which subset of the desktop to paint (layer-shell Phase 3 multi-surface).
     paint_filter: ShellPaintFilter,
+    /// Temporary event-routing target for a layer-shell input surface. This is
+    /// separate from `paint_filter`: protocol chrome must receive events from
+    /// its own surface without being painted into the background surface.
+    input_filter: Option<ShellPaintFilter>,
     /// Spotlight search overlay (Super+Space) — interior-mutable for layout during draw.
     spotlight_ui: spotlight_ui::SpotlightUI,
 }
@@ -488,6 +506,24 @@ impl ShellDesktop {
         self.paint_filter = filter;
     }
 
+    /// Mark the compositor-owned layer-shell chrome as live. This is called by
+    /// the layer driver only after it has discovered and configured the
+    /// protocol, not while constructing the shell model or in unit tests.
+    pub(crate) fn set_layer_shell_bound(&mut self, bound: bool) {
+        self.layer_shell_bound = bound;
+        if bound {
+            tracing::info!(
+                "compositor owns ordinary application windows; shell background is chrome-only"
+            );
+        }
+    }
+
+    /// Route the next input dispatch through the widget set belonging to a
+    /// particular layer surface. Painting remains governed by `paint_filter`.
+    pub(crate) fn set_input_filter(&mut self, filter: Option<ShellPaintFilter>) {
+        self.input_filter = filter;
+    }
+
     /// Lay out the dock at the origin for painting onto a dock-height strip surface.
     pub(crate) fn prepare_dock_strip_layout(&mut self, width: f32, dock_h: f32) {
         self.dock_view.set_rect(Rect::new(0.0, 0.0, width, dock_h));
@@ -506,7 +542,7 @@ impl ShellDesktop {
 
     /// Pixel height the Top menu layer must cover: bar only, or bar + open dropdown.
     pub(crate) fn menu_layer_height_px(&self) -> u32 {
-        const BAR: u32 = 24;
+        const BAR: u32 = MENU_BAR_HEIGHT_PX;
         let Some(idx) = self.menu_bar.open_menu else {
             return BAR;
         };
@@ -555,6 +591,12 @@ enum ShellWindowMode {
     Fullscreen,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DockActivation {
+    ActivateExisting,
+    LaunchNew,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum WindowInteraction {
     Move {
@@ -569,6 +611,16 @@ enum WindowInteraction {
 }
 
 impl ShellDesktop {
+    /// True only after the Linux layer-shell driver has successfully bound the
+    /// compositor-owned desktop surfaces. In that mode ordinary application
+    /// windows are XDG toplevels managed by `slopos-compositor`; the shell's
+    /// `ShellWindow` model remains available solely for the non-layer test and
+    /// fallback path and must not participate in live desktop painting or hit
+    /// testing.
+    fn compositor_owns_ordinary_windows(&self) -> bool {
+        self.layer_shell_bound
+    }
+
     fn new(
         menu_server: Arc<RwLock<MenuServer>>,
         launch_services: Arc<RwLock<LaunchServices>>,
@@ -655,11 +707,11 @@ impl ShellDesktop {
             lock_error_message: None,
             expected_lock_password,
             session_clients: SessionClientRegistry::new(),
-            // Protocol chrome: menu bar (24) + dock (64) matching content_bounds insets.
+            // Protocol chrome: kit-matched menu bar (19) + dock (64).
             chrome: ChromeSession::bootstrap_default(
                 session_output_size().0,
                 session_output_size().1,
-                24,
+                MENU_BAR_HEIGHT_PX as i32,
                 64,
             ),
             foreign_toplevels: ForeignToplevelRegistry::new(),
@@ -678,22 +730,22 @@ impl ShellDesktop {
             mime_open_spawn: true,
             last_mime_open: None,
             last_status_refresh: std::time::Instant::now(),
-            last_foreign_menu_sync: std::time::Instant::now(),
             last_network_connect: None,
             network_connect_spawn: true,
             paint_filter: ShellPaintFilter::All,
+            input_filter: None,
             spotlight_ui: spotlight_ui::SpotlightUI::new(),
         };
         // Map layer-shell chrome + sync foreign-toplevel list when a compositor is live.
         SloposI::attach_wayland_session_protocols(&mut shell);
         if let Ok(app) = std::env::var("SLOPOS_START_APP") {
             if app == "finder" || app == "com.slopos.finder" {
-                shell.open_finder_window();
+                // Finder is a first-party Wayland client, not an in-shell
+                // painted window. Keep the shell responsible for chrome only.
+                shell.launch_external_app("com.slopos.finder");
             } else {
                 shell.launch_external_app(&app);
             }
-        } else {
-            shell.open_finder_window();
         }
         if std::env::var_os("SLOPOS_START_SPOTLIGHT").is_some() {
             shell.spotlight_ui.show();
@@ -815,7 +867,9 @@ impl ShellDesktop {
             }
             A11yDispatchTarget::ChromeWindowClose => self.close_active_window(),
             A11yDispatchTarget::ChromeWindowMinimize => {
-                if let Some(id) = self.active_window_id() {
+                if self.compositor_owns_ordinary_windows() {
+                    self.request_focused_window_action(WindowPresentationAction::Minimize);
+                } else if let Some(id) = self.active_window_id() {
                     self.toggle_window_minimized(id);
                 }
             }
@@ -912,7 +966,7 @@ impl ShellDesktop {
             .iter()
             .find(|s| s.role == ChromeRole::MenuBar && s.mapped)
             .map(|s| s.height as f64)
-            .unwrap_or(24.0);
+            .unwrap_or(MENU_BAR_HEIGHT as f64);
         let dock_height = self
             .chrome
             .surfaces()
@@ -953,6 +1007,15 @@ impl ShellDesktop {
     }
 
     fn open_folder_window<S: Into<String>>(&mut self, title: S, path: PathBuf) -> Uuid {
+        if self.compositor_owns_ordinary_windows() {
+            // Directory browsing is a real Finder client operation in the
+            // compositor-owned session. `open_path_with_mime` builds the
+            // validated Finder argv and registers the resulting client; it
+            // must not create a shell-painted stand-in window.
+            self.open_path_with_mime(path);
+            return Uuid::nil();
+        }
+
         let rect = self.next_finder_rect();
         let title = title.into();
         let mut window = build_folder_window(&title, &path);
@@ -982,6 +1045,22 @@ impl ShellDesktop {
         lines: impl IntoIterator<Item = String>,
     ) -> Uuid {
         let title = title.into();
+        let lines: Vec<String> = lines.into_iter().collect();
+        if self.compositor_owns_ordinary_windows() {
+            // About/status/Force Quit content is shell-owned overlay content,
+            // not an ordinary application window. Until the dedicated shell
+            // overlay layer is expanded, surface it through the existing
+            // notification service instead of painting a fake XDG window into
+            // the desktop background.
+            self.record_notification(
+                "com.slopos.shell",
+                &title,
+                &lines.join("\n"),
+                NotificationPriority::Normal,
+            );
+            return Uuid::nil();
+        }
+
         let rect = clamp_window_rect(
             Rect::new(
                 self.content_bounds().x + 112.0,
@@ -1013,6 +1092,10 @@ impl ShellDesktop {
     }
 
     fn close_active_window(&mut self) {
+        if self.compositor_owns_ordinary_windows() {
+            self.request_focused_window_action(WindowPresentationAction::Close);
+            return;
+        }
         let Some(id) = self.active_window_id() else {
             return;
         };
@@ -1206,30 +1289,94 @@ impl ShellDesktop {
     fn bundle_id_for_foreign_app_id(app_id: &str) -> Option<&'static str> {
         let id = app_id.trim().to_ascii_lowercase();
         match id.as_str() {
-            "finder" => Some("com.slopos.finder"),
-            "settings" => Some("com.slopos.settings"),
-            "terminal" => Some("com.slopos.terminal"),
-            "textedit" => Some("com.slopos.textedit"),
-            "appstore" => Some("com.slopos.appstore"),
+            "finder" | "com.slopos.finder" => Some("com.slopos.finder"),
+            "settings" | "com.slopos.settings" => Some("com.slopos.settings"),
+            "terminal" | "com.slopos.terminal" => Some("com.slopos.terminal"),
+            "textedit" | "com.slopos.textedit" => Some("com.slopos.textedit"),
+            "appstore" | "com.slopos.appstore" => Some("com.slopos.appstore"),
             _ => None,
         }
     }
 
-    /// When compositor spawns clients (Super+O), sync their menus into the shell bar.
-    fn maybe_sync_foreign_app_menu(&mut self) {
-        if self.last_foreign_menu_sync.elapsed() < std::time::Duration::from_secs(2) {
-            return;
+    /// Match a compositor foreign-toplevel app id to a canonical SLOPOS
+    /// bundle id without treating arbitrary strings as launch commands.
+    fn foreign_toplevel_matches_bundle(app_id: &str, bundle_id: &str) -> bool {
+        app_id.trim() == bundle_id
+    }
+
+    fn dock_activation_for_existing_client(existing_client: bool) -> DockActivation {
+        if existing_client {
+            DockActivation::ActivateExisting
+        } else {
+            DockActivation::LaunchNew
         }
-        self.last_foreign_menu_sync = std::time::Instant::now();
+    }
+
+    /// Read the compositor-owned focused client record.
+    ///
+    /// The outer `Option` distinguishes “the compositor has not published a
+    /// record yet” from a published record whose `app_id` is empty because
+    /// focus is on shell chrome or the desktop. This is deliberately scoped to
+    /// the session runtime; arbitrary global files are never consulted.
+    fn compositor_active_app_id() -> Option<Option<String>> {
+        let path = std::env::var_os("SLOPOS_ACTIVE_TOPLEVEL_FILE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR")
+                    .map(PathBuf::from)
+                    .map(|dir| dir.join("active-toplevel"))
+            })?;
+        let contents = fs::read_to_string(path).ok()?;
+        let app_id = contents
+            .lines()
+            .find_map(|line| line.strip_prefix("app_id="))
+            .unwrap_or_default()
+            .trim();
+        if app_id.is_empty() {
+            Some(None)
+        } else if app_id.chars().all(|ch| !ch.is_control()) {
+            Some(Some(app_id.to_string()))
+        } else {
+            None
+        }
+    }
+
+    /// Synchronize the global menu to the compositor-focused client.
+    ///
+    /// The old implementation chose the first launched client or first foreign
+    /// toplevel, which made the bar appear to belong to the shell's fake Finder
+    /// window. The compositor focus record is authoritative; list order is only
+    /// a compatibility fallback for direct/non-SLOPOS compositors.
+    fn maybe_sync_foreign_app_menu(&mut self) {
         foreign_toplevel_client::try_sync_foreign_toplevels(&mut self.foreign_toplevels);
 
-        let active_internal = self.window_manager.read().active_window.and_then(|id| {
-            self.window_manager
-                .read()
-                .windows
-                .get(&id)
-                .map(|w| w.app_id.clone())
-        });
+        if let Some(active) = Self::compositor_active_app_id() {
+            match active {
+                Some(app_id) => {
+                    let bundle = Self::bundle_id_for_foreign_app_id(&app_id)
+                        .map(str::to_owned)
+                        .unwrap_or(app_id);
+                    self.activate_app_menu(&bundle);
+                }
+                None => {
+                    self.menu_server.write().reset_to_shell_menus();
+                    self.menu_bar.menus = self.menu_server.read().menus.clone();
+                }
+            }
+            return;
+        }
+
+        let active_internal = if self.compositor_owns_ordinary_windows() {
+            None
+        } else {
+            self.window_manager.read().active_window.and_then(|id| {
+                self.window_manager
+                    .read()
+                    .windows
+                    .get(&id)
+                    .map(|w| w.app_id.clone())
+            })
+        };
 
         if let Some(app_id) = active_internal {
             if app_id != "com.slopos.finder" {
@@ -1502,11 +1649,31 @@ impl ShellDesktop {
     /// hit-test chains: the widget decides *that* it was activated (with real
     /// press/release semantics), the shell only decides what that means.
     fn process_pointer_activations(&mut self) {
-        // Dock: launch the pressed item's app.
+        // Dock: activate a live compositor-owned client, or launch only when
+        // no matching client is present. The shell never changes client
+        // geometry or focus directly.
         if let Some(item_idx) = self.dock_view.take_clicked() {
             let app_id = self.dock.write().launch_app(item_idx);
             if let Some(app_id) = app_id {
-                self.launch_external_app(&app_id);
+                let existing_client = if self.compositor_owns_ordinary_windows() {
+                    self.refresh_foreign_toplevels_from_compositor();
+                    self.foreign_toplevels
+                        .entries()
+                        .any(|entry| Self::foreign_toplevel_matches_bundle(&entry.app_id, &app_id))
+                } else {
+                    false
+                };
+
+                match Self::dock_activation_for_existing_client(existing_client) {
+                    DockActivation::ActivateExisting => {
+                        // A failed control send must not create a second
+                        // process for an app that is already mapped.
+                        let _ = self.request_application_activation(&app_id);
+                    }
+                    DockActivation::LaunchNew => {
+                        self.launch_external_app(&app_id);
+                    }
+                }
             }
         }
 
@@ -1518,6 +1685,12 @@ impl ShellDesktop {
         // Shell windows: buttons, the workspace grid, and folder-window icon
         // views record activations inside the tree; collect the resulting
         // actions first, then apply them (no borrows held across mutations).
+        if self.compositor_owns_ordinary_windows() {
+            // A live layer-shell session has no shell-owned ordinary windows
+            // to inspect. App content and its actions belong to the focused
+            // compositor-managed client.
+            return;
+        }
         enum WindowAction {
             Close(Uuid),
             ForceQuit { id: Uuid, entry: Option<String> },
@@ -1695,6 +1868,9 @@ impl ShellDesktop {
     }
 
     fn layout_windows(&mut self) {
+        if self.compositor_owns_ordinary_windows() {
+            return;
+        }
         let bounds = self.content_bounds();
         for index in 0..self.windows.len() {
             let rect = self.windows[index].window.rect();
@@ -1723,14 +1899,26 @@ impl ShellDesktop {
             "shell.new_finder_window" => {
                 self.open_finder_window();
             }
-            "shell.close_finder_window" => self.close_active_window(),
+            "shell.close_finder_window" => {
+                if self.compositor_owns_ordinary_windows() {
+                    self.request_focused_window_action(WindowPresentationAction::Close);
+                } else {
+                    self.close_active_window();
+                }
+            }
             "shell.zoom_window" => {
-                if let Some(id) = self.active_window_id() {
+                if self.compositor_owns_ordinary_windows() {
+                    self.request_focused_window_action(WindowPresentationAction::ToggleZoom);
+                } else if let Some(id) = self.active_window_id() {
                     self.toggle_window_zoom(id);
                 }
             }
             "shell.toggle_fullscreen" => {
-                if let Some(id) = self.active_window_id() {
+                if self.compositor_owns_ordinary_windows() {
+                    self.request_focused_window_action(
+                        WindowPresentationAction::ToggleFullscreen,
+                    );
+                } else if let Some(id) = self.active_window_id() {
                     self.toggle_window_fullscreen(id);
                 }
             }
@@ -1897,23 +2085,94 @@ impl ShellDesktop {
             return false;
         }
 
-        let action_label = menu_action_label(&self.menu_bar.menus, action).unwrap_or_else(|| {
-            action
-                .rsplit('.')
-                .next()
-                .unwrap_or(action)
-                .replace('_', " ")
-        });
-        self.open_shell_status_window(
-            "Application Menu Action",
-            [
-                format!("Application: {active_app}"),
-                format!("Action: {action_label}"),
-                format!("Identifier: {action}"),
-                "Cross-process dispatch requires session/compositor IPC.".to_string(),
-            ],
-        );
+        // Application manifests may include a conventional Window menu. These
+        // operations are still compositor semantics, never application-owned
+        // geometry, even though the action id is namespaced by the app.
+        let presentation_action = if action.ends_with(".window.minimize") {
+            Some(WindowPresentationAction::Minimize)
+        } else if action.ends_with(".window.zoom") {
+            Some(WindowPresentationAction::ToggleZoom)
+        } else if action.ends_with(".window.fullscreen") {
+            Some(WindowPresentationAction::ToggleFullscreen)
+        } else {
+            None
+        };
+        if let Some(presentation_action) = presentation_action {
+            if self.compositor_owns_ordinary_windows() {
+                self.request_focused_window_action(presentation_action);
+            } else if let Some(id) = self.active_window_id() {
+                match presentation_action {
+                    WindowPresentationAction::Minimize => self.toggle_window_minimized(id),
+                    WindowPresentationAction::ToggleZoom => self.toggle_window_zoom(id),
+                    WindowPresentationAction::ToggleFullscreen => self.toggle_window_fullscreen(id),
+                    _ => {}
+                }
+            }
+            return true;
+        }
+
+        if self.compositor_owns_ordinary_windows() {
+            match send_application_menu_action(&active_app, action) {
+                Ok(()) => tracing::info!(
+                    bundle_id = %active_app,
+                    action_id = %action,
+                    "global menu action sent to focused application"
+                ),
+                Err(error) => {
+                    tracing::warn!(
+                        bundle_id = %active_app,
+                        action_id = %action,
+                        %error,
+                        "focused application has no live menu endpoint"
+                    );
+                }
+            }
+        } else {
+            let action_label =
+                menu_action_label(&self.menu_bar.menus, action).unwrap_or_else(|| {
+                    action
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(action)
+                        .replace('_', " ")
+                });
+            self.open_shell_status_window(
+                "Application Menu Action",
+                [
+                    format!("Application: {active_app}"),
+                    format!("Action: {action_label}"),
+                    format!("Identifier: {action}"),
+                    "Cross-process dispatch is available only in a live SLOPOS session."
+                        .to_string(),
+                ],
+            );
+        }
         true
+    }
+
+    fn request_focused_window_action(&self, action: WindowPresentationAction) {
+        let request = SessionControlRequest::FocusedWindow { action };
+        if let Err(error) = send_session_control(&request) {
+            tracing::warn!(?action, %error, "could not send focused-window action to compositor");
+        } else {
+            tracing::info!(?action, "sent focused-window action to compositor");
+        }
+    }
+
+    fn request_application_activation(&self, bundle_id: &str) -> bool {
+        let request = SessionControlRequest::ActivateApplication {
+            bundle_id: bundle_id.to_string(),
+        };
+        match send_session_control(&request) {
+            Ok(()) => {
+                tracing::info!(%bundle_id, "sent application activation request to compositor");
+                true
+            }
+            Err(error) => {
+                tracing::warn!(%bundle_id, %error, "could not send application activation request to compositor");
+                false
+            }
+        }
     }
 
     /// Pure API / UI path: validate → nmcli plan → best-effort spawn (like systemctl).
@@ -2725,7 +2984,12 @@ fn default_finder_rect(shell_rect: Rect) -> Rect {
 }
 
 fn titlebar_rect(window_rect: Rect) -> Rect {
-    Rect::new(window_rect.x, window_rect.y, window_rect.width, 24.0)
+    Rect::new(
+        window_rect.x,
+        window_rect.y,
+        window_rect.width,
+        WINDOW_TITLE_BAR_HEIGHT,
+    )
 }
 
 fn close_box_rect(window_rect: Rect) -> Rect {
@@ -3174,21 +3438,26 @@ impl Widget for ShellDesktop {
             return size;
         }
 
-        self.menu_bar
-            .set_rect(Rect::new(self.rect().x, self.rect().y, size.width, 24.0));
-        let _ = self
-            .menu_bar
-            .layout(LayoutConstraint::tight(Size::new(size.width, 24.0)));
+        self.menu_bar.set_rect(Rect::new(
+            self.rect().x,
+            self.rect().y,
+            size.width,
+            MENU_BAR_HEIGHT,
+        ));
+        let _ = self.menu_bar.layout(LayoutConstraint::tight(Size::new(
+            size.width,
+            MENU_BAR_HEIGHT,
+        )));
 
         self.desktop.set_rect(Rect::new(
             self.rect().x,
-            self.rect().y + 24.0,
+            self.rect().y + MENU_BAR_HEIGHT,
             size.width,
-            (size.height - 24.0 - 64.0).max(0.0),
+            (size.height - MENU_BAR_HEIGHT - 64.0).max(0.0),
         ));
         let _ = self.desktop.layout(LayoutConstraint::tight(Size::new(
             size.width,
-            (size.height - 24.0 - 64.0).max(0.0),
+            (size.height - MENU_BAR_HEIGHT - 64.0).max(0.0),
         )));
 
         self.dock_view.set_rect(Rect::new(
@@ -3232,6 +3501,15 @@ impl Widget for ShellDesktop {
             return;
         }
         self.desktop.draw(theme);
+        if self.compositor_owns_ordinary_windows() {
+            // The compositor paints every ordinary XDG toplevel above this
+            // background surface. The shell paints wallpaper/icons and
+            // shell-only overlays here, never a second application window.
+            for popup in &self.notification_popup_windows {
+                popup.draw(theme);
+            }
+            return;
+        }
         let active_workspace = self.active_workspace();
         // Draw non-active windows first
         for shell_window in self
@@ -3758,7 +4036,7 @@ impl Widget for ShellDesktop {
         let right_margin = 12.0;
         let popup_w = 280.0;
         let popup_h = 80.0;
-        let menu_bar_h = 24.0;
+        let menu_bar_h = MENU_BAR_HEIGHT;
         let gap = 8.0;
         let desktop_width = self.rect().width;
 
@@ -3784,38 +4062,50 @@ impl Widget for ShellDesktop {
         if self.locked {
             return vec![&self.lock_screen_widget as &dyn Widget];
         }
-        match self.paint_filter {
+        // During layer-shell input dispatch, use the surface that received the
+        // event as the routing scope. The paint filter remains unchanged so a
+        // menu/dock widget is never accidentally drawn into the background
+        // surface just because it received input there.
+        let active_filter = self.input_filter.unwrap_or(self.paint_filter);
+        match active_filter {
             ShellPaintFilter::MenuBar | ShellPaintFilter::MenuPopup => {
                 return vec![&self.menu_bar as &dyn Widget];
             }
             ShellPaintFilter::Dock => return vec![&self.dock_view as &dyn Widget],
             ShellPaintFilter::Background | ShellPaintFilter::All => {}
         }
-        let capacity = self.windows.len() + 3 + self.notification_popup_windows.len();
+        let shell_window_count = if self.compositor_owns_ordinary_windows() {
+            0
+        } else {
+            self.windows.len()
+        };
+        let capacity = shell_window_count + 3 + self.notification_popup_windows.len();
         let mut children: Vec<&dyn Widget> = Vec::with_capacity(capacity);
         children.push(&self.desktop);
         let active_workspace = self.active_workspace();
-        for shell_window in &self.windows {
-            if shell_window.workspace == active_workspace {
-                children.push(&shell_window.window);
+        if !self.compositor_owns_ordinary_windows() {
+            for shell_window in &self.windows {
+                if shell_window.workspace == active_workspace {
+                    children.push(&shell_window.window);
+                }
             }
         }
-        if matches!(self.paint_filter, ShellPaintFilter::All)
-            && should_paint_kit_chrome(self.layer_shell_bound)
+        if matches!(active_filter, ShellPaintFilter::All)
+            && (self.input_filter.is_some() || should_paint_kit_chrome(self.layer_shell_bound))
         {
             children.push(&self.dock_view);
         }
         for popup in &self.notification_popup_windows {
             children.push(popup as &dyn Widget);
         }
-        if matches!(self.paint_filter, ShellPaintFilter::All)
-            && should_paint_kit_chrome(self.layer_shell_bound)
+        if matches!(active_filter, ShellPaintFilter::All)
+            && (self.input_filter.is_some() || should_paint_kit_chrome(self.layer_shell_bound))
         {
             children.push(&self.menu_bar);
         }
         if self.spotlight_ui.is_visible()
             && matches!(
-                self.paint_filter,
+                active_filter,
                 ShellPaintFilter::Background | ShellPaintFilter::All
             )
         {
@@ -3840,13 +4130,21 @@ impl Widget for ShellDesktop {
         }
         let paint_chrome = matches!(self.paint_filter, ShellPaintFilter::All)
             && should_paint_kit_chrome(self.layer_shell_bound);
-        let capacity = self.windows.len() + 3 + self.notification_popup_windows.len();
+        let compositor_owns_windows = self.compositor_owns_ordinary_windows();
+        let shell_window_count = if compositor_owns_windows {
+            0
+        } else {
+            self.windows.len()
+        };
+        let capacity = shell_window_count + 3 + self.notification_popup_windows.len();
         let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(capacity);
         children.push(&mut self.desktop);
         let active_workspace = self.workspace_manager.read().active;
-        for shell_window in &mut self.windows {
-            if shell_window.workspace == active_workspace {
-                children.push(&mut shell_window.window);
+        if !compositor_owns_windows {
+            for shell_window in &mut self.windows {
+                if shell_window.workspace == active_workspace {
+                    children.push(&mut shell_window.window);
+                }
             }
         }
         if paint_chrome {
@@ -3891,6 +4189,34 @@ mod tests {
     static MENU_MANIFEST_ENV_LOCK: Mutex<()> = Mutex::new(());
     static LOCK_PASSWORD_ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    #[test]
+    fn foreign_toplevel_matching_accepts_only_known_or_exact_bundle_ids() {
+        assert!(ShellDesktop::foreign_toplevel_matches_bundle(
+            "com.slopos.settings",
+            "com.slopos.settings"
+        ));
+        assert!(!ShellDesktop::foreign_toplevel_matches_bundle(
+            "SETTINGS",
+            "com.slopos.settings"
+        ));
+        assert!(!ShellDesktop::foreign_toplevel_matches_bundle(
+            "com.slopos.settings-malicious",
+            "com.slopos.settings"
+        ));
+        assert!(!ShellDesktop::foreign_toplevel_matches_bundle(
+            "/tmp/settings",
+            "com.slopos.settings"
+        ));
+        assert_eq!(
+            ShellDesktop::dock_activation_for_existing_client(true),
+            DockActivation::ActivateExisting
+        );
+        assert_eq!(
+            ShellDesktop::dock_activation_for_existing_client(false),
+            DockActivation::LaunchNew
+        );
+    }
+
     fn temp_shell_root() -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -3920,6 +4246,10 @@ mod tests {
             session_manager,
         );
         desktop.layout(LayoutConstraint::tight(Size::new(960.0, 640.0)));
+        // Production no longer creates a fake Finder window in the shell.
+        // Keep the legacy in-process window coverage explicit in unit tests
+        // that exercise shell-owned dialog/window policy.
+        desktop.open_finder_window();
         // Unit tests: plan MIME open / nmcli without spawning real processes.
         desktop.mime_open_spawn = false;
         desktop.network_connect_spawn = false;

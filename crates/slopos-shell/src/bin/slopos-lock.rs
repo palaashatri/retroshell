@@ -182,6 +182,7 @@ mod linux {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_text(
         pixels: &mut [u8],
         width: u32,
@@ -198,6 +199,7 @@ mod linux {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_char(pixels: &mut [u8], width: u32, x: u32, y: u32, ch: char, r: u8, g: u8, b: u8) {
         let stride = width * 4;
         let glyph = simple_glyph(ch);

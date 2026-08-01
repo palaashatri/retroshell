@@ -1,10 +1,129 @@
 use crate::pty::Pty;
 use crate::terminal::Terminal;
+use nix::errno::Errno;
+use nix::sys::signal::{self, Signal};
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::Pid;
 use slopos_kit::{
     AccessibilityNode, Event, EventResult, LayoutConstraint, Rect, Size, ThemeContext, Widget,
     WidgetState,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChildShutdownResult {
+    signal_requested: bool,
+    reaped: bool,
+    still_running: bool,
+}
+
+fn child_process_group(pid: Pid) -> Pid {
+    match pid.as_raw().checked_neg() {
+        Some(group_pid) if group_pid != 0 => Pid::from_raw(group_pid),
+        _ => pid,
+    }
+}
+
+fn best_effort_shutdown_child(pid: Pid) -> ChildShutdownResult {
+    best_effort_shutdown_child_with(pid, signal::kill, |child| {
+        waitpid(child, Some(WaitPidFlag::WNOHANG))
+    })
+}
+
+fn best_effort_shutdown_child_with<K, W>(
+    pid: Pid,
+    mut send_signal: K,
+    mut reap_child: W,
+) -> ChildShutdownResult
+where
+    K: FnMut(Pid, Signal) -> Result<(), Errno>,
+    W: FnMut(Pid) -> Result<WaitStatus, Errno>,
+{
+    fn observe_wait_status(
+        pid: Pid,
+        signal_requested: bool,
+        status: Result<WaitStatus, Errno>,
+    ) -> Option<ChildShutdownResult> {
+        match status {
+            Ok(WaitStatus::Exited(..) | WaitStatus::Signaled(..)) => Some(ChildShutdownResult {
+                signal_requested,
+                reaped: true,
+                still_running: false,
+            }),
+            Ok(WaitStatus::StillAlive) => None,
+            Ok(WaitStatus::Stopped(..) | WaitStatus::Continued(..)) => Some(ChildShutdownResult {
+                signal_requested,
+                reaped: false,
+                still_running: true,
+            }),
+            // Linux exposes additional ptrace-only wait statuses. They do
+            // not mean that the child has exited.
+            #[cfg(target_os = "linux")]
+            Ok(WaitStatus::PtraceEvent(..) | WaitStatus::PtraceSyscall(..)) => {
+                Some(ChildShutdownResult {
+                    signal_requested,
+                    reaped: false,
+                    still_running: true,
+                })
+            }
+            Err(Errno::ECHILD | Errno::ESRCH) => Some(ChildShutdownResult {
+                signal_requested,
+                reaped: true,
+                still_running: false,
+            }),
+            Err(err) => {
+                tracing::debug!(child_pid = pid.as_raw(), %err, "terminal close: waitpid failed");
+                Some(ChildShutdownResult {
+                    signal_requested,
+                    reaped: false,
+                    still_running: true,
+                })
+            }
+        }
+    }
+
+    let target = child_process_group(pid);
+    let mut signal_requested = false;
+
+    for signal_kind in [Signal::SIGHUP, Signal::SIGTERM] {
+        match send_signal(target, signal_kind) {
+            Ok(()) => {
+                signal_requested = true;
+                tracing::debug!(
+                    child_pid = pid.as_raw(),
+                    target_pid = target.as_raw(),
+                    ?signal_kind,
+                    "terminal close: requested child shutdown"
+                );
+            }
+            Err(Errno::ESRCH) => {
+                return ChildShutdownResult {
+                    signal_requested,
+                    reaped: true,
+                    still_running: false,
+                };
+            }
+            Err(err) => {
+                tracing::debug!(
+                    child_pid = pid.as_raw(),
+                    target_pid = target.as_raw(),
+                    ?signal_kind,
+                    %err,
+                    "terminal close: signal request failed"
+                );
+            }
+        }
+
+        if let Some(result) = observe_wait_status(pid, signal_requested, reap_child(pid)) {
+            return result;
+        }
+    }
+
+    observe_wait_status(pid, signal_requested, reap_child(pid)).unwrap_or(ChildShutdownResult {
+        signal_requested,
+        reaped: false,
+        still_running: true,
+    })
+}
 
 #[allow(dead_code)]
 pub struct Tab {
@@ -102,6 +221,15 @@ impl TabManager {
             tab.title,
             tab.child_pid
         );
+        let shutdown = best_effort_shutdown_child(tab.child_pid);
+        tracing::info!(
+            tab_id = tab.id,
+            child_pid = tab.child_pid.as_raw(),
+            signal_requested = shutdown.signal_requested,
+            reaped = shutdown.reaped,
+            still_running = shutdown.still_running,
+            "Terminal tab close requested child shutdown"
+        );
         self.tabs.remove(index);
         if self.active_tab_index >= self.tabs.len() && !self.tabs.is_empty() {
             self.active_tab_index = self.tabs.len() - 1;
@@ -111,6 +239,10 @@ impl TabManager {
 
     pub fn active_tab(&self) -> Option<&Tab> {
         self.tabs.get(self.active_tab_index)
+    }
+
+    pub fn active_tab_index(&self) -> usize {
+        self.active_tab_index
     }
 
     pub fn active_tab_mut(&mut self) -> Option<&mut Tab> {
@@ -269,5 +401,97 @@ impl Widget for TabManager {
     }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn child_shutdown_requests_sighup_and_reaps_immediately() {
+        let pid = Pid::from_raw(42);
+        let mut sent = Vec::new();
+        let mut wait_calls = 0usize;
+
+        let result = best_effort_shutdown_child_with(
+            pid,
+            |target, signal_kind| {
+                sent.push((target.as_raw(), signal_kind));
+                Ok(())
+            },
+            |_| {
+                wait_calls += 1;
+                Ok(WaitStatus::Exited(pid, 0))
+            },
+        );
+
+        assert_eq!(
+            sent,
+            vec![(child_process_group(pid).as_raw(), Signal::SIGHUP)]
+        );
+        assert_eq!(wait_calls, 1);
+        assert!(result.signal_requested);
+        assert!(result.reaped);
+        assert!(!result.still_running);
+    }
+
+    #[test]
+    fn child_shutdown_escalates_to_sigterm_when_child_stays_alive() {
+        let pid = Pid::from_raw(77);
+        let mut sent = Vec::new();
+        let mut wait_calls = 0usize;
+
+        let result = best_effort_shutdown_child_with(
+            pid,
+            |target, signal_kind| {
+                sent.push((target.as_raw(), signal_kind));
+                Ok(())
+            },
+            |_| {
+                wait_calls += 1;
+                Ok(WaitStatus::StillAlive)
+            },
+        );
+
+        assert_eq!(
+            sent,
+            vec![
+                (child_process_group(pid).as_raw(), Signal::SIGHUP),
+                (child_process_group(pid).as_raw(), Signal::SIGTERM),
+            ]
+        );
+        assert_eq!(wait_calls, 3);
+        assert!(result.signal_requested);
+        assert!(!result.reaped);
+        assert!(result.still_running);
+    }
+
+    #[test]
+    fn child_shutdown_treats_missing_child_as_already_gone() {
+        let pid = Pid::from_raw(99);
+        let mut sent = Vec::new();
+        let mut wait_calls = 0usize;
+
+        let result = best_effort_shutdown_child_with(
+            pid,
+            |target, signal_kind| {
+                sent.push((target.as_raw(), signal_kind));
+                Ok(())
+            },
+            |_| {
+                wait_calls += 1;
+                Err(Errno::ECHILD)
+            },
+        );
+
+        assert_eq!(
+            sent,
+            vec![(child_process_group(pid).as_raw(), Signal::SIGHUP)]
+        );
+        assert_eq!(wait_calls, 1);
+        assert!(result.signal_requested);
+        assert!(result.reaped);
+        assert!(!result.still_running);
     }
 }

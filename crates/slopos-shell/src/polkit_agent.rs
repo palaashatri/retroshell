@@ -162,7 +162,7 @@ mod linux {
             self.state
                 .lock()
                 .begin(req)
-                .map_err(|e| zbus::fdo::Error::Failed(e))?;
+                .map_err(zbus::fdo::Error::Failed)?;
             Ok(())
         }
 

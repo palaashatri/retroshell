@@ -1,11 +1,13 @@
 pub mod message;
 pub mod service_registry;
 pub mod services;
+pub mod session_control;
 pub mod transport;
 
 pub use message::*;
 pub use service_registry::ServiceRegistry;
 pub use services::*;
+pub use session_control::*;
 pub use transport::Transport;
 
 use parking_lot::RwLock;

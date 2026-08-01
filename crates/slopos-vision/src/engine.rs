@@ -2,7 +2,10 @@
 //! segmentation with lazy, manifest-verified model loading.
 
 use crate::composite;
-use crate::decode::{decode_image_limited, DEFAULT_MAX_SOURCE_PIXELS};
+use crate::decode::{
+    decode_image_limited, read_image_limited, DEFAULT_MAX_ENCODED_INPUT_BYTES,
+    DEFAULT_MAX_SOURCE_PIXELS,
+};
 use crate::error::VisionError;
 use crate::manifest::{self, ModelEntry, ModelManifest, ModelStatus};
 use crate::ocr::OcrEngine;
@@ -24,6 +27,8 @@ pub const DEFAULT_MODELS_DIR: &str = "models/vision";
 pub struct VisionEngineConfig {
     /// Directory containing `manifest.toml` and the model files it references.
     pub models_dir: PathBuf,
+    /// Maximum encoded image size accepted before reading the file into memory.
+    pub max_encoded_input_bytes: u64,
     /// Maximum source-image pixel count for any single job.
     pub max_source_pixels: u64,
 }
@@ -32,6 +37,7 @@ impl Default for VisionEngineConfig {
     fn default() -> Self {
         Self {
             models_dir: PathBuf::from(DEFAULT_MODELS_DIR),
+            max_encoded_input_bytes: DEFAULT_MAX_ENCODED_INPUT_BYTES,
             max_source_pixels: DEFAULT_MAX_SOURCE_PIXELS,
         }
     }
@@ -151,8 +157,11 @@ impl VisionEngine {
 
     /// Decode an image file, guarding against decompression bombs.
     pub fn decode_image(&self, path: &Path) -> Result<DynamicImage, VisionError> {
-        let data = fs::read(path)?;
-        self.decode_image_bytes(&data)
+        read_image_limited(
+            path,
+            self.config.max_encoded_input_bytes,
+            self.config.max_source_pixels,
+        )
     }
 
     /// Decode raw image bytes, guarding against decompression bombs.
@@ -166,6 +175,11 @@ impl VisionEngine {
         image: &DynamicImage,
         options: OcrOptions,
     ) -> Result<OcrResult, VisionError> {
+        if !options.min_confidence.is_finite() || !(0.0..=1.0).contains(&options.min_confidence) {
+            return Err(VisionError::Unsupported(
+                "OCR minimum confidence must be finite and between 0 and 1".to_string(),
+            ));
+        }
         self.check_source_pixels(image)?;
         self.ocr()?.extract_text(image, &options)
     }
@@ -176,6 +190,7 @@ impl VisionEngine {
         image: &DynamicImage,
         options: SegmentationOptions,
     ) -> Result<SubjectMask, VisionError> {
+        validate_segmentation_options(&options)?;
         self.check_source_pixels(image)?;
         self.segment()?.segment(image, &options)
     }
@@ -221,17 +236,32 @@ impl VisionEngine {
     }
 
     /// Per-model install status (`Installed` / `Missing` / `HashMismatch`).
-    pub fn model_status(&self) -> Vec<(String, ModelStatus)> {
+    ///
+    /// Verification errors are retained in the result instead of being
+    /// silently dropped, so callers can distinguish a broken model path from
+    /// a model that is simply not installed.
+    pub fn model_status(&self) -> Vec<(String, Result<ModelStatus, VisionError>)> {
         self.manifest
             .models
             .iter()
-            .filter_map(|m| {
-                manifest::verify_model(&self.config.models_dir, m)
-                    .ok()
-                    .map(|s| (m.id.clone(), s))
+            .map(|m| {
+                (
+                    m.id.clone(),
+                    manifest::verify_model(&self.config.models_dir, m),
+                )
             })
             .collect()
     }
+}
+
+fn validate_segmentation_options(options: &SegmentationOptions) -> Result<(), VisionError> {
+    let mask = &options.mask_post;
+    if !mask.threshold.is_finite() || !(0.0..=1.0).contains(&mask.threshold) {
+        return Err(VisionError::Unsupported(
+            "segmentation threshold must be finite and between 0 and 1".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -243,6 +273,7 @@ mod tests {
     fn default_config_points_at_models_dir() {
         let cfg = VisionEngineConfig::default();
         assert_eq!(cfg.models_dir, PathBuf::from("models/vision"));
+        assert_eq!(cfg.max_encoded_input_bytes, DEFAULT_MAX_ENCODED_INPUT_BYTES);
         assert_eq!(cfg.max_source_pixels, DEFAULT_MAX_SOURCE_PIXELS);
     }
 
@@ -286,6 +317,115 @@ mod tests {
         assert_eq!(caps.len(), 1);
         assert_eq!(caps[0].id, "u2netp");
         let status = engine.model_status();
-        assert_eq!(status, vec![("u2netp".to_string(), ModelStatus::Missing)]);
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].0, "u2netp");
+        assert!(matches!(status[0].1, Ok(ModelStatus::Missing)));
+    }
+
+    #[test]
+    fn decode_image_rejects_encoded_input_before_reading_it() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("manifest.toml"), "models = []").unwrap();
+        let image_path = dir.path().join("input.bin");
+        std::fs::write(&image_path, [0_u8; 4]).unwrap();
+        let engine = VisionEngine::load(VisionEngineConfig {
+            models_dir: dir.path().to_path_buf(),
+            max_encoded_input_bytes: 3,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let error = engine.decode_image(&image_path).unwrap_err();
+        assert!(matches!(
+            error,
+            VisionError::EncodedImageTooLarge {
+                max_bytes: 3,
+                actual_bytes: 4
+            }
+        ));
+    }
+
+    #[test]
+    fn model_status_preserves_verification_errors() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("model.onnx")).unwrap();
+        let directory_size = std::fs::metadata(dir.path().join("model.onnx"))
+            .unwrap()
+            .len();
+        let manifest = format!(
+            r#"
+                [[models]]
+                id = "directory-model"
+                version = "1.0.0"
+                purpose = "subject_segmentation"
+                architecture = "test"
+                file = "model.onnx"
+                sha256 = "{}"
+                size = {}
+                input_shape = [1, 3, -1, -1]
+                output_interpretation = "test"
+                source_url = "https://example.invalid/model.onnx"
+                model_license = "MIT"
+                weight_license = "MIT"
+                attribution = "test"
+                redistribution = "allowed"
+            "#,
+            "0".repeat(64),
+            directory_size
+        );
+        std::fs::write(dir.path().join("manifest.toml"), manifest).unwrap();
+        let engine = VisionEngine::load(VisionEngineConfig {
+            models_dir: dir.path().to_path_buf(),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let status = engine.model_status();
+        assert!(matches!(status[0].1, Err(VisionError::Io(_))));
+    }
+
+    #[test]
+    fn invalid_ocr_confidence_is_rejected_before_model_load() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("manifest.toml"), "models = []").unwrap();
+        let engine = VisionEngine::load(VisionEngineConfig {
+            models_dir: dir.path().to_path_buf(),
+            ..Default::default()
+        })
+        .unwrap();
+        let error = engine
+            .extract_text(
+                &DynamicImage::new_rgb8(1, 1),
+                OcrOptions {
+                    min_confidence: f32::NAN,
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(error, VisionError::Unsupported(_)));
+    }
+
+    #[test]
+    fn invalid_segmentation_threshold_is_rejected_before_model_load() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("manifest.toml"), "models = []").unwrap();
+        let engine = VisionEngine::load(VisionEngineConfig {
+            models_dir: dir.path().to_path_buf(),
+            ..Default::default()
+        })
+        .unwrap();
+        let error = engine
+            .segment_subject(
+                &DynamicImage::new_rgb8(1, 1),
+                SegmentationOptions {
+                    mask_post: crate::types::MaskPostProcessOptions {
+                        threshold: 2.0,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(error, VisionError::Unsupported(_)));
     }
 }

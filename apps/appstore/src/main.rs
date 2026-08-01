@@ -85,6 +85,27 @@ fn main() {
 
     app.set_menus(vec![store_menu, edit_menu, window_menu, help_menu]);
 
+    app.on_menu_action(|action, window| {
+        let Some(content) = window.content.as_mut() else {
+            return;
+        };
+        let Some(view) = content.as_any_mut().downcast_mut::<AppStoreView>() else {
+            return;
+        };
+        let action = action
+            .strip_prefix("com.slopos.appstore.")
+            .unwrap_or(action);
+        match action {
+            "store.refresh" => {
+                view.refresh_backend();
+            }
+            "store.search" => {
+                view.focus_widget(view.query.id());
+            }
+            _ => {}
+        }
+    });
+
     let mut window = Window::new("App Store");
     window.set_content(Box::new(AppStoreView::new()));
     app.set_main_window(window);

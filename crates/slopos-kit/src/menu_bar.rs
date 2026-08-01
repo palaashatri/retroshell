@@ -1,4 +1,8 @@
 use crate::{
+    design_tokens::{
+        MENU_BAR_LEADING, MENU_DROPDOWN_VERTICAL_PADDING, MENU_ITEM_GAP, MENU_ITEM_HEIGHT,
+        MENU_TITLE_HORIZONTAL_PADDING,
+    },
     event::MouseButton,
     menu::{Menu, MenuItemKind},
     theme::ThemeContext,
@@ -89,17 +93,17 @@ impl MenuBar {
             menu_rect.x,
             self.rect().y + self.rect().height - 1.0,
             item_width,
-            menu.items.len() as f32 * 20.0 + 8.0,
+            menu.items.len() as f32 * MENU_ITEM_HEIGHT + MENU_DROPDOWN_VERTICAL_PADDING,
         ))
     }
 
     pub fn item_rect(&self, menu_index: usize, item_index: usize) -> Option<Rect> {
         let dropdown = self.dropdown_rect(menu_index)?;
         Some(Rect::new(
-            dropdown.x + 4.0,
-            dropdown.y + 4.0 + item_index as f32 * 20.0,
-            dropdown.width - 8.0,
-            20.0,
+            dropdown.x + 2.0,
+            dropdown.y + 2.0 + item_index as f32 * MENU_ITEM_HEIGHT,
+            dropdown.width - 4.0,
+            MENU_ITEM_HEIGHT,
         ))
     }
 
@@ -161,7 +165,10 @@ impl Widget for MenuBar {
     }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
-        let size = constraint.clamp(Size::new(constraint.max_width, 24.0));
+        let size = constraint.clamp(Size::new(
+            constraint.max_width,
+            crate::design_tokens::MENU_BAR_HEIGHT,
+        ));
         self.set_rect(Rect::new(
             self.rect().x,
             self.rect().y,
@@ -171,9 +178,9 @@ impl Widget for MenuBar {
 
         // Classic Mac–style spacing: padding inside each title hit target, plus
         // a clear gap between adjacent menu titles so they don't read as one word.
-        const LEADING: f32 = 8.0;
-        const TITLE_PAD: f32 = 18.0; // horizontal padding inside each title rect
-        const ITEM_GAP: f32 = 8.0;
+        const LEADING: f32 = MENU_BAR_LEADING;
+        const TITLE_PAD: f32 = MENU_TITLE_HORIZONTAL_PADDING;
+        const ITEM_GAP: f32 = MENU_ITEM_GAP;
         const CHAR_W: f32 = 7.0;
 
         self.menu_rects.clear();
@@ -287,7 +294,7 @@ mod tests {
     #[test]
     fn menu_bar_opens_switches_and_closes() {
         let mut menu_bar = test_menu_bar();
-        menu_bar.layout(LayoutConstraint::tight(Size::new(640.0, 24.0)));
+        menu_bar.layout(LayoutConstraint::tight(Size::new(640.0, 19.0)));
 
         let file_point = Point::new(16.0, 10.0);
         let edit_point = Point::new(menu_bar.menu_rects()[1].x + 6.0, 10.0);
@@ -319,7 +326,7 @@ mod tests {
     #[test]
     fn menu_bar_records_action_from_dropdown_click() {
         let mut menu_bar = test_menu_bar();
-        menu_bar.layout(LayoutConstraint::tight(Size::new(640.0, 24.0)));
+        menu_bar.layout(LayoutConstraint::tight(Size::new(640.0, 19.0)));
         menu_bar.open_menu(0);
 
         let open_rect = menu_bar.item_rect(0, 0).unwrap();

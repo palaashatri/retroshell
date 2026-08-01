@@ -24,27 +24,34 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use anyhow::Context;
     use std::collections::{HashMap, HashSet};
     use std::io::Write;
     use std::os::unix::io::OwnedFd;
+    use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::Duration;
 
+    use slopos_bus::{SessionControlListener, SessionControlRequest, WindowPresentationAction};
     use slopos_compositor::frame_timing::{FrameScheduler, RefreshRate};
     use slopos_compositor::hdr::HdrCapabilities;
     use slopos_compositor::{
         accumulate_damage_for_window_move, accumulate_damage_rect, apply_scale_to_output_config,
-        assign_new_window_to_active, calculate_presentation_geometry, cascade_position,
-        detect_dri3_from_env, detect_output_scale_from_env, focus_window_after_workspace_switch,
+        assign_new_window_to_active, cascade_position, clamp_window_to_work_area,
+        detect_output_scale_from_env, focus_window_after_workspace_switch,
         geometry_for_interactive_grab, move_to_top, next_cascade_offset, output_scale_summary,
-        prefer_full_redraw, resolve_laid_out_outputs_from_env,
-        selection_bytes_for_mime_with_text_fallback, session_mode_note,
-        text_input_capability_from_env, text_input_capability_summary, topmost_window_at,
-        total_output_size, window_paint_source, CompositorBackendKind, DamageRect, DisplayPolicy,
-        InteractiveGrab, InteractiveGrabKind, LaidOutOutput, OutputScale, PlaceholderPresentStats,
-        ResizeEdges, TextInputCapability, TilePlacement, WindowGeometry, WindowPaintSource,
-        WindowPresentationState, WindowRestoreState, WorkspaceId, WorkspaceState, ZoomAction,
-        ZoomPolicyConfig, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+        pointer_grab_request_is_valid, prefer_full_redraw, register_wayland_display_source,
+        resolve_laid_out_outputs_from_env, selection_bytes_for_mime_with_text_fallback,
+        session_mode_note, text_input_capability_from_env, text_input_capability_summary,
+        total_output_size, transition_presentation_state, window_paint_source,
+        CompositorBackendKind, DamageRect, DisplayPolicy, InteractiveGrab, InteractiveGrabKind,
+        LaidOutOutput, OutputScale, PlaceholderPresentStats, ResizeEdges, TextInputCapability,
+        WindowGeometry, WindowPaintSource, WindowPresentationState, WindowRestoreState,
+        WorkspaceId, WorkspaceState, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+    };
+    use smithay::desktop::{
+        find_popup_root_surface, PopupGrab, PopupKeyboardGrab, PopupKind, PopupManager,
+        PopupPointerGrab,
     };
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
     use smithay::reexports::wayland_server::protocol::{
@@ -83,7 +90,7 @@ mod linux {
         desktop::utils::send_frames_surface_tree,
         input::{
             keyboard::{FilterResult, XkbConfig},
-            pointer::{ButtonEvent, CursorImageStatus, CursorImageSurfaceData, MotionEvent},
+            pointer::{ButtonEvent, CursorImageStatus, CursorImageSurfaceData, Focus, MotionEvent},
             Seat, SeatHandler, SeatState,
         },
         output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
@@ -116,7 +123,10 @@ mod linux {
                 },
                 SelectionHandler, SelectionSource, SelectionTarget,
             },
-            shell::wlr_layer::{Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState},
+            shell::wlr_layer::{
+                Anchor, Layer, LayerSurface, LayerSurfaceCachedState, Margins,
+                WlrLayerShellHandler, WlrLayerShellState,
+            },
             shell::xdg::{
                 decoration::{XdgDecorationHandler, XdgDecorationState},
                 PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
@@ -174,12 +184,13 @@ mod linux {
         foreign: ForeignToplevelHandle,
         /// Stable id for workspace visibility (`foreign.identifier()` at map).
         window_id: String,
+        /// Wayland app_id captured at map time; the shell uses compositor focus
+        /// state to select the corresponding global-menu manifest.
+        app_id: String,
         /// Top-left position in logical compositor space
         position: Point<i32, Logical>,
         /// Last committed size (logical pixels)
         size: Size<i32, Logical>,
-        /// Geometry restored after maximize/fullscreen.
-        restore_geometry: Option<WindowGeometry>,
         /// Single-authority presentation state (Normal, Minimized, SmartZoomed, Filled, Fullscreen, Tiled).
         presentation_state: WindowPresentationState,
         /// Saved restore state prior to zoom/fill/fullscreen/tiling.
@@ -190,15 +201,137 @@ mod linux {
 
     struct MappedLayer {
         surface: LayerSurface,
-        #[allow(dead_code)]
         layer: Layer,
-        #[allow(dead_code)]
         namespace: String,
+        /// Authoritative compositor-space placement of the layer surface.
+        geo: Rectangle<i32, Logical>,
+        /// Exclusive work-area reservation requested by the layer client.
+        exclusive_zone: i32,
+    }
+
+    #[derive(Clone)]
+    struct PointerPress {
+        serial: Serial,
+        surface: WlSurface,
+    }
+
+    fn layer_policy_defaults(
+        namespace: &str,
+        output: Size<i32, Logical>,
+    ) -> (Size<i32, Logical>, Anchor) {
+        match namespace {
+            "slopos-i-menu" | "menu-bar" => (
+                Size::from((output.w, 24)),
+                Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
+            ),
+            "slopos-i-dock" | "dock" => (
+                Size::from((output.w, 64)),
+                Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
+            ),
+            "slopos-i-menu-popup" => (Size::from((1, 1)), Anchor::TOP | Anchor::LEFT),
+            _ => (
+                output,
+                Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT,
+            ),
+        }
+    }
+
+    fn layer_geometry_for(
+        namespace: &str,
+        layer: Layer,
+        output: Size<i32, Logical>,
+        requested: Size<i32, Logical>,
+        anchor: Anchor,
+        margins: Margins,
+    ) -> Rectangle<i32, Logical> {
+        let (fallback_size, fallback_anchor) = layer_policy_defaults(namespace, output);
+        let anchor = if anchor.is_empty() {
+            fallback_anchor
+        } else {
+            anchor
+        };
+        let left = margins.left.max(0);
+        let right = margins.right.max(0);
+        let top = margins.top.max(0);
+        let bottom = margins.bottom.max(0);
+
+        let width = if requested.w == 0 {
+            if anchor.anchored_horizontally() {
+                (output.w - left - right).max(1)
+            } else {
+                fallback_size.w
+            }
+        } else {
+            requested.w
+        }
+        .clamp(1, output.w.max(1));
+        let height = if requested.h == 0 {
+            if anchor.anchored_vertically() {
+                (output.h - top - bottom).max(1)
+            } else {
+                fallback_size.h
+            }
+        } else {
+            requested.h
+        }
+        .clamp(1, output.h.max(1));
+
+        let x = if anchor.contains(Anchor::LEFT) && anchor.contains(Anchor::RIGHT) {
+            left
+        } else if anchor.contains(Anchor::RIGHT) {
+            (output.w - width - right).max(0)
+        } else if anchor.contains(Anchor::LEFT) {
+            left
+        } else {
+            (output.w - width) / 2
+        };
+        let y = if anchor.contains(Anchor::TOP) && anchor.contains(Anchor::BOTTOM) {
+            top
+        } else if anchor.contains(Anchor::BOTTOM) {
+            (output.h - height - bottom).max(0)
+        } else if anchor.contains(Anchor::TOP) {
+            top
+        } else {
+            (output.h - height) / 2
+        };
+
+        // `layer` is intentionally part of the policy signature: layer order
+        // controls composition, while anchors control geometry. Keeping both
+        // here prevents callers from accidentally treating a Bottom surface as
+        // a normal xdg window when adding new chrome roles.
+        let _ = layer;
+        Rectangle::new((x, y).into(), (width, height).into())
+    }
+
+    fn layer_surface_request(surface: &LayerSurface) -> (Size<i32, Logical>, Anchor, Margins, i32) {
+        with_states(surface.wl_surface(), |states| {
+            let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+            let current = *cached.current();
+            (
+                current.size,
+                current.anchor,
+                current.margin,
+                current.exclusive_zone.into(),
+            )
+        })
     }
 
     impl MappedWindow {
         fn geometry(&self) -> WindowGeometry {
             WindowGeometry::new(self.position.x, self.position.y, self.size.w, self.size.h)
+        }
+    }
+
+    pub(super) fn x11_resize_edge_to_resize_edges(edge: ResizeEdge) -> ResizeEdges {
+        match edge {
+            ResizeEdge::Top => ResizeEdges::TOP,
+            ResizeEdge::Bottom => ResizeEdges::BOTTOM,
+            ResizeEdge::Left => ResizeEdges::LEFT,
+            ResizeEdge::Right => ResizeEdges::RIGHT,
+            ResizeEdge::TopLeft => ResizeEdges::TOP_LEFT,
+            ResizeEdge::BottomLeft => ResizeEdges::BOTTOM_LEFT,
+            ResizeEdge::TopRight => ResizeEdges::TOP_RIGHT,
+            ResizeEdge::BottomRight => ResizeEdges::BOTTOM_RIGHT,
         }
     }
 
@@ -244,6 +377,16 @@ mod linux {
         workspace_state: WorkspaceState,
         // Layer-shell chrome (menu bar, dock, notifications, …)
         layer_surfaces: Vec<MappedLayer>,
+        /// Tracks xdg popup trees independently of ordinary toplevel windows.
+        popup_manager: PopupManager,
+        /// The currently active popup grab, if a client requested one.
+        popup_grab: Option<PopupGrab<SloposCompositor>>,
+        /// Window whose xdg_toplevel state currently carries Activated.
+        activated_window_id: Option<String>,
+        /// Generic Restore targets the most recently minimized client. Focus
+        /// moves to another visible window after minimize, so the active id
+        /// alone cannot identify the Dock restore target.
+        last_minimized_window_id: Option<String>,
         // Counter for cascading new window placement
         next_window_offset: i32,
         // Current pointer position (logical)
@@ -254,6 +397,9 @@ mod linux {
         interactive_grab: Option<InteractiveGrab>,
         /// Tracks BTN_LEFT so stale xdg move/resize requests cannot start a grab.
         left_button_down: bool,
+        /// The most recent left-button press delivered to an application surface.
+        /// xdg_toplevel.move/resize must consume this exact serial while held.
+        last_pointer_press: Option<PointerPress>,
         /// A frame is produced only after damage, input, commit, or a frame event.
         frame_dirty: bool,
         // Output size advertised for X11 input transforms (union of all outputs).
@@ -300,8 +446,20 @@ mod linux {
         xdisplay: Option<u32>,
         /// X11 surfaces we know about (not fully managed yet under nested X11).
         x11_surfaces: Vec<X11WmSurface>,
+        /// XWayland windows associated with live Wayland surfaces.
+        x11_surface_associations: HashMap<X11Window, WlSurface>,
         /// Wayland socket name advertised to spawned clients (Super+O/L shortcuts).
         wayland_socket_name: String,
+        /// Session-scoped semantic requests from the shell. The compositor
+        /// remains the sole owner of real window geometry and presentation state.
+        control_listener: Option<SessionControlListener>,
+    }
+
+    pub(super) fn bind_session_control_listener(
+        runtime: &std::path::Path,
+    ) -> anyhow::Result<SessionControlListener> {
+        SessionControlListener::bind(runtime)
+            .map_err(|error| anyhow::anyhow!("bind session control socket: {error}"))
     }
 
     impl SloposCompositor {
@@ -311,18 +469,166 @@ mod linux {
             Serial::from(self.serial)
         }
 
-        /// Find the topmost **visible** window that contains `pt`, returning its index.
-        fn window_at(&self, pt: Point<f64, Logical>) -> Option<usize> {
-            // Walk top→bottom; skip windows on inactive workspaces.
-            for (idx, w) in self.windows.iter().enumerate().rev() {
-                if w.minimized || !self.workspace_state.is_visible(&w.window_id) {
-                    continue;
+        fn popup_origin(
+            window: &MappedWindow,
+            popup: &PopupKind,
+            popup_offset: Point<i32, Logical>,
+        ) -> Point<i32, Logical> {
+            let geometry = popup.geometry();
+            Point::from((
+                window.position.x + popup_offset.x - geometry.loc.x,
+                window.position.y + popup_offset.y - geometry.loc.y,
+            ))
+        }
+
+        /// Find a popup or toplevel surface under a compositor-space point.
+        /// Popup trees are checked before the parent window and are independent
+        /// of the parent rectangle, as required for menus that extend outside
+        /// their parent surface.
+        fn surface_under(
+            &self,
+            pt: Point<f64, Logical>,
+        ) -> Option<(WlSurface, Point<f64, Logical>)> {
+            for layer in self.layer_surfaces.iter().rev() {
+                if matches!(layer.layer, Layer::Overlay | Layer::Top)
+                    && layer
+                        .geo
+                        .contains(Point::<i32, Logical>::from((pt.x as i32, pt.y as i32)))
+                {
+                    return Some((
+                        layer.surface.wl_surface().clone(),
+                        Point::from((layer.geo.loc.x as f64, layer.geo.loc.y as f64)),
+                    ));
                 }
-                if w.geometry().contains_f64(pt.x, pt.y) {
-                    return Some(idx);
+            }
+
+            for window in self
+                .windows
+                .iter()
+                .rev()
+                .filter(|w| !w.minimized && self.workspace_state.is_visible(&w.window_id))
+            {
+                let popups: Vec<_> =
+                    PopupManager::popups_for_surface(window.toplevel.wl_surface()).collect();
+                for (popup, popup_offset) in popups.into_iter().rev() {
+                    let geometry = popup.geometry();
+                    let origin = Self::popup_origin(window, &popup, popup_offset);
+                    if geometry.size.w > 0
+                        && geometry.size.h > 0
+                        && (pt.x as i32) >= origin.x
+                        && (pt.y as i32) >= origin.y
+                        && (pt.x as i32) < origin.x + geometry.size.w
+                        && (pt.y as i32) < origin.y + geometry.size.h
+                    {
+                        return Some((
+                            popup.wl_surface().clone(),
+                            Point::from((origin.x as f64, origin.y as f64)),
+                        ));
+                    }
+                }
+                if window.geometry().contains_f64(pt.x, pt.y) {
+                    return Some((
+                        window.toplevel.wl_surface().clone(),
+                        Point::from((window.position.x as f64, window.position.y as f64)),
+                    ));
+                }
+            }
+
+            for layer in self.layer_surfaces.iter().rev() {
+                if matches!(layer.layer, Layer::Bottom | Layer::Background)
+                    && layer
+                        .geo
+                        .contains(Point::<i32, Logical>::from((pt.x as i32, pt.y as i32)))
+                {
+                    return Some((
+                        layer.surface.wl_surface().clone(),
+                        Point::from((layer.geo.loc.x as f64, layer.geo.loc.y as f64)),
+                    ));
                 }
             }
             None
+        }
+
+        fn activated_window_for_surface(&self, surface: &WlSurface) -> Option<String> {
+            if let Some(window) = self
+                .windows
+                .iter()
+                .find(|w| w.toplevel.wl_surface() == surface)
+            {
+                return Some(window.window_id.clone());
+            }
+            let popup = self.popup_manager.find_popup(surface)?;
+            let root = find_popup_root_surface(&popup).ok()?;
+            self.windows
+                .iter()
+                .find(|w| w.toplevel.wl_surface() == &root)
+                .map(|w| w.window_id.clone())
+        }
+
+        /// Keep xdg_toplevel.Activated synchronized with compositor focus.
+        fn sync_activated_for_surface(&mut self, surface: Option<&WlSurface>) {
+            let next = surface.and_then(|surface| self.activated_window_for_surface(surface));
+            if self.activated_window_id == next {
+                return;
+            }
+            let previous = self.activated_window_id.take();
+            self.activated_window_id = next.clone();
+            for window in &self.windows {
+                let was_active = previous.as_ref() == Some(&window.window_id);
+                let is_active = next.as_ref() == Some(&window.window_id);
+                if !was_active && !is_active {
+                    continue;
+                }
+                window.toplevel.with_pending_state(|state| {
+                    if is_active {
+                        state.states.set(xdg_toplevel::State::Activated);
+                    } else {
+                        state.states.unset(xdg_toplevel::State::Activated);
+                    }
+                });
+                window.toplevel.send_configure();
+            }
+        }
+
+        fn cleanup_popup_state(&mut self) {
+            self.popup_manager.cleanup();
+            if self.popup_grab.as_ref().is_some_and(PopupGrab::has_ended) {
+                self.popup_grab = None;
+            }
+        }
+
+        fn begin_popup_grab(
+            &mut self,
+            surface: PopupSurface,
+            seat: wl_seat::WlSeat,
+            serial: Serial,
+        ) {
+            let popup = PopupKind::from(surface);
+            if !self.seat.owns(&seat) {
+                tracing::debug!("rejecting xdg popup grab from an unknown seat");
+                return;
+            }
+            let Some(root) = find_popup_root_surface(&popup).ok() else {
+                tracing::debug!("rejecting xdg popup grab without a live root surface");
+                return;
+            };
+            let popup_surface = popup.wl_surface().clone();
+            let Ok(grab) = self
+                .popup_manager
+                .grab_popup(root, popup, &self.seat, serial)
+            else {
+                tracing::debug!("rejecting invalid xdg popup grab");
+                return;
+            };
+            if let Some(keyboard) = self.seat.get_keyboard() {
+                keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+            }
+            if let Some(pointer) = self.seat.get_pointer() {
+                pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+            }
+            self.popup_grab = Some(grab);
+            self.focus_surface(Some(popup_surface));
+            self.request_redraw();
         }
 
         /// Bring window at `idx` to the top and focus keyboard+pointer on it.
@@ -330,15 +636,17 @@ mod linux {
             if idx >= self.windows.len() {
                 return;
             }
+            let app_id = self.windows[idx].app_id.clone();
             self.windows[idx].minimized = false;
             // Rotate to top
             let surface = self.windows[idx].toplevel.wl_surface().clone();
             move_to_top(&mut self.windows, idx);
 
-            let serial = self.next_serial();
-            if let Some(kb) = self.seat.get_keyboard() {
-                kb.set_focus(self, Some(surface.clone()), serial);
+            self.focus_surface(Some(surface.clone()));
+            if let Err(err) = slopos_compositor::publish_active_toplevel(Some(&app_id)) {
+                tracing::debug!(error = %err, app_id = %app_id, "could not publish active application");
             }
+            let serial = self.next_serial();
             // Move pointer focus to surface at (0,0) within the window
             if let Some(ptr) = self.seat.get_pointer() {
                 let win = self.windows.last().unwrap();
@@ -357,9 +665,20 @@ mod linux {
                 );
                 ptr.frame(self);
             }
+        }
 
-            // Clipboard/primary selection focus follows keyboard focus (smithay seat data).
-            let client = surface.client();
+        fn focus_surface(&mut self, surface: Option<WlSurface>) {
+            self.sync_activated_for_surface(surface.as_ref());
+            if surface.is_none() {
+                if let Err(err) = slopos_compositor::publish_active_toplevel(None) {
+                    tracing::debug!(error = %err, "could not clear active application");
+                }
+            }
+            let serial = self.next_serial();
+            if let Some(kb) = self.seat.get_keyboard() {
+                kb.set_focus(self, surface.clone(), serial);
+            }
+            let client = surface.and_then(|surface| surface.client());
             set_data_device_focus(&self.display_handle, &self.seat, client.clone());
             set_primary_focus(&self.display_handle, &self.seat, client);
         }
@@ -373,6 +692,13 @@ mod linux {
                 if !alive.contains(id.as_str()) {
                     self.workspace_state.remove_window(&id);
                 }
+            }
+            if self
+                .last_minimized_window_id
+                .as_ref()
+                .is_some_and(|id| !alive.contains(id.as_str()))
+            {
+                self.last_minimized_window_id = None;
             }
         }
 
@@ -399,6 +725,7 @@ mod linux {
             if let Some(kb) = self.seat.get_keyboard() {
                 kb.set_focus(self, None, serial);
             }
+            self.sync_activated_for_surface(None);
             set_data_device_focus(&self.display_handle, &self.seat, None);
             set_primary_focus(&self.display_handle, &self.seat, None);
         }
@@ -442,15 +769,42 @@ mod linux {
             self.note_window_geometry_change(&id, old, new);
         }
 
-        fn begin_interactive_grab(&mut self, surface: &ToplevelSurface, kind: InteractiveGrabKind) {
-            if !self.left_button_down {
-                tracing::debug!("ignoring xdg move/resize without pressed left button");
+        fn begin_interactive_grab(
+            &mut self,
+            surface: &ToplevelSurface,
+            kind: InteractiveGrabKind,
+            seat: &wl_seat::WlSeat,
+            serial: Serial,
+        ) {
+            let requested_surface = surface.wl_surface();
+            let same_surface = self
+                .last_pointer_press
+                .as_ref()
+                .is_some_and(|press| press.surface == *requested_surface);
+            let pressed_serial = self
+                .last_pointer_press
+                .as_ref()
+                .map(|press| u32::from(press.serial));
+            let authorized = pointer_grab_request_is_valid(
+                u32::from(serial),
+                pressed_serial,
+                same_surface,
+                self.left_button_down,
+                self.seat.owns(seat),
+            );
+            if !authorized {
+                tracing::debug!(
+                    request_serial = u32::from(serial),
+                    ?kind,
+                    same_surface,
+                    "rejecting unauthorized xdg move/resize request"
+                );
                 return;
             }
             let Some(window) = self
                 .windows
                 .iter()
-                .find(|w| w.toplevel.wl_surface() == surface.wl_surface())
+                .find(|w| w.toplevel.wl_surface() == requested_surface)
             else {
                 return;
             };
@@ -529,11 +883,279 @@ mod linux {
             self.request_redraw();
         }
 
-        fn set_window_state_geometry(
+        fn associated_x11_surface(&self, window: &X11WmSurface) -> Option<WlSurface> {
+            self.x11_surface_associations
+                .get(&window.window_id())
+                .cloned()
+        }
+
+        fn x11_toplevel_for_surface(&self, surface: &WlSurface) -> Option<ToplevelSurface> {
+            self.windows
+                .iter()
+                .find(|window| window.toplevel.wl_surface() == surface)
+                .map(|window| window.toplevel.clone())
+        }
+
+        fn x11_client_seat(&self, surface: &WlSurface) -> Option<wl_seat::WlSeat> {
+            let client = surface.client()?;
+            self.seat.client_seats(&client).into_iter().next()
+        }
+
+        fn begin_x11_interactive_grab(
+            &mut self,
+            window: &X11WmSurface,
+            kind: InteractiveGrabKind,
+            button: u32,
+        ) {
+            let primary_button = button == 0x110 || button == 1;
+            if !primary_button {
+                tracing::debug!(
+                    button,
+                    ?kind,
+                    "rejecting X11 interactive grab on non-primary button"
+                );
+                return;
+            }
+
+            let Some(surface) = self.associated_x11_surface(window) else {
+                tracing::debug!(
+                    window = window.window_id(),
+                    ?kind,
+                    "rejecting X11 interactive grab without associated wl_surface"
+                );
+                return;
+            };
+            let Some(toplevel) = self.x11_toplevel_for_surface(&surface) else {
+                tracing::debug!(
+                    window = window.window_id(),
+                    ?kind,
+                    "rejecting X11 interactive grab without mapped toplevel"
+                );
+                return;
+            };
+            let Some(seat) = self.x11_client_seat(&surface) else {
+                tracing::debug!(
+                    window = window.window_id(),
+                    ?kind,
+                    "rejecting X11 interactive grab without client seat resource"
+                );
+                return;
+            };
+            let Some(serial) = self.last_pointer_press.as_ref().map(|press| press.serial) else {
+                tracing::debug!(
+                    window = window.window_id(),
+                    ?kind,
+                    "rejecting X11 interactive grab without prior pointer press serial"
+                );
+                return;
+            };
+
+            self.begin_interactive_grab(&toplevel, kind, &seat, serial);
+        }
+
+        fn output_area(&self) -> WindowGeometry {
+            WindowGeometry::new(0, 0, self.output_size.w, self.output_size.h)
+        }
+
+        fn work_area(&self) -> WindowGeometry {
+            let output = self.output_area();
+            let top = self
+                .layer_surfaces
+                .iter()
+                .filter(|layer| layer.layer == Layer::Top)
+                .map(|layer| layer.exclusive_zone.max(0))
+                .max()
+                .unwrap_or(0)
+                .min(output.height);
+            let bottom = self
+                .layer_surfaces
+                .iter()
+                .filter(|layer| layer.layer == Layer::Bottom)
+                .map(|layer| layer.exclusive_zone.max(0))
+                .max()
+                .unwrap_or(0)
+                .min(output.height.saturating_sub(top));
+            WindowGeometry::new(
+                0,
+                top,
+                output.width,
+                output.height.saturating_sub(top + bottom).max(1),
+            )
+        }
+
+        /// Keep normal windows inside the current compositor-owned work area
+        /// after a layer-shell surface changes its exclusive reservation.
+        fn clamp_normal_windows_to_work_area(&mut self) {
+            let work_area = self.work_area();
+            let mut changed = false;
+            for window in &mut self.windows {
+                if window.minimized
+                    || window.presentation_state != WindowPresentationState::Normal
+                    || window.app_id.starts_with("com.slopos.shell")
+                {
+                    continue;
+                }
+                let current = window.geometry();
+                let next = clamp_window_to_work_area(current, work_area);
+                if current == next {
+                    continue;
+                }
+                window.position = Point::from((next.x, next.y));
+                window.size = Size::from((next.width, next.height));
+                let toplevel = window.toplevel.clone();
+                toplevel.with_pending_state(|state| {
+                    state.size = Some(Size::from((next.width, next.height)));
+                });
+                toplevel.send_configure();
+                changed = true;
+            }
+            if changed {
+                self.request_redraw();
+            }
+        }
+
+        fn drain_session_control(&mut self) {
+            let requests = self
+                .control_listener
+                .as_ref()
+                .map(SessionControlListener::drain)
+                .unwrap_or_default();
+            for request in requests {
+                match request {
+                    SessionControlRequest::FocusedWindow { action } => {
+                        self.apply_focused_window_action(action);
+                    }
+                    SessionControlRequest::ActivateApplication { bundle_id } => {
+                        self.activate_application(&bundle_id);
+                    }
+                    SessionControlRequest::FocusedApplicationMenu {
+                        bundle_id,
+                        action_id,
+                    } => {
+                        tracing::warn!(
+                            %bundle_id,
+                            %action_id,
+                            "application menu request reached compositor without an app endpoint"
+                        );
+                    }
+                }
+            }
+        }
+
+        /// Activate a matching mapped client on behalf of shell chrome.
+        ///
+        /// The shell sends only a semantic application id; this backend owns
+        /// the actual restore, stacking, focus, and active-toplevel update.
+        fn activate_application(&mut self, bundle_id: &str) {
+            let Some(idx) = self
+                .windows
+                .iter()
+                .rposition(|window| window.app_id == bundle_id)
+            else {
+                tracing::debug!(%bundle_id, "application activation found no mapped client");
+                return;
+            };
+
+            let window_id = self.windows[idx].window_id.clone();
+            if self.windows[idx].minimized {
+                let surface = self.windows[idx].toplevel.clone();
+                self.set_window_presentation_state(&surface, WindowPresentationState::Normal);
+                self.windows[idx].minimized = false;
+                if self.last_minimized_window_id.as_deref() == Some(window_id.as_str()) {
+                    self.last_minimized_window_id = None;
+                }
+            }
+            self.focus_window(idx);
+            tracing::info!(%bundle_id, %window_id, "activated existing application client");
+        }
+
+        fn apply_focused_window_action(&mut self, action: WindowPresentationAction) {
+            let window_id = if action == WindowPresentationAction::Restore {
+                self.last_minimized_window_id
+                    .as_ref()
+                    .and_then(|id| {
+                        self.windows
+                            .iter()
+                            .find(|window| window.window_id == *id && window.minimized)
+                            .map(|window| window.window_id.clone())
+                    })
+                    .or_else(|| self.activated_window_id.clone())
+            } else {
+                self.activated_window_id.clone()
+            };
+            let Some(window_id) = window_id else {
+                tracing::debug!(
+                    ?action,
+                    "ignored focused-window action with no focused toplevel"
+                );
+                return;
+            };
+            let Some(idx) = self
+                .windows
+                .iter()
+                .position(|window| window.window_id == window_id)
+            else {
+                tracing::debug!(%window_id, "focused-window action targeted a stale toplevel");
+                return;
+            };
+
+            let current = self.windows[idx].presentation_state;
+            let target = match action {
+                WindowPresentationAction::ToggleZoom => {
+                    if matches!(current, WindowPresentationState::Normal) {
+                        WindowPresentationState::SmartZoomed
+                    } else {
+                        WindowPresentationState::Normal
+                    }
+                }
+                WindowPresentationAction::SmartZoom => WindowPresentationState::SmartZoomed,
+                WindowPresentationAction::Fill => WindowPresentationState::Filled,
+                WindowPresentationAction::ToggleFullscreen => {
+                    if current == WindowPresentationState::Fullscreen {
+                        WindowPresentationState::Normal
+                    } else {
+                        WindowPresentationState::Fullscreen
+                    }
+                }
+                WindowPresentationAction::Fullscreen => WindowPresentationState::Fullscreen,
+                WindowPresentationAction::Minimize => WindowPresentationState::Minimized,
+                WindowPresentationAction::Restore => WindowPresentationState::Normal,
+                WindowPresentationAction::Close => {
+                    self.windows[idx].toplevel.send_close();
+                    tracing::info!(%window_id, "sent close request to focused toplevel");
+                    return;
+                }
+            };
+
+            let surface = self.windows[idx].toplevel.clone();
+            self.set_window_presentation_state(&surface, target);
+            self.windows[idx].minimized = target == WindowPresentationState::Minimized;
+            if target == WindowPresentationState::Minimized {
+                self.last_minimized_window_id = Some(window_id.clone());
+            } else if target == WindowPresentationState::Normal
+                && self.last_minimized_window_id.as_deref() == Some(window_id.as_str())
+            {
+                self.last_minimized_window_id = None;
+            }
+            tracing::info!(
+                %window_id,
+                ?action,
+                state = ?target,
+                "applied compositor presentation request"
+            );
+            if self.windows[idx].minimized {
+                self.apply_focus_after_workspace_switch();
+            } else if action == WindowPresentationAction::Restore {
+                self.focus_window(idx);
+            } else {
+                self.request_redraw();
+            }
+        }
+
+        fn set_window_presentation_state(
             &mut self,
             surface: &ToplevelSurface,
-            state_flag: xdg_toplevel::State,
-            enabled: bool,
+            target_state: WindowPresentationState,
         ) {
             let Some(idx) = self
                 .windows
@@ -543,23 +1165,38 @@ mod linux {
                 return;
             };
             let old = self.windows[idx].geometry();
-            if enabled {
-                if self.windows[idx].restore_geometry.is_none() {
-                    self.windows[idx].restore_geometry = Some(old);
-                }
-                self.windows[idx].position = Point::from((0, 0));
-                self.windows[idx].size = Size::from((self.output_size.w, self.output_size.h));
-            } else if let Some(restore) = self.windows[idx].restore_geometry.take() {
-                self.windows[idx].position = Point::from((restore.x, restore.y));
-                self.windows[idx].size = Size::from((restore.width, restore.height));
-            }
+            let current_state = self.windows[idx].presentation_state;
+            let current_restore_state = self.windows[idx].restore_state.clone();
+            let transition = transition_presentation_state(
+                current_state,
+                old,
+                current_restore_state.as_ref(),
+                target_state,
+                self.work_area(),
+                self.output_area(),
+                None,
+                "nested-0",
+                self.workspace_state.active.as_usize(),
+            );
+            self.windows[idx].presentation_state = transition.state;
+            self.windows[idx].restore_state = transition.restore_state;
+            self.windows[idx].position =
+                Point::from((transition.geometry.x, transition.geometry.y));
+            self.windows[idx].size =
+                Size::from((transition.geometry.width, transition.geometry.height));
             let new = self.windows[idx].geometry();
             let toplevel = self.windows[idx].toplevel.clone();
             toplevel.with_pending_state(|state| {
-                if enabled {
-                    state.states.set(state_flag);
-                } else {
-                    state.states.unset(state_flag);
+                state.states.unset(xdg_toplevel::State::Maximized);
+                state.states.unset(xdg_toplevel::State::Fullscreen);
+                match target_state {
+                    WindowPresentationState::Filled => {
+                        state.states.set(xdg_toplevel::State::Maximized);
+                    }
+                    WindowPresentationState::Fullscreen => {
+                        state.states.set(xdg_toplevel::State::Fullscreen);
+                    }
+                    _ => {}
                 }
                 state.size = Some(Size::from((new.width, new.height)));
             });
@@ -616,14 +1253,15 @@ mod linux {
         /// - Workspace switch requests a full redraw; window moves accumulate damage.
         fn render_frame(&mut self) {
             self.prune_dead_windows();
+            self.cleanup_popup_state();
             self.layer_surfaces.retain(|l| l.surface.alive());
 
             // Present plan: workspace switch forces full redraw; otherwise use pending
             // damage heuristic (still full clear today — partial clip is follow-on).
             let full_redraw = self.need_full_redraw
-                || self.pending_damage.map_or(false, |d| {
-                    prefer_full_redraw(d, self.output_size.w, self.output_size.h)
-                });
+                || self
+                    .pending_damage
+                    .is_some_and(|d| prefer_full_redraw(d, self.output_size.w, self.output_size.h));
             self.need_full_redraw = false;
             let _damage_for_present = if full_redraw {
                 None
@@ -703,7 +1341,7 @@ mod linux {
 
             for &i in &under {
                 let layer = &self.layer_surfaces[i];
-                let loc = Point::<i32, Physical>::from((0, 0));
+                let loc = Point::<i32, Physical>::from((layer.geo.loc.x, layer.geo.loc.y));
                 surface_elements.extend(render_elements_from_surface_tree(
                     renderer,
                     layer.surface.wl_surface(),
@@ -722,6 +1360,19 @@ mod linux {
                 .collect();
             for (i, w) in visible_windows.iter().enumerate() {
                 let loc = Point::<i32, Physical>::from((w.position.x, w.position.y));
+                let popup_elements = PopupManager::popups_for_surface(w.toplevel.wl_surface())
+                    .flat_map(|(popup, popup_offset)| {
+                        let popup_loc = Self::popup_origin(w, &popup, popup_offset);
+                        render_elements_from_surface_tree(
+                            renderer,
+                            popup.wl_surface(),
+                            Point::<i32, Physical>::from((popup_loc.x, popup_loc.y)),
+                            1.0_f64,
+                            1.0_f32,
+                            Kind::Unspecified,
+                        )
+                    });
+                surface_elements.extend(popup_elements);
                 let els = render_elements_from_surface_tree(
                     renderer,
                     w.toplevel.wl_surface(),
@@ -738,7 +1389,7 @@ mod linux {
                         // No committed buffer: solid rect so the window still appears.
                         let color_idx = i % WIN_COLORS.len();
                         let (r, g, b) = WIN_COLORS[color_idx];
-                        let rect = Rectangle::from_loc_and_size(
+                        let rect = Rectangle::new(
                             Point::<i32, Physical>::from((w.position.x, w.position.y)),
                             Size::<i32, Physical>::from((w.size.w, w.size.h)),
                         );
@@ -748,7 +1399,7 @@ mod linux {
             }
             for &i in &over {
                 let layer = &self.layer_surfaces[i];
-                let loc = Point::<i32, Physical>::from((0, 0));
+                let loc = Point::<i32, Physical>::from((layer.geo.loc.x, layer.geo.loc.y));
                 surface_elements.extend(render_elements_from_surface_tree(
                     renderer,
                     layer.surface.wl_surface(),
@@ -823,21 +1474,18 @@ mod linux {
                 RETRO_GRAY.2 as f32 / 255.0,
                 1.0_f32,
             ]);
-            let full_screen =
-                Rectangle::from_loc_and_size(Point::<i32, Physical>::from((0, 0)), output_size);
+            let full_screen = Rectangle::new(Point::<i32, Physical>::from((0, 0)), output_size);
             if let Err(e) = frame.clear(retro_gray, &[full_screen]) {
                 eprintln!("[render] clear failed: {e}");
             }
 
-            if !placeholders.is_empty() {
-                if self.placeholder_stats.note_frame_with_placeholders() {
-                    eprintln!(
-                        "[slopos-compositor] present honesty: frame used solid placeholders \
-                         (no committed SHM buffer for {} window(s)); session counter starts at {}",
-                        placeholders.len(),
-                        self.placeholder_stats.frames_with_placeholders
-                    );
-                }
+            if !placeholders.is_empty() && self.placeholder_stats.note_frame_with_placeholders() {
+                eprintln!(
+                    "[slopos-compositor] present honesty: frame used solid placeholders \
+                     (no committed SHM buffer for {} window(s)); session counter starts at {}",
+                    placeholders.len(),
+                    self.placeholder_stats.frames_with_placeholders
+                );
             }
             for (rect, color) in &placeholders {
                 if let Err(e) = frame.clear(*color, &[*rect]) {
@@ -906,14 +1554,14 @@ mod linux {
                     (1, 12, 3),
                 ];
                 for &(x, y, width) in OUTLINE {
-                    let rect = Rectangle::from_loc_and_size(
+                    let rect = Rectangle::new(
                         Point::<i32, Physical>::from((origin_x + x, origin_y + y)),
                         Size::<i32, Physical>::from((width, 1)),
                     );
                     let _ = frame.clear(black, &[rect]);
                 }
                 for &(x, y, width) in FILL {
-                    let rect = Rectangle::from_loc_and_size(
+                    let rect = Rectangle::new(
                         Point::<i32, Physical>::from((origin_x + x, origin_y + y)),
                         Size::<i32, Physical>::from((width, 1)),
                     );
@@ -994,6 +1642,7 @@ mod linux {
 
         fn commit(&mut self, surface: &WlSurface) {
             on_commit_buffer_handler::<Self>(surface);
+            self.popup_manager.commit(surface);
             // Update size of the matching window after the client commits.
             // ToplevelSurface::current_state gives us the server-side acknowledged size;
             // use that or fall back to DEFAULT_WIN. Size changes accumulate damage.
@@ -1025,6 +1674,37 @@ mod linux {
             if let Some((id, old, new)) = geometry_change {
                 self.note_window_geometry_change(&id, old, new);
             }
+
+            // Apply the client-requested layer-shell anchors, margins, and
+            // size to compositor-space placement. A layer surface is allowed
+            // to extend outside its parent's notion of a window rectangle.
+            let output = Size::<i32, Logical>::from((self.output_size.w, self.output_size.h));
+            for layer in self.layer_surfaces.iter_mut() {
+                if layer.surface.wl_surface() != surface {
+                    continue;
+                }
+                let (requested, anchor, margins, exclusive_zone) =
+                    layer_surface_request(&layer.surface);
+                let geo = layer_geometry_for(
+                    &layer.namespace,
+                    layer.layer,
+                    output,
+                    requested,
+                    anchor,
+                    margins,
+                );
+                let current = layer.surface.current_state();
+                if current.size != Some(geo.size) {
+                    layer.surface.with_pending_state(|state| {
+                        state.size = Some(geo.size);
+                    });
+                    layer.surface.send_configure();
+                }
+                layer.geo = geo;
+                layer.exclusive_zone = exclusive_zone;
+                break;
+            }
+            self.clamp_normal_windows_to_work_area();
             self.request_redraw();
         }
     }
@@ -1267,17 +1947,23 @@ mod linux {
         }
 
         fn new_toplevel(&mut self, surface: ToplevelSurface) {
-            surface.with_pending_state(|state| {
-                // Tell the client what size we'd like
-                state.size = Some(Size::from((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)));
-                state.states.set(xdg_toplevel::State::Activated);
-            });
-            surface.send_configure();
-
             // Cascade new windows
             let offset = self.next_window_offset;
             self.next_window_offset = next_cascade_offset(offset);
-            let position = Point::from(cascade_position(offset));
+            let (x, y) = cascade_position(offset);
+            let geometry = clamp_window_to_work_area(
+                WindowGeometry::new(x, y, DEFAULT_WINDOW_W, DEFAULT_WINDOW_H),
+                self.work_area(),
+            );
+            surface.with_pending_state(|state| {
+                // The compositor owns the logical work area, including scale
+                // and layer-shell exclusive zones. Do not let a default
+                // client request cover the Dock on a small logical output.
+                state.size = Some(Size::from((geometry.width, geometry.height)));
+                state.states.set(xdg_toplevel::State::Activated);
+            });
+            surface.send_configure();
+            let position = Point::from((geometry.x, geometry.y));
 
             let (title, app_id) = with_states(surface.wl_surface(), |states| {
                 let data = states
@@ -1320,9 +2006,9 @@ mod linux {
                 toplevel: surface,
                 foreign,
                 window_id,
+                app_id,
                 position,
-                size: Size::from((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)),
-                restore_geometry: None,
+                size: Size::from((geometry.width, geometry.height)),
                 presentation_state: WindowPresentationState::Normal,
                 restore_state: None,
                 minimized: false,
@@ -1337,17 +2023,17 @@ mod linux {
         fn move_request(
             &mut self,
             surface: ToplevelSurface,
-            _seat: wl_seat::WlSeat,
-            _serial: Serial,
+            seat: wl_seat::WlSeat,
+            serial: Serial,
         ) {
-            self.begin_interactive_grab(&surface, InteractiveGrabKind::Move);
+            self.begin_interactive_grab(&surface, InteractiveGrabKind::Move, &seat, serial);
         }
 
         fn resize_request(
             &mut self,
             surface: ToplevelSurface,
-            _seat: wl_seat::WlSeat,
-            _serial: Serial,
+            seat: wl_seat::WlSeat,
+            serial: Serial,
             edges: xdg_toplevel::ResizeEdge,
         ) {
             let edges = match edges {
@@ -1361,15 +2047,20 @@ mod linux {
                 xdg_toplevel::ResizeEdge::BottomRight => ResizeEdges::BOTTOM_RIGHT,
                 _ => return,
             };
-            self.begin_interactive_grab(&surface, InteractiveGrabKind::Resize(edges));
+            self.begin_interactive_grab(
+                &surface,
+                InteractiveGrabKind::Resize(edges),
+                &seat,
+                serial,
+            );
         }
 
         fn maximize_request(&mut self, surface: ToplevelSurface) {
-            self.set_window_state_geometry(&surface, xdg_toplevel::State::Maximized, true);
+            self.set_window_presentation_state(&surface, WindowPresentationState::Filled);
         }
 
         fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-            self.set_window_state_geometry(&surface, xdg_toplevel::State::Maximized, false);
+            self.set_window_presentation_state(&surface, WindowPresentationState::Normal);
         }
 
         fn fullscreen_request(
@@ -1377,11 +2068,11 @@ mod linux {
             surface: ToplevelSurface,
             _output: Option<wl_output::WlOutput>,
         ) {
-            self.set_window_state_geometry(&surface, xdg_toplevel::State::Fullscreen, true);
+            self.set_window_presentation_state(&surface, WindowPresentationState::Fullscreen);
         }
 
         fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-            self.set_window_state_geometry(&surface, xdg_toplevel::State::Fullscreen, false);
+            self.set_window_presentation_state(&surface, WindowPresentationState::Normal);
         }
 
         fn minimize_request(&mut self, surface: ToplevelSurface) {
@@ -1390,6 +2081,7 @@ mod linux {
                 .iter()
                 .position(|w| w.toplevel.wl_surface() == surface.wl_surface())
             {
+                self.last_minimized_window_id = Some(self.windows[idx].window_id.clone());
                 self.windows[idx].minimized = true;
                 self.request_full_redraw();
                 self.apply_focus_after_workspace_switch();
@@ -1404,6 +2096,9 @@ mod linux {
             {
                 let win = self.windows.remove(idx);
                 self.workspace_state.remove_window(&win.window_id);
+                if self.last_minimized_window_id.as_deref() == Some(win.window_id.as_str()) {
+                    self.last_minimized_window_id = None;
+                }
                 win.foreign.send_closed();
             }
             // Focus topmost **visible** remaining window (not hidden by workspace).
@@ -1436,26 +2131,58 @@ mod linux {
                     .and_then(|d| d.lock().unwrap().app_id.clone())
                     .unwrap_or_default()
             });
+            let active_window_id = self.activated_window_id.clone();
             if let Some(w) = self
                 .windows
-                .iter()
+                .iter_mut()
                 .find(|w| w.toplevel.wl_surface() == surface.wl_surface())
             {
+                let is_active = active_window_id.as_ref() == Some(&w.window_id);
+                w.app_id = app_id.clone();
                 w.foreign.send_app_id(&app_id);
                 w.foreign.send_done();
+                if is_active {
+                    if let Err(err) = slopos_compositor::publish_active_toplevel(Some(&app_id)) {
+                        tracing::debug!(
+                            error = %err,
+                            app_id = %app_id,
+                            "could not refresh active application"
+                        );
+                    }
+                }
             }
         }
 
-        fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {}
+        fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+            let popup = PopupKind::from(surface.clone());
+            if let Err(err) = self.popup_manager.track_popup(popup) {
+                tracing::debug!(?err, "failed to track xdg popup");
+                return;
+            }
+            surface.with_pending_state(|state| {
+                state.positioner = positioner;
+            });
+            if let Err(err) = surface.send_configure() {
+                tracing::debug!(?err, "failed to configure xdg popup");
+            }
+            self.request_redraw();
+        }
 
-        fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: WlSerial) {}
+        fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: WlSerial) {
+            self.begin_popup_grab(surface, seat, serial);
+        }
 
         fn reposition_request(
             &mut self,
-            _surface: PopupSurface,
-            _positioner: PositionerState,
-            _token: u32,
+            surface: PopupSurface,
+            positioner: PositionerState,
+            token: u32,
         ) {
+            surface.with_pending_state(|state| {
+                state.positioner = positioner;
+            });
+            let _serial = surface.send_repositioned(token);
+            self.request_redraw();
         }
     }
 
@@ -1480,16 +2207,21 @@ mod linux {
             eprintln!(
                 "[slopos-compositor] layer-shell surface namespace={namespace} layer={layer:?}"
             );
-            let size = self.output_size;
+            let output = Size::<i32, Logical>::from((self.output_size.w, self.output_size.h));
+            let (requested, anchor, margins, exclusive_zone) = layer_surface_request(&surface);
+            let geo = layer_geometry_for(&namespace, layer, output, requested, anchor, margins);
             surface.with_pending_state(|state| {
-                state.size = Some(Size::from((size.w, size.h)));
+                state.size = Some(geo.size);
             });
             surface.send_configure();
             self.layer_surfaces.push(MappedLayer {
                 surface,
                 layer,
                 namespace,
+                geo,
+                exclusive_zone,
             });
+            self.request_redraw();
         }
 
         fn layer_destroyed(&mut self, surface: LayerSurface) {
@@ -1615,13 +2347,15 @@ mod linux {
         fn surface_associated(
             &mut self,
             _xwm: XwmId,
-            _wl_surface: WlSurface,
+            wl_surface: WlSurface,
             surface: X11WmSurface,
         ) {
             tracing::info!(
                 title = %surface.title(),
                 "XWayland surface associated with wl_surface"
             );
+            self.x11_surface_associations
+                .insert(surface.window_id(), wl_surface);
             if !self
                 .x11_surfaces
                 .iter()
@@ -1668,11 +2402,13 @@ mod linux {
         fn unmapped_window(&mut self, _xwm: XwmId, window: X11WmSurface) {
             self.x11_surfaces
                 .retain(|s| s.window_id() != window.window_id());
+            self.x11_surface_associations.remove(&window.window_id());
         }
 
         fn destroyed_window(&mut self, _xwm: XwmId, window: X11WmSurface) {
             self.x11_surfaces
                 .retain(|s| s.window_id() != window.window_id());
+            self.x11_surface_associations.remove(&window.window_id());
         }
 
         fn configure_request(
@@ -1713,13 +2449,17 @@ mod linux {
         fn resize_request(
             &mut self,
             _xwm: XwmId,
-            _window: X11WmSurface,
-            _button: u32,
-            _resize_edge: ResizeEdge,
+            window: X11WmSurface,
+            button: u32,
+            resize_edge: ResizeEdge,
         ) {
+            let edges = x11_resize_edge_to_resize_edges(resize_edge);
+            self.begin_x11_interactive_grab(&window, InteractiveGrabKind::Resize(edges), button);
         }
 
-        fn move_request(&mut self, _xwm: XwmId, _window: X11WmSurface, _button: u32) {}
+        fn move_request(&mut self, _xwm: XwmId, window: X11WmSurface, button: u32) {
+            self.begin_x11_interactive_grab(&window, InteractiveGrabKind::Move, button);
+        }
 
         fn allow_selection_access(&mut self, _xwm: XwmId, _selection: SelectionTarget) -> bool {
             // Allow X clients to read the Wayland selection store.
@@ -1763,6 +2503,7 @@ mod linux {
             self.xwm = None;
             self.xdisplay = None;
             self.x11_surfaces.clear();
+            self.x11_surface_associations.clear();
         }
     }
 
@@ -1848,12 +2589,8 @@ mod linux {
         state.update_interactive_grab();
         state.request_redraw();
 
-        // Find which window (if any) the pointer is over
-        let focus = state.window_at(pos).map(|idx| {
-            let w = &state.windows[idx];
-            let local = Point::from((pos.x - w.position.x as f64, pos.y - w.position.y as f64));
-            (w.toplevel.wl_surface().clone(), local)
-        });
+        // Hit-test layer chrome, popup trees, then ordinary toplevels.
+        let focus = state.surface_under(pos);
 
         let serial = state.next_serial();
         let time = ev.time_msec();
@@ -1886,22 +2623,39 @@ mod linux {
             state.left_button_down = btn_state == ButtonState::Pressed;
             if btn_state == ButtonState::Released {
                 state.finish_interactive_grab();
+                state.last_pointer_press = None;
             }
         }
 
-        // On press: hit-test surfaces and focus the topmost one
+        // On press: hit-test surfaces and focus the topmost one.
         if btn_state == ButtonState::Pressed {
             let pos = state.pointer_pos;
-            if let Some(idx) = state.window_at(pos) {
-                state.focus_window(idx);
-            } else {
-                // Click on desktop: clear keyboard focus
-                let serial = state.next_serial();
-                if let Some(kb) = state.seat.get_keyboard() {
-                    kb.set_focus(state, None, serial);
+            let hit = state.surface_under(pos);
+            if primary_button {
+                state.last_pointer_press = hit.as_ref().and_then(|(surface, _)| {
+                    state
+                        .windows
+                        .iter()
+                        .any(|window| window.toplevel.wl_surface() == surface)
+                        .then(|| PointerPress {
+                            serial,
+                            surface: surface.clone(),
+                        })
+                });
+            }
+            match hit {
+                Some((surface, _)) => {
+                    if let Some(idx) = state
+                        .windows
+                        .iter()
+                        .position(|window| window.toplevel.wl_surface() == &surface)
+                    {
+                        state.focus_window(idx);
+                    } else {
+                        state.focus_surface(Some(surface));
+                    }
                 }
-                set_data_device_focus(&state.display_handle, &state.seat, None);
-                set_primary_focus(&state.display_handle, &state.seat, None);
+                None => state.focus_surface(None),
             }
         }
 
@@ -2069,6 +2823,7 @@ mod linux {
         }
     }
 
+    #[cfg(test)]
     pub fn parse_bool_env(key: &str) -> bool {
         match std::env::var(key) {
             Ok(v) => matches!(
@@ -2077,6 +2832,34 @@ mod linux {
             ),
             Err(_) => false,
         }
+    }
+
+    pub(crate) fn default_backend_for_host(
+        display: Option<&str>,
+        _wayland_display: Option<&str>,
+    ) -> &'static str {
+        // The nested implementation below is Smithay's X11 backend. A host
+        // Wayland socket is not a valid transport for it.
+        if display.is_some_and(|value| !value.is_empty()) {
+            "nested"
+        } else {
+            "drm"
+        }
+    }
+
+    pub(crate) fn validate_nested_transport(
+        requested_backend: &str,
+        display: Option<&str>,
+    ) -> Result<(), String> {
+        if matches!(requested_backend, "nested" | "x11" | "winit")
+            && !display.is_some_and(|value| !value.is_empty())
+        {
+            return Err(
+                "nested backend requires a non-empty DISPLAY (nested transport is X11-only); use --backend drm or --backend headless"
+                    .to_owned(),
+            );
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -2104,14 +2887,18 @@ mod linux {
         // Backend selection is explicit and fail-fast. The production session
         // never substitutes labwc/sway or silently changes the requested backend.
         let requested_backend = backend_arg.unwrap_or_else(|| {
-            if std::env::var_os("DISPLAY").is_some()
-                || std::env::var_os("SLOPOS_HOST_WAYLAND_DISPLAY").is_some()
-            {
-                "nested".to_owned()
-            } else {
-                "drm".to_owned()
-            }
+            default_backend_for_host(
+                std::env::var("DISPLAY").ok().as_deref(),
+                std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
+            )
+            .to_owned()
         });
+
+        if let Err(error) =
+            validate_nested_transport(&requested_backend, std::env::var("DISPLAY").ok().as_deref())
+        {
+            anyhow::bail!(error);
+        }
 
         if requested_backend == "drm" {
             eprintln!("[slopos-compositor] backend: SessionDrm (explicit)");
@@ -2132,7 +2919,11 @@ mod linux {
                 "--backend winit currently uses Smithay's nested X11 transport; use --backend nested"
             );
         }
-        let backend_kind = CompositorBackendKind::NestedX11;
+        let backend_kind = if headless {
+            CompositorBackendKind::Headless
+        } else {
+            CompositorBackendKind::NestedX11
+        };
         eprintln!(
             "[slopos-compositor] backend: {} (explicit)",
             if headless { "Headless" } else { "NestedX11" }
@@ -2161,7 +2952,7 @@ mod linux {
         }
 
         let mut event_loop: EventLoop<SloposCompositor> = EventLoop::try_new()?;
-        let mut display: Display<SloposCompositor> = Display::new()?;
+        let display: Display<SloposCompositor> = Display::new()?;
         let display_handle = display.handle();
         let loop_handle = event_loop.handle();
         let loop_signal = event_loop.get_signal();
@@ -2273,8 +3064,13 @@ mod linux {
 
         if let Some(ref x11_backend) = x11_backend {
             let x11_handle = x11_backend.handle();
+            let nested_window_size = Size::<u16, Logical>::from((
+                output_size.w.clamp(1, u16::MAX as i32) as u16,
+                output_size.h.clamp(1, u16::MAX as i32) as u16,
+            ));
             if let Ok(window) = WindowBuilder::new()
                 .title("slopos-compositor")
+                .size(nested_window_size)
                 .build(&x11_handle)
             {
                 if let Ok((_drm_node, fd)) = x11_handle.drm_node() {
@@ -2315,18 +3111,18 @@ mod linux {
         tracing::info!("Listening on WAYLAND_DISPLAY={}", socket_name);
         eprintln!("[slopos-compositor] WAYLAND_DISPLAY={}", socket_name);
         println!("WAYLAND_DISPLAY={}", socket_name);
+        // Bind the session control endpoint before publishing readiness. The
+        // session supervisor starts shell clients as soon as readiness is
+        // visible; constructing this listener later in `SloposCompositor`
+        // otherwise leaves a startup window where menu actions are lost.
+        let control_listener = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .map(|runtime| bind_session_control_listener(&runtime))
+            .transpose()?;
         // Write the actual socket name to a file so the entrypoint can read it,
         // and set the env var so child processes launched by the compositor see the right name.
-        let runtime_dir =
-            std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp/runtime-root".to_string());
-        let _ = std::fs::write(
-            std::path::Path::new(&runtime_dir).join("wayland-display"),
-            &socket_name,
-        );
-        let _ = std::fs::write(
-            std::path::Path::new(&runtime_dir).join("slopos-client-wayland-display"),
-            &socket_name,
-        );
+        slopos_compositor::publish_session_readiness(&socket_name, output_size.w, output_size.h)
+            .map_err(|err| anyhow::anyhow!("publish private session readiness: {err}"))?;
         std::env::set_var("SLOPOS_CLIENT_WAYLAND_DISPLAY", &socket_name);
         std::env::set_var("WAYLAND_DISPLAY", &socket_name);
 
@@ -2339,6 +3135,8 @@ mod linux {
                     .expect("failed to insert client");
             })
             .expect("failed to insert wayland socket source");
+        register_wayland_display_source(&loop_handle, display)
+            .context("insert Wayland display source")?;
 
         if let Some(x11_backend) = x11_backend {
             loop_handle
@@ -2397,11 +3195,16 @@ mod linux {
             windows: Vec::new(),
             workspace_state: WorkspaceState::new(),
             layer_surfaces: Vec::new(),
+            popup_manager: PopupManager::default(),
+            popup_grab: None,
+            activated_window_id: None,
+            last_minimized_window_id: None,
             next_window_offset: 0,
             pointer_pos: Point::from((0.0_f64, 0.0_f64)),
             cursor_status: CursorImageStatus::default_named(),
             interactive_grab: None,
             left_button_down: false,
+            last_pointer_press: None,
             frame_dirty: true,
             output_size,
             serial: 0,
@@ -2422,38 +3225,33 @@ mod linux {
             xwm: None,
             xdisplay: None,
             x11_surfaces: Vec::new(),
+            x11_surface_associations: HashMap::new(),
             wayland_socket_name: socket_name.clone(),
+            control_listener,
         };
 
-        // P1.3: best-effort XWayland after state exists (needs loop_handle + display).
+        // P1.3: best-effort XWayland after state exists (needs loop_handle).
         try_start_xwayland(&mut state);
 
         tracing::info!("slopos-compositor event loop starting");
         while state.running {
-            display.flush_clients()?;
-
             // Pace the loop with FrameScheduler when not adaptive (VRR).
             // Adaptive uses a short poll so PresentCompleted / input wake us quickly.
             let dispatch_timeout = if !state.frame_dirty {
-                // File-descriptor sources wake calloop immediately. A long idle
-                // timeout prevents an empty desktop from polling at 1 kHz.
-                Some(Duration::from_millis(250))
+                // File-descriptor sources, including the Wayland display, wake
+                // calloop immediately. An idle compositor can therefore block
+                // until input, a client request, or host output activity.
+                None
             } else if state.frame_scheduler.refresh_rate().is_fixed() {
                 let wait = state.frame_scheduler.time_until_next_frame();
-                let ms = wait.as_millis().min(32).max(1) as u64;
+                let ms = wait.as_millis().clamp(1, 32) as u64;
                 Some(Duration::from_millis(ms))
             } else {
                 Some(Duration::from_millis(16))
             };
 
             event_loop.dispatch(dispatch_timeout, &mut state)?;
-
-            // Process pending client requests. The listening-socket source only
-            // ACCEPTS connections; without this call no client request (bind,
-            // commit, …) is ever read, and every client hangs on its first
-            // roundtrip. Mirrors the DRM session loop in session_drm.rs.
-            display.dispatch_clients(&mut state)?;
-            display.flush_clients()?;
+            state.drain_session_control();
 
             // Damage-driven rendering: commits, pointer motion, output refresh,
             // workspace changes and animations explicitly mark the frame dirty.
@@ -2493,5 +3291,76 @@ mod tests {
         assert!(!parse_bool_env("TEST_BOOL_ENV_FALSE_3"));
         assert!(!parse_bool_env("TEST_BOOL_ENV_FALSE_4"));
         assert!(!parse_bool_env("TEST_BOOL_ENV_UNSET"));
+    }
+
+    #[test]
+    fn automatic_backend_requires_x11_display_for_nested() {
+        assert_eq!(linux::default_backend_for_host(Some(":99"), None), "nested");
+        assert_eq!(
+            linux::default_backend_for_host(None, Some("wayland-0")),
+            "drm",
+            "a Wayland-only host must not select the X11 nested backend"
+        );
+        assert_eq!(linux::default_backend_for_host(Some(""), None), "drm");
+        assert_eq!(linux::default_backend_for_host(None, None), "drm");
+    }
+
+    #[test]
+    fn explicit_nested_backend_fails_without_x11_display() {
+        let error = linux::validate_nested_transport("nested", None).unwrap_err();
+        assert!(error.contains("DISPLAY"));
+        assert!(linux::validate_nested_transport("nested", Some(":99")).is_ok());
+        assert!(linux::validate_nested_transport("drm", None).is_ok());
+        assert!(linux::validate_nested_transport("headless", None).is_ok());
+    }
+
+    #[test]
+    fn nested_control_binds_before_readiness_and_delivers_request() {
+        let runtime = std::env::temp_dir().join(format!(
+            "slopos-nested-control-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before Unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&runtime).expect("create test runtime");
+
+        let listener = linux::bind_session_control_listener(&runtime)
+            .expect("bind control listener before readiness");
+        let control_socket = runtime.join(slopos_bus::SESSION_CONTROL_SOCKET);
+        assert!(
+            control_socket.exists(),
+            "control socket must precede readiness"
+        );
+
+        std::fs::write(runtime.join("readiness"), b"wayland-9\n").expect("write readiness marker");
+        let request = slopos_bus::SessionControlRequest::FocusedWindow {
+            action: slopos_bus::WindowPresentationAction::Fill,
+        };
+        let previous_runtime = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR");
+        std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", &runtime);
+        slopos_bus::send_session_control(&request).expect("deliver semantic request");
+        if let Some(previous_runtime) = previous_runtime {
+            std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", previous_runtime);
+        } else {
+            std::env::remove_var("SLOPOS_SESSION_RUNTIME_DIR");
+        }
+
+        assert_eq!(listener.drain(), vec![request]);
+        drop(listener);
+        std::fs::remove_dir_all(&runtime).expect("remove test runtime");
+    }
+
+    #[test]
+    fn x11_resize_edges_use_shared_interactive_mapping() {
+        assert_eq!(
+            linux::x11_resize_edge_to_resize_edges(smithay::xwayland::xwm::ResizeEdge::Top),
+            slopos_compositor::ResizeEdges::TOP
+        );
+        assert_eq!(
+            linux::x11_resize_edge_to_resize_edges(smithay::xwayland::xwm::ResizeEdge::BottomRight,),
+            slopos_compositor::ResizeEdges::BOTTOM_RIGHT
+        );
     }
 }

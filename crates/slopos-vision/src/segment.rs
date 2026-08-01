@@ -103,15 +103,11 @@ impl SegmentEngine {
                 Some(opts),
             )
             .map_err(|err| VisionError::Inference(err.to_string()))?;
-        let out = results.pop().expect("run returned the requested output");
+        let out = take_segmentation_output(&mut results)?;
         let ([_, channels, oh, ow], prob) = out
             .into_shape_vec::<f32, 4>()
             .map_err(|err| VisionError::InvalidOutput(format!("unexpected output: {err}")))?;
-        if channels != 1 {
-            return Err(VisionError::InvalidOutput(format!(
-                "segmentation output has {channels} channels; expected 1"
-            )));
-        }
+        validate_segmentation_output(channels, oh, ow, prob.len())?;
 
         // rembg min-max normalizes the raw side output before scaling it back.
         let mi = prob.iter().cloned().fold(f32::INFINITY, f32::min);
@@ -125,6 +121,31 @@ impl SegmentEngine {
         let src_prob = resize_map(&normalized, ow, oh, src_w, src_h);
         mask::postprocess_mask(&src_prob, src_w, src_h, &options.mask_post)
     }
+}
+
+fn take_segmentation_output<T>(results: &mut Vec<T>) -> Result<T, VisionError> {
+    results
+        .pop()
+        .ok_or_else(|| VisionError::InvalidOutput("segmentation returned no output".into()))
+}
+
+fn validate_segmentation_output(
+    channels: usize,
+    height: usize,
+    width: usize,
+    values: usize,
+) -> Result<(), VisionError> {
+    if channels != 1 {
+        return Err(VisionError::InvalidOutput(format!(
+            "segmentation output has {channels} channels; expected 1"
+        )));
+    }
+    if height == 0 || width == 0 || values == 0 {
+        return Err(VisionError::InvalidOutput(format!(
+            "segmentation output has invalid dimensions: channels={channels}, height={height}, width={width}"
+        )));
+    }
+    Ok(())
 }
 
 /// Bilinear-resize a row-major `[ch][cw]` single-channel map to `[nh][nw]`.
@@ -160,6 +181,26 @@ fn resize_map(src: &[f32], cw: usize, ch: usize, nw: u32, nh: u32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_segmentation_output_is_structured_error() {
+        let mut results: Vec<u8> = Vec::new();
+        let error = take_segmentation_output(&mut results).unwrap_err();
+        assert!(matches!(
+            error,
+            VisionError::InvalidOutput(message) if message == "segmentation returned no output"
+        ));
+    }
+
+    #[test]
+    fn zero_sized_segmentation_output_is_structured_error() {
+        for (height, width, values) in [(0, 4, 0), (4, 0, 0), (4, 4, 0)] {
+            let error = validate_segmentation_output(1, height, width, values).unwrap_err();
+            assert!(
+                matches!(error, VisionError::InvalidOutput(message) if message.contains("invalid dimensions"))
+            );
+        }
+    }
 
     #[test]
     fn resize_map_upsamples_exactly() {

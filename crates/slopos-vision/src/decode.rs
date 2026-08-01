@@ -6,7 +6,35 @@
 
 use crate::error::VisionError;
 use image::{DynamicImage, ImageReader};
+use std::fs;
 use std::io::Cursor;
+use std::path::Path;
+
+/// Maximum encoded image size accepted by default for file-based decode.
+pub const DEFAULT_MAX_ENCODED_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+
+fn check_encoded_input_size(encoded_bytes: u64, max_encoded_bytes: u64) -> Result<(), VisionError> {
+    if encoded_bytes > max_encoded_bytes {
+        return Err(VisionError::EncodedImageTooLarge {
+            max_bytes: max_encoded_bytes,
+            actual_bytes: encoded_bytes,
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn read_image_limited(
+    path: &Path,
+    max_encoded_bytes: u64,
+    max_pixels: u64,
+) -> Result<DynamicImage, VisionError> {
+    let encoded_bytes = fs::metadata(path)?.len();
+    check_encoded_input_size(encoded_bytes, max_encoded_bytes)?;
+
+    let data = fs::read(path)?;
+    check_encoded_input_size(data.len() as u64, max_encoded_bytes)?;
+    decode_image_limited(&data, max_pixels)
+}
 
 /// Decode `data` as an image, refusing images whose declared dimensions
 /// exceed `max_pixels` (a decompression-bomb guard).
@@ -47,6 +75,7 @@ pub const DEFAULT_MAX_SOURCE_PIXELS: u64 = 40_000_000;
 mod tests {
     use super::*;
     use image::RgbaImage;
+    use tempfile::tempdir;
 
     fn encode_png(w: u32, h: u32) -> Vec<u8> {
         let img = RgbaImage::from_pixel(w, h, image::Rgba([255, 0, 0, 255]));
@@ -84,5 +113,21 @@ mod tests {
     fn rejects_garbage_bytes() {
         let data = vec![0u8; 128];
         assert!(decode_image_limited(&data, 1000).is_err());
+    }
+
+    #[test]
+    fn rejects_encoded_file_before_full_read() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("oversized.bin");
+        std::fs::write(&path, [0u8; 4]).unwrap();
+
+        let err = read_image_limited(&path, 3, 1000).unwrap_err();
+        assert!(matches!(
+            err,
+            VisionError::EncodedImageTooLarge {
+                max_bytes: 3,
+                actual_bytes: 4
+            }
+        ));
     }
 }

@@ -2,8 +2,17 @@
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use slopos_bus::SloposBus;
+use slopos_bus::{
+    send_session_control, ApplicationControlListener, ApplicationMenuRequest,
+    SessionControlRequest, SloposBus, WindowPresentationAction,
+};
 use slopos_kit::button::Button;
+use slopos_kit::design_tokens::{
+    CLASSIC_DARK_GRAY_RGBA, CLASSIC_FACE_ALT_RGBA, CLASSIC_FACE_RGBA, CLASSIC_INK_RGBA,
+    CLASSIC_LAVENDER_DARK_RGBA, CLASSIC_LAVENDER_RGBA, CLASSIC_MID_LIGHT_RGBA, CLASSIC_MID_RGBA,
+    CLASSIC_PAPER_RGBA, MENU_BAR_HEIGHT, MENU_ITEM_HEIGHT, MENU_LABEL_INSET, MENU_SHADOW_OFFSET,
+    MENU_SHORTCUT_INSET, WINDOW_CONTROL_SIZE, WINDOW_TITLE_BAR_HEIGHT,
+};
 use slopos_kit::dialog::Dialog;
 use slopos_kit::dock_view::DockView;
 use slopos_kit::event::{KeyCode, Modifiers, MouseButton};
@@ -24,15 +33,19 @@ use slopos_kit::tab_view::TabView;
 use slopos_kit::text_field::TextField;
 use slopos_kit::toolbar::Toolbar;
 use slopos_kit::tree_view::{TreeNode, TreeView};
-use slopos_kit::window::Window;
+use slopos_kit::window::{hit_test_window_chrome, Window, WindowChromeHit};
 use slopos_kit::workspace_grid_view::WorkspaceGridView;
 use slopos_kit::{Color, LayoutConstraint, MonospaceView, Point, Rect, Size, Widget};
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::{SystemTime, UNIX_EPOCH};
 use wgpu::util::DeviceExt;
+
+#[cfg(target_os = "linux")]
+use winit::platform::wayland::WindowAttributesExtWayland;
 
 static RENDER_DARK_MODE: AtomicBool = AtomicBool::new(false);
 static RENDER_ACCENT_COLOR: Mutex<[f32; 4]> = Mutex::new([0.36, 0.54, 0.85, 1.0]); // default Mac OS 7 blue
@@ -61,17 +74,17 @@ pub fn snap_stroke_1px(val: f32) -> f32 {
     val.floor() + 0.5
 }
 
-// System 7 Classic palette — aligned to Calculable/System7Components Assets.xcassets
-// See AGENTS.md, section 4 (Product and visual doctrine).
-const S7_BG: [f32; 4] = [1.0, 1.0, 1.0, 1.0]; // Background #FFFFFF
-const S7_FG: [f32; 4] = [0.0, 0.0, 0.0, 1.0]; // Foreground #000000
-const S7_GRAY100: [f32; 4] = [0.937, 0.937, 0.937, 1.0]; // #EFEFEF
-const S7_GRAY200: [f32; 4] = [0.855, 0.855, 0.855, 1.0]; // #DADADA
-const S7_GRAY300: [f32; 4] = [0.647, 0.647, 0.647, 1.0]; // #A5A5A5
-const S7_GRAY400: [f32; 4] = [0.525, 0.525, 0.525, 1.0]; // #868686
-const S7_GRAY500: [f32; 4] = [0.400, 0.400, 0.400, 1.0]; // #666666
-const S7_LAVENDER100: [f32; 4] = [0.855, 0.855, 0.988, 1.0]; // #DADAFC
-const S7_LAVENDER300: [f32; 4] = [0.529, 0.529, 0.690, 1.0]; // #8787B0
+// System 7 Classic palette is owned by slopos-kit; the SDK only aliases the
+// renderer-friendly values for its immediate-mode presenter.
+const S7_BG: [f32; 4] = CLASSIC_PAPER_RGBA;
+const S7_FG: [f32; 4] = CLASSIC_INK_RGBA;
+const S7_GRAY100: [f32; 4] = CLASSIC_FACE_RGBA;
+const S7_GRAY200: [f32; 4] = CLASSIC_FACE_ALT_RGBA;
+const S7_GRAY300: [f32; 4] = CLASSIC_MID_LIGHT_RGBA;
+const S7_GRAY400: [f32; 4] = CLASSIC_MID_RGBA;
+const S7_GRAY500: [f32; 4] = CLASSIC_DARK_GRAY_RGBA;
+const S7_LAVENDER100: [f32; 4] = CLASSIC_LAVENDER_RGBA;
+const S7_LAVENDER300: [f32; 4] = CLASSIC_LAVENDER_DARK_RGBA;
 
 const COLOR_PLATINUM_BG: [f32; 4] = S7_GRAY100;
 const COLOR_BUTTON_BG: [f32; 4] = S7_GRAY100;
@@ -149,6 +162,13 @@ fn set_render_accent(color: [f32; 4]) {
 
 fn render_accent() -> [f32; 4] {
     *RENDER_ACCENT_COLOR.lock()
+}
+
+fn request_compositor_window_action(action: WindowPresentationAction) {
+    let request = SessionControlRequest::FocusedWindow { action };
+    if let Err(error) = send_session_control(&request) {
+        tracing::debug!(?action, %error, "compositor window action unavailable");
+    }
 }
 
 /// Get a color value based on current theme (light/dark mode).
@@ -293,6 +313,40 @@ fn sanitize_manifest_name(name: &str) -> String {
         .collect()
 }
 
+fn publish_bytes_atomically(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    let Some(parent) = path.parent() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "manifest path has no parent directory",
+        ));
+    };
+    let stem = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("manifest");
+    let temporary_path = parent.join(format!(
+        ".{stem}.{}.{}.tmp",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary_path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(&temporary_path, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    result
+}
+
 fn ui(light: [f32; 4], dark: [f32; 4]) -> [f32; 4] {
     if render_dark_mode() {
         dark
@@ -301,47 +355,7 @@ fn ui(light: [f32; 4], dark: [f32; 4]) -> [f32; 4] {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WindowChromeHit {
-    Content,
-    Titlebar,
-    Close,
-    Zoom,
-    ResizeSouthEast,
-}
-
-fn hit_test_window_chrome(point: Point, size: Size) -> WindowChromeHit {
-    const TITLEBAR_HEIGHT: f32 = 24.0;
-    const CONTROL_TOP: f32 = 5.0;
-    const CONTROL_SIZE: f32 = 14.0;
-    const CONTROL_MARGIN: f32 = 11.0;
-    const RESIZE_GRIP: f32 = 18.0;
-
-    if point.x >= (size.width - RESIZE_GRIP).max(0.0)
-        && point.y >= (size.height - RESIZE_GRIP).max(0.0)
-    {
-        return WindowChromeHit::ResizeSouthEast;
-    }
-    if point.y >= CONTROL_TOP
-        && point.y <= CONTROL_TOP + CONTROL_SIZE
-        && point.x >= CONTROL_MARGIN
-        && point.x <= CONTROL_MARGIN + CONTROL_SIZE
-    {
-        return WindowChromeHit::Close;
-    }
-    let zoom_left = (size.width - CONTROL_MARGIN - CONTROL_SIZE).max(0.0);
-    if point.y >= CONTROL_TOP
-        && point.y <= CONTROL_TOP + CONTROL_SIZE
-        && point.x >= zoom_left
-        && point.x <= zoom_left + CONTROL_SIZE
-    {
-        return WindowChromeHit::Zoom;
-    }
-    if point.y >= 1.0 && point.y < TITLEBAR_HEIGHT {
-        return WindowChromeHit::Titlebar;
-    }
-    WindowChromeHit::Content
-}
+pub type MenuActionHandler = Box<dyn FnMut(&str, &mut Window)>;
 
 pub struct Application {
     pub name: String,
@@ -351,6 +365,7 @@ pub struct Application {
     pub menus: Vec<Menu>,
     pub bus: Option<SloposBus>,
     pub running: bool,
+    menu_action_handler: Option<MenuActionHandler>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -371,12 +386,23 @@ impl Application {
             menus: vec![],
             bus: None,
             running: false,
+            menu_action_handler: None,
         }
     }
 
     pub fn with_bus(mut self, bus: SloposBus) -> Self {
         self.bus = Some(bus);
         self
+    }
+
+    /// Register the application-owned receiver for actions selected in the
+    /// compositor-wide global menu. The shell only forwards the action id;
+    /// application state and document semantics stay inside the client.
+    pub fn on_menu_action<F>(&mut self, handler: F)
+    where
+        F: FnMut(&str, &mut Window) + 'static,
+    {
+        self.menu_action_handler = Some(Box::new(handler));
     }
 
     pub fn set_main_window(&mut self, window: Window) {
@@ -428,7 +454,13 @@ impl Application {
         let path = dir.join(format!("{}.json", sanitize_manifest_name(&self.bundle_id)));
         let json =
             serde_json::to_vec_pretty(&self.menu_manifest()).map_err(std::io::Error::other)?;
-        fs::write(&path, json)?;
+
+        // The shell polls this directory while clients are starting and while
+        // a client can republish its menu after a live configuration change.
+        // Never expose a partially-written JSON document to the shell: publish
+        // into the same directory and rename, which is atomic on the session's
+        // filesystem.
+        publish_bytes_atomically(&path, &json)?;
         Ok(Some(path))
     }
 
@@ -459,6 +491,7 @@ impl Application {
 
         struct AppHandler {
             name: String,
+            bundle_id: String,
             window: Option<Window>,
             initial_size: Size,
             platform_window: Option<Arc<winit::window::Window>>,
@@ -470,6 +503,8 @@ impl Application {
             dark_mode: bool,
             accent_color: [f32; 4],
             scale: f32,
+            control_requests: Option<mpsc::Receiver<ApplicationMenuRequest>>,
+            menu_action_handler: Option<MenuActionHandler>,
         }
 
         impl AppHandler {
@@ -498,6 +533,57 @@ impl Application {
                     win.set_rect(Rect::new(0.0, 0.0, size.width, size.height));
                     win.layout(LayoutConstraint::tight(size));
                     self.dirty = true;
+                }
+            }
+
+            fn drain_menu_actions(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+                let requests = self
+                    .control_requests
+                    .as_ref()
+                    .map(|receiver| receiver.try_iter().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                for request in requests {
+                    if request.bundle_id != self.bundle_id {
+                        continue;
+                    }
+                    if is_application_menu_action(&request.action_id, &self.bundle_id, &self.name)
+                        == Some(ApplicationMenuAction::Quit)
+                    {
+                        tracing::info!(
+                            bundle_id = %self.bundle_id,
+                            "application quit selected from global menu"
+                        );
+                        event_loop.exit();
+                        continue;
+                    }
+                    if is_application_menu_action(&request.action_id, &self.bundle_id, &self.name)
+                        == Some(ApplicationMenuAction::Hide)
+                    {
+                        request_compositor_window_action(WindowPresentationAction::Minimize);
+                        continue;
+                    }
+                    let mut handler = self.menu_action_handler.take();
+                    if let (Some(window), Some(menu_action_handler)) =
+                        (self.window.as_mut(), handler.as_mut())
+                    {
+                        menu_action_handler(&request.action_id, window);
+                        self.dirty = true;
+                        if let Some(platform_window) = &self.platform_window {
+                            platform_window.request_redraw();
+                        }
+                        tracing::info!(
+                            bundle_id = %self.bundle_id,
+                            action_id = %request.action_id,
+                            "application handled global menu action"
+                        );
+                    } else {
+                        tracing::warn!(
+                            bundle_id = %self.bundle_id,
+                            action_id = %request.action_id,
+                            "application received global menu action without a handler"
+                        );
+                    }
+                    self.menu_action_handler = handler;
                 }
             }
 
@@ -544,6 +630,13 @@ impl Application {
                         initial_size.height,
                     ))
                     .with_decorations(false);
+
+                // Publish the SDK bundle identity on the Wayland xdg_toplevel.
+                // Without this, the compositor sees every first-party client as
+                // `slopos-i.app`, so authoritative focus cannot select the
+                // corresponding global-menu manifest.
+                #[cfg(target_os = "linux")]
+                let attrs = attrs.with_name(self.bundle_id.clone(), self.name.clone());
 
                 match event_loop.create_window(attrs) {
                     Ok(window) => {
@@ -667,12 +760,16 @@ impl Application {
                                             return;
                                         }
                                         WindowChromeHit::Zoom => {
-                                            window.set_maximized(!window.is_maximized());
+                                            request_compositor_window_action(
+                                                WindowPresentationAction::ToggleZoom,
+                                            );
                                             return;
                                         }
                                         WindowChromeHit::Titlebar => {
                                             if is_double_click {
-                                                window.set_maximized(!window.is_maximized());
+                                                request_compositor_window_action(
+                                                    WindowPresentationAction::ToggleZoom,
+                                                );
                                             } else if let Err(err) = window.drag_window() {
                                                 tracing::warn!("failed to request compositor window move: {err}");
                                             }
@@ -775,7 +872,8 @@ impl Application {
                 }
             }
 
-            fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+            fn about_to_wait(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+                self.drain_menu_actions(event_loop);
                 let (next_dark_mode, next_accent) = load_theme_preference();
                 if next_dark_mode != self.dark_mode || next_accent != self.accent_color {
                     self.dark_mode = next_dark_mode;
@@ -791,11 +889,49 @@ impl Application {
                     }
                 }
             }
+
+            fn user_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+                self.drain_menu_actions(event_loop);
+            }
         }
 
         let (init_dark_mode, init_accent) = load_theme_preference();
+        let control_requests = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR").and_then(|_| {
+            match ApplicationControlListener::bind(&self.bundle_id) {
+                Ok(listener) => {
+                    let (sender, receiver) = mpsc::channel();
+                    let event_proxy = event_loop.proxy();
+                    std::thread::spawn(move || loop {
+                        match listener.recv_blocking() {
+                            Ok(request) => {
+                                if sender.send(request).is_err() {
+                                    break;
+                                }
+                                if event_proxy.send_event(()).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                tracing::debug!(%error, "application global-menu listener stopped");
+                                break;
+                            }
+                        }
+                    });
+                    Some(receiver)
+                }
+                Err(error) => {
+                    tracing::debug!(
+                        bundle_id = %self.bundle_id,
+                        %error,
+                        "application global-menu endpoint unavailable"
+                    );
+                    None
+                }
+            }
+        });
         let mut handler = AppHandler {
             name: self.name.clone(),
+            bundle_id: self.bundle_id.clone(),
             window: main_window,
             initial_size: self.initial_size,
             platform_window: None,
@@ -807,6 +943,8 @@ impl Application {
             dark_mode: init_dark_mode,
             accent_color: init_accent,
             scale: 1.0,
+            control_requests,
+            menu_action_handler: self.menu_action_handler.take(),
         };
         if let Err(err) = event_loop.run(&mut handler) {
             tracing::error!("application event loop failed: {err}");
@@ -864,6 +1002,33 @@ fn action_slug(label: &str) -> String {
     } else {
         slug
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApplicationMenuAction {
+    Hide,
+    Quit,
+}
+
+fn is_application_menu_action(
+    action_id: &str,
+    bundle_id: &str,
+    app_name: &str,
+) -> Option<ApplicationMenuAction> {
+    let prefix = format!("{}.", bundle_id);
+    let action = action_id.strip_prefix(&prefix)?;
+    let app_slug = action_slug(app_name);
+    if action == format!("finder.quit_{}", app_slug)
+        || action == format!("{}.quit_{}", app_slug, app_slug)
+    {
+        return Some(ApplicationMenuAction::Quit);
+    }
+    if action == format!("finder.hide_{}", app_slug)
+        || action == format!("{}.hide_{}", app_slug, app_slug)
+    {
+        return Some(ApplicationMenuAction::Hide);
+    }
+    None
 }
 
 pub fn menu_item(label: &str, action: &str) -> MenuItem {
@@ -1768,12 +1933,18 @@ fn draw_desktop_backdrop(canvas: &mut Canvas<'_>) {
     // Menu bar area under layer chrome is painted by the menu surface; for winit
     // fallback keep a subtle strip matching theme.
     if !render_dark_mode() {
-        canvas.rect(Rect::new(0.0, 0.0, canvas.width, 24.0), rgb(239, 239, 239));
-        canvas.rect(Rect::new(0.0, 24.0, canvas.width, 1.0), S7_FG);
-    } else {
-        canvas.rect(Rect::new(0.0, 0.0, canvas.width, 24.0), COLOR_DARK_MENU);
         canvas.rect(
-            Rect::new(0.0, 24.0, canvas.width, 1.0),
+            Rect::new(0.0, 0.0, canvas.width, MENU_BAR_HEIGHT),
+            rgb(239, 239, 239),
+        );
+        canvas.rect(Rect::new(0.0, MENU_BAR_HEIGHT, canvas.width, 1.0), S7_FG);
+    } else {
+        canvas.rect(
+            Rect::new(0.0, 0.0, canvas.width, MENU_BAR_HEIGHT),
+            COLOR_DARK_MENU,
+        );
+        canvas.rect(
+            Rect::new(0.0, MENU_BAR_HEIGHT, canvas.width, 1.0),
             COLOR_DARK_EDGE_LIGHT,
         );
     }
@@ -1802,16 +1973,21 @@ fn draw_window(canvas: &mut Canvas<'_>, window: &Window) {
     canvas.rect(rect, window_bg);
     draw_system7_3d_border(canvas, rect);
 
-    let titlebar = Rect::new(rect.x + 1.0, rect.y + 1.0, rect.width - 2.0, 22.0);
+    let titlebar = Rect::new(
+        rect.x + 1.0,
+        rect.y + 1.0,
+        rect.width - 2.0,
+        WINDOW_TITLE_BAR_HEIGHT,
+    );
     draw_classic_titlebar(canvas, titlebar, window.title(), window.is_active);
 
     // Content below title bar (inside black border)
     canvas.with_clip(
         Rect::new(
             rect.x + 2.0,
-            rect.y + 24.0,
+            rect.y + WINDOW_TITLE_BAR_HEIGHT + 2.0,
             (rect.width - 4.0).max(0.0),
-            (rect.height - 26.0).max(0.0),
+            (rect.height - WINDOW_TITLE_BAR_HEIGHT - 4.0).max(0.0),
         ),
         |canvas| {
             for child in window.children() {
@@ -1899,7 +2075,7 @@ fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str, is_ac
     );
 
     // Boxes layout
-    let box_size = 13.0;
+    let box_size = WINDOW_CONTROL_SIZE;
     let box_y = inner.y + (inner.height - box_size) * 0.5;
 
     // Left close box
@@ -2734,19 +2910,19 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
             canvas.rect(
                 Rect::new(
                     menu_rect.x + 1.0,
-                    menu_rect.y + 2.0,
+                    menu_rect.y + 1.0,
                     menu_rect.width - 2.0,
-                    20.0,
+                    (menu_rect.height - 2.0).max(1.0),
                 ),
                 highlight_color,
             );
         }
         if index == 0 {
-            draw_slopos_menu_logo(canvas, menu_rect.x + 4.0, menu_rect.y + 6.0, active);
+            draw_slopos_menu_logo(canvas, menu_rect.x + 4.0, menu_rect.y + 3.0, active);
             canvas.text(
                 &menu.title,
                 menu_rect.x + 18.0,
-                menu_rect.y + 8.0,
+                menu_rect.y + 5.0,
                 if active {
                     [1.0, 1.0, 1.0, 1.0]
                 } else {
@@ -2757,7 +2933,7 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
             canvas.text(
                 &menu.title,
                 menu_rect.x + 8.0,
-                menu_rect.y + 8.0,
+                menu_rect.y + 5.0,
                 if active {
                     [1.0, 1.0, 1.0, 1.0]
                 } else {
@@ -2772,11 +2948,11 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
     canvas.text(
         &right_label,
         rect.x + rect.width - right_w - 72.0,
-        rect.y + 8.0,
+        rect.y + 5.0,
         theme_ink(),
     );
-    draw_status_glyph(canvas, rect.x + rect.width - 42.0, rect.y + 7.0);
-    draw_status_glyph(canvas, rect.x + rect.width - 22.0, rect.y + 7.0);
+    draw_status_glyph(canvas, rect.x + rect.width - 42.0, rect.y + 4.0);
+    draw_status_glyph(canvas, rect.x + rect.width - 22.0, rect.y + 4.0);
 
     if let Some(menu_index) = menu_bar.open_menu {
         if !menu_bar.suppress_dropdown_paint {
@@ -2854,12 +3030,12 @@ fn draw_open_menu_box(
 
     canvas.rect(
         Rect::new(
-            dropdown.x + 3.0,
-            dropdown.y + 3.0,
+            dropdown.x + MENU_SHADOW_OFFSET,
+            dropdown.y + MENU_SHADOW_OFFSET,
             dropdown.width,
             dropdown.height,
         ),
-        rgba(0, 0, 0, 0.24),
+        S7_FG,
     );
     let menu_bg = if render_dark_mode() {
         [0.16, 0.17, 0.18, 1.0]
@@ -2906,7 +3082,7 @@ fn draw_open_menu_box(
             canvas.rect(
                 Rect::new(
                     item_rect.x + 12.0,
-                    item_rect.y + 9.0,
+                    item_rect.y + MENU_ITEM_HEIGHT * 0.5,
                     item_rect.width - 24.0,
                     1.0,
                 ),
@@ -2915,7 +3091,7 @@ fn draw_open_menu_box(
             canvas.rect(
                 Rect::new(
                     item_rect.x + 12.0,
-                    item_rect.y + 10.0,
+                    item_rect.y + MENU_ITEM_HEIGHT * 0.5 + 1.0,
                     item_rect.width - 24.0,
                     1.0,
                 ),
@@ -2958,8 +3134,8 @@ fn draw_open_menu_box(
         }
         canvas.text(
             &item.label,
-            item_rect.x + 24.0,
-            item_rect.y + 7.0,
+            item_rect.x + MENU_LABEL_INSET,
+            item_rect.y + 5.0,
             text_color,
         );
         if let Some((key, modifiers)) = item.shortcut {
@@ -2967,8 +3143,8 @@ fn draw_open_menu_box(
             let shortcut_w = canvas.measure_text(&shortcut);
             canvas.text(
                 &shortcut,
-                item_rect.x + item_rect.width - shortcut_w - 8.0,
-                item_rect.y + 7.0,
+                item_rect.x + item_rect.width - shortcut_w - MENU_SHORTCUT_INSET,
+                item_rect.y + 5.0,
                 text_color,
             );
         }
@@ -4218,7 +4394,12 @@ fn distance_squared(a: Point, b: Point) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_clock_from_seconds, parse_theme_preference, theme_accents};
+    use super::{
+        format_clock_from_seconds, is_application_menu_action, parse_theme_preference,
+        publish_bytes_atomically, theme_accents, ApplicationMenuAction,
+    };
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parses_dark_appearance_preference() {
@@ -4262,5 +4443,60 @@ mod tests {
         assert_eq!(format_clock_from_seconds(11 * 3600 + 59 * 60), "11:59 AM");
         assert_eq!(format_clock_from_seconds(12 * 3600), "12:00 PM");
         assert_eq!(format_clock_from_seconds(23 * 3600 + 5 * 60), "11:05 PM");
+    }
+
+    #[test]
+    fn recognizes_sdk_owned_hide_and_quit_menu_actions() {
+        assert_eq!(
+            is_application_menu_action(
+                "com.slopos.finder.finder.quit_finder",
+                "com.slopos.finder",
+                "Finder",
+            ),
+            Some(ApplicationMenuAction::Quit)
+        );
+        assert_eq!(
+            is_application_menu_action(
+                "com.slopos.finder.finder.hide_finder",
+                "com.slopos.finder",
+                "Finder",
+            ),
+            Some(ApplicationMenuAction::Hide)
+        );
+        assert_eq!(
+            is_application_menu_action(
+                "com.slopos.finder.file.new_folder",
+                "com.slopos.finder",
+                "Finder",
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn publishes_menu_manifest_bytes_as_one_complete_file() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("slopos-sdk-manifest-{unique}"));
+        fs::create_dir_all(&directory).expect("create manifest test directory");
+        let path = directory.join("com.slopos.test.json");
+
+        publish_bytes_atomically(&path, br#"{"menus":[{"title":"File"}]}"#)
+            .expect("atomically publish manifest");
+        assert_eq!(
+            fs::read_to_string(&path).expect("read published manifest"),
+            r#"{"menus":[{"title":"File"}]}"#
+        );
+        assert_eq!(
+            fs::read_dir(&directory)
+                .expect("read manifest directory")
+                .count(),
+            1,
+            "temporary manifest must be renamed away"
+        );
+
+        fs::remove_dir_all(directory).expect("remove manifest test directory");
     }
 }

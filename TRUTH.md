@@ -4,12 +4,12 @@
 exists in source, what has actually been built/tested/run, current defects, and
 the next acceptance gate. Product requirements live in `AGENTS.md`.
 
-**Snapshot audited:** `retroshell(2).zip`  
-**Git HEAD:** `5ed6f74f700ead25ccfbd4a9c81ef3226ae73203`  
-**Commit:** `5ed6f74 feat(slopos-i): implement window presentation state machine, zoom policy, and shared font service`  
-**Branch in snapshot:** `docs/program-design`  
+**Original snapshot audited:** `retroshell(2).zip`
+**Original archive Git HEAD:** `5ed6f74f700ead25ccfbd4a9c81ef3226ae73203`
+**Current Git HEAD:** `afef105d2b2dd0c45bc269a16930ad04d3185b56` on `docs/program-design`
+**Current working tree:** uncommitted compositor/session/shell architecture fix
 **Audit date:** 2026-08-01  
-**Audit type:** source/archive/static validation; no independent Rust build or runtime execution in the audit environment.
+**Audit type:** source review plus Ubuntu Server VM build/test/runtime verification and UTM visual QA.
 
 ## 1. Evidence language
 
@@ -27,9 +27,12 @@ or state mutation in a test do not prove visible runtime interaction.
 
 ## 2. Independent audit limits and static checks
 
-The audit environment did not contain `cargo` or `rustc`, so it did not compile,
-test, launch, or benchmark this snapshot. Runtime claims inherited from prior
-agent reports remain historical claims until repeated with raw artifacts.
+The original archive audit environment did not contain `cargo` or `rustc`, so
+that audit did not compile, test, launch, or benchmark the archive. The current
+working tree was subsequently copied to and hash-matched against the Ubuntu VM
+QA tree; current build and runtime evidence is recorded in section 11.
+
+`cargo-deny` was not installed in the VM and was not run.
 
 The following checks were independently completed on this snapshot:
 
@@ -44,7 +47,8 @@ The following checks were independently completed on this snapshot:
   `models/vision/manifest.toml`;
 - approximately 61,747 Rust source lines were present under `crates/` and `apps/`.
 
-These are static facts, not a successful Rust build.
+These particular checks are static facts; the current VM build, test, and
+runtime evidence is recorded in section 11.
 
 ## 3. Executive status
 
@@ -63,49 +67,58 @@ Strongest current source progress:
 - `slopos-vision` contains real OCR, U2Netp segmentation, mask post-processing,
   alpha compositing, manifest/hash validation and cancellation checks.
 
+The current working-tree P1 slice also establishes the compositor-owned desktop
+surface model: the shell uses full-output/background, full-width menu, Dock,
+and popup layer surfaces; ordinary application windows remain compositor-owned
+XDG toplevels; and the global menu follows the compositor's focused app.
+
 Largest current blockers:
 
-- move/resize request validation ignores the supplied Wayland seat/serial;
-- XDG popups and correct layer-shell work-area layout are incomplete;
-- new window-presentation policy types are not wired into live SDK/compositor behavior;
+- pointer-driven move/resize, full popup compatibility, and third-party client
+  protocol coverage still need dedicated runtime interaction evidence;
+- new window-presentation policy types are not wired into all live SDK/compositor
+  transitions;
 - SLOPOS Spaces remains a fixed eight-workspace prototype;
 - `slopos-fonts` is disconnected and the visible text renderer is not production-grade;
-- Vision protocol/client/daemon and Preview are placeholders;
+- Vision protocol/client/daemon and Preview now have typed/current source and
+  focused tests, but successful model inference, packaged model import, and
+  complete Finder/Preview UX remain open;
 - XWayland movement/resizing and several portal/application paths remain incomplete;
 - a clean clone has no implemented model-pack acquisition/install flow;
-- no independent build/runtime result exists for this exact snapshot.
+- current VM evidence does not prove physical hardware behavior, XWayland
+  compatibility, or the complete application/Spaces/text requirements.
 
 ## 4. Current component matrix
 
 | Component | Status | Evidence and current truth |
 |---|---|---|
-| Workspace/build | **SOURCE PRESENT** | 18 workspace members in `Cargo.toml`; exact snapshot not independently compiled. |
-| `slopos-session` | **SOURCE PRESENT** | Starts compositor, waits for private socket, launches shell, separates host/client display, process-group teardown. Needs per-session nonce directory and signal handling. |
-| Private socket routing | **RUNTIME OBSERVED, historical report** | Prior VM report claimed all six clients on `wayland-2` and host saw one outer window. Not independently repeated after HEAD `5ed6f74`. |
-| Visible cursor | **SOURCE PRESENT** | Nested and DRM cursor-state/composition paths exist. Human-visible behavior on current HEAD not independently observed. |
-| Native move/resize | **SOURCE PRESENT** | Grab state and geometry/damage updates exist. Seat/serial validation is incorrect; manual pointer sequence unverified. |
-| Focus/raise | **SOURCE PRESENT** | Geometry/stack focus code exists; XDG Activated synchronization needs correction. |
-| Minimize/restore | **SOURCE PRESENT, incomplete** | Hidden/minimized Boolean exists; Dock model and robust restore flow are incomplete. |
-| Maximize/fullscreen | **SOURCE PRESENT, basic** | Old raw-output geometry path exists. Work-area-aware Fill and shared state machine are not live. |
+| Workspace/build | **BUILD VERIFIED, TEST VERIFIED (scoped)** | The UTM r15 guest built and tested the compositor/session targets and focused packages. Current-source focused Vision/Preview checks, 26 package tests, 63 Vision-core tests, and targeted Clippy passed on the host. A current full-workspace check/test result is not available; an earlier broad guest attempt hit `No space left on device`. |
+| `slopos-session` | **RUNTIME OBSERVED** | DRM session published a per-session runtime directory, readiness token, actual `1280x800` output dimensions, and private client socket; exact session termination removed its runtime directory and left no SLOPOS processes. |
+| Private socket routing | **RUNTIME OBSERVED** | Compositor owned private `wayland-1`; shell and first-party clients were launched from readiness-provided private runtime variables. The artifact records the socket inode/owner and process tree. |
+| Visible cursor | **RUNTIME OBSERVED** | UTM captures show a visible cursor over application content. |
+| Native move/resize | **TEST VERIFIED; runtime interaction unverified** | Grab state, geometry/damage updates, and seat/serial ownership checks are present; the compositor test `pointer_grab_requires_live_same_surface_press_and_owned_seat` passed. The fresh r15 UTM run still has no human pointer-driven move/resize sequence because input capture reported `noWindowsAvailable`. |
+| Focus/raise | **RUNTIME OBSERVED** | Focus artifacts show Settings and Terminal becoming active; `active-toplevel` and the global menu changed with compositor focus. |
+| Minimize/restore | **RUNTIME OBSERVED, partial** | The fresh r15 Finder run sent typed `Minimize` and `Restore` requests to the exact session control socket; the window disappeared and returned in fresh UTM captures. Dock-click restore and broader lifecycle coverage remain incomplete. |
+| Maximize/fullscreen | **RUNTIME OBSERVED, partial** | The fresh r15 run applied compositor-owned `Fill` and recorded `state=Filled`; fullscreen and the complete shared presentation policy remain unverified. |
 | Configurable zoom control | **PLANNED / scaffolding** | `WindowPresentationState`, `ZoomPolicyConfig` and geometry helpers exist but are not wired through SDK, Settings and both compositor backends. |
-| XDG popups | **PLANNED** | `new_popup`, `grab`, and `reposition_request` handlers are empty in the audited nested path. |
-| Layer shell | **SOURCE PRESENT, incomplete** | Shell surfaces map, but anchors, margins, requested dimensions and exclusive zones are not implemented authoritatively. |
-| XWayland | **SOURCE PRESENT, incomplete** | Basic integration exists; interactive move/resize handlers remain empty. |
+| XDG popups | **SOURCE PRESENT, partial runtime** | Popup handling and shell popup overlay paths are present; the QA compositor mapped the popup overlay layer. Full third-party popup grabs/repositioning remain unverified. |
+| Layer shell | **RUNTIME OBSERVED** | DRM logs show compositor-owned desktop background, full-width menu, Dock, and overlay surfaces; the output was `1280x800` and the UTM canvas had no surrounding shell window. |
+| XWayland | **SOURCE PRESENT, TEST VERIFIED; runtime unverified** | The nested XWayland move/resize bridge and Linux edge-mapping regression test exist; no real X11 client exercised the bridge in UTM. |
 | SLOPOS Spaces | **SOURCE PRESENT, prototype** | Fixed `WORKSPACE_COUNT = 8`, switch/filter mapping. No dynamic model, overview, names, assignment, fullscreen Spaces, gestures or Settings. |
 | Renderer | **SOURCE PRESENT, immature** | wgpu/immediate drawing exists. Text still expands glyph coverage into many rectangles; expensive and not shaped. |
 | Text platform | **PLANNED** | No end-to-end shaping, bidi, fallback, glyph atlas, IME or production selection geometry in the visible SDK path. |
 | `slopos-fonts` | **SOURCE PRESENT, disconnected** | Profiles/discovery structures exist. No consumers; discovery is non-recursive; no font database/installation/Settings/render integration. |
-| Shell | **SOURCE PRESENT** | Desktop/menu/Dock/search/portals are substantial but contain incomplete paths and must be re-QA'd under compositor sovereignty. |
-| Finder | **SOURCE PRESENT** | Native app and shell Finder-like views exist. File operations, explicit desktop view, MIME/thumbnail/application integration need systematic QA. |
-| Settings | **SOURCE PRESENT, partial** | Existing panels and best-effort backends. No live font, Spaces, zoom-policy or complete display/color controls. |
-| TextEdit | **SOURCE PRESENT, partial** | App exists; blocked by production text/editing/save/recovery requirements. |
-| Terminal | **SOURCE PRESENT, partial** | App exists; PTY, resize, Unicode, selection and lifecycle require runtime QA. |
-| App Store | **SOURCE PRESENT, prototype** | Catalog and install-related code exists; update/remove/confirm/signing/trust/atomic replacement remain incomplete. |
-| Preview | **PLANNED** | Current `apps/preview` logs “not yet implemented” and exits. |
-| Vision core | **SOURCE PRESENT, substantial V1** | Real PP-OCRv4/U2Netp inference path, decoding, mask processing and hashing. Exact build/output not independently reproduced. |
-| Vision protocol/client | **PLANNED** | Placeholder crates without the required typed job API. |
-| `slopos-visiond` | **PLANNED** | Logs “not yet implemented” and exits. |
-| Finder/Preview Vision UX | **PLANNED** | No complete daemon, overlay, clipboard or context-menu flow. |
+| Shell | **RUNTIME OBSERVED** | Shell painted only shell chrome/overlays; no production fake Finder window was started. Global menu content followed the focused real client. |
+| Finder | **RUNTIME OBSERVED** | `SLOPOS_START_APP=finder` launched the real Finder client; the UTM capture shows the Finder window on the compositor-owned desktop. |
+| Settings | **RUNTIME OBSERVED, partial** | Settings rendered as a separate client in the multi-window UTM capture; live font, Spaces, zoom-policy, and complete display/color controls remain incomplete. |
+| TextEdit | **RUNTIME OBSERVED, partial** | A separate TextEdit client was visible in the multi-window UTM capture; production text/editing/save/recovery remains incomplete. |
+| Terminal | **RUNTIME OBSERVED, partial** | A separate Terminal client rendered and took focus in UTM; PTY, resize, Unicode, selection and lifecycle still need dedicated QA. |
+| App Store | **RUNTIME OBSERVED, prototype** | A separate App Store client was visible in UTM; update/remove/confirm/signing/trust/atomic replacement remain incomplete. |
+| Preview | **BUILD VERIFIED, TEST VERIFIED; RUNTIME OBSERVED, partial** | Current-source Preview check and 6 tests pass. The r14 guest snapshot started Preview and dispatched Extract Text, but no successful model output, save/clipboard result, or complete overlay flow was observed; r14 runtime provenance is older than the current viewer source. |
+| Vision core | **BUILD VERIFIED, substantial V1** | Real PP-OCRv4/U2Netp inference path, decoding, mask processing and hashing compiled in the workspace; model inference output was not exercised in this QA run. |
+| Vision protocol/client | **BUILD VERIFIED, TEST VERIFIED** | Current-source focused check and Clippy pass; protocol 8 tests and client 9 tests pass. The typed local-only job/asset/error path is source-backed, but no successful model job was observed through the daemon in this run. |
+| `slopos-visiond` | **BUILD VERIFIED, TEST VERIFIED; RUNTIME OBSERVED, startup only** | Current-source daemon check, Clippy, and 3 tests pass. The r15 guest session launched a session-scoped daemon process, but the guest snapshot did not produce successful OCR/segmentation output. |
+| Finder/Preview Vision UX | **SOURCE PRESENT, partial** | Preview contains native Vision request/result paths, but Finder context integration, successful inference display, clipboard/save output, packaged model import, and complete UX remain open. |
 | Packaging | **SOURCE PRESENT, unverified** | Arch, Debian, session and ISO artifacts exist; clean install/login/ISO boot are not verified for current HEAD. |
 | HDR/VRR | **PLANNED / hooks only** | No current physical-hardware evidence. Do not advertise as working. |
 | FreeBSD | **PLANNED portability target** | No runtime evidence; cross-build status for current HEAD is unknown. |
@@ -122,33 +135,38 @@ Useful source behavior:
 - known readiness file is removed rather than every `wayland-*` socket;
 - compositor and shell use process groups and one side tears down when the other exits.
 
+The current working tree adds a unique session nonce/runtime directory, binds
+readiness to the compositor PID/token, forwards actual output dimensions, and
+keeps shell/application clients on the exact private socket. A post-fix DRM run
+also exercised compositor death and `SIGHUP`: both paths tore down the shell and
+client process groups and removed the unique session directory, leaving only
+the shared `slopos-i` root.
+
 Remaining defects:
 
-- one global readiness path can race across concurrent same-user sessions;
-- readiness does not cryptographically or structurally prove it came from the
-  exact child process just launched;
-- no complete signal-aware supervisor shutdown path was found;
-- backend naming still conflates `nested`/`winit` with the actual Smithay X11 nested backend.
+- backend naming and full display-manager/hardware lifecycle coverage remain
+  separate acceptance work.
 
-Next acceptance gate: unique per-session runtime directory and nonce, signal
-handling, clean process reaping, then a clean socket/process/runtime capture.
+Next acceptance gate: validate the same session contract under nested mode and a
+real display-manager launch, then capture pointer-driven window interaction.
 
 ### 5.2 Compositor protocols and input
 
-Move/resize code is now more than a fake shell rectangle, but handlers accept a
-request based on a global left-button state while ignoring the supplied seat
-and serial. This violates the intended Wayland implicit-grab contract and can
-accept stale or unrelated requests.
+The current working tree validates the requesting seat and live pointer-press
+serial for interactive move/resize, keeps input routing separate from shell
+paint routing, and updates mapped-window app IDs when clients announce them
+after mapping. It also configures compositor-owned desktop/menu/Dock/overlay
+layer surfaces from the actual output dimensions, publishes authoritative
+focus through `active-toplevel`, and routes global-menu changes from focus
+instead of a timer. The DRM compositor no longer launches `slopos-shell`; the
+session supervisor is the sole shell owner.
 
-Other blockers:
-
-- XDG popup creation, grab and reposition handlers are empty;
-- layer surfaces are configured without complete anchor/margin/exclusive-zone layout;
-- authoritative work area is therefore unavailable for Fill/tiling;
-- focus does not reliably clear/set XDG Activated state with configures;
-- hit testing is based mainly on stored top-level rectangles rather than full
-  surface trees, input regions, subsurfaces and popups;
-- XWayland move/resize requests remain empty.
+The r15 runtime logs observed all four shell layer surfaces and the UTM captures
+showed a real Finder client, focus/menu chrome, Fill, Minimize, Restore, and
+scale behavior. The automated compositor tests covered pointer-grab ownership
+and surface-tree paint/input separation. A full human pointer move/resize
+sequence, third-party popup grab/reposition compatibility, and XWayland
+interaction remain unverified.
 
 ### 5.3 Window presentation
 
@@ -208,16 +226,23 @@ ppocr_keys_v1.txt           28b2362ad4ab2dc38769aa72feb535e3a9ddb3fd2a7585a05920
 u2netp.onnx                 309c8469258dda742793dce0ebea8e6dd393174f89934733ecc8b14c76f4ddd8
 ```
 
+The current source now contains typed local-only protocol/client/daemon paths and
+a native Preview viewer. Current-source focused checks cover 26 tests across
+Preview, the client, protocol, and daemon, plus 63 Vision-core tests. These
+checks do not prove successful inference with the packaged weights or visible
+Vision output.
+
 Remaining issues:
 
-- protocol/client/daemon/Preview are placeholders;
-- model default path is repository-relative and unsuitable for packaged sessions;
-- ignored weights have no implemented model-pack acquisition/import script;
-- output tensor dimensions need strict validation to avoid assertion/panic paths;
-- cancellation is cooperative, not interruptible during a long inference call;
-- `model_status` suppresses some verification errors;
-- encoded input file size needs a bound before reading the entire file;
-- model attribution/notice packaging is incomplete.
+- the core `VisionEngineConfig::default()` remains repository-relative; the
+  daemon/session path prefers `$XDG_DATA_HOME/slopos-i/models/vision`, then
+  `$HOME/.local/share/slopos-i/models/vision`, with a relative fallback;
+- ignored weights have no complete model-pack acquisition/import flow, and
+  model attribution/notice packaging is incomplete;
+- real OCR/segmentation output, bounded worker/resource behavior under load,
+  and cancellation during a long inference call remain unverified;
+- Finder has no complete Vision context-action integration; Preview does not
+  yet prove successful overlay, clipboard, and save output through the daemon.
 
 ### 5.7 Applications and services
 
@@ -258,8 +283,10 @@ Reported CPU after an early redraw fix:
 - compositor around `1.3%`;
 - shell around `98.7%` under LLVMpipe.
 
-That shell result is still unacceptable for an idle desktop and must be rerun
-after the current HEAD.
+The r3 run superseded this historical sample with a 60-second multi-client
+sample: shell CPU was approximately 5.1–5.6% and compositor CPU approximately
+8.4–8.6%, with active application clients present. This is evidence of a
+measured run, not a near-zero idle claim; a clean idle benchmark remains open.
 
 ### Earlier “verified” stages and matrices
 
@@ -270,16 +297,17 @@ carried forward. Git history preserves the documents for archaeology.
 
 ## 7. Immediate next work order
 
-1. Build and test exact HEAD in the Linux VM; capture raw output.
-2. Protect and audit current Vision changes before merging other branches.
-3. Fix per-session runtime directory/nonce and supervisor signals.
-4. Fix seat/serial validation for move/resize.
-5. Implement XDG popups and correct layer-shell layout/work areas.
-6. Synchronize XDG Activated and surface-tree hit testing.
-7. Wire the shared presentation state machine through SDK, nested, DRM and Settings.
-8. Replace the text renderer and connect `slopos-fonts` before visual font profiles.
-9. Build dynamic SLOPOS Spaces after the core WM state is reliable.
-10. Implement Vision protocol/client/daemon, model-pack paths, then Preview/Finder UX.
+1. Validate the private-session contract in nested mode and through a
+   display-manager launch.
+2. Capture a real pointer-driven move/resize sequence, popup grab/reposition
+   sequence, and representative XWayland interaction.
+3. Record a clean idle compositor/shell benchmark after the current runtime fix.
+4. Protect and audit current Vision changes before merging other branches.
+5. Wire the shared presentation state machine through SDK, nested, DRM and Settings.
+6. Replace the text renderer and connect `slopos-fonts` before visual font profiles.
+7. Build dynamic SLOPOS Spaces after the core WM state is reliable.
+8. Exercise the current Vision protocol/client/daemon with a verified model pack,
+   then complete Preview/Finder Vision UX and packaged model provisioning.
 
 Do not start broad UI polish, HDR marketing, App Store expansion, or another
 capability matrix before steps 1–6 are stable.
@@ -345,3 +373,426 @@ The repository documentation policy is now:
 - `AGENTS.md` — normative development source of truth;
 - `TRUTH.md` — factual audit/evidence source of truth;
 - no other Markdown files.
+
+## 11. 2026-08-01 — compositor-owned desktop/session architecture fix and UTM QA
+
+Environment: Ubuntu 26.04 LTS, aarch64, UTM guest on the macOS host; DRM
+backend; `1280x800` output; llvmpipe renderer; Rust 1.97.1 / Cargo 1.97.1.
+The 13 modified source files were SHA-256 matched between the host working tree
+and `/home/ubuntu/qa/2026-08-01-compositor-p1` before verification. Git HEAD was
+`afef105d2b2dd0c45bc269a16930ad04d3185b56`; the fix remains uncommitted.
+
+Commands: `artifacts/qa/2026-08-01-utm-architecture-fix-r3/verification-vm.txt`;
+runtime logs, readiness, socket ownership, process tree, focus transitions, and
+60-second CPU/RSS sample in the same directory. Visual evidence:
+`utm-finder.jpeg`, `utm-multi-window-settings.jpeg`, and
+`utm-focused-terminal.jpeg`.
+
+Result: **BUILD VERIFIED**, **TEST VERIFIED**, and **RUNTIME OBSERVED**.
+
+- The compositor published `wayland-1` in a unique session directory and
+  readiness included the compositor PID/token and actual `1280x800` dimensions.
+- DRM logs showed four compositor-owned layer surfaces: full-output desktop
+  background, full-width global menu, Dock, and menu-popup overlay.
+- `SLOPOS_START_APP=finder` started the real Finder client. Finder, Settings,
+  TextEdit, Terminal, and App Store appeared as separate compositor-managed
+  clients; no fake Finder XDG desktop window was used.
+- The UTM captures show the desktop canvas filling the guest output, a full-width
+  global menu, visible cursor, bottom Dock, and no surrounding `640x480` shell
+  surface. The Finder menu showed Finder-specific controls; the focused Terminal
+  capture showed Terminal-specific controls; the Settings capture showed the
+  Settings menu title after focus changed.
+- Focus artifacts and `active-toplevel` showed Settings then Terminal focus;
+  the global menu changed with focus without the previous two-second throttle.
+- The 60-second multi-client sample recorded approximately 5.1–5.6% shell CPU
+  and 8.4–8.6% compositor CPU. This is not a clean idle benchmark.
+- Exact guest shutdown left no matching SLOPOS/application processes and removed
+  the session runtime directory.
+
+Known failures and limitations: guest `grim` could not capture because the
+compositor does not implement `wlr-screencopy-unstable-v1`; the SIGUSR1
+compositor capture failed on llvmpipe because `AR24` framebuffer readback is
+unsupported. The session log also records the VM's missing AT-SPI registry and
+portal-registration warning. `cargo-deny` was unavailable. This run did not
+prove a human pointer-driven move/resize, full third-party popup grab/reposition
+behavior, XWayland interaction, nested backend behavior, physical DRM hardware,
+or completion of the remaining P2–P10 product requirements.
+
+Changed truth: P1 session identity/cleanup, compositor-owned shell layer layout,
+real-client startup, app-ID propagation, authoritative focus publication, and
+focus-driven global-menu routing are now source- and VM-runtime-backed for this
+working tree. The desktop remains experimental rather than a complete daily
+driver until the remaining acceptance gates are exercised.
+
+## 12. 2026-08-01 — session lifecycle and single-shell correction
+
+Environment: Ubuntu 26.04 LTS, aarch64 UTM guest; DRM backend; llvmpipe;
+`1280x800`; Rust 1.97.1 / Cargo 1.97.1. The updated
+`crates/slopos-compositor/src/session_drm.rs` was hash-matched between host and
+guest before the post-fix build.
+
+Change: removed the unconditional DRM compositor call that spawned
+`slopos-shell`. `slopos-session` is now the sole shell owner; compositor key
+actions may still launch explicit clients such as Finder or the lock screen.
+
+Commands and raw evidence:
+`artifacts/qa/2026-08-01-utm-p1-shell-single-r1/verification.txt`,
+`session.log`, `readiness.txt`, `process-tree.txt`, `runtime-files.txt`,
+`topology.log`, `duplicate-shell-warning.txt`, and
+`shutdown-verification.txt`. The lifecycle artifacts from the compositor-death
+and SIGHUP runs are under
+`artifacts/qa/2026-08-01-utm-session-lifecycle-r1/`.
+
+Result: **BUILD VERIFIED**, **TEST VERIFIED**, and **RUNTIME OBSERVED**.
+
+- VM format, workspace check, workspace tests, workspace build, and Clippy
+  with `-D warnings` all exited 0 after the edit.
+- The fresh DRM session published a private `wayland-1`, actual `1280x800`
+  dimensions, exactly one shell child, one real Finder client, and all four
+  compositor-owned shell layers. No duplicate `slopos-shell` spawn warning was
+  emitted.
+- Killing the compositor produced the expected supervisor error path and
+  cleaned the shell/client group. Sending `SIGHUP` to the supervisor produced
+  the expected shutdown path. Both removed the unique session directory while
+  preserving only the shared `slopos-i` root.
+- The fresh UTM screenshot shows the full desktop canvas, global menu, real
+  Finder window, cursor, desktop icons, and Dock: `utm-finder-post-fix.jpeg`.
+
+Remaining risk: UTM Computer Use returned `noWindowsAvailable` for mouse
+actions, and the guest has no input-injection utility, so pointer-driven
+move/resize and popup grab/reposition remain unverified. This is recorded as an
+evidence limitation, not a PASS. Nested/display-manager behavior, XWayland,
+Spaces, production text/fonts, and later P2–P10 work remain open.
+
+## 13. 2026-08-01 — scaled work-area clamp and Classic Macintosh kit QA
+
+Environment: Ubuntu 26.04 LTS, aarch64, UTM guest on the macOS host; explicit
+DRM backend; `1280x800` virtual output; llvmpipe; Rust 1.97.1 / Cargo 1.97.1.
+Git HEAD was `afef105d2b2dd0c45bc269a16930ad04d3185b56`; the working tree remains
+uncommitted. The guest source hashes for the compositor, session, design-token,
+and SDK files matched the host before the run.
+
+Commands and raw evidence: all build/test output, process/runtime snapshots,
+readiness records, key compositor lines, and shutdown checks are under
+`artifacts/qa/2026-08-01-scale-clamp-r8/evidence/`. Fresh UTM captures are
+`utm-scale-100.jpeg`, `utm-scale-125.jpeg`, `utm-scale-150.jpeg`, and
+`utm-scale-200.jpeg` in that directory.
+
+Result: **BUILD VERIFIED**, **TEST VERIFIED**, and **RUNTIME OBSERVED**.
+
+- `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`,
+  `CARGO_BUILD_JOBS=1 cargo test --workspace`, `cargo build --workspace`,
+  and Clippy with `-D warnings` all exited with status 0 in the guest. The
+  compositor library test run also passed independently.
+- The Figma Classic Macintosh UI Kit Community file was reviewed directly
+  (file key `LGMlwNCoVdakZxDBvPKg1W`, example screen node `73:5016`). The shared
+  native-kit path now carries the reference's compact 19 px menu bar, 16 px
+  menu rows, hard-edged System 7 window treatment, left close/right zoom
+  controls, restrained desktop pattern, and palette/token relationships in
+  `crates/slopos-kit/src/design_tokens.rs` and the SDK renderer.
+- At 1.0× and 1.25× the real Finder client remained at its requested
+  `640x480` geometry because it fit the larger logical work area. At 1.5× and
+  2.0× the compositor mapped it at `(0,19)` with `640x317`, after the global
+  menu and Dock exclusive zones were applied. The fresh captures show the
+  full-width global menu, full desktop backdrop, real Finder content, visible
+  cursor, and Dock without the client covering the Dock.
+- Every scale run used the private compositor socket and recorded the four
+  compositor-owned shell layers: desktop background, global menu, Dock, and
+  menu-popup overlay. Each run was terminated with `SIGTERM`; the shutdown
+  artifacts show no remaining SLOPOS process or per-session runtime directory.
+
+Remaining risk: this is runtime evidence for the DRM/llvmpipe UTM guest, not
+physical display hardware. The captures do not prove pointer-driven
+move/resize, third-party popup grabs, XWayland, nested mode, or production
+text/font behavior. `slopos-kit` remains renderer-neutral while `slopos-sdk`
+owns the current native pixel paint path; the shared token and SDK styling are
+the current Figma-inspired visual foundation, not a claim that P2 text/font
+work is complete.
+
+## 14. 2026-08-01 — native kit global-menu wake path and UTM post-fix QA
+
+Environment: Ubuntu 26.04 LTS, aarch64 UTM guest on the macOS host; explicit
+DRM backend; `1280x800` virtual output; llvmpipe; Rust 1.97.1 / Cargo 1.97.1.
+Git HEAD was `afef105d2b2dd0c45bc269a16930ad04d3185b56`; the working tree
+remains uncommitted. The guest verification copy was
+`/home/ubuntu/qa/2026-08-01-native-kit-r9`.
+
+Change: application control sockets now wake SDK clients that are parked in
+`ControlFlow::Wait`, so focused global-menu actions are delivered to the real
+application event loop. The shared native kit continues to own the
+Classic-inspired palette and metrics; the SDK consumes those tokens for the
+current native pixel presentation path. The visual direction was reviewed
+against the supplied Classic Macintosh UI Kit Community file
+(`LGMlwNCoVdakZxDBvPKg1W`, example node `73:5016`) without copying proprietary
+assets or fonts.
+
+Commands and raw evidence:
+`artifacts/qa/2026-08-01-utm-native-kit-r9/evidence/` contains the guest
+format/check/test/build/Clippy logs, environment, session log, private-socket
+listing, runtime files, CPU/RSS sample, app logs, and fresh UTM captures.
+The scale matrix remains under
+`artifacts/qa/2026-08-01-scale-clamp-r8/evidence/`.
+
+Result: **BUILD VERIFIED**, **TEST VERIFIED**, and **RUNTIME OBSERVED**.
+
+- Guest `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`,
+  `cargo test --workspace`, `cargo build --workspace`, and
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+  completed successfully in the post-fix logs.
+- The DRM session used a private `wayland-1` socket under a unique runtime
+  directory and logged compositor-owned desktop, global-menu, Dock, and
+  menu-popup layer surfaces. Finder, Settings, and Terminal were real mapped
+  clients rather than shell-painted application windows.
+- The fresh captures `utm-finder-postfix.png`,
+  `utm-settings-menu-action-postfix.png`, `utm-settings-minimized.png`, and
+  `utm-terminal-postfix.png` visibly show a full-width global menu, a
+  full-output patterned desktop, client windows constrained to the work area,
+  a visible cursor, and a separate bottom Dock. The screenshots were visually
+  inspected from the UTM guest captures.
+- The Settings global-menu action produced a visible General-pane change and
+  `application handled global menu action` in `settings-postfix.log`. The
+  Settings Hide/Minimize action produced `state=Minimized` in the compositor
+  session log and removed the Settings window from the canvas in the fresh
+  capture.
+- The 1.0x, 1.25x, 1.5x, and 2.0x scale captures and runtime logs show the same
+  full-width shell chrome and work-area clamping at each supported scale.
+- The session received SIGTERM and the post-fix log ended with client
+  disconnects. A separate restore request did restore the currently focused
+  Finder rather than the hidden Settings window; Dock restore therefore
+  remains incomplete.
+
+Known failures and limitations: UTM Computer Use returned
+`noWindowsAvailable` for pointer actions and the guest had no input-injection
+utility, so human pointer-driven move/resize and popup grab/reposition remain
+unverified. The active-client CPU sample is not a clean idle benchmark.
+Nested mode, display-manager launch, XWayland, physical hardware, production
+text/fonts, Spaces, Vision UI/daemon, and later P2–P10 requirements remain
+open. `cargo deny` was unavailable in the guest.
+
+Changed truth: the native kit is now a shared, source-backed Classic-inspired
+visual foundation used by kit geometry/menu behavior and SDK presentation;
+the compositor-owned desktop/window/menu architecture and global-menu action
+wake path have UTM runtime evidence. This does not elevate SLOPOS-I to a
+complete daily-driver desktop.
+
+## 15. 2026-08-01 — Wayland display-source repair and compositor restore-target QA
+
+Environment: Ubuntu 26.04 LTS, aarch64, UTM guest on the macOS host; explicit
+DRM backend; `1280x800` virtual output; llvmpipe; Rust 1.97.1 / Cargo 1.97.1.
+The guest source at `/home/ubuntu/qa/2026-08-01-backend-transport-r10` was
+hash-matched to the host before the run. The working tree remains uncommitted.
+
+Change: both nested and DRM backends now register the Wayland server display
+poll fd with calloop, so client requests are dispatched while the compositor
+waits for events. The shared compositor presentation path also retains the
+most recently minimized window id. A generic `Restore` request therefore
+restores the window that was minimized even after focus has moved to another
+client, and returns focus to the restored client.
+
+Commands and raw evidence:
+`artifacts/qa/2026-08-01-wayland-display-source-r11/evidence/wayland-display-source-r11/`
+contains the guest format, check, test, build, Clippy, focused regression,
+environment, readiness, socket, process, resource, application, session, and
+shutdown artifacts. Fresh UTM captures are `utm-ubuntu-r11.png`,
+`utm-final-r11.png`, `utm-settings-minimized-restorefix-r11.png`, and
+`utm-settings-restored-r11.png` in the same QA directory.
+
+Result: **BUILD VERIFIED**, **TEST VERIFIED**, and **RUNTIME OBSERVED**.
+
+- `cargo fmt --all -- --check`, `cargo check --workspace --all-targets`,
+  `cargo test --workspace`, `cargo build --workspace`, and
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+  all exited 0 after the restore-target edit in the Ubuntu guest.
+- The focused Wayland regression command ran
+  `wayland_display_source_dispatches_client_requests_when_fd_is_ready` and
+  reported `1 passed; 0 failed; 96 filtered out`.
+- The fresh DRM session published a unique readiness-bound `wayland-1` socket.
+  Logs show compositor-owned Background, Top global-menu, Bottom Dock, and
+  Overlay menu-popup layer surfaces, followed by a real Finder toplevel and a
+  real Settings toplevel. The UTM captures show the desktop canvas filling the
+  guest output with no grey bootstrap-only frame, a full-width app-specific
+  global menu, hard-edged native window chrome, visible cursor, patterned
+  desktop, and Dock.
+- A namespaced Settings menu request sent to the exact private application
+  control socket woke the parked SDK event loop; `settings-restore.log`
+  records `application handled global menu action`, and the final capture shows
+  the Settings global menu and General pane while Finder remains a separate
+  compositor-managed window behind it.
+- A compositor `Minimize` request removed Settings from the canvas. After focus
+  moved to Finder, a generic `Restore` request restored Settings and published
+  `app_id=com.slopos.settings` as the active toplevel. The post-fix minimized
+  and restored captures are visually inspected UTM window captures.
+- The active multi-client 60-second sample contains 12 samples for session,
+  compositor, shell, Finder, and Settings in `cpu-memory-active-60s.csv`.
+  This is an active-client sample, not a clean idle benchmark.
+- SIGTERM stopped the session and direct Settings client; the shutdown artifact
+  reports no remaining matching SLOPOS/application process and
+  `runtime_exists=no`.
+
+Remaining risk: this is runtime evidence for the UTM DRM/llvmpipe guest, not
+physical display hardware. The run still does not prove human pointer-driven
+move/resize, third-party popup grabs, XWayland interaction, nested mode,
+display-manager launch, production text/font behavior, dynamic Spaces, Vision
+daemon/UI, or later P2–P10 requirements. `cargo deny` remains unavailable in
+the guest.
+
+Changed truth: Wayland client transport is now regression-tested and observed
+in the DRM guest; the global menu is visibly focused-client-specific; and the
+generic minimize/restore path no longer follows the wrong newly focused
+window. SLOPOS-I remains experimental rather than a complete daily-driver
+desktop.
+
+## 16. 2026-08-01 — nested XWayland grab bridge and full UTM QA
+
+Environment: Ubuntu 26.04 LTS, aarch64, UTM guest on the macOS host; explicit
+DRM backend; UTM virtual output; llvmpipe; Rust 1.97.1 / Cargo 1.97.1. Git
+HEAD was `afef105d2b2dd0c45bc269a16930ad04d3185b56`; the working tree remains
+uncommitted. The fresh guest copy was
+`/home/ubuntu/qa/2026-08-01-full-qa-r13`.
+
+Change: `crates/slopos-compositor/src/main.rs` now records the XWayland
+window-to-Wayland-surface association and routes nested XWayland
+`move_request`/`resize_request` through the existing compositor interactive
+grab path. The path reuses the same client seat, live pointer-press serial,
+same-surface, and button-held authorization checks as native XDG toplevel
+interaction. The edge mapping helper has a Linux binary test.
+
+Commands and raw evidence: the fresh runtime/process/socket/readiness,
+application logs, CPU/RSS sample, scale-session logs, and shutdown records are
+under `artifacts/qa/2026-08-01-full-qa-r13/evidence/`. Fresh UTM captures are
+`utm-finder-r13.jpeg`, `utm-multi-window.jpeg`,
+`utm-multi-workspace-2.jpeg`, `utm-multi-workspace-1-recheck.jpeg`,
+`utm-scale-125.jpeg`, `utm-scale-150.jpeg`, and `utm-scale-200.jpeg` in the
+same directory.
+
+Result: **BUILD VERIFIED**, **TEST VERIFIED**, and **RUNTIME OBSERVED** for the
+scoped claims below; the full workspace remains resource-limited in this VM.
+
+- `cargo fmt --all -- --check` passed. The guest `cargo check --workspace
+  --all-targets` passed before the final XWayland-only test visibility fix;
+  the final guest `cargo check -p slopos-compositor --all-targets` passed.
+- Guest `cargo test --workspace --lib` ran 656 tests with zero failures before
+  the final XWayland binary-test-only edit. Final targeted tests then ran
+  `cargo test -p slopos-compositor --bin slopos-compositor` with 5 passed and
+  `cargo test -p slopos-compositor --lib` with 97 passed. Targeted compositor
+  Clippy with `-D warnings` passed.
+- The exact full `cargo test --workspace` attempt exited 101 while writing
+  `winit` because the 30 GB guest filesystem reached `No space left on
+  device`. A later full workspace binary build reached the same limit while
+  linking TextEdit. The scoped runtime build succeeded with
+  `cargo build -p slopos-session -p slopos-compositor -p slopos-shell -p
+  finder -p settings -p textedit -p terminal -p appstore`.
+- The fresh DRM session published `wayland-1` under a unique readiness-bound
+  runtime with `1280x800` output. The process tree and environment records
+  show the session, compositor, shell, Finder, TextEdit, Terminal, Settings,
+  and App Store clients using the private socket; no host `DISPLAY` was
+  passed to the shell/client path. The UTM multi-window capture visibly shows
+  five real application clients with compositor-owned classic window chrome,
+  global menu, patterned desktop, cursor, and Dock.
+- With UTM input capture enabled, `Super+2` switched to an empty workspace and
+  `Super+1` restored the application windows. This is runtime evidence for the
+  existing fixed workspace shortcut path, not evidence for dynamic SLOPOS
+  Spaces.
+- Fresh scale runs produced `1280x800` readiness at 1.25× and `640x400`
+  readiness at 1.5× and 2.0×, matching the current integer buffer-scale
+  quantization policy. The inspected captures show the Finder client and Dock
+  remaining visible at each run; 1.0× is represented by the fresh initial
+  `utm-finder-r13.jpeg` capture.
+- The active five-client resource sample contains 31 samples over 60 seconds.
+  Average CPU was 4.42% for the shell, 0.50% for the compositor, 0.34% each
+  for Finder and TextEdit, 0.41% for Terminal, 0.28% for Settings, and 0.31%
+  for App Store. This is an active-client sample, not a clean idle benchmark.
+- The fresh session and scale runs received SIGTERM; the per-session runtime
+  directories were removed. The final shutdown record has zero matching
+  SLOPOS/application processes and one remaining child under the shared
+  `slopos-i` root, which is expected shared runtime state.
+
+Known failures and limitations: after enabling UTM capture, the Computer Use
+service rejected the pointer drag with `noWindowsAvailable`; releasing capture
+required the UTM shortcut plus a harmless key. Therefore no pointer-driven
+move/resize, popup grab/reposition, or Dock click claim is made. The six
+additional application clients in this run were launched directly over the
+private socket for protocol/visual coverage, then terminated explicitly before
+session shutdown; this does not replace a shell-launched lifecycle test. The
+new XWayland bridge is source- and Linux-test-verified but was not exercised by
+a real X11 client. Nested mode, display-manager login, physical hardware,
+production text/fonts, dynamic Spaces, Vision daemon/UI, and later P2–P10 work
+remain open.
+
+Changed truth: nested XWayland move/resize now has a shared source path and
+Linux edge-mapping regression coverage; UTM DRM visual coverage now includes a
+fresh multi-client run, keyboard workspace switching, and current scale
+captures. SLOPOS-I remains an experimental/developing desktop and is not a
+complete daily-driver.
+
+## 17. 2026-08-01 — current-source Vision checks and fresh UTM r15 QA
+
+Environment: current host source checks used macOS with Homebrew Rust 1.97.1 /
+Cargo 1.97.1. Runtime QA used an Ubuntu 26.04 aarch64 UTM guest with the
+explicit DRM backend, `Virtual-1` at `1280x800`, seatd, and llvmpipe/virgl.
+The guest runtime source tree was `/home/ubuntu/qa/2026-08-01-vision-session-r14`.
+Its session/compositor snapshot predates the current `slopos-visiond` and
+Preview viewer hashes, so the current-source Vision checks below are distinct
+from the guest runtime claims. The working tree remains uncommitted.
+
+Current-source commands and raw evidence:
+`artifacts/qa/2026-08-01-utm-pointer-r15/evidence/` contains
+`check-current-source-vision-preview-r15.log`,
+`test-current-source-vision-preview-r15.log`,
+`test-current-source-vision-core-r15.log`, and
+`clippy-current-source-vision-preview-r15.log`.
+
+Result: **BUILD VERIFIED**, **TEST VERIFIED**, and **RUNTIME OBSERVED** for the
+scoped claims below.
+
+- Current-source `cargo check -p slopos-visiond -p slopos-vision-client
+  -p slopos-vision-protocol -p preview` exited 0.
+- Current-source tests passed with 26 total tests: Preview 6, Vision client 9,
+  Vision protocol 8, and Vision daemon 3. `cargo test -p slopos-vision
+  --all-targets` passed 63 tests. Current-source targeted Clippy passed with
+  `-D warnings`. The commands emitted the existing Rust future-incompatibility
+  warning for `block v0.1.6`, but no test or Clippy errors.
+- The fresh 1.0× UTM run started the real Finder client through the session
+  supervisor. Logs show a session-scoped Vision daemon, compositor-owned
+  `wayland-1`, Background/Top/Bottom/Overlay layer-shell surfaces, and a real
+  Finder toplevel. The UTM capture visibly shows the patterned desktop,
+  full-width global menu, classic Finder chrome, cursor, desktop icons, and
+  Dock.
+- Typed requests sent to the exact session `control.sock` produced
+  compositor log states `Fill -> Filled`, `Minimize -> Minimized`, and
+  `Restore -> Normal`. Fresh captures show Finder filling the work area,
+  disappearing on minimize, and returning at its original geometry on restore.
+
+The fresh visual captures are stored at
+`artifacts/qa/2026-08-01-utm-pointer-r15/`:
+`utm-finder-current-r15.jpeg`, `utm-finder-fill-current-r15.jpeg`,
+`utm-finder-minimized-current-r15.jpeg`, `utm-finder-restored-current-r15.jpeg`,
+`utm-finder-scale-125-current-r15.jpeg`,
+`utm-finder-scale-150-current-r15.jpeg`, and
+`utm-finder-scale-200-current-r15.jpeg`. They are direct UTM captures, are
+1173x768 JPEGs, and were visually inspected from disk after copying.
+
+| Requested scale | Effective buffer scale | Logical canvas | Runtime evidence |
+|---|---:|---:|---|
+| 1.0× | 1 | 1280x800 | `session-visual-current-r15.log` |
+| 1.25× | 1 | 1280x800 | `session-visual-scale-125-current-r15.log` |
+| 1.5× | 2 | 640x400 | `session-visual-scale-150-current-r15.log` |
+| 2.0× | 2 | 640x400 | `session-visual-scale-200-current-r15.log` |
+
+Each scale run used the private `wayland-1` socket, mapped Finder, and was
+terminated with SIGTERM. The guest post-run checks found no SLOPOS process and
+no per-session runtime directory. The matrix demonstrates the current
+integer-buffer-scale quantization; it is not evidence of true fractional
+rasterization. The compositor SIGUSR1 screenshot hook remains broken on this
+UTM renderer: the raw r15 diagnostic log records `Unsupported pixel format:
+DrmFourcc(AR24)`, so those hook failures are not counted as visual captures.
+
+Remaining risk: UTM input capture still could not produce a human pointer press
+through drag, valid serial, geometry delta, and release sequence; therefore
+pointer-driven move/resize, popup grabs/repositioning, Dock clicks, and true
+input-driven focus changes remain unverified. Nested mode, display-manager
+login, physical hardware, XWayland clients, clean idle profiling, full current
+workspace verification, real Vision inference, model-pack import, Finder
+Vision integration, production text/fonts, dynamic Spaces, and later P2–P10
+requirements remain open. SLOPOS-I remains experimental/developing rather than
+a complete daily-driver desktop.

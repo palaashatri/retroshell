@@ -136,6 +136,56 @@ fn main() {
         help_menu,
     ]);
 
+    // The global menu is rendered by slopos-shell, but application commands
+    // stay in Finder. The SDK delivers the namespaced action over the
+    // session-private application endpoint; this closure is the application
+    // boundary, not a second shell window model.
+    app.on_menu_action(|action, window| {
+        let Some(content) = window.content.as_mut() else {
+            return;
+        };
+        let Some(view) = content.as_any_mut().downcast_mut::<FinderView>() else {
+            return;
+        };
+        let action = action.strip_prefix("com.slopos.finder.").unwrap_or(action);
+        match action {
+            "file.new_folder" => {
+                view.create_new_folder();
+            }
+            "file.get_info" => {
+                view.show_selected_info();
+            }
+            "file.move_to_trash" => {
+                view.move_selected_to_trash();
+            }
+            "go.back" => {
+                view.go_back();
+            }
+            "go.forward" => {
+                view.go_forward();
+            }
+            "go.enclosing_folder" => {
+                view.go_to_parent();
+            }
+            "go.home" => {
+                if let Some(home) = std::env::var_os("HOME") {
+                    view.navigate_to_path(PathBuf::from(home));
+                }
+            }
+            "go.desktop" | "go.documents" | "go.downloads" => {
+                if let Some(home) = std::env::var_os("HOME") {
+                    let folder = match action {
+                        "go.desktop" => "Desktop",
+                        "go.documents" => "Documents",
+                        _ => "Downloads",
+                    };
+                    view.navigate_to_path(PathBuf::from(home).join(folder));
+                }
+            }
+            _ => {}
+        }
+    });
+
     let finderview = FinderView::new();
     let mut window = Window::new("Finder");
     window.layout = Layout::vertical(0.0);

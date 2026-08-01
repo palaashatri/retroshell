@@ -2,6 +2,7 @@
 name = "slopos-sdk"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 slopos-kit = { path = "../slopos-kit" }

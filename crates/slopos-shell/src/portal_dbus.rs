@@ -371,7 +371,7 @@ mod linux {
             let ids = option_string_loose(&options, "source_ids")
                 .or_else(|| option_string_loose(&options, "sources"))
                 .map(|s| {
-                    s.split(|c: char| c == ',' || c == ' ' || c == '\n')
+                    s.split([',', ' ', '\n'])
                         .filter_map(|p| p.trim().parse::<u32>().ok())
                         .collect::<Vec<_>>()
                 })
@@ -505,6 +505,7 @@ mod linux {
     #[interface(name = "org.freedesktop.impl.portal.Print")]
     impl PortalPrintIface {
         /// PreparePrint-style plan → `lp` argv (does not spawn by default).
+        #[allow(clippy::too_many_arguments)]
         fn prepare_print(
             &self,
             _handle: zbus::zvariant::ObjectPath<'_>,

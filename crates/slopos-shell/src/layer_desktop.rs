@@ -5,15 +5,19 @@
 //! - **Top** menu bar — `exclusive_zone = menu_h`
 //! - **Bottom** dock — `exclusive_zone = dock_h`
 //!
-//! Gated behind `SLOPOS_LAYER_SHELL_CHROME`. Linux only.
+//! The Linux session uses this path by default; the session environment also
+//! exposes `SLOPOS_LAYER_SHELL_CHROME=1` as an explicit diagnostic marker.
 
 #![cfg(target_os = "linux")]
 
 use anyhow::anyhow;
+use slopos_kit::design_tokens::MENU_BAR_HEIGHT_PX;
 use slopos_kit::event::{KeyCode, MouseButton};
 use slopos_kit::{Event, Widget};
 use slopos_sdk::{RawSurfaceRenderer, UiRuntime};
 use std::ffi::c_void;
+use std::fs;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use wayland_client::{
     protocol::{wl_keyboard, wl_pointer, wl_registry, wl_surface},
@@ -24,9 +28,10 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_surface_v1::{self, Anchor, KeyboardInteractivity, ZwlrLayerSurfaceV1},
 };
 
+use crate::shell_scale::detect_shell_scale_from_env;
 use crate::{ShellDesktop, ShellPaintFilter};
 
-const MENU_H: u32 = 24;
+const MENU_H: u32 = MENU_BAR_HEIGHT_PX;
 const DOCK_H: u32 = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -197,9 +202,14 @@ struct LayerSurf {
     renderer: Option<RawSurfaceRenderer>,
 }
 
+fn scale_surface_dimension(value: u32, buffer_scale: u32) -> u32 {
+    value.saturating_mul(buffer_scale.max(1)).max(1)
+}
+
 /// Main entry: exclusive Top/Bottom chrome + Background desktop.
 pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> anyhow::Result<()> {
     let conn = Connection::connect_to_env().map_err(|e| anyhow!("wayland connect: {}", e))?;
+    let buffer_scale = detect_shell_scale_from_env().integer_buffer_scale();
 
     let mut event_queue = conn.new_event_queue();
     let qh = event_queue.handle();
@@ -217,11 +227,13 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         runtime: None,
         output_w: width,
         output_h: height,
+        buffer_scale,
         running: true,
         last_pointer: (0.0, 0.0),
         pointer_kind: ChromeSurfaceKind::Background,
         modifiers: slopos_kit::event::Modifiers::NONE,
         popup_origin: (0.0, 0.0),
+        active_toplevel_mtime: None,
     };
 
     event_queue
@@ -251,6 +263,7 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
     bg_layer.set_exclusive_zone(0);
     bg_layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
     bg_layer.set_size(width, height);
+    bg_wl.set_buffer_scale(buffer_scale as i32);
     bg_wl.commit();
 
     // Top menu — exclusive band
@@ -267,6 +280,7 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
     menu_layer.set_exclusive_zone(MENU_H as i32);
     menu_layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
     menu_layer.set_size(width, MENU_H);
+    menu_wl.set_buffer_scale(buffer_scale as i32);
     menu_wl.commit();
 
     // Bottom dock — exclusive band
@@ -283,6 +297,7 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
     dock_layer.set_exclusive_zone(DOCK_H as i32);
     dock_layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
     dock_layer.set_size(width, DOCK_H);
+    dock_wl.set_buffer_scale(buffer_scale as i32);
     dock_wl.commit();
 
     // Overlay popup — sized/moved when a menu is open (1×1 placeholder when closed).
@@ -300,6 +315,7 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
     popup_layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
     popup_layer.set_margin(0, 0, 0, 0);
     popup_layer.set_size(1, 1);
+    popup_wl.set_buffer_scale(buffer_scale as i32);
     popup_wl.commit();
 
     state.surfaces = vec![
@@ -355,9 +371,13 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
             ChromeSurfaceKind::Dock => (width, DOCK_H),
             ChromeSurfaceKind::MenuPopup => (1, 1),
         });
+        let (rw, rh) = (
+            scale_surface_dimension(cw, buffer_scale),
+            scale_surface_dimension(ch, buffer_scale),
+        );
         let surface_ptr = surf.wl.id().as_ptr() as *mut c_void;
         let renderer = futures::executor::block_on(unsafe {
-            RawSurfaceRenderer::new(display_ptr, surface_ptr, cw, ch)
+            RawSurfaceRenderer::new(display_ptr, surface_ptr, rw, rh)
         })
         .map_err(|e| anyhow!("RawSurfaceRenderer {:?}: {}", surf.kind, e))?;
         surf.renderer = Some(renderer);
@@ -372,7 +392,21 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
     state.output_w = desk_w;
     state.output_h = desk_h;
 
-    let mut runtime = UiRuntime::new(content, desk_w, desk_h, 1.0);
+    let scale = detect_shell_scale_from_env().as_f64() as f32;
+    let mut runtime = UiRuntime::new(
+        content,
+        scale_surface_dimension(desk_w, buffer_scale),
+        scale_surface_dimension(desk_h, buffer_scale),
+        scale,
+    );
+    runtime.with_root_content_mut(|w| {
+        if let Some(desktop) = w.as_any_mut().downcast_mut::<ShellDesktop>() {
+            // The shell model is also used by tests and non-layer drivers. Only
+            // mark protocol chrome live after this driver has discovered and
+            // configured the actual layer-shell surfaces.
+            desktop.set_layer_shell_bound(true);
+        }
+    });
     paint_all(&mut state, &mut runtime)?;
     state.runtime = Some(runtime);
 
@@ -380,9 +414,17 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
     // events interrupt the poll immediately; an idle shell performs no redraw.
     while state.running {
         dispatch_with_timeout(&conn, &mut event_queue, &mut state, 1_000)?;
+        let active_toplevel_changed =
+            active_toplevel_mtime_changed(&mut state.active_toplevel_mtime);
 
         if let Some(mut runtime) = state.runtime.take() {
             runtime.tick();
+            if active_toplevel_changed {
+                // The compositor publishes focus independently of shell input;
+                // make the next menu-strip paint reflect that authoritative
+                // client activation without repainting continuously at idle.
+                runtime.mark_dirty();
+            }
             if runtime.is_dirty() {
                 paint_all(&mut state, &mut runtime)?;
             }
@@ -391,6 +433,24 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
     }
 
     Ok(())
+}
+
+fn active_toplevel_mtime_changed(previous: &mut Option<SystemTime>) -> bool {
+    let path = std::env::var_os("SLOPOS_ACTIVE_TOPLEVEL_FILE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR")
+                .map(PathBuf::from)
+                .map(|dir| dir.join("active-toplevel"))
+        });
+    let current = path
+        .and_then(|path| fs::metadata(path).ok())
+        .and_then(|metadata| metadata.modified().ok());
+    if *previous == current {
+        return false;
+    }
+    *previous = current;
+    true
 }
 
 /// Dispatch pending Wayland events, waiting up to `timeout_ms` for new ones.
@@ -466,7 +526,10 @@ fn paint_all(state: &mut LayerDesktopState, runtime: &mut UiRuntime) -> anyhow::
             surf.wl.commit();
             // Configure arrives on the next dispatch; skip popup paint this frame.
         } else if let Some(renderer) = surf.renderer.as_mut() {
-            renderer.resize(w, h);
+            renderer.resize(
+                scale_surface_dimension(w, state.buffer_scale),
+                scale_surface_dimension(h, state.buffer_scale),
+            );
         }
     }
 
@@ -576,7 +639,12 @@ fn paint_all(state: &mut LayerDesktopState, runtime: &mut UiRuntime) -> anyhow::
             desktop.set_paint_filter(ShellPaintFilter::Background);
         }
     });
-    runtime.resize(state.output_w, state.output_h, 1.0);
+    let scale = detect_shell_scale_from_env().as_f64() as f32;
+    runtime.resize(
+        scale_surface_dimension(state.output_w, state.buffer_scale),
+        scale_surface_dimension(state.output_h, state.buffer_scale),
+        scale,
+    );
     // The resize above restores hit-test layout after painting menu/dock strips;
     // it does not invalidate the pixels just committed to those surfaces.
     runtime.clear_dirty();
@@ -606,6 +674,24 @@ fn map_pointer_to_desktop(
     }
 }
 
+fn set_runtime_filter(runtime: &mut UiRuntime, filter: Option<ShellPaintFilter>) {
+    runtime.with_root_content_mut(|w| {
+        if let Some(desktop) = w.as_any_mut().downcast_mut::<ShellDesktop>() {
+            desktop.set_input_filter(filter);
+        }
+    });
+}
+
+fn set_runtime_input_filter(runtime: &mut UiRuntime, kind: Option<ChromeSurfaceKind>) {
+    let filter = kind.map(|kind| match kind {
+        ChromeSurfaceKind::Background => ShellPaintFilter::Background,
+        ChromeSurfaceKind::Menu => ShellPaintFilter::MenuBar,
+        ChromeSurfaceKind::MenuPopup => ShellPaintFilter::MenuPopup,
+        ChromeSurfaceKind::Dock => ShellPaintFilter::Dock,
+    });
+    set_runtime_filter(runtime, filter);
+}
+
 struct LayerDesktopState {
     compositor: Option<wayland_client::protocol::wl_compositor::WlCompositor>,
     shm: Option<wayland_client::protocol::wl_shm::WlShm>,
@@ -617,6 +703,7 @@ struct LayerDesktopState {
     runtime: Option<UiRuntime>,
     output_w: u32,
     output_h: u32,
+    buffer_scale: u32,
     running: bool,
     last_pointer: (f64, f64),
     pointer_kind: ChromeSurfaceKind,
@@ -624,6 +711,9 @@ struct LayerDesktopState {
     modifiers: slopos_kit::event::Modifiers,
     /// Output-local origin of the menu Overlay popup surface.
     popup_origin: (f32, f32),
+    /// Last observed compositor focus-record mtime; used to repaint the
+    /// global menu only when focus changes.
+    active_toplevel_mtime: Option<SystemTime>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for LayerDesktopState {
@@ -710,18 +800,19 @@ impl Dispatch<wayland_client::protocol::wl_seat::WlSeat, ()> for LayerDesktopSta
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wayland_client::protocol::wl_seat::Event::Capabilities { capabilities } = event {
-            if let WEnum::Value(caps) = capabilities {
-                if caps.contains(wayland_client::protocol::wl_seat::Capability::Pointer)
-                    && state.wl_pointer.is_none()
-                {
-                    state.wl_pointer = Some(seat.get_pointer(qh, ()));
-                }
-                if caps.contains(wayland_client::protocol::wl_seat::Capability::Keyboard)
-                    && state.wl_keyboard.is_none()
-                {
-                    state.wl_keyboard = Some(seat.get_keyboard(qh, ()));
-                }
+        if let wayland_client::protocol::wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(caps),
+        } = event
+        {
+            if caps.contains(wayland_client::protocol::wl_seat::Capability::Pointer)
+                && state.wl_pointer.is_none()
+            {
+                state.wl_pointer = Some(seat.get_pointer(qh, ()));
+            }
+            if caps.contains(wayland_client::protocol::wl_seat::Capability::Keyboard)
+                && state.wl_keyboard.is_none()
+            {
+                state.wl_keyboard = Some(seat.get_keyboard(qh, ()));
             }
         }
     }
@@ -751,7 +842,9 @@ impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for LayerDesk
                     state.popup_origin,
                 );
                 if let Some(runtime) = state.runtime.as_mut() {
+                    set_runtime_input_filter(runtime, Some(state.pointer_kind));
                     runtime.pointer_moved(dx, dy);
+                    set_runtime_input_filter(runtime, None);
                 }
             }
             wl_pointer::Event::Button {
@@ -772,8 +865,10 @@ impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for LayerDesk
                     state.popup_origin,
                 );
                 if let Some(runtime) = state.runtime.as_mut() {
+                    set_runtime_input_filter(runtime, Some(state.pointer_kind));
                     runtime.pointer_moved(dx, dy);
                     let _ = runtime.pointer_button(mouse, pressed, now_ms());
+                    set_runtime_input_filter(runtime, None);
                 }
             }
             wl_pointer::Event::Enter {
@@ -797,13 +892,17 @@ impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for LayerDesk
                     state.popup_origin,
                 );
                 if let Some(runtime) = state.runtime.as_mut() {
+                    set_runtime_input_filter(runtime, Some(state.pointer_kind));
                     runtime.pointer_moved(dx, dy);
                     runtime.set_focus(true);
+                    set_runtime_input_filter(runtime, None);
                 }
             }
             wl_pointer::Event::Leave { .. } => {
                 if let Some(runtime) = state.runtime.as_mut() {
+                    set_runtime_input_filter(runtime, Some(state.pointer_kind));
                     runtime.set_focus(false);
+                    set_runtime_input_filter(runtime, None);
                 }
             }
             _ => {}
@@ -851,6 +950,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for LayerDesktopState {
                         modifiers: mods,
                     }
                 };
+                set_runtime_filter(runtime, Some(ShellPaintFilter::All));
                 runtime.key(ev);
                 // Feed printable chars for lock password / text fields.
                 if pressed && !mods.control && !mods.alt && !mods.meta {
@@ -858,15 +958,20 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for LayerDesktopState {
                         runtime.key(Event::Char { character: ch });
                     }
                 }
+                set_runtime_input_filter(runtime, None);
             }
             wl_keyboard::Event::Enter { .. } => {
                 if let Some(runtime) = state.runtime.as_mut() {
+                    set_runtime_filter(runtime, Some(ShellPaintFilter::All));
                     runtime.set_focus(true);
+                    set_runtime_input_filter(runtime, None);
                 }
             }
             wl_keyboard::Event::Leave { .. } => {
                 if let Some(runtime) = state.runtime.as_mut() {
+                    set_runtime_filter(runtime, Some(ShellPaintFilter::All));
                     runtime.set_focus(false);
+                    set_runtime_input_filter(runtime, None);
                 }
             }
             _ => {}

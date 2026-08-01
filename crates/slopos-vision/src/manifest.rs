@@ -11,7 +11,7 @@ use crate::error::VisionError;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Normalization constants applied to model input pixels.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -51,6 +51,28 @@ impl ModelEntry {
     pub fn path(&self, models_dir: &Path) -> PathBuf {
         models_dir.join(&self.file)
     }
+
+    fn validate_file_path(&self) -> Result<(), VisionError> {
+        let path = Path::new(&self.file);
+        if self.file.is_empty()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+            || path
+                .components()
+                .any(|component| matches!(component, Component::CurDir))
+        {
+            return Err(VisionError::ManifestLoad {
+                path: self.file.clone(),
+                message: "model file must be a non-empty relative path without . or .. components"
+                    .to_string(),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// The full parsed manifest.
@@ -71,6 +93,26 @@ impl ModelManifest {
         self.models.iter().filter(move |m| m.purpose == purpose)
     }
 
+    fn validate(&self) -> Result<(), VisionError> {
+        for entry in &self.models {
+            entry.validate_file_path()?;
+        }
+        for (index, entry) in self.models.iter().enumerate() {
+            if self
+                .models
+                .iter()
+                .take(index)
+                .any(|previous| previous.id == entry.id)
+            {
+                return Err(VisionError::ManifestLoad {
+                    path: "manifest.toml".to_string(),
+                    message: format!("duplicate model id: {}", entry.id),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Compute the SHA-256 of `data` as lowercase hex.
     pub fn sha256_hex(data: &[u8]) -> String {
         hex::encode(Sha256::digest(data))
@@ -84,10 +126,13 @@ pub fn load_manifest(models_dir: &Path) -> Result<ModelManifest, VisionError> {
         path: path.display().to_string(),
         message: err.to_string(),
     })?;
-    toml::from_str(&text).map_err(|err| VisionError::ManifestLoad {
-        path: path.display().to_string(),
-        message: err.to_string(),
-    })
+    let manifest: ModelManifest =
+        toml::from_str(&text).map_err(|err| VisionError::ManifestLoad {
+            path: path.display().to_string(),
+            message: err.to_string(),
+        })?;
+    manifest.validate()?;
+    Ok(manifest)
 }
 
 /// Streaming SHA-256 of a file, as lowercase hex.
@@ -249,5 +294,77 @@ mod tests {
             file_sha256(&path).unwrap(),
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
         );
+    }
+
+    #[test]
+    fn manifest_rejects_model_path_escape() {
+        let dir = tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            r#"
+                [[models]]
+                id = "escape"
+                version = "1.0.0"
+                purpose = "subject_segmentation"
+                architecture = "test"
+                file = "../outside.onnx"
+                sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+                size = 1
+                input_shape = [1, 3, -1, -1]
+                output_interpretation = "test"
+                source_url = "https://example.invalid/model.onnx"
+                model_license = "MIT"
+                weight_license = "MIT"
+                attribution = "test"
+                redistribution = "allowed"
+            "#,
+        );
+
+        let error = load_manifest(dir.path()).unwrap_err();
+        assert!(matches!(error, VisionError::ManifestLoad { .. }));
+    }
+
+    #[test]
+    fn manifest_rejects_duplicate_model_ids() {
+        let dir = tempdir().unwrap();
+        write_manifest(
+            dir.path(),
+            r#"
+                [[models]]
+                id = "duplicate"
+                version = "1.0.0"
+                purpose = "subject_segmentation"
+                architecture = "test"
+                file = "one.onnx"
+                sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+                size = 1
+                input_shape = [1, 3, -1, -1]
+                output_interpretation = "test"
+                source_url = "https://example.invalid/one.onnx"
+                model_license = "MIT"
+                weight_license = "MIT"
+                attribution = "test"
+                redistribution = "allowed"
+
+                [[models]]
+                id = "duplicate"
+                version = "1.0.0"
+                purpose = "subject_segmentation"
+                architecture = "test"
+                file = "two.onnx"
+                sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+                size = 1
+                input_shape = [1, 3, -1, -1]
+                output_interpretation = "test"
+                source_url = "https://example.invalid/two.onnx"
+                model_license = "MIT"
+                weight_license = "MIT"
+                attribution = "test"
+                redistribution = "allowed"
+            "#,
+        );
+
+        let error = load_manifest(dir.path()).unwrap_err();
+        assert!(matches!(error, VisionError::ManifestLoad { .. }));
     }
 }

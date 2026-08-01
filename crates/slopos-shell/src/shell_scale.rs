@@ -34,6 +34,20 @@ impl ShellScale {
     pub fn is_identity(self) -> bool {
         self.numerator == self.denominator
     }
+
+    /// Return the integer buffer scale supported by the current Wayland path.
+    ///
+    /// Fractional output scale needs the fractional-scale and viewporter
+    /// protocols, which are not advertised yet. Keep the shell's effective
+    /// scale aligned with the compositor's integer output scale rather than
+    /// applying a second fractional transform to an already-scaled surface.
+    pub fn integer_buffer_scale(self) -> u32 {
+        self.as_f64().round().max(1.0).min(u32::MAX as f64) as u32
+    }
+
+    pub fn quantized_integer(self) -> Self {
+        Self::new(self.integer_buffer_scale(), 1).unwrap_or(Self::IDENTITY)
+    }
 }
 
 fn gcd(mut a: u32, mut b: u32) -> u32 {
@@ -75,6 +89,7 @@ pub fn detect_shell_scale_from_env() -> ShellScale {
         .or_else(|| std::env::var("SLOPOS_OUTPUT_SCALE").ok());
     v.as_deref()
         .and_then(parse_shell_scale)
+        .map(ShellScale::quantized_integer)
         .unwrap_or(ShellScale::IDENTITY)
 }
 
@@ -130,5 +145,15 @@ mod tests {
         let (m, d) = scaled_chrome_insets(ShellScale::new(2, 1).unwrap(), 24.0, 64.0);
         assert_eq!(m, 48.0);
         assert_eq!(d, 128.0);
+    }
+
+    #[test]
+    fn fractional_scale_quantizes_until_fractional_protocol_exists() {
+        assert_eq!(ShellScale::new(5, 4).unwrap().integer_buffer_scale(), 1);
+        assert_eq!(ShellScale::new(3, 2).unwrap().integer_buffer_scale(), 2);
+        assert_eq!(
+            ShellScale::new(3, 2).unwrap().quantized_integer().as_f64(),
+            2.0
+        );
     }
 }

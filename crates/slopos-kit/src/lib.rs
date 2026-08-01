@@ -1,6 +1,7 @@
 pub mod accessibility;
 pub mod button;
 pub mod clipboard;
+pub mod design_tokens;
 pub mod dialog;
 pub mod dispatch;
 pub mod dnd;
@@ -49,6 +50,7 @@ pub use accessibility::{
 };
 pub use button::Button;
 pub use clipboard::Clipboard;
+pub use design_tokens::*;
 pub use dialog::Dialog;
 pub use dispatch::{
     deliver_to, dispatch_pointer, dispatch_positional, for_each_widget_mut, hit_test, widget_at,
@@ -79,7 +81,9 @@ pub use theme::{ThemeContext, ThemeToken, ThemeValue};
 pub use toolbar::Toolbar;
 pub use tree_view::TreeView;
 pub use widget::{Widget, WidgetId, WidgetState};
-pub use window::Window;
+pub use window::{
+    hit_test_window_chrome, hit_test_window_chrome_with_metrics, Window, WindowChromeHit,
+};
 pub use workspace_grid_view::WorkspaceGridView;
 
 pub type Result<T> = std::result::Result<T, KitError>;

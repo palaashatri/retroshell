@@ -1,5 +1,6 @@
 use slopos_kit::event::{KeyCode, Modifiers};
 use slopos_kit::window::Window;
+use slopos_kit::{Event, Widget};
 use slopos_sdk::{build_menu, Application};
 
 mod pty;
@@ -121,6 +122,56 @@ fn main() {
         window_menu,
         help_menu,
     ]);
+
+    // Menu presentation belongs to the shell; tab and terminal commands are
+    // handled by this client over its private application endpoint.
+    app.on_menu_action(|action, window| {
+        let Some(content) = window.content.as_mut() else {
+            return;
+        };
+        let Some(tabs) = content.as_any_mut().downcast_mut::<TabManager>() else {
+            return;
+        };
+        let action = action
+            .strip_prefix("com.slopos.terminal.")
+            .unwrap_or(action);
+        match action {
+            "shell.new_tab" => {
+                let _ = tabs.open_tab(80, 24);
+            }
+            "shell.close_tab" => {
+                let _ = tabs.close_tab(tabs.active_tab_index());
+            }
+            "edit.copy" => {
+                let _ = tabs.handle_event(&Event::KeyDown {
+                    key: KeyCode::C,
+                    modifiers: Modifiers {
+                        meta: true,
+                        ..Modifiers::NONE
+                    },
+                });
+            }
+            "edit.paste" => {
+                let _ = tabs.handle_event(&Event::KeyDown {
+                    key: KeyCode::V,
+                    modifiers: Modifiers {
+                        meta: true,
+                        ..Modifiers::NONE
+                    },
+                });
+            }
+            "edit.select_all" => {
+                let _ = tabs.handle_event(&Event::KeyDown {
+                    key: KeyCode::A,
+                    modifiers: Modifiers {
+                        meta: true,
+                        ..Modifiers::NONE
+                    },
+                });
+            }
+            _ => {}
+        }
+    });
 
     let mut tab_manager = TabManager::new();
     if let Err(e) = tab_manager.open_tab(80, 24) {

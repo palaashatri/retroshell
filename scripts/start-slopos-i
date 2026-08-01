@@ -50,7 +50,7 @@ SESSION_BIN="$(resolve_bin slopos-session)" || {
 # compositor window; it is not a labwc/sway session fallback.
 backend="${SLOPOS_BACKEND:-}"
 if [ -z "$backend" ]; then
-  if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+  if [ -n "${DISPLAY:-}" ]; then
     backend="nested"
   else
     backend="drm"

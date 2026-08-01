@@ -59,6 +59,21 @@ fn main() {
         help_menu,
     ]);
 
+    app.on_menu_action(|action, window| {
+        let Some(content) = window.content.as_mut() else {
+            return;
+        };
+        let Some(view) = content.as_any_mut().downcast_mut::<SettingsView>() else {
+            return;
+        };
+        let action = action
+            .strip_prefix("com.slopos.settings.")
+            .unwrap_or(action);
+        if action == "file.show_all_settings" {
+            view.select_category(Category::General);
+        }
+    });
+
     let store = SettingsStore::default();
     let view = SettingsView::load(store);
     let mut window = Window::new("Settings");

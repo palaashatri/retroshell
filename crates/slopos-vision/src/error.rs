@@ -32,6 +32,11 @@ pub enum VisionError {
     #[error("image could not be decoded: {0}")]
     Decode(String),
 
+    #[error(
+        "encoded image exceeds the maximum allowed size ({max_bytes} bytes); got {actual_bytes} bytes"
+    )]
+    EncodedImageTooLarge { max_bytes: u64, actual_bytes: u64 },
+
     #[error("image exceeds the maximum allowed size ({max} pixels); got {pixels} pixels")]
     ImageTooLarge { max: u64, pixels: u64 },
 

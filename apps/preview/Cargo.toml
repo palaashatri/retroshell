@@ -2,6 +2,7 @@
 name = "preview"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [[bin]]
 name = "preview"
@@ -10,6 +11,11 @@ path = "src/main.rs"
 [dependencies]
 slopos-sdk = { path = "../../crates/slopos-sdk" }
 slopos-kit = { path = "../../crates/slopos-kit" }
-serde = { workspace = true }
-log = { workspace = true }
-tokio = { workspace = true }
+image = { workspace = true }
+slopos-vision-client = { path = "../../crates/slopos-vision-client" }
+slopos-vision-protocol = { path = "../../crates/slopos-vision-protocol" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

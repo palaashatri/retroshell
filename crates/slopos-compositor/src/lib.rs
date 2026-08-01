@@ -4,12 +4,60 @@ pub mod client_spawn;
 pub mod frame_timing;
 pub mod hdr;
 pub mod perf_budget;
+pub mod spaces;
 pub mod window_state;
 pub mod workspace_focus;
 
+/// Register the Wayland server's internal poll fd with the compositor event loop.
+///
+/// `ListeningSocketSource` only accepts new client streams. Wayland protocol
+/// requests arrive on each accepted client and are surfaced through the
+/// server display's own poll fd, so a compositor that blocks in calloop must
+/// register this source instead of dispatching clients after an unbounded
+/// wait. Keeping this in shared compositor policy makes nested and DRM
+/// backends use the same client-transport contract.
+#[cfg(target_os = "linux")]
+pub fn register_wayland_display_source<'event_loop, State: 'static>(
+    loop_handle: &smithay::reexports::calloop::LoopHandle<'event_loop, State>,
+    display: smithay::reexports::wayland_server::Display<State>,
+) -> anyhow::Result<()> {
+    use smithay::reexports::calloop::{generic::Generic, Interest, Mode, PostAction};
+
+    loop_handle
+        .insert_source(
+            Generic::new(display, Interest::READ, Mode::Level),
+            |_, display, state| {
+                // `Generic` prevents mutable access because dropping its inner
+                // fd while registered would leave calloop with a dangling fd.
+                // The source remains registered for the entire compositor
+                // lifetime, so mutating the live Display without moving or
+                // dropping it is sound here.
+                let display = unsafe { display.get_mut() };
+                let dispatched = display.dispatch_clients(state).map_err(|error| {
+                    tracing::error!(error = %error, "Wayland display dispatch failed");
+                    error
+                })?;
+                if dispatched > 0 {
+                    tracing::debug!(dispatched, "Wayland client requests dispatched");
+                }
+                display.flush_clients().map_err(|error| {
+                    tracing::error!(error = %error, "Wayland client flush failed");
+                    error
+                })?;
+                Ok(PostAction::Continue)
+            },
+        )
+        .map(|_| ())
+        .map_err(|error| anyhow::anyhow!("register Wayland display source: {error}"))
+}
+
+pub use spaces::{
+    FullscreenClassification, MultiMonitorPolicy, Space, SpaceId, SpaceTarget, SpacesError,
+    SpacesModel,
+};
 pub use window_state::{
-    calculate_presentation_geometry, TilePlacement, WindowPresentationState, WindowRestoreState,
-    ZoomAction, ZoomPolicyConfig,
+    calculate_presentation_geometry, transition_presentation_state, PresentationTransition,
+    TilePlacement, WindowPresentationState, WindowRestoreState, ZoomAction, ZoomPolicyConfig,
 };
 pub use workspace_focus::{
     assign_new_window_to_active, focus_window_after_workspace_switch, hit_test_allowed,
@@ -41,34 +89,36 @@ use hdr::ColorSpace;
 /// How the session compositor process is expected to present.
 ///
 /// Pure policy label for Phase A/B honesty: logs and entrypoints must say which
-/// path was chosen (nested X11 under Xvfb, real DRM/KMS session, or external
-/// labwc fallback) rather than implying DRM when only nested X11 is running.
+/// path was chosen (nested X11 under an X11 host, real DRM/KMS session, or
+/// protocol-only headless mode) rather than implying DRM when only nested X11
+/// is running.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum CompositorBackendKind {
     /// Nested Smithay X11 backend (Xvfb / desktop X host). Needs DRI3 for GL.
     NestedX11,
     /// Session DRM/KMS (bare metal / seat) path when prefer_drm && dri3_ok.
     SessionDrm,
-    /// External labwc process — not slopos-compositor itself.
-    LabwcFallback,
+    /// Protocol-only compositor path with no host display transport.
+    Headless,
 }
 
 /// Select compositor session backend kind from capability flags.
 ///
 /// Precedence:
-/// 1. `force_labwc` → [`CompositorBackendKind::LabwcFallback`]
+/// 1. `headless` → [`CompositorBackendKind::Headless`]
 /// 2. `prefer_drm && dri3_available` → [`CompositorBackendKind::SessionDrm`]
 /// 3. otherwise → [`CompositorBackendKind::NestedX11`]
 ///
 /// Nested X11 remains the default when DRM is not preferred or DRI3 is missing;
-/// actual GL init may still fail without DRI3 (entrypoint then falls back to labwc).
+/// actual GL init may still fail without DRI3, but no third-party compositor is
+/// selected as a fallback.
 pub fn select_backend_kind(
     prefer_drm: bool,
     dri3_available: bool,
-    force_labwc: bool,
+    headless: bool,
 ) -> CompositorBackendKind {
-    if force_labwc {
-        return CompositorBackendKind::LabwcFallback;
+    if headless {
+        return CompositorBackendKind::Headless;
     }
     if prefer_drm && dri3_available {
         return CompositorBackendKind::SessionDrm;
@@ -96,18 +146,17 @@ pub fn detect_dri3_from_env_value(value: Option<&str>) -> Option<bool> {
     parse_bool_loose(value)
 }
 
-/// One-line honest label for logs (never claims DRM when nested / labwc).
+/// One-line honest label for logs (never claims DRM when nested or headless).
 pub fn session_mode_summary(kind: CompositorBackendKind) -> String {
     match kind {
         CompositorBackendKind::NestedX11 => {
-            "session_mode=nested_x11 (not DRM/KMS; labwc may still be used if GL/DRI3 fails)"
-                .to_string()
+            "session_mode=nested_x11 (not DRM/KMS; SLOPOS owns the nested compositor)".to_string()
         }
         CompositorBackendKind::SessionDrm => {
             "session_mode=session_drm (DRM/KMS seat path)".to_string()
         }
-        CompositorBackendKind::LabwcFallback => {
-            "session_mode=labwc_fallback (external labwc; not slopos-compositor)".to_string()
+        CompositorBackendKind::Headless => {
+            "session_mode=headless (no host display transport)".to_string()
         }
     }
 }
@@ -128,10 +177,108 @@ pub const DEFAULT_OUTPUT_W: i32 = 1024;
 pub const DEFAULT_OUTPUT_H: i32 = 768;
 pub const DEFAULT_WINDOW_W: i32 = 640;
 pub const DEFAULT_WINDOW_H: i32 = 480;
+pub const MIN_WINDOW_W: i32 = 160;
+pub const MIN_WINDOW_H: i32 = 96;
 pub const INITIAL_WINDOW_X: i32 = 64;
 pub const INITIAL_WINDOW_Y: i32 = 64;
 pub const CASCADE_STEP: i32 = 32;
 pub const CASCADE_WRAP: i32 = 256;
+
+/// Publish the private Wayland socket handshake for `slopos-session`.
+///
+/// The supervisor gives the compositor a unique `XDG_RUNTIME_DIR`, so these
+/// files are scoped to one session and cannot race with another login. The
+/// readiness payload includes the compositor PID, supervisor token, and the
+/// compositor's actual logical output size; the session parent validates the
+/// identity before launching any clients and forwards the size to the shell.
+#[cfg(target_os = "linux")]
+pub fn publish_session_readiness(
+    socket_name: &str,
+    output_width: i32,
+    output_height: i32,
+) -> std::io::Result<()> {
+    if !socket_name.starts_with("wayland-")
+        || socket_name["wayland-".len()..]
+            .chars()
+            .any(|character| !character.is_ascii_digit())
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Wayland socket name is not a numeric wayland-* handle",
+        ));
+    }
+
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "XDG_RUNTIME_DIR is required for the private compositor socket",
+        )
+    })?;
+    let runtime = Path::new(&runtime);
+    let token = std::env::var("SLOPOS_SESSION_TOKEN").unwrap_or_default();
+    let payload = format!(
+        "{socket_name}\npid={}\ntoken={token}\nwidth={}\nheight={}\n",
+        std::process::id(),
+        output_width.max(1),
+        output_height.max(1)
+    );
+
+    write_session_file(&runtime.join("readiness"), &payload)?;
+    write_session_file(
+        &runtime.join("client-wayland-display"),
+        &format!("{socket_name}\n"),
+    )?;
+
+    // Keep the old names for direct compositor invocations and existing QA
+    // tooling. They remain inside this session's private runtime directory.
+    write_session_file(
+        &runtime.join("wayland-display"),
+        &format!("{socket_name}\n"),
+    )?;
+    write_session_file(
+        &runtime.join("slopos-client-wayland-display"),
+        &format!("{socket_name}\n"),
+    )?;
+    // Start with desktop/chrome focus until the first ordinary client is
+    // mapped and focused. This also gives the shell a stable, session-owned
+    // control-plane record during startup.
+    write_session_file(&runtime.join("active-toplevel"), "app_id=\n")
+}
+
+/// Publish the compositor-authoritative focused application for the shell.
+///
+/// `ext_foreign_toplevel_list_v1` intentionally exposes identity and title but
+/// not activation state. The shell therefore reads this session-scoped,
+/// compositor-written record instead of guessing from list order or its own
+/// fake window model. An empty `app_id` means focus is on desktop chrome or
+/// there is no application focus.
+#[cfg(target_os = "linux")]
+pub fn publish_active_toplevel(app_id: Option<&str>) -> std::io::Result<()> {
+    let runtime = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR").ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "SLOPOS_SESSION_RUNTIME_DIR is required for active toplevel state",
+        )
+    })?;
+    let app_id = app_id.unwrap_or_default();
+    if app_id.contains('\n') || app_id.contains('\r') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "active application id contains a line break",
+        ));
+    }
+    write_session_file(
+        &Path::new(&runtime).join("active-toplevel"),
+        &format!("app_id={app_id}\n"),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn write_session_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+    std::fs::write(&temporary, contents)?;
+    std::fs::rename(temporary, path)
+}
 
 /// A discovered DRM render/primary node path (session DRM path).
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -981,6 +1128,22 @@ impl OutputScale {
     pub fn is_identity(self) -> bool {
         self.reduced() == Self::IDENTITY
     }
+
+    /// Return the integer buffer scale the current Wayland backends can honor.
+    ///
+    /// `wl_output.scale` and `wl_surface.set_buffer_scale` are integer-only.
+    /// Until SLOPOS advertises the fractional-scale and viewporter protocols,
+    /// a requested fractional scale is therefore quantized to the nearest
+    /// integer rather than being applied a second time in the compositor.
+    /// Examples: 1.25× → 1×, 1.5× → 2×.
+    pub fn integer_buffer_scale(self) -> i32 {
+        self.as_f64().round().max(1.0).min(i32::MAX as f64) as i32
+    }
+
+    /// The effective integer scale represented by [`Self::integer_buffer_scale`].
+    pub fn quantized_integer(self) -> Self {
+        Self::new(self.integer_buffer_scale() as u32, 1).unwrap_or(Self::IDENTITY)
+    }
 }
 
 /// Parse an output scale string.
@@ -1326,6 +1489,39 @@ impl WindowGeometry {
     }
 }
 
+/// Clamp a normal window to the compositor-owned work area.
+///
+/// Client-requested sizes are logical pixels.  The work area is the only
+/// authoritative rectangle after output scale and layer-shell exclusive zones
+/// have been resolved, so a default 640×480 request must not cover the Dock on
+/// a small logical HiDPI output.  Both nested and DRM backends use this helper
+/// before sending the initial configure and when chrome changes the work area.
+pub fn clamp_window_to_work_area(
+    desired: WindowGeometry,
+    work_area: WindowGeometry,
+) -> WindowGeometry {
+    let work_width = work_area.width.max(1);
+    let work_height = work_area.height.max(1);
+    let width = desired
+        .width
+        .max(MIN_WINDOW_W.min(work_width))
+        .min(work_width);
+    let height = desired
+        .height
+        .max(MIN_WINDOW_H.min(work_height))
+        .min(work_height);
+    let max_x = work_area.x.saturating_add(work_width.saturating_sub(width));
+    let max_y = work_area
+        .y
+        .saturating_add(work_height.saturating_sub(height));
+    WindowGeometry::new(
+        desired.x.clamp(work_area.x, max_x),
+        desired.y.clamp(work_area.y, max_y),
+        width,
+        height,
+    )
+}
+
 /// Edges involved in a compositor-owned interactive resize operation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ResizeEdges {
@@ -1440,6 +1636,22 @@ impl InteractiveGrab {
             start_geometry: geometry,
         })
     }
+}
+
+/// Validate the authorization preconditions for an xdg_toplevel move/resize.
+///
+/// Wayland clients must submit the serial from a live pointer button press on
+/// the same surface and through a seat owned by the compositor. Keeping this
+/// predicate independent of Smithay makes the security boundary testable
+/// without constructing a live Wayland display.
+pub fn pointer_grab_request_is_valid(
+    request_serial: u32,
+    pressed_serial: Option<u32>,
+    same_surface: bool,
+    left_button_down: bool,
+    seat_owned: bool,
+) -> bool {
+    seat_owned && left_button_down && same_surface && pressed_serial == Some(request_serial)
 }
 
 /// Resolve an interactive move/resize against the current pointer position.
@@ -2158,6 +2370,58 @@ impl WorkspaceState {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wayland_display_source_dispatches_client_requests_when_fd_is_ready() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+        use smithay::reexports::wayland_server::Display;
+
+        struct TestClientData;
+
+        impl ClientData for TestClientData {
+            fn initialized(&self, _client_id: ClientId) {}
+
+            fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+        }
+
+        let display = Display::<()>::new().expect("create Wayland display");
+        let (server_stream, mut client_stream) =
+            UnixStream::pair().expect("create test Wayland socket pair");
+        client_stream
+            .set_nonblocking(true)
+            .expect("set client socket nonblocking");
+        display
+            .handle()
+            .insert_client(server_stream, Arc::new(TestClientData))
+            .expect("insert test Wayland client");
+
+        let mut event_loop = EventLoop::<()>::try_new().expect("create calloop event loop");
+        register_wayland_display_source(&event_loop.handle(), display)
+            .expect("register Wayland display poll fd");
+
+        // wl_display.sync(new_id=2), encoded as the real wire request.
+        client_stream
+            .write_all(&[1, 0, 0, 0, 0, 0, 12, 0, 2, 0, 0, 0])
+            .expect("send wl_display.sync request");
+
+        event_loop
+            .dispatch(Some(Duration::from_millis(100)), &mut ())
+            .expect("dispatch Wayland display source");
+
+        let mut response = [0; 12];
+        client_stream
+            .read_exact(&mut response)
+            .expect("read wl_callback.done response");
+        assert_eq!(&response[0..4], &[2, 0, 0, 0]);
+        assert_eq!(&response[4..8], &[0, 0, 12, 0]);
+    }
+
     #[test]
     fn parse_outputs_spec_single_and_multi() {
         assert_eq!(
@@ -2605,18 +2869,18 @@ mod tests {
     }
 
     #[test]
-    fn select_backend_kind_force_labwc_wins() {
+    fn select_backend_kind_headless_wins() {
         assert_eq!(
             select_backend_kind(true, true, true),
-            CompositorBackendKind::LabwcFallback
+            CompositorBackendKind::Headless
         );
         assert_eq!(
             select_backend_kind(false, false, true),
-            CompositorBackendKind::LabwcFallback
+            CompositorBackendKind::Headless
         );
         assert_eq!(
             select_backend_kind(true, false, true),
-            CompositorBackendKind::LabwcFallback
+            CompositorBackendKind::Headless
         );
     }
 
@@ -2667,9 +2931,9 @@ mod tests {
         assert!(drm.contains("session_drm"));
         assert!(drm.contains("DRM"));
 
-        let labwc = session_mode_summary(CompositorBackendKind::LabwcFallback);
-        assert!(labwc.contains("labwc"));
-        assert!(labwc.contains("fallback") || labwc.contains("not slopos-compositor"));
+        let headless = session_mode_summary(CompositorBackendKind::Headless);
+        assert!(headless.contains("headless"));
+        assert!(headless.contains("no host display"));
     }
 
     #[test]
@@ -3243,6 +3507,32 @@ mod tests {
     }
 
     #[test]
+    fn normal_window_is_clamped_to_scaled_work_area() {
+        let desired = WindowGeometry::new(64, 64, DEFAULT_WINDOW_W, DEFAULT_WINDOW_H);
+        let work_area = WindowGeometry::new(0, 19, 640, 317);
+        assert_eq!(
+            clamp_window_to_work_area(desired, work_area),
+            WindowGeometry::new(0, 19, 640, 317)
+        );
+    }
+
+    #[test]
+    fn normal_window_keeps_cascade_geometry_when_it_fits() {
+        let desired = WindowGeometry::new(64, 64, DEFAULT_WINDOW_W, DEFAULT_WINDOW_H);
+        let work_area = WindowGeometry::new(0, 19, 1280, 712);
+        assert_eq!(clamp_window_to_work_area(desired, work_area), desired);
+    }
+
+    #[test]
+    fn normal_window_respects_minimums_in_tiny_work_area() {
+        let work_area = WindowGeometry::new(0, 0, 80, 60);
+        assert_eq!(
+            clamp_window_to_work_area(WindowGeometry::new(20, 20, 1, 1), work_area),
+            work_area
+        );
+    }
+
+    #[test]
     fn interactive_resize_honours_edges_and_minimum() {
         let grab = InteractiveGrab::resizing(
             "textedit",
@@ -3269,5 +3559,45 @@ mod tests {
             geometry_for_interactive_grab(&left, 500, 100, 160, 120, 1024, 768),
             WindowGeometry::new(190, 40, 160, 200)
         );
+    }
+
+    #[test]
+    fn pointer_grab_requires_live_same_surface_press_and_owned_seat() {
+        assert!(pointer_grab_request_is_valid(
+            42,
+            Some(42),
+            true,
+            true,
+            true
+        ));
+        assert!(!pointer_grab_request_is_valid(
+            43,
+            Some(42),
+            true,
+            true,
+            true
+        ));
+        assert!(!pointer_grab_request_is_valid(
+            42,
+            Some(42),
+            false,
+            true,
+            true
+        ));
+        assert!(!pointer_grab_request_is_valid(
+            42,
+            Some(42),
+            true,
+            false,
+            true
+        ));
+        assert!(!pointer_grab_request_is_valid(
+            42,
+            Some(42),
+            true,
+            true,
+            false
+        ));
+        assert!(!pointer_grab_request_is_valid(42, None, true, true, true));
     }
 }

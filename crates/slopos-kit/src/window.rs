@@ -1,7 +1,92 @@
 use crate::{
-    theme::ThemeContext, AccessibilityNode, AccessibilityRole, Event, EventResult, Layout,
-    LayoutConstraint, Rect, Size, Widget, WidgetState,
+    design_tokens::{ClassicMetrics, CLASSIC_METRICS, WINDOW_TITLE_BAR_HEIGHT},
+    theme::ThemeContext,
+    AccessibilityNode, AccessibilityRole, Event, EventResult, Layout, LayoutConstraint, Point,
+    Rect, Size, Widget, WidgetState,
 };
+
+/// The semantic target under a local pointer position in native window chrome.
+///
+/// This is intentionally a classification only.  A compositor or SDK owns
+/// the resulting close, zoom, move, or resize policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowChromeHit {
+    Content,
+    Titlebar,
+    Close,
+    Zoom,
+    ResizeSouthEast,
+}
+
+/// Classify a local window coordinate using the canonical Classic metrics.
+pub fn hit_test_window_chrome(point: Point, size: Size) -> WindowChromeHit {
+    hit_test_window_chrome_with_metrics(point, size, CLASSIC_METRICS)
+}
+
+/// Classify a local window coordinate using caller-supplied metrics.
+///
+/// Coordinates outside the window, borders, and any non-control area are
+/// reported as [`WindowChromeHit::Content`].  The south-east grow box wins
+/// first when regions overlap, matching classic direct-manipulation chrome.
+pub fn hit_test_window_chrome_with_metrics(
+    point: Point,
+    size: Size,
+    metrics: ClassicMetrics,
+) -> WindowChromeHit {
+    let width = size.width.max(0.0);
+    let height = size.height.max(0.0);
+    let border = metrics.window_border_width.max(0.0);
+    let control_size = metrics.window_control_size.max(0.0);
+    let control_top = metrics.window_control_top.max(0.0);
+    let control_inset = metrics.window_control_inset.max(0.0);
+
+    let grip_size = metrics
+        .window_resize_grip_size
+        .max(0.0)
+        .min(width)
+        .min(height);
+    if contains_half_open(
+        point,
+        width - grip_size,
+        height - grip_size,
+        grip_size,
+        grip_size,
+    ) {
+        return WindowChromeHit::ResizeSouthEast;
+    }
+
+    if contains_half_open(
+        point,
+        control_inset,
+        control_top,
+        control_size,
+        control_size,
+    ) {
+        return WindowChromeHit::Close;
+    }
+
+    let zoom_left = (width - control_inset - control_size).max(0.0);
+    if contains_half_open(point, zoom_left, control_top, control_size, control_size) {
+        return WindowChromeHit::Zoom;
+    }
+
+    let titlebar_width = (width - 2.0 * border).max(0.0);
+    let titlebar_height = metrics.window_title_bar_height.max(0.0);
+    if contains_half_open(point, border, border, titlebar_width, titlebar_height) {
+        return WindowChromeHit::Titlebar;
+    }
+
+    WindowChromeHit::Content
+}
+
+fn contains_half_open(point: Point, x: f32, y: f32, width: f32, height: f32) -> bool {
+    width > 0.0
+        && height > 0.0
+        && point.x >= x
+        && point.x < x + width
+        && point.y >= y
+        && point.y < y + height
+}
 
 pub struct Window {
     state: WidgetState,
@@ -36,6 +121,11 @@ impl Window {
     pub fn set_title<S: Into<String>>(&mut self, title: S) {
         self.title = title.into();
     }
+
+    /// Hit-test a local point against this window's canonical chrome.
+    pub fn hit_test_chrome(&self, point: Point) -> WindowChromeHit {
+        hit_test_window_chrome(point, Size::new(self.rect().width, self.rect().height))
+    }
 }
 
 impl Widget for Window {
@@ -62,7 +152,7 @@ impl Widget for Window {
                 } else {
                     Rect::new(
                         rect.x + 1.0,
-                        rect.y + 25.0,
+                        rect.y + WINDOW_TITLE_BAR_HEIGHT + 5.0,
                         (rect.width - 2.0).max(0.0),
                         (rect.height - 26.0).max(0.0),
                     )
@@ -183,5 +273,62 @@ impl Widget for Window {
     }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hit_test_window_chrome, hit_test_window_chrome_with_metrics, WindowChromeHit};
+    use crate::{design_tokens::CLASSIC_METRICS, Point, Size};
+
+    #[test]
+    fn classic_chrome_hit_test_prioritizes_controls_and_grow_box() {
+        let size = Size::new(200.0, 100.0);
+
+        assert_eq!(
+            hit_test_window_chrome(Point::new(17.0, 11.0), size),
+            WindowChromeHit::Close
+        );
+        assert_eq!(
+            hit_test_window_chrome(Point::new(182.0, 11.0), size),
+            WindowChromeHit::Zoom
+        );
+        assert_eq!(
+            hit_test_window_chrome(Point::new(80.0, 11.0), size),
+            WindowChromeHit::Titlebar
+        );
+        assert_eq!(
+            hit_test_window_chrome(Point::new(80.0, 40.0), size),
+            WindowChromeHit::Content
+        );
+        assert_eq!(
+            hit_test_window_chrome(Point::new(190.0, 90.0), size),
+            WindowChromeHit::ResizeSouthEast
+        );
+    }
+
+    #[test]
+    fn chrome_hit_test_uses_half_open_edges_and_custom_metrics() {
+        let size = Size::new(200.0, 100.0);
+        let mut metrics = CLASSIC_METRICS;
+        metrics.window_control_inset = 20.0;
+        metrics.window_resize_grip_size = 10.0;
+
+        assert_eq!(
+            hit_test_window_chrome_with_metrics(Point::new(25.0, 11.0), size, metrics),
+            WindowChromeHit::Close
+        );
+        assert_eq!(
+            hit_test_window_chrome_with_metrics(Point::new(33.0, 11.0), size, metrics),
+            WindowChromeHit::Titlebar
+        );
+        assert_eq!(
+            hit_test_window_chrome_with_metrics(Point::new(195.0, 95.0), size, metrics),
+            WindowChromeHit::ResizeSouthEast
+        );
+        assert_eq!(
+            hit_test_window_chrome_with_metrics(Point::new(189.0, 79.0), size, metrics),
+            WindowChromeHit::Content
+        );
     }
 }

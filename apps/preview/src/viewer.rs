@@ -1,0 +1,1129 @@
+use image::{DynamicImage, ImageFormat, ImageReader};
+use slopos_kit::event::{Event, KeyCode};
+use slopos_kit::panel::Panel;
+use slopos_kit::scroll_view::ScrollView;
+use slopos_kit::theme::ThemeContext;
+use slopos_kit::widget::{Widget, WidgetState};
+use slopos_kit::{AccessibilityNode, AccessibilityRole, Button, EventResult, Label};
+use slopos_kit::{LayoutConstraint, Rect, Size};
+use slopos_vision_client::{VisionClient, VisionClientConfig};
+use slopos_vision_protocol::{
+    ArtifactRole, AssetDataResponse, ClientRequestId, ExtractTextJob, ExtractTextOptions,
+    FileLabel, ImageMediaType, ImageMetadata, ImageSource, InlineImage, JobStatus, LiftSubjectJob,
+    LiftSubjectOptions, PixelSize, SubmitJobRequest, VisionJob, VisionResult, MAX_FILE_STEM_LEN,
+};
+use std::ffi::OsString;
+use std::fs;
+use std::io::Cursor;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const MAX_ENCODED_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SOURCE_PIXELS: u64 = 40_000_000;
+const THUMBNAIL_MAX_WIDTH: u32 = 96;
+const THUMBNAIL_MAX_HEIGHT: u32 = 64;
+const MIN_ZOOM: f32 = 0.01;
+const MAX_ZOOM: f32 = 8.0;
+const SCROLLBAR_WIDTH: f32 = 12.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZoomMode {
+    Fit,
+    Manual,
+}
+
+#[derive(Debug)]
+struct LoadedImage {
+    path: PathBuf,
+    width: u32,
+    height: u32,
+    encoded: Vec<u8>,
+    media_type: Option<ImageMediaType>,
+    pixels: Vec<[f32; 4]>,
+    pixel_width: u32,
+    pixel_height: u32,
+}
+
+/// Parse the deliberately small Preview CLI: zero or one image path.
+pub(crate) fn parse_cli_args(
+    args: impl IntoIterator<Item = OsString>,
+) -> Result<Option<PathBuf>, String> {
+    let mut args = args.into_iter();
+    let _program = args.next();
+    let path = args.next().map(PathBuf::from);
+    if args.next().is_some() {
+        return Err("expected zero or one image path".to_string());
+    }
+    if path
+        .as_deref()
+        .is_some_and(|path| path.as_os_str().is_empty())
+    {
+        return Err("image path must not be empty".to_string());
+    }
+    Ok(path)
+}
+
+fn validate_image_path(path: &Path, max_encoded_bytes: u64) -> Result<u64, String> {
+    let metadata = fs::metadata(path).map_err(|error| format!("cannot inspect path: {error}"))?;
+    if !metadata.is_file() {
+        return Err("path is not a regular file".to_string());
+    }
+    if metadata.len() > max_encoded_bytes {
+        return Err(format!(
+            "encoded image is too large ({} bytes; limit is {} bytes)",
+            metadata.len(),
+            max_encoded_bytes
+        ));
+    }
+    Ok(metadata.len())
+}
+
+fn media_type_for_format(format: ImageFormat) -> Option<ImageMediaType> {
+    match format {
+        ImageFormat::Png => Some(ImageMediaType::Png),
+        ImageFormat::Jpeg => Some(ImageMediaType::Jpeg),
+        ImageFormat::WebP => Some(ImageMediaType::Webp),
+        ImageFormat::Bmp => Some(ImageMediaType::Bmp),
+        ImageFormat::Tiff => Some(ImageMediaType::Tiff),
+        _ => None,
+    }
+}
+
+fn decode_encoded_image_limited(
+    data: &[u8],
+) -> Result<(DynamicImage, Option<ImageMediaType>), String> {
+    if data.len() as u64 > MAX_ENCODED_BYTES {
+        return Err("encoded image exceeds the Preview size limit".to_string());
+    }
+
+    let reader = ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .map_err(|error| format!("cannot identify image format: {error}"))?;
+    let format = reader
+        .format()
+        .ok_or_else(|| "unsupported image format".to_string())?;
+
+    let (width, height) = ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .map_err(|error| format!("cannot identify image dimensions: {error}"))?
+        .into_dimensions()
+        .map_err(|error| format!("cannot read image dimensions: {error}"))?;
+    let pixels = (width as u64).saturating_mul(height as u64);
+    if width == 0 || height == 0 {
+        return Err("image has empty dimensions".to_string());
+    }
+    if pixels > MAX_SOURCE_PIXELS {
+        return Err(format!(
+            "image is too large ({} pixels; limit is {})",
+            pixels, MAX_SOURCE_PIXELS
+        ));
+    }
+
+    let image = reader
+        .decode()
+        .map_err(|error| format!("cannot decode image: {error}"))?;
+    Ok((image, media_type_for_format(format)))
+}
+
+fn decode_image_limited(
+    path: &Path,
+) -> Result<(DynamicImage, Vec<u8>, Option<ImageMediaType>), String> {
+    let encoded_bytes = validate_image_path(path, MAX_ENCODED_BYTES)?;
+    let data = fs::read(path).map_err(|error| format!("cannot read image: {error}"))?;
+    if data.len() as u64 > MAX_ENCODED_BYTES || data.len() as u64 != encoded_bytes {
+        return Err("image changed while it was being read".to_string());
+    }
+
+    let (image, media_type) = decode_encoded_image_limited(&data)?;
+    Ok((image, data, media_type))
+}
+
+fn load_image(path: &Path) -> Result<LoadedImage, String> {
+    let (image, encoded, media_type) = decode_image_limited(path)?;
+    let width = image.width();
+    let height = image.height();
+    let thumbnail = image.thumbnail(THUMBNAIL_MAX_WIDTH, THUMBNAIL_MAX_HEIGHT);
+    let rgba = thumbnail.to_rgba8();
+    let pixel_width = rgba.width();
+    let pixel_height = rgba.height();
+    let pixels = rgba
+        .pixels()
+        .enumerate()
+        .map(|(index, pixel)| {
+            let x = index as u32 % pixel_width;
+            let y = index as u32 / pixel_width;
+            let checker = if (x + y).is_multiple_of(2) {
+                0.91
+            } else {
+                0.78
+            };
+            let alpha = f32::from(pixel[3]) / 255.0;
+            [
+                f32::from(pixel[0]) / 255.0 * alpha + checker * (1.0 - alpha),
+                f32::from(pixel[1]) / 255.0 * alpha + checker * (1.0 - alpha),
+                f32::from(pixel[2]) / 255.0 * alpha + checker * (1.0 - alpha),
+                1.0,
+            ]
+        })
+        .collect();
+
+    Ok(LoadedImage {
+        path: path.to_path_buf(),
+        width,
+        height,
+        encoded,
+        media_type,
+        pixels,
+        pixel_width,
+        pixel_height,
+    })
+}
+
+fn clamp_zoom(zoom: f32) -> f32 {
+    if zoom.is_nan() {
+        MIN_ZOOM
+    } else if zoom.is_finite() {
+        zoom.clamp(MIN_ZOOM, MAX_ZOOM)
+    } else if zoom.is_sign_positive() {
+        MAX_ZOOM
+    } else {
+        MIN_ZOOM
+    }
+}
+
+fn fit_zoom(image_width: u32, image_height: u32, viewport_width: f32, viewport_height: f32) -> f32 {
+    if image_width == 0 || image_height == 0 || viewport_width <= 0.0 || viewport_height <= 0.0 {
+        return 1.0;
+    }
+    let width_ratio = viewport_width / image_width as f32;
+    let height_ratio = viewport_height / image_height as f32;
+    clamp_zoom(width_ratio.min(height_ratio))
+}
+
+fn solid_panel(fill: [f32; 4]) -> Panel {
+    let mut panel = Panel::new();
+    panel.themed = false;
+    panel.fill = fill;
+    panel.beveled = false;
+    panel.raised = false;
+    panel.bordered = false;
+    panel
+}
+
+struct ImageCanvas {
+    state: WidgetState,
+    cells: Vec<Panel>,
+    path: PathBuf,
+    encoded: Vec<u8>,
+    media_type: Option<ImageMediaType>,
+    pixel_width: u32,
+    pixel_height: u32,
+    source_width: u32,
+    source_height: u32,
+    zoom: f32,
+}
+
+impl ImageCanvas {
+    fn empty() -> Self {
+        Self {
+            state: WidgetState::new(),
+            cells: Vec::new(),
+            path: PathBuf::new(),
+            encoded: Vec::new(),
+            media_type: None,
+            pixel_width: 0,
+            pixel_height: 0,
+            source_width: 0,
+            source_height: 0,
+            zoom: 1.0,
+        }
+    }
+
+    fn from_loaded(image: LoadedImage) -> Self {
+        let cells = image.pixels.into_iter().map(solid_panel).collect();
+        Self {
+            state: WidgetState::new(),
+            cells,
+            path: image.path,
+            encoded: image.encoded,
+            media_type: image.media_type,
+            pixel_width: image.pixel_width,
+            pixel_height: image.pixel_height,
+            source_width: image.width,
+            source_height: image.height,
+            zoom: 1.0,
+        }
+    }
+
+    fn natural_size(&self) -> Size {
+        if self.source_width == 0 || self.source_height == 0 {
+            return Size::new(1.0, 1.0);
+        }
+        Size::new(
+            self.source_width as f32 * self.zoom,
+            self.source_height as f32 * self.zoom,
+        )
+    }
+
+    fn set_zoom(&mut self, zoom: f32) {
+        self.zoom = clamp_zoom(zoom);
+        let size = self.natural_size();
+        let rect = self.rect();
+        self.state.rect = Rect::new(rect.x, rect.y, size.width, size.height);
+        self.position_cells();
+    }
+
+    fn position_cells(&mut self) {
+        if self.pixel_width == 0 || self.pixel_height == 0 {
+            return;
+        }
+        let rect = self.rect();
+        let cell_width = rect.width / self.pixel_width as f32;
+        let cell_height = rect.height / self.pixel_height as f32;
+        for (index, cell) in self.cells.iter_mut().enumerate() {
+            let x = index as u32 % self.pixel_width;
+            let y = index as u32 / self.pixel_width;
+            let cell_rect = Rect::new(
+                rect.x + x as f32 * cell_width,
+                rect.y + y as f32 * cell_height,
+                cell_width,
+                cell_height,
+            );
+            cell.set_rect(cell_rect);
+        }
+    }
+}
+
+impl Widget for ImageCanvas {
+    fn widget_state(&self) -> &WidgetState {
+        &self.state
+    }
+
+    fn widget_state_mut(&mut self) -> &mut WidgetState {
+        &mut self.state
+    }
+
+    fn set_rect(&mut self, rect: Rect) {
+        self.state.rect = rect;
+        self.position_cells();
+    }
+
+    fn layout(&mut self, _constraint: LayoutConstraint) -> Size {
+        let size = self.natural_size();
+        let rect = self.rect();
+        self.state.rect = Rect::new(rect.x, rect.y, size.width, size.height);
+        self.position_cells();
+        size
+    }
+
+    fn draw(&self, _theme: &ThemeContext) {}
+
+    fn accessibility(&self) -> Option<AccessibilityNode> {
+        Some(AccessibilityNode::new(AccessibilityRole::Image, "Image"))
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.cells.iter().map(|cell| cell as &dyn Widget).collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
+        self.cells
+            .iter_mut()
+            .map(|cell| cell as &mut dyn Widget)
+            .collect()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+pub struct PreviewView {
+    state: WidgetState,
+    source_path: Option<PathBuf>,
+    source_dimensions: Option<(u32, u32)>,
+    zoom: f32,
+    zoom_mode: ZoomMode,
+    background: Panel,
+    toolbar_background: Panel,
+    status_background: Panel,
+    filename_label: Label,
+    dimensions_label: Label,
+    zoom_label: Label,
+    empty_hint: Label,
+    open_button: Button,
+    zoom_out_button: Button,
+    zoom_in_button: Button,
+    fit_button: Button,
+    actual_size_button: Button,
+    extract_text_button: Button,
+    lift_subject_button: Button,
+    image_scroll: ScrollView,
+    scrollbar: Panel,
+    status_label: Label,
+    status_text: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ViewAction {
+    Open,
+    ZoomIn,
+    ZoomOut,
+    Fit,
+    ActualSize,
+    ExtractText,
+    LiftSubject,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum VisionAction {
+    ExtractText,
+    LiftSubject,
+}
+
+impl VisionAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::ExtractText => "Extract Text",
+            Self::LiftSubject => "Lift Subject",
+        }
+    }
+}
+
+impl PreviewView {
+    pub fn new(path: Option<PathBuf>) -> Self {
+        let filename = path
+            .as_deref()
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "No image selected".to_string());
+        let (loaded, status) = match path.as_deref() {
+            Some(path) => match load_image(path) {
+                Ok(image) => (
+                    Some(image),
+                    "Ready — image decoded; Vision uses the local daemon when available."
+                        .to_string(),
+                ),
+                Err(error) => (None, format!("Cannot open {filename}: {error}")),
+            },
+            None => (
+                None,
+                "No image selected — launch Preview with an image path or use File > Open..."
+                    .to_string(),
+            ),
+        };
+        let source_dimensions = loaded.as_ref().map(|image| (image.width, image.height));
+        let canvas = loaded
+            .map(ImageCanvas::from_loaded)
+            .unwrap_or_else(ImageCanvas::empty);
+        let mut image_scroll = ScrollView::new();
+        image_scroll.scrollable_x = true;
+        image_scroll.scrollable_y = true;
+        image_scroll.set_content(Box::new(canvas));
+
+        let mut view = Self {
+            state: WidgetState::new(),
+            source_path: path,
+            source_dimensions,
+            zoom: 1.0,
+            zoom_mode: ZoomMode::Fit,
+            background: solid_panel([0.93, 0.93, 0.92, 1.0]),
+            toolbar_background: solid_panel([0.86, 0.86, 0.85, 1.0]),
+            status_background: solid_panel([0.86, 0.86, 0.85, 1.0]),
+            filename_label: Label::new(filename),
+            dimensions_label: Label::new("No image loaded"),
+            zoom_label: Label::new("No image"),
+            empty_hint: Label::new("No image selected"),
+            open_button: Button::new("Open..."),
+            zoom_out_button: Button::new("-"),
+            zoom_in_button: Button::new("+"),
+            fit_button: Button::new("Fit"),
+            actual_size_button: Button::new("100%"),
+            extract_text_button: Button::new("Extract Text"),
+            lift_subject_button: Button::new("Lift Subject"),
+            image_scroll,
+            scrollbar: solid_panel([0.50, 0.50, 0.48, 1.0]),
+            status_label: Label::new(status.clone()),
+            status_text: status,
+        };
+        view.update_labels();
+        view
+    }
+
+    pub fn window_title(&self) -> String {
+        match self
+            .source_path
+            .as_deref()
+            .and_then(Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned())
+        {
+            Some(filename) => format!("Preview - {filename}"),
+            None => "Preview".to_string(),
+        }
+    }
+
+    pub fn handle_action(&mut self, action: &str) {
+        let action = match action {
+            "com.slopos.preview.file.open" => Some(ViewAction::Open),
+            "com.slopos.preview.zoom.in" => Some(ViewAction::ZoomIn),
+            "com.slopos.preview.zoom.out" => Some(ViewAction::ZoomOut),
+            "com.slopos.preview.zoom.fit" => Some(ViewAction::Fit),
+            "com.slopos.preview.zoom.actual_size" => Some(ViewAction::ActualSize),
+            "com.slopos.preview.vision.extract_text" => Some(ViewAction::ExtractText),
+            "com.slopos.preview.vision.lift_subject" => Some(ViewAction::LiftSubject),
+            other => match other.rsplit_once('.') {
+                Some((_, "open")) => Some(ViewAction::Open),
+                Some((_, "zoom_in")) => Some(ViewAction::ZoomIn),
+                Some((_, "zoom_out")) => Some(ViewAction::ZoomOut),
+                Some((_, "fit_to_window")) => Some(ViewAction::Fit),
+                Some((_, "actual_size")) => Some(ViewAction::ActualSize),
+                Some((_, "extract_text")) => Some(ViewAction::ExtractText),
+                Some((_, "lift_subject")) => Some(ViewAction::LiftSubject),
+                _ => None,
+            },
+        };
+        if let Some(action) = action {
+            self.apply_action(action);
+        }
+    }
+
+    fn apply_action(&mut self, action: ViewAction) {
+        match action {
+            ViewAction::Open => self.open_action(),
+            ViewAction::ZoomIn => self.change_zoom(1.25),
+            ViewAction::ZoomOut => self.change_zoom(0.8),
+            ViewAction::Fit => self.set_zoom_mode(ZoomMode::Fit),
+            ViewAction::ActualSize => {
+                self.zoom_mode = ZoomMode::Manual;
+                self.zoom = 1.0;
+                self.reflow_image();
+                self.set_status("Actual size (100%)");
+            }
+            ViewAction::ExtractText => self.submit_vision_job(VisionAction::ExtractText),
+            ViewAction::LiftSubject => self.submit_vision_job(VisionAction::LiftSubject),
+        }
+    }
+
+    fn submit_vision_job(&mut self, action: VisionAction) {
+        let request = match self.build_vision_request(action) {
+            Ok(request) => request,
+            Err(error) => {
+                self.set_status(format!("Vision unavailable: {error}; no output produced."));
+                return;
+            }
+        };
+
+        let mut config = match VisionClientConfig::from_environment() {
+            Ok(config) => config,
+            Err(error) => {
+                self.set_status(format!("Vision unavailable: {error}; no output produced."));
+                return;
+            }
+        };
+        // Preview actions must not leave the native UI blocked for the full
+        // daemon defaults when the optional session service is absent.
+        config.connect_timeout = Duration::from_millis(300);
+        config.write_timeout = Duration::from_millis(500);
+        config.read_timeout = Duration::from_secs(2);
+        let client = match VisionClient::with_config(config) {
+            Ok(client) => client,
+            Err(error) => {
+                self.set_status(format!("Vision unavailable: {error}; no output produced."));
+                return;
+            }
+        };
+
+        let operation_name = action.label();
+        match client.submit(request) {
+            Ok(accepted) => {
+                self.resolve_vision_job(&client, action, accepted.job_id, operation_name);
+            }
+            Err(error) => {
+                self.set_status(format!(
+                    "{operation_name} unavailable: {error}; no output produced."
+                ));
+            }
+        }
+    }
+
+    fn build_vision_request(&self, action: VisionAction) -> Result<SubmitJobRequest, String> {
+        let image = self
+            .image_canvas_image()
+            .ok_or_else(|| "no image is loaded".to_string())?;
+        let media_type = image
+            .media_type
+            .ok_or_else(|| "this image format is not accepted by Vision".to_string())?;
+        let label = safe_file_label(&image.path);
+        let source = ImageSource::Inline(InlineImage {
+            metadata: ImageMetadata {
+                media_type,
+                encoded_bytes: image.encoded.len() as u64,
+                dimensions: PixelSize {
+                    width: image.source_width,
+                    height: image.source_height,
+                },
+                sha256: None,
+                label,
+            },
+            bytes: image.encoded.clone(),
+        });
+        let job = match action {
+            VisionAction::ExtractText => VisionJob::ExtractText(ExtractTextJob {
+                source,
+                options: ExtractTextOptions::default(),
+            }),
+            VisionAction::LiftSubject => VisionJob::LiftSubject(LiftSubjectJob {
+                source,
+                options: LiftSubjectOptions::default(),
+            }),
+        };
+        let request = SubmitJobRequest {
+            client_request_id: Some(ClientRequestId(format!(
+                "preview-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ))),
+            job,
+        };
+        request
+            .validate(MAX_ENCODED_BYTES, MAX_SOURCE_PIXELS)
+            .map_err(|error| format!("request validation failed: {error:?}"))?;
+        Ok(request)
+    }
+
+    fn resolve_vision_job(
+        &mut self,
+        client: &VisionClient,
+        action: VisionAction,
+        job_id: slopos_vision_protocol::JobId,
+        operation_name: &str,
+    ) {
+        let job = match client.get_result(job_id.clone()) {
+            Ok(job) => job,
+            Err(error) => {
+                self.set_status(format!(
+                    "{operation_name} submitted ({job_id:?}); result not available: {error}."
+                ));
+                return;
+            }
+        };
+
+        if let Some(error) = job.error {
+            self.set_status(format!(
+                "{operation_name} failed: {}; no output produced.",
+                error.message
+            ));
+            return;
+        }
+        if job.status != JobStatus::Succeeded {
+            self.set_status(format!(
+                "{operation_name} submitted ({:?}); no output is available yet.",
+                job.status
+            ));
+            return;
+        }
+
+        match (action, job.result) {
+            (VisionAction::ExtractText, Some(VisionResult::ExtractText(result))) => {
+                self.set_status(format!(
+                    "Extract Text completed: {} characters across {} lines.",
+                    result.full_text.chars().count(),
+                    result.lines.len()
+                ));
+            }
+            (VisionAction::LiftSubject, Some(VisionResult::LiftSubject(result))) => {
+                if result.cutout.role != ArtifactRole::LiftedSubject {
+                    self.set_status(
+                        "Lift Subject returned an unexpected artifact role; no output produced.",
+                    );
+                    return;
+                }
+                match client.get_asset(result.cutout.image.asset_id.clone()) {
+                    Ok(asset) => match validate_asset_response(&asset) {
+                        Ok(()) => self.set_status(format!(
+                            "Lift Subject completed: received {} bytes in memory; no file was written.",
+                            asset.bytes.len()
+                        )),
+                        Err(error) => self.set_status(format!(
+                            "Lift Subject returned an invalid asset: {error}; no output produced."
+                        )),
+                    },
+                    Err(error) => self.set_status(format!(
+                        "Lift Subject completed but its asset could not be retrieved: {error}; no output produced."
+                    )),
+                }
+            }
+            _ => self.set_status(format!(
+                "{operation_name} completed without a usable result; no output produced."
+            )),
+        }
+    }
+
+    fn image_canvas_image(&self) -> Option<&ImageCanvas> {
+        let content = self.image_scroll.content.as_ref()?;
+        let canvas = content.as_any().downcast_ref::<ImageCanvas>()?;
+        (!canvas.encoded.is_empty()).then_some(canvas)
+    }
+
+    fn open_action(&mut self) {
+        let Some(path) = self.source_path.clone() else {
+            self.set_status(
+                "Open unavailable: this SDK has no file-picker API; launch Preview with an image path.",
+            );
+            return;
+        };
+        self.load_path(path);
+    }
+
+    fn load_path(&mut self, path: PathBuf) {
+        let filename = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        self.source_path = Some(path.clone());
+        match load_image(&path) {
+            Ok(image) => {
+                self.source_dimensions = Some((image.width, image.height));
+                self.image_scroll
+                    .set_content(Box::new(ImageCanvas::from_loaded(image)));
+                self.empty_hint.text.clear();
+                self.zoom_mode = ZoomMode::Fit;
+                self.zoom = 1.0;
+                self.image_scroll.scroll_x = 0.0;
+                self.image_scroll.scroll_y = 0.0;
+                self.set_status(format!(
+                    "Loaded {filename} — Vision uses the local daemon when available."
+                ));
+            }
+            Err(error) => {
+                self.source_dimensions = None;
+                self.image_scroll
+                    .set_content(Box::new(ImageCanvas::empty()));
+                self.empty_hint.text = "No image loaded".to_string();
+                self.zoom_mode = ZoomMode::Fit;
+                self.zoom = 1.0;
+                self.image_scroll.scroll_x = 0.0;
+                self.image_scroll.scroll_y = 0.0;
+                self.set_status(format!("Cannot open {filename}: {error}"));
+            }
+        }
+        self.update_labels();
+        self.reflow_image();
+    }
+
+    fn change_zoom(&mut self, factor: f32) {
+        if self.source_dimensions.is_none() {
+            self.set_status("Zoom unavailable: no image is loaded.");
+            return;
+        }
+        self.zoom_mode = ZoomMode::Manual;
+        self.zoom = clamp_zoom(self.zoom * factor);
+        self.reflow_image();
+        self.set_status(format!("Zoom set to {}%", zoom_percent(self.zoom)));
+    }
+
+    fn set_zoom_mode(&mut self, mode: ZoomMode) {
+        self.zoom_mode = mode;
+        if mode == ZoomMode::Fit {
+            if let Some((width, height)) = self.source_dimensions {
+                let rect = self.image_scroll.rect();
+                self.zoom = fit_zoom(
+                    width,
+                    height,
+                    (rect.width - SCROLLBAR_WIDTH - 4.0).max(1.0),
+                    (rect.height - 4.0).max(1.0),
+                );
+            }
+            self.image_scroll.scroll_x = 0.0;
+            self.image_scroll.scroll_y = 0.0;
+            self.reflow_image();
+            self.set_status(format!("Fit to window — {}%", zoom_percent(self.zoom)));
+        }
+    }
+
+    fn set_status(&mut self, status: impl Into<String>) {
+        self.status_text = status.into();
+        self.status_label.text = self.status_text.clone();
+        self.update_labels();
+    }
+
+    fn update_labels(&mut self) {
+        self.dimensions_label.text = match self.source_dimensions {
+            Some((width, height)) => format!("{width} x {height}"),
+            None => "No image loaded".to_string(),
+        };
+        self.zoom_label.text = match self.source_dimensions {
+            Some((width, height)) => {
+                let offset = self.image_scroll.scroll_offset();
+                format!(
+                    "{width} x {height}  |  {}%  |  scroll {:.0}, {:.0}",
+                    zoom_percent(self.zoom),
+                    offset.x,
+                    offset.y
+                )
+            }
+            None => "No image".to_string(),
+        };
+        self.status_label.text = self.status_text.clone();
+    }
+
+    fn reflow_image(&mut self) {
+        let rect = self.rect();
+        if rect.width > 0.0 && rect.height > 0.0 {
+            let _ = self.layout(LayoutConstraint::tight(Size::new(rect.width, rect.height)));
+        }
+    }
+
+    fn image_canvas_mut(&mut self) -> Option<&mut ImageCanvas> {
+        self.image_scroll
+            .content
+            .as_mut()?
+            .as_any_mut()
+            .downcast_mut::<ImageCanvas>()
+    }
+
+    fn sync_scrollbar(&mut self) {
+        if let Some(rect) = self.image_scroll.scrollbar_rect() {
+            self.scrollbar.set_rect(rect);
+        } else {
+            self.scrollbar.set_rect(Rect::ZERO);
+        }
+    }
+
+    fn dispatch_button(
+        button: &mut Button,
+        action: ViewAction,
+        event: &Event,
+    ) -> Option<(EventResult, ViewAction)> {
+        let result = button.handle_event(event);
+        if button.take_clicked() {
+            Some((EventResult::Handled, action))
+        } else if matches!(result, EventResult::Ignored) {
+            None
+        } else {
+            Some((result, action))
+        }
+    }
+}
+
+impl Widget for PreviewView {
+    fn widget_state(&self) -> &WidgetState {
+        &self.state
+    }
+
+    fn widget_state_mut(&mut self) -> &mut WidgetState {
+        &mut self.state
+    }
+
+    fn layout(&mut self, constraint: LayoutConstraint) -> Size {
+        let size = constraint.clamp(Size::new(constraint.max_width, constraint.max_height));
+        let rect = Rect::new(self.rect().x, self.rect().y, size.width, size.height);
+        self.set_rect(rect);
+
+        let pad = 12.0;
+        let toolbar_height = 38.0;
+        let status_height = 25.0;
+        let content_width = (rect.width - pad * 2.0).max(0.0);
+        let image_rect = Rect::new(
+            rect.x + pad,
+            rect.y + toolbar_height + 4.0,
+            content_width,
+            (rect.height - toolbar_height - status_height - 4.0).max(0.0),
+        );
+
+        self.background.set_rect(rect);
+        self.toolbar_background
+            .set_rect(Rect::new(rect.x, rect.y, rect.width, toolbar_height));
+        self.status_background.set_rect(Rect::new(
+            rect.x,
+            rect.y + rect.height - status_height,
+            rect.width,
+            status_height,
+        ));
+
+        self.filename_label
+            .set_rect(Rect::new(rect.x + pad, rect.y + 8.0, 180.0, 20.0));
+        self.dimensions_label
+            .set_rect(Rect::new(rect.x + 195.0, rect.y + 8.0, 120.0, 20.0));
+        self.zoom_label
+            .set_rect(Rect::new(rect.x + 325.0, rect.y + 8.0, 260.0, 20.0));
+
+        let mut button_x = rect.x + 12.0;
+        let button_y = rect.y + 39.0;
+        let button_gap = 5.0;
+        for (button, width) in [
+            (&mut self.open_button, 74.0),
+            (&mut self.zoom_out_button, 32.0),
+            (&mut self.zoom_in_button, 32.0),
+            (&mut self.fit_button, 48.0),
+            (&mut self.actual_size_button, 58.0),
+            (&mut self.extract_text_button, 102.0),
+            (&mut self.lift_subject_button, 100.0),
+        ] {
+            button.set_rect(Rect::new(button_x, button_y, width, 28.0));
+            let _ = button.layout(LayoutConstraint::tight(Size::new(width, 28.0)));
+            button_x += width + button_gap;
+        }
+
+        self.image_scroll.set_rect(image_rect);
+        if self.zoom_mode == ZoomMode::Fit {
+            if let Some((width, height)) = self.source_dimensions {
+                self.zoom = fit_zoom(
+                    width,
+                    height,
+                    (image_rect.width - SCROLLBAR_WIDTH - 4.0).max(1.0),
+                    (image_rect.height - 4.0).max(1.0),
+                );
+            }
+        }
+        let zoom = self.zoom;
+        if let Some(canvas) = self.image_canvas_mut() {
+            canvas.set_zoom(zoom);
+        }
+        let _ = self.image_scroll.layout(LayoutConstraint::tight(Size::new(
+            image_rect.width,
+            image_rect.height,
+        )));
+        self.sync_scrollbar();
+
+        self.empty_hint.set_rect(Rect::new(
+            image_rect.x + 16.0,
+            image_rect.y + (image_rect.height * 0.5).max(20.0),
+            (image_rect.width - 32.0).max(0.0),
+            20.0,
+        ));
+        self.status_label.set_rect(Rect::new(
+            rect.x + pad,
+            rect.y + rect.height - status_height + 3.0,
+            (rect.width - pad * 2.0).max(0.0),
+            20.0,
+        ));
+        self.update_labels();
+        size
+    }
+
+    fn draw(&self, _theme: &ThemeContext) {}
+
+    fn handle_event(&mut self, event: &Event) -> EventResult {
+        if let Event::KeyDown { key, modifiers } = event {
+            let action = match (key, modifiers.meta) {
+                (KeyCode::O, true) => Some(ViewAction::Open),
+                (KeyCode::Equals, true) | (KeyCode::Equals, false) => Some(ViewAction::ZoomIn),
+                (KeyCode::Minus, true) | (KeyCode::Minus, false) => Some(ViewAction::ZoomOut),
+                (KeyCode::Key0, true) | (KeyCode::Key0, false) => Some(ViewAction::ActualSize),
+                (KeyCode::F, false) => Some(ViewAction::Fit),
+                _ => None,
+            };
+            if let Some(action) = action {
+                self.apply_action(action);
+                return EventResult::Handled;
+            }
+        }
+
+        let mut result = self.image_scroll.handle_event(event);
+        let mut clicked_action = None;
+        if matches!(result, EventResult::Ignored) {
+            for (button, action) in [
+                (&mut self.lift_subject_button, ViewAction::LiftSubject),
+                (&mut self.extract_text_button, ViewAction::ExtractText),
+                (&mut self.actual_size_button, ViewAction::ActualSize),
+                (&mut self.fit_button, ViewAction::Fit),
+                (&mut self.zoom_in_button, ViewAction::ZoomIn),
+                (&mut self.zoom_out_button, ViewAction::ZoomOut),
+                (&mut self.open_button, ViewAction::Open),
+            ] {
+                if let Some((button_result, button_action)) =
+                    Self::dispatch_button(button, action, event)
+                {
+                    result = button_result;
+                    if matches!(result, EventResult::Handled)
+                        && matches!(event, Event::MouseUp { .. } | Event::KeyDown { .. })
+                    {
+                        clicked_action = Some(button_action);
+                    }
+                    break;
+                }
+            }
+        }
+        if let Some(action) = clicked_action {
+            self.apply_action(action);
+        }
+        self.update_labels();
+        self.sync_scrollbar();
+        result
+    }
+
+    fn update(&mut self) {
+        self.image_scroll.update();
+        self.update_labels();
+        self.sync_scrollbar();
+    }
+
+    fn accessibility(&self) -> Option<AccessibilityNode> {
+        Some(AccessibilityNode::new(AccessibilityRole::Window, "Preview"))
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![
+            &self.background,
+            &self.toolbar_background,
+            &self.filename_label,
+            &self.dimensions_label,
+            &self.zoom_label,
+            &self.open_button,
+            &self.zoom_out_button,
+            &self.zoom_in_button,
+            &self.fit_button,
+            &self.actual_size_button,
+            &self.extract_text_button,
+            &self.lift_subject_button,
+            &self.image_scroll,
+            &self.scrollbar,
+            &self.empty_hint,
+            &self.status_background,
+            &self.status_label,
+        ]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
+        vec![
+            &mut self.background,
+            &mut self.toolbar_background,
+            &mut self.filename_label,
+            &mut self.dimensions_label,
+            &mut self.zoom_label,
+            &mut self.open_button,
+            &mut self.zoom_out_button,
+            &mut self.zoom_in_button,
+            &mut self.fit_button,
+            &mut self.actual_size_button,
+            &mut self.extract_text_button,
+            &mut self.lift_subject_button,
+            &mut self.image_scroll,
+            &mut self.scrollbar,
+            &mut self.empty_hint,
+            &mut self.status_background,
+            &mut self.status_label,
+        ]
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+fn zoom_percent(zoom: f32) -> u32 {
+    (clamp_zoom(zoom) * 100.0).round() as u32
+}
+
+fn safe_file_label(path: &Path) -> Option<FileLabel> {
+    let stem = path.file_stem()?.to_str()?.to_string();
+    if stem.is_empty() || stem.len() > MAX_FILE_STEM_LEN {
+        return None;
+    }
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    let label = FileLabel { stem, extension };
+    label.validate().ok().map(|_| label)
+}
+
+fn validate_asset_response(asset: &AssetDataResponse) -> Result<(), String> {
+    asset
+        .asset
+        .validate(MAX_ENCODED_BYTES, MAX_SOURCE_PIXELS)
+        .map_err(|error| format!("asset metadata validation failed: {error:?}"))?;
+    if asset.bytes.len() as u64 != asset.asset.metadata.encoded_bytes {
+        return Err("asset byte count does not match its metadata".to_string());
+    }
+    let (decoded, media_type) = decode_encoded_image_limited(&asset.bytes)?;
+    let dimensions = asset.asset.metadata.dimensions;
+    if decoded.width() != dimensions.width || decoded.height() != dimensions.height {
+        return Err("asset dimensions do not match its metadata".to_string());
+    }
+    if media_type != Some(asset.asset.metadata.media_type) {
+        return Err("asset format does not match its metadata".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::codecs::png::PngEncoder;
+    use image::ImageEncoder;
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let image = image::RgbaImage::from_pixel(width, height, image::Rgba([10, 20, 30, 255]));
+        let mut bytes = Vec::new();
+        PngEncoder::new(&mut bytes)
+            .write_image(
+                image.as_raw(),
+                width,
+                height,
+                image::ExtendedColorType::Rgba8,
+            )
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn zoom_is_finite_and_bounded() {
+        assert_eq!(clamp_zoom(-1.0), MIN_ZOOM);
+        assert_eq!(clamp_zoom(100.0), MAX_ZOOM);
+        assert_eq!(clamp_zoom(f32::INFINITY), MAX_ZOOM);
+        assert_eq!(clamp_zoom(f32::NEG_INFINITY), MIN_ZOOM);
+        assert_eq!(clamp_zoom(f32::NAN), MIN_ZOOM);
+    }
+
+    #[test]
+    fn fit_zoom_preserves_aspect_ratio_and_bounds_extremes() {
+        assert!((fit_zoom(1600, 800, 800.0, 400.0) - 0.5).abs() < f32::EPSILON);
+        assert_eq!(fit_zoom(1, 1, 10_000.0, 10_000.0), MAX_ZOOM);
+        assert_eq!(fit_zoom(40_000_000, 1, 1.0, 1.0), MIN_ZOOM);
+        assert_eq!(fit_zoom(0, 100, 100.0, 100.0), 1.0);
+    }
+
+    #[test]
+    fn path_validation_rejects_directories_and_large_encoded_files() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(validate_image_path(directory.path(), 1024)
+            .unwrap_err()
+            .contains("regular file"));
+
+        let path = directory.path().join("large.bin");
+        fs::write(&path, [0u8; 8]).unwrap();
+        assert!(validate_image_path(&path, 7)
+            .unwrap_err()
+            .contains("too large"));
+    }
+
+    #[test]
+    fn valid_image_is_dimension_checked_and_downsampled() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sample.png");
+        fs::write(&path, png_bytes(128, 80)).unwrap();
+
+        let image = load_image(&path).unwrap();
+        assert_eq!((image.width, image.height), (128, 80));
+        assert!(image.pixel_width <= THUMBNAIL_MAX_WIDTH);
+        assert!(image.pixel_height <= THUMBNAIL_MAX_HEIGHT);
+        assert_eq!(
+            image.pixels.len(),
+            (image.pixel_width * image.pixel_height) as usize
+        );
+        assert_eq!(image.path, path);
+    }
+}

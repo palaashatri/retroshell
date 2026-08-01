@@ -28,7 +28,7 @@ extern "C" fn on_sigusr1(_sig: libc::c_int) {
 /// Install a SIGUSR1 handler that requests a screenshot on the next frame.
 pub fn install_signal_handler() {
     unsafe {
-        libc::signal(libc::SIGUSR1, on_sigusr1 as usize);
+        libc::signal(libc::SIGUSR1, on_sigusr1 as *const () as usize);
     }
 }
 

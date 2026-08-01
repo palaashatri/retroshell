@@ -160,6 +160,56 @@ fn main() {
         help_menu,
     ]);
 
+    // Keep document operations in TextEdit while the shell owns only the
+    // global menu presentation and compositor-owned window operations.
+    app.on_menu_action(|action, window| {
+        let Some(content) = window.content.as_mut() else {
+            return;
+        };
+        let Some(view) = content.as_any_mut().downcast_mut::<TextEditView>() else {
+            return;
+        };
+        let action = action
+            .strip_prefix("com.slopos.textedit.")
+            .unwrap_or(action);
+        match action {
+            "file.new" => {
+                view.new_document();
+            }
+            "file.open" => {
+                view.open_document();
+            }
+            "file.save" => {
+                view.save_document();
+            }
+            "file.save_as" => {
+                view.save_as_from_path_field();
+            }
+            "edit.undo" => {
+                view.undo();
+            }
+            "edit.redo" => {
+                view.redo();
+            }
+            "edit.cut" => {
+                view.cut_document();
+            }
+            "edit.copy" => {
+                view.copy_document();
+            }
+            "edit.paste" => {
+                view.paste_document();
+            }
+            "edit.select_all" => {
+                view.select_all_document();
+            }
+            "edit.find" => {
+                view.toggle_find();
+            }
+            _ => {}
+        }
+    });
+
     let document_path = std::env::args_os().nth(1).map(PathBuf::from);
     let view = TextEditView::open(document_path);
     let title = view.window_title();

@@ -39,6 +39,96 @@ pub struct WindowRestoreState {
     pub space_id: usize,
 }
 
+/// Result of one compositor-owned presentation transition.
+///
+/// Backends apply this value to their Wayland surface/configure state, but do
+/// not make their own geometry or restore decisions. Keeping the transition
+/// pure is what lets nested and DRM use exactly the same state machine.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PresentationTransition {
+    pub state: WindowPresentationState,
+    pub geometry: WindowGeometry,
+    pub restore_state: Option<WindowRestoreState>,
+}
+
+/// Transition one window presentation state while preserving normal geometry.
+///
+/// `work_area` excludes compositor-owned shell exclusive zones for Fill/Smart
+/// Zoom. `output_area` is the complete output used by Fullscreen. Once a
+/// window enters a non-normal presentation state, its first normal geometry
+/// and Space/output identity are retained until it returns to `Normal`.
+#[allow(clippy::too_many_arguments)]
+pub fn transition_presentation_state(
+    current_state: WindowPresentationState,
+    current_geometry: WindowGeometry,
+    current_restore_state: Option<&WindowRestoreState>,
+    target_state: WindowPresentationState,
+    work_area: WindowGeometry,
+    output_area: WindowGeometry,
+    preferred_size: Option<(i32, i32)>,
+    output_id: impl Into<String>,
+    space_id: usize,
+) -> PresentationTransition {
+    let mut restore_state = current_restore_state.cloned();
+
+    if !matches!(
+        target_state,
+        WindowPresentationState::Normal | WindowPresentationState::Minimized
+    ) && restore_state.is_none()
+    {
+        restore_state = Some(WindowRestoreState::new(
+            current_geometry,
+            current_state,
+            output_id,
+            space_id,
+        ));
+    }
+
+    if target_state == WindowPresentationState::Normal {
+        let geometry = restore_state
+            .as_ref()
+            .map(|restore| restore.normal_geometry)
+            .unwrap_or(current_geometry);
+        return PresentationTransition {
+            state: WindowPresentationState::Normal,
+            geometry,
+            restore_state: None,
+        };
+    }
+
+    if target_state == WindowPresentationState::Minimized {
+        // Minimize changes visibility, not geometry. Keep the restore record so
+        // restoring a window after a presentation transition returns to its
+        // original normal geometry.
+        return PresentationTransition {
+            state: WindowPresentationState::Minimized,
+            geometry: current_geometry,
+            restore_state,
+        };
+    }
+
+    let normal_geometry = restore_state
+        .as_ref()
+        .map(|restore| restore.normal_geometry)
+        .unwrap_or(current_geometry);
+    let area = if target_state == WindowPresentationState::Fullscreen {
+        output_area
+    } else {
+        work_area
+    };
+
+    PresentationTransition {
+        state: target_state,
+        geometry: calculate_presentation_geometry(
+            area,
+            target_state,
+            preferred_size,
+            normal_geometry,
+        ),
+        restore_state,
+    }
+}
+
 impl WindowRestoreState {
     pub fn new(
         normal_geometry: WindowGeometry,
@@ -166,8 +256,12 @@ pub fn calculate_presentation_geometry(
         WindowPresentationState::Filled | WindowPresentationState::Fullscreen => work_area,
         WindowPresentationState::SmartZoomed => {
             if let Some((pref_w, pref_h)) = preferred_size {
-                let target_w = pref_w.clamp(200, work_area.width);
-                let target_h = pref_h.clamp(150, work_area.height);
+                let area_width = work_area.width.max(1);
+                let area_height = work_area.height.max(1);
+                let min_width = 200.min(area_width);
+                let min_height = 150.min(area_height);
+                let target_w = pref_w.clamp(min_width, area_width);
+                let target_h = pref_h.clamp(min_height, area_height);
                 let target_x = work_area.x + (work_area.width - target_w) / 2;
                 let target_y = work_area.y + (work_area.height - target_h) / 2;
                 WindowGeometry::new(target_x, target_y, target_w, target_h)
@@ -285,5 +379,111 @@ mod tests {
         assert_eq!(tile_left.width, 640);
         assert_eq!(tile_left.height, 770);
         assert_eq!(tile_left.x, 0);
+    }
+
+    #[test]
+    fn transition_fill_captures_normal_geometry_and_restores_it() {
+        let work_area = WindowGeometry::new(0, 24, 1280, 712);
+        let output = WindowGeometry::new(0, 0, 1280, 800);
+        let normal = WindowGeometry::new(120, 88, 640, 420);
+
+        let filled = transition_presentation_state(
+            WindowPresentationState::Normal,
+            normal,
+            None,
+            WindowPresentationState::Filled,
+            work_area,
+            output,
+            None,
+            "drm-0",
+            2,
+        );
+        assert_eq!(filled.state, WindowPresentationState::Filled);
+        assert_eq!(filled.geometry, work_area);
+        assert_eq!(
+            filled
+                .restore_state
+                .as_ref()
+                .map(|restore| restore.normal_geometry),
+            Some(normal)
+        );
+        assert_eq!(
+            filled
+                .restore_state
+                .as_ref()
+                .map(|restore| restore.output_id.as_str()),
+            Some("drm-0")
+        );
+
+        let restored = transition_presentation_state(
+            filled.state,
+            filled.geometry,
+            filled.restore_state.as_ref(),
+            WindowPresentationState::Normal,
+            work_area,
+            output,
+            None,
+            "drm-0",
+            2,
+        );
+        assert_eq!(restored.state, WindowPresentationState::Normal);
+        assert_eq!(restored.geometry, normal);
+        assert_eq!(restored.restore_state, None);
+    }
+
+    #[test]
+    fn transition_fullscreen_uses_output_but_restores_same_normal_geometry() {
+        let work_area = WindowGeometry::new(0, 24, 1280, 712);
+        let output = WindowGeometry::new(0, 0, 1280, 800);
+        let normal = WindowGeometry::new(40, 72, 720, 480);
+        let filled = transition_presentation_state(
+            WindowPresentationState::Normal,
+            normal,
+            None,
+            WindowPresentationState::Filled,
+            work_area,
+            output,
+            None,
+            "nested-0",
+            0,
+        );
+        let fullscreen = transition_presentation_state(
+            filled.state,
+            filled.geometry,
+            filled.restore_state.as_ref(),
+            WindowPresentationState::Fullscreen,
+            work_area,
+            output,
+            None,
+            "nested-0",
+            0,
+        );
+
+        assert_eq!(fullscreen.geometry, output);
+        assert_eq!(
+            fullscreen
+                .restore_state
+                .as_ref()
+                .map(|restore| restore.normal_geometry),
+            Some(normal)
+        );
+    }
+
+    #[test]
+    fn transition_minimize_does_not_change_geometry() {
+        let normal = WindowGeometry::new(30, 40, 640, 420);
+        let transition = transition_presentation_state(
+            WindowPresentationState::Normal,
+            normal,
+            None,
+            WindowPresentationState::Minimized,
+            WindowGeometry::new(0, 24, 1280, 712),
+            WindowGeometry::new(0, 0, 1280, 800),
+            None,
+            "nested-0",
+            0,
+        );
+        assert_eq!(transition.state, WindowPresentationState::Minimized);
+        assert_eq!(transition.geometry, normal);
     }
 }

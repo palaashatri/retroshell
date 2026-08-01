@@ -516,6 +516,7 @@ mod linux {
     #[interface(name = "org.freedesktop.Notifications")]
     impl FdoNotificationsIface {
         /// FreeDesktop Notifications.Notify
+        #[allow(clippy::too_many_arguments)]
         fn notify(
             &self,
             app_name: &str,

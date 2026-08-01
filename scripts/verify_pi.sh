@@ -80,8 +80,8 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-$USER}"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
-if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
-  timeout 15 ./target/release/slopos-compositor > /tmp/slopos-compositor-pi.log 2>&1 &
+if [ -n "${DISPLAY:-}" ]; then
+  timeout 15 ./target/release/slopos-compositor --backend nested > /tmp/slopos-compositor-pi.log 2>&1 &
   CPID=$!
   sleep 3
   if kill -0 "$CPID" 2>/dev/null; then
@@ -92,7 +92,7 @@ if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
     tail -40 /tmp/slopos-compositor-pi.log || true
   fi
 else
-  echo "No DISPLAY/WAYLAND_DISPLAY; skip live compositor (start a session first)"
+  echo "No X11 DISPLAY; skip nested smoke (run --backend drm from a DRM/TTY session)"
 fi
 
 echo
