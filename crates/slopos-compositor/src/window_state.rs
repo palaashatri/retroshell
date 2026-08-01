@@ -29,6 +29,15 @@ pub enum WindowPresentationState {
     Tiled(TilePlacement),
 }
 
+/// How a presentation transition should treat the window's compositor-owned
+/// stacking position.  Geometry changes do not implicitly raise or reorder a
+/// window; the backend may apply a separate focus/stacking operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum WindowStackingIntent {
+    Preserve,
+    RestoreAt(usize),
+}
+
 /// Geometry and location recorded prior to a presentation state transition
 /// (zoom, fill, fullscreen, tiling).
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,6 +46,7 @@ pub struct WindowRestoreState {
     pub previous_state: WindowPresentationState,
     pub output_id: String,
     pub space_id: usize,
+    pub stacking_intent: WindowStackingIntent,
 }
 
 /// Result of one compositor-owned presentation transition.
@@ -49,6 +59,10 @@ pub struct PresentationTransition {
     pub state: WindowPresentationState,
     pub geometry: WindowGeometry,
     pub restore_state: Option<WindowRestoreState>,
+    /// Restore metadata consumed when a non-normal window returns to Normal.
+    /// This is deliberately separate from the active restore record, which is
+    /// cleared once the normal geometry has been selected.
+    pub restored_from: Option<WindowRestoreState>,
 }
 
 /// Transition one window presentation state while preserving normal geometry.
@@ -98,8 +112,9 @@ pub fn transition_presentation_state(
         };
         return PresentationTransition {
             state: WindowPresentationState::Normal,
-            geometry,
+            geometry: clamp_geometry_to_area(geometry, work_area),
             restore_state: None,
+            restored_from: restore_state,
         };
     }
 
@@ -111,6 +126,7 @@ pub fn transition_presentation_state(
             state: WindowPresentationState::Minimized,
             geometry: current_geometry,
             restore_state,
+            restored_from: None,
         };
     }
 
@@ -133,6 +149,7 @@ pub fn transition_presentation_state(
             normal_geometry,
         ),
         restore_state,
+        restored_from: None,
     }
 }
 
@@ -148,7 +165,13 @@ impl WindowRestoreState {
             previous_state,
             output_id: output_id.into(),
             space_id,
+            stacking_intent: WindowStackingIntent::Preserve,
         }
+    }
+
+    pub fn with_stacking_intent(mut self, stacking_intent: WindowStackingIntent) -> Self {
+        self.stacking_intent = stacking_intent;
+        self
     }
 }
 
@@ -257,9 +280,8 @@ pub fn calculate_presentation_geometry(
     preferred_size: Option<(i32, i32)>,
     normal_geometry: WindowGeometry,
 ) -> WindowGeometry {
-    match state {
-        WindowPresentationState::Normal => normal_geometry,
-        WindowPresentationState::Minimized => normal_geometry,
+    let target = match state {
+        WindowPresentationState::Normal | WindowPresentationState::Minimized => normal_geometry,
         WindowPresentationState::Filled | WindowPresentationState::Fullscreen => {
             normalize_area(work_area, 1, 1)
         }
@@ -317,7 +339,9 @@ pub fn calculate_presentation_geometry(
                 }
             }
         }
-    }
+    };
+
+    clamp_geometry_to_area(target, work_area)
 }
 
 fn normalize_area(area: WindowGeometry, minimum_width: i32, minimum_height: i32) -> WindowGeometry {
@@ -332,6 +356,21 @@ fn normalize_area(area: WindowGeometry, minimum_width: i32, minimum_height: i32)
 fn split_extent(extent: i32) -> (i32, i32) {
     let first = extent / 2;
     (first, extent - first)
+}
+
+fn clamp_geometry_to_area(desired: WindowGeometry, area: WindowGeometry) -> WindowGeometry {
+    let area = normalize_area(area, 1, 1);
+    let width = desired.width.clamp(1, area.width);
+    let height = desired.height.clamp(1, area.height);
+    let max_x = area.x.saturating_add(area.width.saturating_sub(width));
+    let max_y = area.y.saturating_add(area.height.saturating_sub(height));
+
+    WindowGeometry::new(
+        desired.x.clamp(area.x, max_x),
+        desired.y.clamp(area.y, max_y),
+        width,
+        height,
+    )
 }
 
 #[cfg(test)]
@@ -512,6 +551,60 @@ mod tests {
     }
 
     #[test]
+    fn normal_transition_exposes_consumed_restore_metadata_without_active_record() {
+        let normal = WindowGeometry::new(40, 60, 640, 420);
+        let restore =
+            WindowRestoreState::new(normal, WindowPresentationState::Normal, "output-a", 7)
+                .with_stacking_intent(WindowStackingIntent::RestoreAt(3));
+
+        let restored = transition_presentation_state(
+            WindowPresentationState::Filled,
+            WindowGeometry::new(0, 24, 1280, 712),
+            Some(&restore),
+            WindowPresentationState::Normal,
+            WindowGeometry::new(0, 24, 1280, 712),
+            WindowGeometry::new(0, 0, 1280, 800),
+            None,
+            "output-b",
+            99,
+        );
+
+        assert_eq!(restored.state, WindowPresentationState::Normal);
+        assert_eq!(restored.restore_state, None);
+        let consumed = restored
+            .restored_from
+            .as_ref()
+            .expect("consumed restore metadata");
+        assert_eq!(consumed.normal_geometry, normal);
+        assert_eq!(consumed.output_id, "output-a");
+        assert_eq!(consumed.space_id, 7);
+        assert_eq!(consumed.stacking_intent, WindowStackingIntent::RestoreAt(3));
+    }
+
+    #[test]
+    fn minimized_preserves_current_geometry_without_work_area_clamping() {
+        let current = WindowGeometry::new(-80, -10, 900, 700);
+        let work_area = WindowGeometry::new(100, 200, 320, 240);
+        let transition = transition_presentation_state(
+            WindowPresentationState::Normal,
+            current,
+            None,
+            WindowPresentationState::Minimized,
+            work_area,
+            WindowGeometry::new(100, 180, 320, 280),
+            None,
+            "output-a",
+            7,
+        );
+
+        assert_eq!(transition.state, WindowPresentationState::Minimized);
+        assert_eq!(transition.geometry, current);
+        assert!(transition.geometry.x < work_area.x);
+        assert!(transition.geometry.y < work_area.y);
+        assert_eq!(transition.restored_from, None);
+    }
+
+    #[test]
     fn transition_minimize_captures_restore_metadata_and_restores_normal_geometry() {
         let normal = WindowGeometry::new(30, 40, 640, 420);
         let work_area = WindowGeometry::new(0, 24, 1280, 712);
@@ -533,6 +626,7 @@ mod tests {
         assert_eq!(restore.previous_state, WindowPresentationState::Normal);
         assert_eq!(restore.output_id, "output-a");
         assert_eq!(restore.space_id, 7);
+        assert_eq!(restore.stacking_intent, WindowStackingIntent::Preserve);
 
         let minimized_again = transition_presentation_state(
             minimized.state,
@@ -559,8 +653,137 @@ mod tests {
             99,
         );
         assert_eq!(restored.state, WindowPresentationState::Normal);
-        assert_eq!(restored.geometry, normal);
+        assert_eq!(restored.geometry, WindowGeometry::new(100, 200, 320, 240));
         assert_eq!(restored.restore_state, None);
+    }
+
+    #[test]
+    fn restoring_after_work_area_change_clamps_saved_geometry() {
+        let normal = WindowGeometry::new(-40, 150, 500, 300);
+        let original_work_area = WindowGeometry::new(0, 24, 1280, 712);
+        let original_output = WindowGeometry::new(0, 0, 1280, 800);
+        let changed_work_area = WindowGeometry::new(100, 200, 800, 500);
+        let changed_output = WindowGeometry::new(100, 180, 800, 540);
+
+        let filled = transition_presentation_state(
+            WindowPresentationState::Normal,
+            normal,
+            None,
+            WindowPresentationState::Filled,
+            original_work_area,
+            original_output,
+            None,
+            "output-a",
+            4,
+        );
+        let restored = transition_presentation_state(
+            filled.state,
+            filled.geometry,
+            filled.restore_state.as_ref(),
+            WindowPresentationState::Normal,
+            changed_work_area,
+            changed_output,
+            None,
+            "output-b",
+            9,
+        );
+
+        assert_eq!(restored.state, WindowPresentationState::Normal);
+        assert_eq!(restored.geometry, WindowGeometry::new(100, 200, 500, 300));
+        assert_eq!(restored.restore_state, None);
+    }
+
+    #[test]
+    fn repeated_toggle_uses_clamped_restore_as_new_normal_baseline() {
+        let normal = WindowGeometry::new(-40, 150, 500, 300);
+        let original_work_area = WindowGeometry::new(0, 24, 1280, 712);
+        let original_output = WindowGeometry::new(0, 0, 1280, 800);
+        let changed_work_area = WindowGeometry::new(100, 200, 800, 500);
+        let changed_output = WindowGeometry::new(100, 180, 800, 540);
+        let expected_normal = WindowGeometry::new(100, 200, 500, 300);
+
+        let filled = transition_presentation_state(
+            WindowPresentationState::Normal,
+            normal,
+            None,
+            WindowPresentationState::Filled,
+            original_work_area,
+            original_output,
+            None,
+            "output-a",
+            4,
+        );
+        let restored = transition_presentation_state(
+            filled.state,
+            filled.geometry,
+            filled.restore_state.as_ref(),
+            WindowPresentationState::Normal,
+            changed_work_area,
+            changed_output,
+            None,
+            "output-b",
+            9,
+        );
+        let smart_zoomed = transition_presentation_state(
+            restored.state,
+            restored.geometry,
+            restored.restore_state.as_ref(),
+            WindowPresentationState::SmartZoomed,
+            changed_work_area,
+            changed_output,
+            Some((600, 400)),
+            "output-b",
+            9,
+        );
+        let restored_again = transition_presentation_state(
+            smart_zoomed.state,
+            smart_zoomed.geometry,
+            smart_zoomed.restore_state.as_ref(),
+            WindowPresentationState::Normal,
+            changed_work_area,
+            changed_output,
+            None,
+            "output-b",
+            9,
+        );
+
+        assert_eq!(restored.geometry, expected_normal);
+        assert_eq!(
+            smart_zoomed
+                .restore_state
+                .as_ref()
+                .map(|restore| restore.normal_geometry),
+            Some(expected_normal)
+        );
+        assert_eq!(restored_again.geometry, expected_normal);
+    }
+
+    #[test]
+    fn transitions_preserve_explicit_stacking_restore_intent() {
+        let normal = WindowGeometry::new(40, 60, 640, 420);
+        let restore =
+            WindowRestoreState::new(normal, WindowPresentationState::Normal, "output-a", 7)
+                .with_stacking_intent(WindowStackingIntent::RestoreAt(3));
+
+        let tiled = transition_presentation_state(
+            WindowPresentationState::Filled,
+            WindowGeometry::new(0, 24, 1280, 712),
+            Some(&restore),
+            WindowPresentationState::Tiled(TilePlacement::Right),
+            WindowGeometry::new(0, 24, 1280, 712),
+            WindowGeometry::new(0, 0, 1280, 800),
+            None,
+            "output-b",
+            9,
+        );
+
+        assert_eq!(
+            tiled
+                .restore_state
+                .as_ref()
+                .map(|restore| restore.stacking_intent),
+            Some(WindowStackingIntent::RestoreAt(3))
+        );
     }
 
     #[test]
@@ -664,6 +887,40 @@ mod tests {
                 calculate_presentation_geometry(invalid_area, state, Some((800, 500)), normal);
             assert!(geometry.width >= 1, "{state:?} has invalid width");
             assert!(geometry.height >= 1, "{state:?} has invalid height");
+        }
+    }
+
+    #[test]
+    fn every_presentation_target_is_contained_by_its_work_area() {
+        let work_area = WindowGeometry::new(100, 200, 800, 500);
+        let normal = WindowGeometry::new(-40, 150, 1200, 700);
+        let states = [
+            WindowPresentationState::Normal,
+            WindowPresentationState::Minimized,
+            WindowPresentationState::SmartZoomed,
+            WindowPresentationState::Filled,
+            WindowPresentationState::Fullscreen,
+            WindowPresentationState::Tiled(TilePlacement::Left),
+            WindowPresentationState::Tiled(TilePlacement::Right),
+            WindowPresentationState::Tiled(TilePlacement::TopLeft),
+            WindowPresentationState::Tiled(TilePlacement::TopRight),
+            WindowPresentationState::Tiled(TilePlacement::BottomLeft),
+            WindowPresentationState::Tiled(TilePlacement::BottomRight),
+        ];
+
+        for state in states {
+            let geometry =
+                calculate_presentation_geometry(work_area, state, Some((-1, 900)), normal);
+            assert!(geometry.x >= work_area.x, "{state:?} escapes left edge");
+            assert!(geometry.y >= work_area.y, "{state:?} escapes top edge");
+            assert!(
+                geometry.x + geometry.width <= work_area.x + work_area.width,
+                "{state:?} escapes right edge"
+            );
+            assert!(
+                geometry.y + geometry.height <= work_area.y + work_area.height,
+                "{state:?} escapes bottom edge"
+            );
         }
     }
 

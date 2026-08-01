@@ -125,6 +125,15 @@ use slopos_bus::{SessionControlListener, SessionControlRequest, WindowPresentati
 /// Compositor-owned selection payload keyed by mime type.
 type MimePayload = Arc<HashMap<String, Vec<u8>>>;
 
+/// Convert Smithay relative-motion microseconds to a nonzero Wayland timestamp.
+fn relative_motion_time_millis(utime: u64) -> u32 {
+    u32::try_from(utime / 1_000).unwrap_or(u32::MAX).max(1)
+}
+
+fn current_monotonic_time_millis() -> u32 {
+    Clock::<Monotonic>::new().now().as_millis().max(1)
+}
+
 #[derive(Clone)]
 struct PointerPress {
     serial: Serial,
@@ -158,7 +167,9 @@ impl PointerGrab<DrmSessionState> for InteractivePointerGrab {
         event: &RelativeMotionEvent,
     ) {
         if !data.update_interactive_grab() {
-            handle.unset_grab(self, data, event.serial, 0, true);
+            let serial = data.next_serial();
+            let time = relative_motion_time_millis(event.utime);
+            handle.unset_grab(self, data, serial, time, true);
             return;
         }
         handle.relative_motion(data, self.start_data.focus.clone(), event);
@@ -1913,7 +1924,9 @@ impl DrmSessionState {
     fn cancel_interactive_grab(&mut self) {
         if self.interactive_grab.is_some() {
             if let Some(pointer) = self.seat.get_pointer() {
-                pointer.unset_grab(self, self.next_serial(), 0);
+                let serial = self.next_serial();
+                let time = current_monotonic_time_millis();
+                pointer.unset_grab(self, serial, time);
             } else {
                 self.finish_interactive_grab();
             }
@@ -3006,5 +3019,14 @@ mod tests {
             p.to_string_lossy().contains("dri") || p.ends_with("card0"),
             "unexpected path {p:?}"
         );
+    }
+
+    #[test]
+    fn relative_motion_time_millis_is_nonzero_and_saturating() {
+        assert_eq!(relative_motion_time_millis(0), 1);
+        assert_eq!(relative_motion_time_millis(999), 1);
+        assert_eq!(relative_motion_time_millis(1_000), 1);
+        assert_eq!(relative_motion_time_millis(2_000), 2);
+        assert_eq!(relative_motion_time_millis(u64::MAX), u32::MAX);
     }
 }

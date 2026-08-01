@@ -102,7 +102,10 @@ mod linux {
         },
         output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
         reexports::{
-            calloop::{EventLoop, LoopHandle, LoopSignal},
+            calloop::{
+                generic::Generic, EventLoop, Interest, LoopHandle, LoopSignal, Mode as CalloopMode,
+                PostAction,
+            },
             wayland_server::{
                 backend::{ClientData, ClientId, DisconnectReason},
                 protocol::{wl_output, wl_surface::WlSurface},
@@ -600,9 +603,6 @@ mod linux {
         x11_surface_associations: HashMap<X11Window, WlSurface>,
         /// Wayland socket name advertised to spawned clients (Super+O/L shortcuts).
         wayland_socket_name: String,
-        /// Session-scoped semantic requests from the shell. The compositor
-        /// remains the sole owner of real window geometry and presentation state.
-        control_listener: Option<SessionControlListener>,
     }
 
     pub(super) fn bind_session_control_listener(
@@ -1244,30 +1244,23 @@ mod linux {
             }
         }
 
-        fn drain_session_control(&mut self) {
-            let requests = self
-                .control_listener
-                .as_ref()
-                .map(SessionControlListener::drain)
-                .unwrap_or_default();
-            for request in requests {
-                match request {
-                    SessionControlRequest::FocusedWindow { action } => {
-                        self.apply_focused_window_action(action);
-                    }
-                    SessionControlRequest::ActivateApplication { bundle_id } => {
-                        self.activate_application(&bundle_id);
-                    }
-                    SessionControlRequest::FocusedApplicationMenu {
-                        bundle_id,
-                        action_id,
-                    } => {
-                        tracing::warn!(
-                            %bundle_id,
-                            %action_id,
-                            "application menu request reached compositor without an app endpoint"
-                        );
-                    }
+        fn apply_session_control_request(&mut self, request: SessionControlRequest) {
+            match request {
+                SessionControlRequest::FocusedWindow { action } => {
+                    self.apply_focused_window_action(action);
+                }
+                SessionControlRequest::ActivateApplication { bundle_id } => {
+                    self.activate_application(&bundle_id);
+                }
+                SessionControlRequest::FocusedApplicationMenu {
+                    bundle_id,
+                    action_id,
+                } => {
+                    tracing::warn!(
+                        %bundle_id,
+                        %action_id,
+                        "application menu request reached compositor without an app endpoint"
+                    );
                 }
             }
         }
@@ -3414,6 +3407,25 @@ mod linux {
                 .expect("failed to insert x11 backend source");
         }
 
+        // The session control socket is part of the nested event loop, not a
+        // polled side-channel. This keeps the compositor asleep when idle
+        // while still waking immediately for shell requests such as Minimize
+        // or Fill. The listener is the exact socket bound in this session's
+        // runtime directory; no Wayland socket discovery is involved.
+        if let Some(listener) = control_listener {
+            loop_handle
+                .insert_source(
+                    Generic::new(listener, Interest::READ, CalloopMode::Level),
+                    |_, listener, state| {
+                        for request in listener.drain() {
+                            state.apply_session_control_request(request);
+                        }
+                        Ok(PostAction::Continue)
+                    },
+                )
+                .map_err(|error| anyhow::anyhow!("insert session control socket: {error}"))?;
+        }
+
         let clock = Clock::<Monotonic>::new();
         let mut state = SloposCompositor {
             display_handle,
@@ -3472,7 +3484,6 @@ mod linux {
             x11_surfaces: Vec::new(),
             x11_surface_associations: HashMap::new(),
             wayland_socket_name: socket_name.clone(),
-            control_listener,
         };
 
         // P1.3: best-effort XWayland after state exists (needs loop_handle).
@@ -3496,7 +3507,6 @@ mod linux {
             };
 
             event_loop.dispatch(dispatch_timeout, &mut state)?;
-            state.drain_session_control();
 
             // Damage-driven rendering: commits, pointer motion, output refresh,
             // workspace changes and animations explicitly mark the frame dirty.
@@ -3594,6 +3604,80 @@ mod tests {
 
         assert_eq!(listener.drain(), vec![request]);
         drop(listener);
+        std::fs::remove_dir_all(&runtime).expect("remove test runtime");
+    }
+
+    #[test]
+    fn nested_control_source_wakes_calloop_and_drains_request() {
+        use std::os::unix::net::UnixDatagram;
+        use std::time::{Duration, Instant};
+
+        use smithay::reexports::calloop::{
+            generic::Generic, EventLoop, Interest, Mode as CalloopMode, PostAction,
+        };
+
+        let runtime = std::env::temp_dir().join(format!(
+            "slo-evt-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before Unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&runtime).expect("create test runtime");
+
+        let listener = linux::bind_session_control_listener(&runtime)
+            .expect("bind exact session control socket");
+        let sender = UnixDatagram::unbound().expect("create control sender");
+        let request = slopos_bus::SessionControlRequest::FocusedWindow {
+            action: slopos_bus::WindowPresentationAction::Fill,
+        };
+
+        let mut event_loop: EventLoop<Vec<slopos_bus::SessionControlRequest>> =
+            EventLoop::try_new().expect("create calloop");
+        event_loop
+            .handle()
+            .insert_source(
+                Generic::new(listener, Interest::READ, CalloopMode::Level),
+                |_, listener, requests| {
+                    requests.extend(listener.drain());
+                    Ok(PostAction::Continue)
+                },
+            )
+            .expect("register exact control fd");
+
+        // Do not queue the datagram before dispatch: the sender waits briefly
+        // after dispatch is entered so the test exercises an idle poll wake.
+        let send_after = Duration::from_millis(50);
+        let payload = serde_json::to_vec(&request).expect("serialize control request");
+        let socket_path = runtime.join(slopos_bus::SESSION_CONTROL_SOCKET);
+        let sender_thread = std::thread::spawn(move || {
+            std::thread::sleep(send_after);
+            sender
+                .send_to(&payload, socket_path)
+                .expect("send control request");
+        });
+
+        let dispatch_timeout = Duration::from_secs(1);
+        let dispatch_started = Instant::now();
+        let mut observed = Vec::new();
+        event_loop
+            .dispatch(Some(dispatch_timeout), &mut observed)
+            .expect("dispatch control fd");
+        let dispatch_elapsed = dispatch_started.elapsed();
+        sender_thread.join().expect("join control sender");
+
+        assert!(
+            dispatch_elapsed >= Duration::from_millis(25),
+            "dispatch returned before the delayed request could wake it: {dispatch_elapsed:?}"
+        );
+        assert!(
+            dispatch_elapsed < dispatch_timeout,
+            "dispatch reached its timeout instead of waking for the request: {dispatch_elapsed:?}"
+        );
+        assert_eq!(observed, vec![request]);
+
+        drop(event_loop);
         std::fs::remove_dir_all(&runtime).expect("remove test runtime");
     }
 
