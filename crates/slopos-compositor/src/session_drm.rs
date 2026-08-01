@@ -31,6 +31,7 @@ use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::DrmDeviceFd;
 use smithay::backend::egl::{EGLContext, EGLDisplay};
+use smithay::backend::input::ButtonState;
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::element::surface::{
     render_elements_from_surface_tree, WaylandSurfaceRenderElement,
@@ -41,7 +42,12 @@ use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
 use smithay::backend::udev::{all_gpus, primary_gpu, UdevBackend, UdevEvent};
 use smithay::input::keyboard::XkbConfig;
-use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData, Focus};
+use smithay::input::pointer::{
+    AxisFrame, ButtonEvent, CursorImageStatus, CursorImageSurfaceData, Focus,
+    GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
+    GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
+    GrabStartData, MotionEvent, PointerGrab, PointerInnerHandle, RelativeMotionEvent,
+};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::calloop::{
@@ -87,8 +93,8 @@ use smithay::wayland::shell::wlr_layer::{
     WlrLayerShellState,
 };
 use smithay::wayland::shell::xdg::{
-    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-    XdgToplevelSurfaceData,
+    PopupSurface, PositionerState, SurfaceCachedState, ToplevelSurface, XdgShellHandler,
+    XdgShellState, XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
@@ -101,15 +107,15 @@ use smithay::{
 use crate::frame_timing::{FrameScheduler, RefreshRate};
 use crate::hdr::HdrCapabilities;
 use crate::{
-    assign_new_window_to_active, clamp_window_to_work_area, detect_output_scale_from_env,
-    discover_drm_nodes, drm_presentation_pipeline, focus_window_after_workspace_switch,
-    geometry_for_interactive_grab, output_scale_summary, plan_drm_modeset,
-    pointer_grab_request_is_valid, preferred_primary_drm_node, register_wayland_display_source,
-    session_mode_summary, transition_presentation_state, visible_paint_order,
-    CompositorBackendKind, DisplayPolicy, DrmPresentationStage, InteractiveGrab,
-    InteractiveGrabKind, OutputScale, ResizeEdges, WindowGeometry, WindowPresentationState,
-    WorkspaceId, WorkspaceState, DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H,
-    DEFAULT_WINDOW_W,
+    assign_new_window_to_active, clamp_window_to_work_area, clear_interactive_grab_state,
+    detect_output_scale_from_env, discover_drm_nodes, drm_presentation_pipeline,
+    focus_window_after_workspace_switch, geometry_for_interactive_grab, output_scale_summary,
+    plan_drm_modeset, pointer_grab_request_is_valid, preferred_primary_drm_node,
+    register_wayland_display_source, session_mode_summary, transition_presentation_state,
+    visible_paint_order, CompositorBackendKind, DisplayPolicy, DrmPresentationStage,
+    InteractiveGrab, InteractiveGrabKind, OutputScale, ResizeEdges, WindowGeometry,
+    WindowPresentationState, WorkspaceId, WorkspaceState, DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W,
+    DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
 };
 use slopos_bus::{SessionControlListener, SessionControlRequest, WindowPresentationAction};
 // Workspace cycle helpers (`cycle_workspace_*` / `activate_workspace_index`) request a
@@ -123,6 +129,149 @@ type MimePayload = Arc<HashMap<String, Vec<u8>>>;
 struct PointerPress {
     serial: Serial,
     surface: WlSurface,
+}
+
+struct InteractivePointerGrab {
+    start_data: GrabStartData<DrmSessionState>,
+}
+
+impl PointerGrab<DrmSessionState> for InteractivePointerGrab {
+    fn motion(
+        &mut self,
+        data: &mut DrmSessionState,
+        handle: &mut PointerInnerHandle<'_, DrmSessionState>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        event: &MotionEvent,
+    ) {
+        if !data.update_interactive_grab() {
+            handle.unset_grab(self, data, event.serial, event.time, true);
+            return;
+        }
+        handle.motion(data, self.start_data.focus.clone(), event);
+    }
+
+    fn relative_motion(
+        &mut self,
+        data: &mut DrmSessionState,
+        handle: &mut PointerInnerHandle<'_, DrmSessionState>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        event: &RelativeMotionEvent,
+    ) {
+        if !data.update_interactive_grab() {
+            handle.unset_grab(self, data, event.serial, 0, true);
+            return;
+        }
+        handle.relative_motion(data, self.start_data.focus.clone(), event);
+    }
+
+    fn button(
+        &mut self,
+        data: &mut DrmSessionState,
+        handle: &mut PointerInnerHandle<'_, DrmSessionState>,
+        event: &ButtonEvent,
+    ) {
+        handle.button(data, event);
+        if event.state == ButtonState::Released && handle.current_pressed().is_empty() {
+            handle.unset_grab(self, data, event.serial, event.time, true);
+        }
+    }
+
+    fn axis(
+        &mut self,
+        data: &mut DrmSessionState,
+        handle: &mut PointerInnerHandle<'_, DrmSessionState>,
+        details: AxisFrame,
+    ) {
+        handle.axis(data, details);
+    }
+
+    fn frame(
+        &mut self,
+        data: &mut DrmSessionState,
+        handle: &mut PointerInnerHandle<'_, DrmSessionState>,
+    ) {
+        handle.frame(data);
+    }
+
+    fn gesture_swipe_begin(
+        &mut self,
+        data: &mut DrmSessionState,
+        handle: &mut PointerInnerHandle<'_, DrmSessionState>,
+        event: &GestureSwipeBeginEvent,
+    ) {
+        handle.gesture_swipe_begin(data, event);
+    }
+
+    fn gesture_swipe_update(
+        &mut self,
+        data: &mut DrmSessionState,
+        handle: &mut PointerInnerHandle<'_, DrmSessionState>,
+        event: &GestureSwipeUpdateEvent,
+    ) {
+        handle.gesture_swipe_update(data, event);
+    }
+
+    fn gesture_swipe_end(
+        &mut self,
+        data: &mut DrmSessionState,
+        handle: &mut PointerInnerHandle<'_, DrmSessionState>,
+        event: &GestureSwipeEndEvent,
+    ) {
+        handle.gesture_swipe_end(data, event);
+    }
+
+    fn gesture_pinch_begin(
+        &mut self,
+        data: &mut DrmSessionState,
+        handle: &mut PointerInnerHandle<'_, DrmSessionState>,
+        event: &GesturePinchBeginEvent,
+    ) {
+        handle.gesture_pinch_begin(data, event);
+    }
+
+    fn gesture_pinch_update(
+        &mut self,
+        data: &mut DrmSessionState,
+        handle: &mut PointerInnerHandle<'_, DrmSessionState>,
+        event: &GesturePinchUpdateEvent,
+    ) {
+        handle.gesture_pinch_update(data, event);
+    }
+
+    fn gesture_pinch_end(
+        &mut self,
+        data: &mut DrmSessionState,
+        handle: &mut PointerInnerHandle<'_, DrmSessionState>,
+        event: &GesturePinchEndEvent,
+    ) {
+        handle.gesture_pinch_end(data, event);
+    }
+
+    fn gesture_hold_begin(
+        &mut self,
+        data: &mut DrmSessionState,
+        handle: &mut PointerInnerHandle<'_, DrmSessionState>,
+        event: &GestureHoldBeginEvent,
+    ) {
+        handle.gesture_hold_begin(data, event);
+    }
+
+    fn gesture_hold_end(
+        &mut self,
+        data: &mut DrmSessionState,
+        handle: &mut PointerInnerHandle<'_, DrmSessionState>,
+        event: &GestureHoldEndEvent,
+    ) {
+        handle.gesture_hold_end(data, event);
+    }
+
+    fn start_data(&self) -> &GrabStartData<DrmSessionState> {
+        &self.start_data
+    }
+
+    fn unset(&mut self, data: &mut DrmSessionState) {
+        data.finish_interactive_grab();
+    }
 }
 
 /// The concrete `DrmCompositor` this session uses: GBM-allocated buffers,
@@ -1356,6 +1505,15 @@ impl DrmSessionState {
 
     /// Drop dead xdg windows and keep `workspace_state` in sync.
     fn prune_dead_windows(&mut self) {
+        let stale_grab = self.interactive_grab.as_ref().is_some_and(|grab| {
+            !self
+                .windows
+                .iter()
+                .any(|window| window.window_id == grab.window_id && window.toplevel.alive())
+        });
+        if stale_grab {
+            self.cancel_interactive_grab();
+        }
         let before: Vec<String> = self.windows.iter().map(|w| w.window_id.clone()).collect();
         self.windows.retain(|w| w.toplevel.alive());
         let alive: std::collections::HashSet<String> =
@@ -1610,6 +1768,15 @@ impl DrmSessionState {
         serial: Serial,
     ) {
         let requested_surface = surface.wl_surface();
+        let Some((window_id, start_geometry, window_position)) = self
+            .windows
+            .iter()
+            .find(|w| w.toplevel.wl_surface() == requested_surface)
+            .map(|window| (window.window_id.clone(), window.geometry(), window.position))
+        else {
+            tracing::debug!(?kind, "rejecting interactive request for an unknown window");
+            return;
+        };
         let same_surface = self
             .last_pointer_press
             .as_ref()
@@ -1618,61 +1785,90 @@ impl DrmSessionState {
             .last_pointer_press
             .as_ref()
             .map(|press| u32::from(press.serial));
+        let same_client = match (requested_surface.client(), seat.client()) {
+            (Some(surface_client), Some(seat_client)) => surface_client == seat_client,
+            _ => false,
+        };
         let authorized = pointer_grab_request_is_valid(
             u32::from(serial),
             pressed_serial,
             same_surface,
             self.left_button_down,
             self.seat.owns(seat),
-        );
+        ) && same_client;
         if !authorized {
             tracing::debug!(
                 request_serial = u32::from(serial),
                 ?kind,
                 same_surface,
+                same_client,
                 "rejecting unauthorized xdg move/resize request"
             );
             return;
         }
-        let Some(window) = self
-            .windows
-            .iter()
-            .find(|w| w.toplevel.wl_surface() == requested_surface)
-        else {
+        let Some(pointer) = self.seat.get_pointer() else {
+            tracing::debug!(?kind, "rejecting interactive request without a pointer");
             return;
         };
+        let pointer_location = pointer.current_location();
         self.interactive_grab = Some(InteractiveGrab {
-            window_id: window.window_id.clone(),
+            window_id: window_id.clone(),
             kind,
-            start_pointer_x: self.pointer_location.x.round() as i32,
-            start_pointer_y: self.pointer_location.y.round() as i32,
-            start_geometry: window.geometry(),
+            start_pointer_x: pointer_location.x.round() as i32,
+            start_pointer_y: pointer_location.y.round() as i32,
+            start_geometry,
         });
+        pointer.set_grab(
+            self,
+            InteractivePointerGrab {
+                start_data: GrabStartData {
+                    focus: Some((
+                        requested_surface.clone(),
+                        Point::from((window_position.x as f64, window_position.y as f64)),
+                    )),
+                    button: 0x110,
+                    location: pointer_location,
+                },
+            },
+            serial,
+            Focus::Keep,
+        );
+        if matches!(kind, InteractiveGrabKind::Resize(_)) {
+            surface.with_pending_state(|state| {
+                state.size = Some(Size::from((start_geometry.width, start_geometry.height)));
+                state.states.set(xdg_toplevel::State::Resizing);
+            });
+            surface.send_configure();
+        }
     }
 
-    fn update_interactive_grab(&mut self) {
+    fn update_interactive_grab(&mut self) -> bool {
         let Some(grab) = self.interactive_grab.clone() else {
-            return;
+            return false;
         };
         let Some(idx) = self
             .windows
             .iter()
             .position(|w| w.window_id == grab.window_id)
         else {
-            self.interactive_grab = None;
-            return;
+            self.finish_interactive_grab();
+            return false;
         };
+        let min_size = with_states(self.windows[idx].toplevel.wl_surface(), |states| {
+            let mut cached = states.cached_state.get::<SurfaceCachedState>();
+            cached.current().min_size
+        });
         let next = geometry_for_interactive_grab(
             &grab,
             self.pointer_location.x.round() as i32,
             self.pointer_location.y.round() as i32,
-            160,
-            96,
+            160.max(min_size.w),
+            96.max(min_size.h),
             self.output_size.0,
             self.output_size.1,
         );
         if self.windows[idx].geometry() == next {
-            return;
+            return true;
         }
         self.windows[idx].position = Point::from((next.x, next.y));
         self.windows[idx].size = Size::from((next.width, next.height));
@@ -1685,14 +1881,23 @@ impl DrmSessionState {
             toplevel.send_configure();
         }
         self.request_full_redraw();
+        true
     }
 
     fn finish_interactive_grab(&mut self) {
-        let Some(grab) = self.interactive_grab.take() else {
+        let Some(grab) = clear_interactive_grab_state(
+            &mut self.interactive_grab,
+            &mut self.last_pointer_press,
+            &mut self.left_button_down,
+        ) else {
             return;
         };
         if matches!(grab.kind, InteractiveGrabKind::Resize(_)) {
-            if let Some(window) = self.windows.iter().find(|w| w.window_id == grab.window_id) {
+            if let Some(window) = self
+                .windows
+                .iter()
+                .find(|w| w.window_id == grab.window_id && w.toplevel.alive())
+            {
                 let toplevel = window.toplevel.clone();
                 let size = window.size;
                 toplevel.with_pending_state(|state| {
@@ -1703,6 +1908,19 @@ impl DrmSessionState {
             }
         }
         self.request_full_redraw();
+    }
+
+    fn cancel_interactive_grab(&mut self) {
+        if self.interactive_grab.is_some() {
+            if let Some(pointer) = self.seat.get_pointer() {
+                pointer.unset_grab(self, self.next_serial(), 0);
+            } else {
+                self.finish_interactive_grab();
+            }
+        } else {
+            self.left_button_down = false;
+            self.last_pointer_press = None;
+        }
     }
 
     fn output_area(&self) -> WindowGeometry {
@@ -1899,7 +2117,6 @@ impl DrmSessionState {
                 let x = event.x_transformed(self.output_size.0);
                 let y = event.y_transformed(self.output_size.1);
                 self.pointer_location = Point::from((x, y));
-                self.update_interactive_grab();
                 self.forward_pointer_motion(event.time_msec());
                 // The DRM cursor is compositor-rendered, so pointer motion is
                 // damage even when no client surface changed.
@@ -1911,7 +2128,6 @@ impl DrmSessionState {
                 let x = (self.pointer_location.x + dx).clamp(0.0, self.output_size.0 as f64 - 1.0);
                 let y = (self.pointer_location.y + dy).clamp(0.0, self.output_size.1 as f64 - 1.0);
                 self.pointer_location = Point::from((x, y));
-                self.update_interactive_grab();
                 self.forward_pointer_motion(event.time_msec());
                 self.request_redraw();
             }
@@ -1922,10 +2138,6 @@ impl DrmSessionState {
                 let btn_state = event.state();
                 if button == 0x110 || button == 1 {
                     self.left_button_down = btn_state == ButtonState::Pressed;
-                    if btn_state == ButtonState::Released {
-                        self.finish_interactive_grab();
-                        self.last_pointer_press = None;
-                    }
                 }
 
                 if btn_state == ButtonState::Pressed && !self.locked {
@@ -1969,6 +2181,9 @@ impl DrmSessionState {
                         },
                     );
                     ptr.frame(self);
+                }
+                if (button == 0x110 || button == 1) && btn_state == ButtonState::Released {
+                    self.finish_interactive_grab();
                 }
             }
             _ => {}
@@ -2160,6 +2375,16 @@ impl DrmSessionState {
     }
 
     fn focus_surface(&mut self, surface: Option<WlSurface>) {
+        let keeps_interactive_grab = self.interactive_grab.as_ref().is_some_and(|grab| {
+            surface.as_ref().is_some_and(|surface| {
+                self.windows.iter().any(|window| {
+                    window.window_id == grab.window_id && window.toplevel.wl_surface() == surface
+                })
+            })
+        });
+        if self.interactive_grab.is_some() && !keeps_interactive_grab {
+            self.cancel_interactive_grab();
+        }
         self.sync_activated_for_surface(surface.as_ref());
         let active_app_id = surface.as_ref().and_then(|surface| {
             self.activated_window_for_surface(surface)
@@ -2545,10 +2770,27 @@ impl XdgShellHandler for DrmSessionState {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        let destroyed_surface = surface.wl_surface();
+        let destroys_grab = self.interactive_grab.as_ref().is_some_and(|grab| {
+            self.windows.iter().any(|window| {
+                window.window_id == grab.window_id
+                    && window.toplevel.wl_surface() == destroyed_surface
+            })
+        });
+        if destroys_grab {
+            self.cancel_interactive_grab();
+        } else if self
+            .last_pointer_press
+            .as_ref()
+            .is_some_and(|press| press.surface == *destroyed_surface)
+        {
+            self.last_pointer_press = None;
+            self.left_button_down = false;
+        }
         if let Some(idx) = self
             .windows
             .iter()
-            .position(|w| w.toplevel.wl_surface() == surface.wl_surface())
+            .position(|w| w.toplevel.wl_surface() == destroyed_surface)
         {
             let win = self.windows.remove(idx);
             self.workspace_state.remove_window(&win.window_id);

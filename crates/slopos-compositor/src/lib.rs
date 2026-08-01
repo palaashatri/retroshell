@@ -1651,7 +1651,24 @@ pub fn pointer_grab_request_is_valid(
     left_button_down: bool,
     seat_owned: bool,
 ) -> bool {
-    seat_owned && left_button_down && same_surface && pressed_serial == Some(request_serial)
+    request_serial != 0
+        && seat_owned
+        && left_button_down
+        && same_surface
+        && pressed_serial == Some(request_serial)
+}
+
+/// Clear the shared state that is valid only while the initiating left-button
+/// press is held. The backend performs any live-surface configure cleanup
+/// after taking the grab returned here.
+pub fn clear_interactive_grab_state<T>(
+    grab: &mut Option<InteractiveGrab>,
+    pointer_press: &mut Option<T>,
+    left_button_down: &mut bool,
+) -> Option<InteractiveGrab> {
+    *left_button_down = false;
+    pointer_press.take();
+    grab.take()
 }
 
 /// Resolve an interactive move/resize against the current pointer position.
@@ -1676,43 +1693,72 @@ pub fn geometry_for_interactive_grab(
     let output_height = output_height.max(min_height);
     let start = grab.start_geometry;
 
-    let mut result = match grab.kind {
+    match grab.kind {
         InteractiveGrabKind::Move => WindowGeometry::new(
-            start.x.saturating_add(dx),
-            start.y.saturating_add(dy),
+            start
+                .x
+                .saturating_add(dx)
+                .clamp(0, output_width.saturating_sub(start.width.max(0))),
+            start
+                .y
+                .saturating_add(dy)
+                .clamp(0, output_height.saturating_sub(start.height.max(0))),
             start.width,
             start.height,
         ),
         InteractiveGrabKind::Resize(edges) => {
-            let mut left = start.x;
-            let mut top = start.y;
-            let mut right = start.x.saturating_add(start.width);
-            let mut bottom = start.y.saturating_add(start.height);
-
-            if edges.left {
-                left = left.saturating_add(dx).min(right - min_width);
-            }
-            if edges.right {
-                right = right.saturating_add(dx).max(left + min_width);
-            }
-            if edges.top {
-                top = top.saturating_add(dy).min(bottom - min_height);
-            }
-            if edges.bottom {
-                bottom = bottom.saturating_add(dy).max(top + min_height);
-            }
-
-            WindowGeometry::new(left, top, right - left, bottom - top)
+            let (left, width) = resize_axis(
+                start.x,
+                start.width,
+                dx,
+                min_width,
+                output_width,
+                edges.left,
+                edges.right,
+            );
+            let (top, height) = resize_axis(
+                start.y,
+                start.height,
+                dy,
+                min_height,
+                output_height,
+                edges.top,
+                edges.bottom,
+            );
+            WindowGeometry::new(left, top, width, height)
         }
-    };
+    }
+}
 
-    result.width = result.width.clamp(min_width, output_width);
-    result.height = result.height.clamp(min_height, output_height);
-    result.x = result.x.clamp(0, output_width.saturating_sub(result.width));
-    result.y = result
-        .y
-        .clamp(0, output_height.saturating_sub(result.height));
-    result
+fn resize_axis(
+    start_position: i32,
+    start_size: i32,
+    delta: i32,
+    min_size: i32,
+    output_size: i32,
+    leading: bool,
+    trailing: bool,
+) -> (i32, i32) {
+    let start_end = start_position.saturating_add(start_size.max(0));
+    let mut position = start_position;
+    let mut end = start_end;
+
+    if leading {
+        let max_position = output_size
+            .saturating_sub(min_size)
+            .min(start_end.saturating_sub(min_size))
+            .max(0);
+        position = start_position.saturating_add(delta).clamp(0, max_position);
+    }
+    if trailing {
+        let min_end = position.saturating_add(min_size).min(output_size);
+        end = start_end.saturating_add(delta).clamp(min_end, output_size);
+    }
+
+    (
+        position,
+        end.saturating_sub(position).clamp(min_size, output_size),
+    )
 }
 
 pub fn cascade_position(offset: i32) -> (i32, i32) {
@@ -3507,6 +3553,16 @@ mod tests {
     }
 
     #[test]
+    fn interactive_move_uses_the_pointer_delta() {
+        let grab =
+            InteractiveGrab::moving("finder", 200, 150, WindowGeometry::new(80, 60, 320, 240));
+        assert_eq!(
+            geometry_for_interactive_grab(&grab, 245, 115, 160, 96, 1024, 768),
+            WindowGeometry::new(125, 25, 320, 240)
+        );
+    }
+
+    #[test]
     fn normal_window_is_clamped_to_scaled_work_area() {
         let desired = WindowGeometry::new(64, 64, DEFAULT_WINDOW_W, DEFAULT_WINDOW_H);
         let work_area = WindowGeometry::new(0, 19, 640, 317);
@@ -3562,6 +3618,135 @@ mod tests {
     }
 
     #[test]
+    fn interactive_resize_honours_each_edge_and_corner() {
+        let start = WindowGeometry::new(100, 100, 300, 200);
+        let cases = [
+            (
+                ResizeEdges::TOP,
+                (0, 50),
+                WindowGeometry::new(100, 150, 300, 150),
+            ),
+            (
+                ResizeEdges::BOTTOM,
+                (0, 50),
+                WindowGeometry::new(100, 100, 300, 250),
+            ),
+            (
+                ResizeEdges::LEFT,
+                (50, 0),
+                WindowGeometry::new(150, 100, 250, 200),
+            ),
+            (
+                ResizeEdges::RIGHT,
+                (50, 0),
+                WindowGeometry::new(100, 100, 350, 200),
+            ),
+            (
+                ResizeEdges::TOP_LEFT,
+                (50, 50),
+                WindowGeometry::new(150, 150, 250, 150),
+            ),
+            (
+                ResizeEdges::TOP_RIGHT,
+                (50, 50),
+                WindowGeometry::new(100, 150, 350, 150),
+            ),
+            (
+                ResizeEdges::BOTTOM_LEFT,
+                (50, 50),
+                WindowGeometry::new(150, 100, 250, 250),
+            ),
+            (
+                ResizeEdges::BOTTOM_RIGHT,
+                (50, 50),
+                WindowGeometry::new(100, 100, 350, 250),
+            ),
+        ];
+
+        for (edges, (dx, dy), expected) in cases {
+            let grab = InteractiveGrab::resizing("textedit", edges, 200, 200, start).unwrap();
+            assert_eq!(
+                geometry_for_interactive_grab(&grab, 200 + dx, 200 + dy, 160, 96, 1024, 768),
+                expected,
+                "resize edges {edges:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn interactive_resize_preserves_fixed_edges_at_output_boundaries() {
+        let start = WindowGeometry::new(100, 100, 300, 200);
+        let left =
+            InteractiveGrab::resizing("textedit", ResizeEdges::LEFT, 200, 200, start).unwrap();
+        assert_eq!(
+            geometry_for_interactive_grab(&left, -1_000, 200, 160, 96, 800, 600),
+            WindowGeometry::new(0, 100, 400, 200)
+        );
+
+        let top = InteractiveGrab::resizing("textedit", ResizeEdges::TOP, 200, 200, start).unwrap();
+        assert_eq!(
+            geometry_for_interactive_grab(&top, 200, -1_000, 160, 96, 800, 600),
+            WindowGeometry::new(100, 0, 300, 300)
+        );
+    }
+
+    #[test]
+    fn interactive_resize_clamps_every_edge_and_corner_to_minimum() {
+        let start = WindowGeometry::new(100, 100, 300, 200);
+        let cases = [
+            (
+                ResizeEdges::TOP,
+                (0, 250),
+                WindowGeometry::new(100, 180, 300, 120),
+            ),
+            (
+                ResizeEdges::BOTTOM,
+                (0, -250),
+                WindowGeometry::new(100, 100, 300, 120),
+            ),
+            (
+                ResizeEdges::LEFT,
+                (250, 0),
+                WindowGeometry::new(240, 100, 160, 200),
+            ),
+            (
+                ResizeEdges::RIGHT,
+                (-250, 0),
+                WindowGeometry::new(100, 100, 160, 200),
+            ),
+            (
+                ResizeEdges::TOP_LEFT,
+                (250, 250),
+                WindowGeometry::new(240, 180, 160, 120),
+            ),
+            (
+                ResizeEdges::TOP_RIGHT,
+                (-250, 250),
+                WindowGeometry::new(100, 180, 160, 120),
+            ),
+            (
+                ResizeEdges::BOTTOM_LEFT,
+                (250, -250),
+                WindowGeometry::new(240, 100, 160, 120),
+            ),
+            (
+                ResizeEdges::BOTTOM_RIGHT,
+                (-250, -250),
+                WindowGeometry::new(100, 100, 160, 120),
+            ),
+        ];
+
+        for (edges, (dx, dy), expected) in cases {
+            let grab = InteractiveGrab::resizing("textedit", edges, 200, 200, start).unwrap();
+            assert_eq!(
+                geometry_for_interactive_grab(&grab, 200 + dx, 200 + dy, 160, 120, 800, 600),
+                expected,
+                "minimum size for resize edges {edges:?}"
+            );
+        }
+    }
+
+    #[test]
     fn pointer_grab_requires_live_same_surface_press_and_owned_seat() {
         assert!(pointer_grab_request_is_valid(
             42,
@@ -3599,5 +3784,26 @@ mod tests {
             false
         ));
         assert!(!pointer_grab_request_is_valid(42, None, true, true, true));
+        assert!(!pointer_grab_request_is_valid(0, Some(0), true, true, true));
+    }
+
+    #[test]
+    fn releasing_interactive_grab_clears_grab_press_and_button_state() {
+        let mut grab = Some(InteractiveGrab::moving(
+            "finder",
+            10,
+            20,
+            WindowGeometry::new(40, 50, 300, 200),
+        ));
+        let mut pointer_press = Some(42_u32);
+        let mut left_button_down = true;
+
+        let released =
+            clear_interactive_grab_state(&mut grab, &mut pointer_press, &mut left_button_down);
+
+        assert!(released.is_some());
+        assert!(grab.is_none());
+        assert!(pointer_press.is_none());
+        assert!(!left_button_down);
     }
 }
