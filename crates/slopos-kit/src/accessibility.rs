@@ -87,10 +87,7 @@ pub fn drain_pending_actions() -> Vec<PendingAccessibleAction> {
 
 /// Number of queued DoAction requests.
 pub fn pending_action_count() -> usize {
-    pending_action_queue()
-        .lock()
-        .map(|q| q.len())
-        .unwrap_or(0)
+    pending_action_queue().lock().map(|q| q.len()).unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +263,7 @@ pub fn role_to_atspi_role(role: AccessibilityRole) -> u32 {
         AccessibilityRole::SplitView => 53,     // SPLIT_PANE
         AccessibilityRole::Notification => 101, // NOTIFICATION
         // Dock has no dedicated AtspiRole; TOOL_BAR is the closest structural match.
-        AccessibilityRole::Dock => 63, // TOOL_BAR
+        AccessibilityRole::Dock => 63,    // TOOL_BAR
         AccessibilityRole::Desktop => 14, // DESKTOP_FRAME
         AccessibilityRole::Unknown => 67, // UNKNOWN
     }
@@ -381,9 +378,10 @@ pub fn shell_chrome_accessibility_tree(app_name: &str) -> AccessibilityTree {
     tree.add(AccessibilityNode::new(AccessibilityRole::Window, app_name));
 
     let mut notify = AccessibilityNode::new(AccessibilityRole::Notification, "Notification Center");
-    notify
-        .children
-        .push(AccessibilityNode::new(AccessibilityRole::List, "Notifications"));
+    notify.children.push(AccessibilityNode::new(
+        AccessibilityRole::List,
+        "Notifications",
+    ));
     tree.add(notify);
 
     tree
@@ -770,9 +768,7 @@ impl ChromeFocusRegion {
         match self {
             Self::MenuBar => matches!(
                 role,
-                AccessibilityRole::MenuBar
-                    | AccessibilityRole::Menu
-                    | AccessibilityRole::MenuItem
+                AccessibilityRole::MenuBar | AccessibilityRole::Menu | AccessibilityRole::MenuItem
             ),
             Self::DesktopIcons => matches!(
                 role,
@@ -1243,13 +1239,7 @@ fn emit_serialized_on_connection(conn: &Connection, s: &SerializedAtspiEvent) ->
         Value::from(s.any_data.as_str()),
         props,
     );
-    match conn.emit_signal(
-        None::<&str>,
-        s.path.as_str(),
-        s.interface,
-        s.member,
-        &body,
-    ) {
+    match conn.emit_signal(None::<&str>, s.path.as_str(), s.interface, s.member, &body) {
         Ok(()) => {
             tracing::debug!(
                 path = %s.path,
@@ -1793,7 +1783,11 @@ struct AtspiAction {
 }
 
 impl AtspiAction {
-    fn from_role(role: AccessibilityRole, path: impl Into<String>, object_name: impl Into<String>) -> Self {
+    fn from_role(
+        role: AccessibilityRole,
+        path: impl Into<String>,
+        object_name: impl Into<String>,
+    ) -> Self {
         Self {
             path: path.into(),
             object_name: object_name.into(),
@@ -2118,10 +2112,7 @@ pub fn register_at_spi_app_with_tree(
             parent_path: ATSPI_NULL_PATH.to_string(),
             child_paths: child_paths.clone(),
             index_in_parent: -1,
-            state: state_to_atspi_bitset(
-                &AccessibilityState::default(),
-                AccessibilityRole::Window,
-            ),
+            state: state_to_atspi_bitset(&AccessibilityState::default(), AccessibilityRole::Window),
             accessible_id: "root".to_string(),
             interfaces: vec![
                 ATSPI_ACCESSIBLE_IFACE.to_string(),
@@ -2524,7 +2515,10 @@ mod tests {
             "/org/a11y/atspi/accessible/2"
         ));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
-        assert!(!try_invoke_registered_action(ACTION_FOCUS, "/org/a11y/atspi/accessible/2"));
+        assert!(!try_invoke_registered_action(
+            ACTION_FOCUS,
+            "/org/a11y/atspi/accessible/2"
+        ));
         clear_action_invoke_handlers();
         assert_eq!(action_invoke_handler_count(), 0);
     }
@@ -2596,10 +2590,7 @@ mod tests {
             .iter()
             .find(|n| n.label == "SLOPOS")
             .expect("Retro menu");
-        assert!(retro
-            .children
-            .iter()
-            .any(|c| c.label == "Lock Screen"));
+        assert!(retro.children.iter().any(|c| c.label == "Lock Screen"));
         assert!(tree
             .nodes
             .iter()
@@ -2638,18 +2629,12 @@ mod tests {
 
     #[test]
     fn next_chrome_focus_region_starts_at_menu_bar() {
-        assert_eq!(
-            next_chrome_focus_region(None),
-            ChromeFocusRegion::MenuBar
-        );
+        assert_eq!(next_chrome_focus_region(None), ChromeFocusRegion::MenuBar);
         assert_eq!(
             next_chrome_focus_region(Some(ChromeFocusRegion::MenuBar)),
             ChromeFocusRegion::DesktopIcons
         );
-        assert_eq!(
-            prev_chrome_focus_region(None),
-            ChromeFocusRegion::Dock
-        );
+        assert_eq!(prev_chrome_focus_region(None), ChromeFocusRegion::Dock);
     }
 
     #[test]
@@ -2822,8 +2807,12 @@ mod tests {
     fn event_bus_push_pop_drain_fifo() {
         let mut bus = AccessibilityEventBus::new();
         assert!(bus.is_empty());
-        bus.push(AccessibleEvent::object_created("/org/a11y/atspi/accessible/0"));
-        bus.push(AccessibleEvent::object_destroyed("/org/a11y/atspi/accessible/1"));
+        bus.push(AccessibleEvent::object_created(
+            "/org/a11y/atspi/accessible/0",
+        ));
+        bus.push(AccessibleEvent::object_destroyed(
+            "/org/a11y/atspi/accessible/1",
+        ));
         assert_eq!(bus.len(), 2);
 
         let first = bus.pop().expect("first event");
@@ -2923,9 +2912,9 @@ mod tests {
         tree.focus_changed_index(0, &mut bus);
         assert!(tree.get(0).unwrap().state.focused);
         let events = bus.drain();
-        assert!(events.iter().any(|e| {
-            e.kind == AccessibleEventKind::Focus && e.path == atspi_object_path(0)
-        }));
+        assert!(events
+            .iter()
+            .any(|e| { e.kind == AccessibleEventKind::Focus && e.path == atspi_object_path(0) }));
     }
 
     #[test]

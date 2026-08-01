@@ -175,11 +175,7 @@ fn char_from_keycode(code: KeyCode, shift: bool) -> Option<char> {
         KeyCode::Equals => '=',
         _ => return None,
     };
-    Some(if shift {
-        ch.to_ascii_uppercase()
-    } else {
-        ch
-    })
+    Some(if shift { ch.to_ascii_uppercase() } else { ch })
 }
 
 /// Decode wl_keyboard mods_depressed (standard xkb mask) into kit Modifiers.
@@ -449,12 +445,13 @@ fn paint_all(state: &mut LayerDesktopState, runtime: &mut UiRuntime) -> anyhow::
     let dock_h = DOCK_H as f32;
 
     // Sync Overlay popup size/margins before painting (may need a configure).
-    let dropdown = runtime.with_root_content_mut(|w| {
-        w.as_any_mut()
-            .downcast_mut::<ShellDesktop>()
-            .and_then(|d| d.open_menu_dropdown_geo())
-    })
-    .flatten();
+    let dropdown = runtime
+        .with_root_content_mut(|w| {
+            w.as_any_mut()
+                .downcast_mut::<ShellDesktop>()
+                .and_then(|d| d.open_menu_dropdown_geo())
+        })
+        .flatten();
     if let Some(surf) = state
         .surfaces
         .iter_mut()
@@ -598,9 +595,10 @@ fn map_pointer_to_desktop(
         ChromeSurfaceKind::Background | ChromeSurfaceKind::Menu => {
             (surface_x as f32, surface_y as f32)
         }
-        ChromeSurfaceKind::MenuPopup => {
-            (popup_origin.0 + surface_x as f32, popup_origin.1 + surface_y as f32)
-        }
+        ChromeSurfaceKind::MenuPopup => (
+            popup_origin.0 + surface_x as f32,
+            popup_origin.1 + surface_y as f32,
+        ),
         ChromeSurfaceKind::Dock => {
             let y = (output_h.saturating_sub(DOCK_H) as f64) + surface_y;
             (surface_x as f32, y as f32)
@@ -764,10 +762,7 @@ impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for LayerDesk
                 let Some(mouse) = mouse_button_from_linux(button) else {
                     return;
                 };
-                let pressed = matches!(
-                    btn_state,
-                    WEnum::Value(wl_pointer::ButtonState::Pressed)
-                );
+                let pressed = matches!(btn_state, WEnum::Value(wl_pointer::ButtonState::Pressed));
                 let (px, py) = state.last_pointer;
                 let (dx, dy) = map_pointer_to_desktop(
                     state.pointer_kind,
@@ -826,9 +821,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for LayerDesktopState {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_keyboard::Event::Modifiers {
-                mods_depressed, ..
-            } => {
+            wl_keyboard::Event::Modifiers { mods_depressed, .. } => {
                 state.modifiers = modifiers_from_xkb_mask(mods_depressed);
                 if let Some(runtime) = state.runtime.as_mut() {
                     runtime.set_modifiers(state.modifiers);
@@ -845,10 +838,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for LayerDesktopState {
                 let Some(code) = keycode_from_linux(key) else {
                     return;
                 };
-                let pressed = matches!(
-                    key_state,
-                    WEnum::Value(wl_keyboard::KeyState::Pressed)
-                );
+                let pressed = matches!(key_state, WEnum::Value(wl_keyboard::KeyState::Pressed));
                 let mods = state.modifiers;
                 let ev = if pressed {
                     Event::KeyDown {

@@ -1,6 +1,6 @@
+use crate::{BusMessage, Result};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use crate::{BusMessage, Result};
 
 pub trait Transport: Send + Sync {
     fn send(&self, message: BusMessage) -> Result<()>;

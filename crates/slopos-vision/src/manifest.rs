@@ -197,7 +197,10 @@ mod tests {
         let manifest = load_manifest(dir.path()).unwrap();
         assert_eq!(manifest.models.len(), 1);
         assert_eq!(manifest.by_id("ocr-det").unwrap().architecture, "DBNet");
-        assert_eq!(manifest.by_id("ocr-det").unwrap().input_shape, vec![1, 3, -1, -1]);
+        assert_eq!(
+            manifest.by_id("ocr-det").unwrap().input_shape,
+            vec![1, 3, -1, -1]
+        );
         assert_eq!(manifest.by_purpose("text_detection").count(), 1);
     }
 

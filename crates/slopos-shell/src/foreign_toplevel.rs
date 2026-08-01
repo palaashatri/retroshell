@@ -330,8 +330,7 @@ mod tests {
 
     #[test]
     fn terminal_app_id_gets_workspace_from_rules() {
-        let entry =
-            ForeignToplevelEntry::new("term-1", "bash", "org.slopos-i.Terminal", Some(99));
+        let entry = ForeignToplevelEntry::new("term-1", "bash", "org.slopos-i.Terminal", Some(99));
         assert_eq!(
             entry.workspace,
             Some(1),

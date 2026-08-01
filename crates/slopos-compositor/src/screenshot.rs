@@ -120,6 +120,7 @@ fn capture(
     let path = shot_path();
     let img = image::RgbaImage::from_raw(w as u32, h as u32, rgba)
         .ok_or_else(|| anyhow::anyhow!("RgbaImage::from_raw: buffer size mismatch"))?;
-    img.save(&path).map_err(|e| anyhow::anyhow!("save {path}: {e}"))?;
+    img.save(&path)
+        .map_err(|e| anyhow::anyhow!("save {path}: {e}"))?;
     Ok(path)
 }

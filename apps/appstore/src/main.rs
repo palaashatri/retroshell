@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports)]
+
 use slopos_kit::button::Button;
 use slopos_kit::event::{KeyCode, Modifiers};
 use slopos_kit::label::Label;
@@ -109,11 +111,7 @@ impl CatalogStore {
     }
 
     fn status_text(&self) -> String {
-        format!(
-            "CATALOG - {} ({} apps)",
-            self.source,
-            self.entries.len()
-        )
+        format!("CATALOG - {} ({} apps)", self.source, self.entries.len())
     }
 
     fn list_lines(&self) -> Vec<String> {
@@ -149,7 +147,10 @@ impl CatalogStore {
                 .map(|app| format!("[AVAILABLE] {}", app))
                 .collect();
             if fallback.is_empty() {
-                Ok(vec![format!("NO RESULTS FOR {}", query.to_ascii_uppercase())])
+                Ok(vec![format!(
+                    "NO RESULTS FOR {}",
+                    query.to_ascii_uppercase()
+                )])
             } else {
                 Ok(fallback)
             }
@@ -669,14 +670,22 @@ impl Widget for AppStoreView {
         let pb_h = 14.0;
         self.progress_bar
             .set_rect(Rect::new(content_x, y, content_w.min(320.0), pb_h));
-        let _ = self
-            .progress_bar
-            .layout(LayoutConstraint::tight(Size::new(content_w.min(320.0), pb_h)));
-        self.progress_label
-            .set_rect(Rect::new(content_x + content_w.min(320.0) + 10.0, y, content_w - content_w.min(320.0) - 10.0, pb_h));
+        let _ = self.progress_bar.layout(LayoutConstraint::tight(Size::new(
+            content_w.min(320.0),
+            pb_h,
+        )));
+        self.progress_label.set_rect(Rect::new(
+            content_x + content_w.min(320.0) + 10.0,
+            y,
+            content_w - content_w.min(320.0) - 10.0,
+            pb_h,
+        ));
         let _ = self
             .progress_label
-            .layout(LayoutConstraint::tight(Size::new(content_w - content_w.min(320.0) - 10.0, pb_h)));
+            .layout(LayoutConstraint::tight(Size::new(
+                content_w - content_w.min(320.0) - 10.0,
+                pb_h,
+            )));
         y += pb_h + 8.0;
 
         // Main area: category sidebar (left) + package list (center) + detail panel (right)
@@ -943,7 +952,10 @@ mod tests {
             point,
             modifiers: Modifiers::NONE,
         });
-        assert!(matches!(down, EventResult::Handled), "press must land on a widget");
+        assert!(
+            matches!(down, EventResult::Handled),
+            "press must land on a widget"
+        );
         view.handle_event(&Event::MouseUp {
             button: MouseButton::Left,
             point,
@@ -966,7 +978,10 @@ mod tests {
 
         assert!(matches!(result, EventResult::Handled));
         assert!(
-            view.results.items.iter().any(|line| line.contains("NO RESULTS"))
+            view.results
+                .items
+                .iter()
+                .any(|line| line.contains("NO RESULTS"))
                 || view.status.text.contains("0 RESULTS"),
             "search ran with no matches: status={} results={:?}",
             view.status.text,
@@ -994,7 +1009,11 @@ mod tests {
 
         assert!(matches!(down, EventResult::Handled));
         assert_eq!(view.results.selected_index, Some(1));
-        assert!(view.status.text.contains("SELECTED - TextEdit"), "{}", view.status.text);
+        assert!(
+            view.status.text.contains("SELECTED - TextEdit"),
+            "{}",
+            view.status.text
+        );
         assert!(view.detail_name.text.contains("TEXTEDIT"));
     }
 
@@ -1080,7 +1099,10 @@ mod tests {
 
     #[test]
     fn category_filter_all_returns_all_items() {
-        let items = vec!["curl - transfer tool".to_string(), "vim - editor".to_string()];
+        let items = vec![
+            "curl - transfer tool".to_string(),
+            "vim - editor".to_string(),
+        ];
         let filtered = filter_by_category(&items, &[]);
         assert_eq!(filtered.len(), 2);
     }
@@ -1114,6 +1136,6 @@ mod tests {
         ];
         view.category_index = 6;
         view.apply_category_filter();
-        assert!(view.results.items.len() >= 1);
+        assert!(!view.results.items.is_empty());
     }
 }

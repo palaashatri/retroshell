@@ -389,7 +389,10 @@ mod tests {
         let mut view = view_with_tall_content();
         view.scroll_y = 80.0;
         view.layout(LayoutConstraint::tight(Size::new(100.0, 100.0)));
-        assert_eq!(view.scroll_y, 80.0, "still in range against the original content");
+        assert_eq!(
+            view.scroll_y, 80.0,
+            "still in range against the original content"
+        );
 
         // Swap in shorter content; re-laying out must pull the now
         // out-of-range offset back to (content - viewport).max(0) rather
@@ -481,7 +484,8 @@ mod tests {
             }
             fn draw(&self, _theme: &ThemeContext) {}
             fn handle_event(&mut self, _event: &Event) -> EventResult {
-                self.handled.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.handled
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 EventResult::Handled
             }
             fn as_any(&self) -> &dyn std::any::Any {

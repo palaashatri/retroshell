@@ -217,7 +217,7 @@ impl Widget for TreeView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{MouseButton, Modifiers};
+    use crate::event::{Modifiers, MouseButton};
     use crate::Point;
 
     /// Builds the same sidebar shape `apps/finder` constructs: two expanded

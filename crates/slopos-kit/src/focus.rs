@@ -365,7 +365,10 @@ mod tests {
             fm.dispatch_key(&mut root, &ev),
             EventResult::Handled
         ));
-        assert_eq!(root.children[0].hits, 1, "only the focused widget receives it");
+        assert_eq!(
+            root.children[0].hits, 1,
+            "only the focused widget receives it"
+        );
         assert_eq!(root.children[1].hits, 0);
 
         // Re-focusing the other widget stops the first one from receiving
@@ -390,6 +393,9 @@ mod tests {
             fm.dispatch_key(&mut root, &ev),
             EventResult::Ignored
         ));
-        assert_eq!(root.children[0].hits, 1, "was tried, but declined the event");
+        assert_eq!(
+            root.children[0].hits, 1,
+            "was tried, but declined the event"
+        );
     }
 }

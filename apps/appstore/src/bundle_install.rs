@@ -3,6 +3,8 @@
 //! This cycle verifies a checksum from the catalog against the downloaded archive.
 //! Cryptographic signing (ed25519/minisign) is future hardening — not implemented here.
 
+#![allow(dead_code, unused_imports)]
+
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -41,10 +43,7 @@ pub fn install_from_archive(
     let got = sha256_hex_file(archive)?;
     let expected = expected_sha256.to_ascii_lowercase();
     if got != expected {
-        return Err(InstallError::Checksum {
-            expected,
-            got,
-        });
+        return Err(InstallError::Checksum { expected, got });
     }
 
     fs::create_dir_all(install_dir).map_err(|e| InstallError::Io(e.to_string()))?;
@@ -100,7 +99,9 @@ fn sha256_hex_file(path: &Path) -> Result<String, InstallError> {
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 8192];
     loop {
-        let n = file.read(&mut buf).map_err(|e| InstallError::Io(e.to_string()))?;
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| InstallError::Io(e.to_string()))?;
         if n == 0 {
             break;
         }
@@ -111,9 +112,12 @@ fn sha256_hex_file(path: &Path) -> Result<String, InstallError> {
 
 fn is_safe_tar_path(path: &Path) -> bool {
     !path.is_absolute()
-        && path
-            .components()
-            .all(|c| !matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
+        && path.components().all(|c| {
+            !matches!(
+                c,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
 }
 
 fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<(), InstallError> {
@@ -200,18 +204,26 @@ mod tests {
 
     #[test]
     fn install_from_archive_checksum_mismatch() {
-        let work = std::env::temp_dir().join(format!("rs_appstore_checksum_{}", std::process::id()));
+        let work =
+            std::env::temp_dir().join(format!("rs_appstore_checksum_{}", std::process::id()));
         fs::create_dir_all(&work).unwrap();
         let install_dir = work.join("Applications");
         fs::create_dir_all(&install_dir).unwrap();
 
         let (archive, _) = build_tiny_app_tar_gz(&work);
-        let err = install_from_archive(&archive, "0000000000000000000000000000000000000000000000000000000000000000", &install_dir)
-            .unwrap_err();
+        let err = install_from_archive(
+            &archive,
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            &install_dir,
+        )
+        .unwrap_err();
 
         match err {
             InstallError::Checksum { expected, got } => {
-                assert_eq!(expected, "0000000000000000000000000000000000000000000000000000000000000000");
+                assert_eq!(
+                    expected,
+                    "0000000000000000000000000000000000000000000000000000000000000000"
+                );
                 assert_ne!(got, expected);
             }
             other => panic!("expected Checksum error, got {:?}", other),

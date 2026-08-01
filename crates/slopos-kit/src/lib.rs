@@ -40,9 +40,9 @@ pub use accessibility::{
     register_at_spi_app, register_at_spi_app_with_tree, register_at_spi_shell_chrome,
     role_has_actions, role_to_atspi_role, sanitize_path_segment, serialize_event_for_dbus,
     shell_chrome_accessibility_tree, state_to_atspi_bitset, try_emit_atspi_dbus_event,
-    try_invoke_registered_action, AccessibleAction, AccessibleEvent, AccessibleEventKind,
-    AccessibilityEventBus, AccessibilityNode, AccessibilityRole, AccessibilityState,
-    AccessibilityTree, ActionInvokeHandler, AtSpiRegistrationInfo, ChromeFocusRegion, EventQueue,
+    try_invoke_registered_action, AccessibilityEventBus, AccessibilityNode, AccessibilityRole,
+    AccessibilityState, AccessibilityTree, AccessibleAction, AccessibleEvent, AccessibleEventKind,
+    ActionInvokeHandler, AtSpiRegistrationInfo, ChromeFocusRegion, EventQueue,
     PendingAccessibleAction, SerializedAtspiEvent, ACTION_ACTIVATE, ACTION_FOCUS, ACTION_PRESS,
     ATSPI_ACCESSIBLE_IFACE, ATSPI_ACCESSIBLE_PREFIX, ATSPI_ACTION_IFACE, ATSPI_APPLICATION_IFACE,
     ATSPI_EVENT_FOCUS_IFACE, ATSPI_EVENT_OBJECT_IFACE, ATSPI_NULL_PATH, ATSPI_ROOT_PATH,
@@ -56,7 +56,6 @@ pub use dispatch::{
 };
 pub use dnd::{DragData, DragSession, DragSource, DropTarget};
 pub use dock_view::{DockView, DockViewItem};
-pub use workspace_grid_view::WorkspaceGridView;
 pub use event::{Event, EventHandler, EventResult};
 pub use focus::FocusManager;
 pub use icon_view::IconView;
@@ -69,9 +68,9 @@ pub use monospace_view::{MonospaceCell, MonospaceView};
 pub use panel::Panel;
 pub use popup_button::PopupButton;
 pub use progress_bar::ProgressBar;
-pub use slopos_render::Color;
 pub use scroll_view::ScrollView;
 pub use slider::Slider;
+pub use slopos_render::Color;
 pub use split_view::SplitView;
 pub use status_bar::{StatusBar, StatusBarAlignment, StatusBarItem};
 pub use tab_view::{Tab, TabView};
@@ -81,6 +80,7 @@ pub use toolbar::Toolbar;
 pub use tree_view::TreeView;
 pub use widget::{Widget, WidgetId, WidgetState};
 pub use window::Window;
+pub use workspace_grid_view::WorkspaceGridView;
 
 pub type Result<T> = std::result::Result<T, KitError>;
 

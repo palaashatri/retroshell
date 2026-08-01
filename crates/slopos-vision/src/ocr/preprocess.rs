@@ -45,7 +45,8 @@ pub fn det_preprocess(img: &RgbImage) -> DetPreprocessed {
     let resize_h = resize_to_multiple_of_32((src_h as f64 * ratio) as f32);
     let resize_w = resize_to_multiple_of_32((src_w as f64 * ratio) as f32);
 
-    let resized: RgbImage = imageops::resize(img, resize_w, resize_h, imageops::FilterType::Triangle);
+    let resized: RgbImage =
+        imageops::resize(img, resize_w, resize_h, imageops::FilterType::Triangle);
 
     let scale = 1.0f32 / 255.0;
     let mean = [0.485f32, 0.456, 0.406];
@@ -196,9 +197,18 @@ mod tests {
         // channels 1/2 (G/R) sit near their ImageNet means -> negative.
         let plane = (32 * 32) as usize;
         for i in 0..plane {
-            assert!((p.data[i] - ((1.0 - 0.485) / 0.229)).abs() < 1e-4, "ch0 should be blue");
-            assert!(p.data[plane + i] < -1.0, "ch1 (green) should be far below zero");
-            assert!(p.data[2 * plane + i] < -1.0, "ch2 (red) should be far below zero");
+            assert!(
+                (p.data[i] - ((1.0 - 0.485) / 0.229)).abs() < 1e-4,
+                "ch0 should be blue"
+            );
+            assert!(
+                p.data[plane + i] < -1.0,
+                "ch1 (green) should be far below zero"
+            );
+            assert!(
+                p.data[2 * plane + i] < -1.0,
+                "ch2 (red) should be far below zero"
+            );
         }
     }
 
@@ -215,7 +225,10 @@ mod tests {
             for y in 0..48usize {
                 for x in 0..100usize {
                     let v = p.data[ch * plane + y * 320 + x];
-                    assert!((v - 1.0).abs() < 1e-4, "expected 1.0 at ch={ch} ({x},{y}), got {v}");
+                    assert!(
+                        (v - 1.0).abs() < 1e-4,
+                        "expected 1.0 at ch={ch} ({x},{y}), got {v}"
+                    );
                 }
                 for x in 100..320usize {
                     assert_eq!(p.data[ch * plane + y * 320 + x], 0.0, "padding must be 0.0");
@@ -237,7 +250,10 @@ mod tests {
             for y in 0..48usize {
                 for x in 0..192usize {
                     let v = narrow.data[ch * plane + y * 320 + x];
-                    assert!((v + 1.0).abs() < 1e-4, "expected -1.0 at ch={ch} ({x},{y}), got {v}");
+                    assert!(
+                        (v + 1.0).abs() < 1e-4,
+                        "expected -1.0 at ch={ch} ({x},{y}), got {v}"
+                    );
                 }
                 for x in 192..320usize {
                     assert_eq!(narrow.data[ch * plane + y * 320 + x], 0.0);
@@ -261,8 +277,14 @@ mod tests {
             for x in 0..48usize {
                 let idx = y * 320 + x;
                 assert!((p.data[idx] - 1.0).abs() < 1e-4, "ch0 should be blue ~ 1.0");
-                assert!((p.data[plane + idx] + 1.0).abs() < 1e-4, "ch1 (green) should be -1.0");
-                assert!((p.data[2 * plane + idx] + 1.0).abs() < 1e-4, "ch2 (red) should be -1.0");
+                assert!(
+                    (p.data[plane + idx] + 1.0).abs() < 1e-4,
+                    "ch1 (green) should be -1.0"
+                );
+                assert!(
+                    (p.data[2 * plane + idx] + 1.0).abs() < 1e-4,
+                    "ch2 (red) should be -1.0"
+                );
             }
         }
     }

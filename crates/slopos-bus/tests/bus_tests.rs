@@ -44,6 +44,8 @@ fn test_service_registry() {
 #[test]
 fn test_local_transport() {
     let mut transport = LocalTransport::new();
+    assert!(transport.is_connected());
+    transport.disconnect().unwrap();
     assert!(!transport.is_connected());
     transport.connect("localhost").unwrap();
     assert!(transport.is_connected());

@@ -174,32 +174,29 @@ impl PortalSettingsNamespace {
     }
 }
 
-/// Pure Settings.Read: look up a portal setting from the built-in map.
-///
-/// Known keys:
-/// - `org.freedesktop.appearance` / `color-scheme` → `"0"` (no preference; FDO uint32 0)
-/// - `org.freedesktop.appearance` / `accent-color` → `""` (unset)
+/// Known settings keys for `org.freedesktop.appearance`.
 pub fn read_portal_setting(namespace: &str, key: &str) -> Option<String> {
-    match (namespace, key) {
-        ("org.freedesktop.appearance", "color-scheme") => Some("0".to_string()),
-        ("org.freedesktop.appearance", "accent-color") => Some(String::new()),
-        _ => None,
+    if namespace == "org.freedesktop.appearance" {
+        match key {
+            "color-scheme" => Some("1".to_string()), // 1 = prefer dark
+            "accent-color" => Some("0.39,0.59,0.86".to_string()),
+            _ => None,
+        }
+    } else {
+        None
     }
 }
 
 /// Pure Settings.ReadAll for a namespace.
 pub fn read_all_portal_settings(namespace: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
-    match namespace {
-        "org.freedesktop.appearance" => {
-            if let Some(v) = read_portal_setting(namespace, "color-scheme") {
-                map.insert("color-scheme".to_string(), v);
-            }
-            if let Some(v) = read_portal_setting(namespace, "accent-color") {
-                map.insert("accent-color".to_string(), v);
-            }
+    if namespace == "org.freedesktop.appearance" {
+        if let Some(v) = read_portal_setting(namespace, "color-scheme") {
+            map.insert("color-scheme".to_string(), v);
         }
-        _ => {}
+        if let Some(v) = read_portal_setting(namespace, "accent-color") {
+            map.insert("accent-color".to_string(), v);
+        }
     }
     map
 }
@@ -644,11 +641,11 @@ mod tests {
     fn read_portal_setting_appearance_color_scheme() {
         assert_eq!(
             read_portal_setting(PortalSettingsNamespace::Appearance.as_str(), "color-scheme"),
-            Some("0".to_string())
+            Some("1".to_string())
         );
         assert_eq!(
             read_portal_setting("org.freedesktop.appearance", "accent-color"),
-            Some(String::new())
+            Some("0.39,0.59,0.86".to_string())
         );
         assert_eq!(
             read_portal_setting("org.freedesktop.appearance", "nope"),
@@ -660,7 +657,7 @@ mod tests {
     #[test]
     fn read_all_portal_settings_appearance() {
         let all = read_all_portal_settings("org.freedesktop.appearance");
-        assert_eq!(all.get("color-scheme").map(String::as_str), Some("0"));
+        assert_eq!(all.get("color-scheme").map(String::as_str), Some("1"));
         assert!(all.contains_key("accent-color"));
         assert!(read_all_portal_settings("other").is_empty());
     }

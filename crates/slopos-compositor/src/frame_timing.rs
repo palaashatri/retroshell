@@ -28,6 +28,7 @@ impl RefreshRate {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         Self::parse_flexible(s)
     }
@@ -160,7 +161,7 @@ mod tests {
         assert!(RefreshRate::Hz60.frame_duration().as_millis() <= 17);
         assert!(RefreshRate::Hz120.frame_duration().as_millis() <= 9);
         assert!(RefreshRate::Hz144.frame_duration().as_millis() <= 7);
-        assert!(RefreshRate::Adaptive.is_fixed() == false);
+        assert!(!RefreshRate::Adaptive.is_fixed());
         assert!(RefreshRate::Hz60.is_fixed());
     }
 
@@ -175,10 +176,16 @@ mod tests {
     fn test_refresh_rate_deserialize() {
         assert_eq!(RefreshRate::from_str("60hz"), Some(RefreshRate::Hz60));
         assert_eq!(RefreshRate::from_str("120hz"), Some(RefreshRate::Hz120));
-        assert_eq!(RefreshRate::from_str("adaptive"), Some(RefreshRate::Adaptive));
+        assert_eq!(
+            RefreshRate::from_str("adaptive"),
+            Some(RefreshRate::Adaptive)
+        );
         assert_eq!(RefreshRate::from_str("invalid"), None);
         assert_eq!(RefreshRate::parse_flexible("60"), Some(RefreshRate::Hz60));
-        assert_eq!(RefreshRate::parse_flexible("VRR"), Some(RefreshRate::Adaptive));
+        assert_eq!(
+            RefreshRate::parse_flexible("VRR"),
+            Some(RefreshRate::Adaptive)
+        );
     }
 
     #[test]

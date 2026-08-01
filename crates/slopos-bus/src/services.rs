@@ -14,7 +14,10 @@ pub struct WifiNetwork {
 pub enum NetworkStatus {
     Disconnected,
     Connecting,
-    Connected { ip_address: String, ssid: Option<String> },
+    Connected {
+        ip_address: String,
+        ssid: Option<String>,
+    },
 }
 
 pub trait NetworkServiceTrait {

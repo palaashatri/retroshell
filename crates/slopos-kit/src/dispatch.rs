@@ -65,11 +65,7 @@ pub fn widget_at(root: &dyn Widget, at: Point) -> Option<WidgetId> {
 /// (previously drawn) sibling in the same way. A child whose rect does not
 /// contain `at`, or that is hidden/disabled, is skipped without ever being
 /// asked to handle the event.
-pub fn dispatch_positional(
-    children: &mut [&mut dyn Widget],
-    at: Point,
-    ev: &Event,
-) -> EventResult {
+pub fn dispatch_positional(children: &mut [&mut dyn Widget], at: Point, ev: &Event) -> EventResult {
     match dispatch_positional_traced(children, at, ev) {
         Some((_, result)) => result,
         None => EventResult::Ignored,
@@ -367,7 +363,10 @@ mod tests {
         let child = TestWidget::new(Rect::new(0.0, 0.0, 50.0, 100.0)).with_child(grandchild);
         let root = TestWidget::new(Rect::new(0.0, 0.0, 100.0, 100.0)).with_child(child);
 
-        assert_eq!(widget_at(&root, Point::new(10.0, 10.0)), Some(grandchild_id));
+        assert_eq!(
+            widget_at(&root, Point::new(10.0, 10.0)),
+            Some(grandchild_id)
+        );
     }
 
     #[test]
@@ -441,8 +440,14 @@ mod tests {
 
         assert!(matches!(result, EventResult::Handled));
         assert_eq!(root.hits, 0);
-        assert_eq!(root.children[0].hits, 1, "child handled after grandchild ignored");
-        assert_eq!(root.children[0].children[0].hits, 1, "grandchild was tried first");
+        assert_eq!(
+            root.children[0].hits, 1,
+            "child handled after grandchild ignored"
+        );
+        assert_eq!(
+            root.children[0].children[0].hits, 1,
+            "grandchild was tried first"
+        );
     }
 
     #[test]
@@ -457,7 +462,10 @@ mod tests {
         let result = dispatch_pointer(&mut root, Point::new(10.0, 10.0), &ev);
 
         assert!(matches!(result, EventResult::Handled));
-        assert_eq!(root.hits, 1, "everything below ignored; root finally handles it");
+        assert_eq!(
+            root.hits, 1,
+            "everything below ignored; root finally handles it"
+        );
         assert_eq!(root.children[0].hits, 1);
         assert_eq!(root.children[0].children[0].hits, 1);
     }
@@ -489,7 +497,10 @@ mod tests {
 
         assert!(matches!(result, EventResult::Handled));
         assert_eq!(root.hits, 1);
-        assert_eq!(root.children[0].hits, 0, "hidden child must never be invoked");
+        assert_eq!(
+            root.children[0].hits, 0,
+            "hidden child must never be invoked"
+        );
     }
 
     // ---- dispatch_positional (direct) ----------------------------------

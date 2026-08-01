@@ -8,6 +8,7 @@ members = [
     "crates/slopos-sdk",
     "crates/slopos-compositor",
     "crates/slopos-session",
+    "crates/slopos-fonts",
     "crates/slopos-vision",
     "crates/slopos-vision-protocol",
     "crates/slopos-vision-client",

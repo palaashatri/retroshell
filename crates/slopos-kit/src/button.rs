@@ -201,11 +201,17 @@ mod tests {
         let mut button = Button::new("OK");
         button.set_rect(Rect::new(0.0, 0.0, 40.0, 28.0));
 
-        assert!(matches!(button.handle_event(&down(100.0, 100.0)), EventResult::Ignored));
+        assert!(matches!(
+            button.handle_event(&down(100.0, 100.0)),
+            EventResult::Ignored
+        ));
         assert!(!button.pressed);
 
         // A stray MouseUp inside, with no prior press, must not fire.
-        assert!(matches!(button.handle_event(&up(10.0, 10.0)), EventResult::Ignored));
+        assert!(matches!(
+            button.handle_event(&up(10.0, 10.0)),
+            EventResult::Ignored
+        ));
         assert!(!button.take_clicked());
     }
 
@@ -218,9 +224,15 @@ mod tests {
         });
         button.set_rect(Rect::new(0.0, 0.0, 40.0, 28.0));
 
-        assert!(matches!(button.handle_event(&down(10.0, 10.0)), EventResult::Handled));
+        assert!(matches!(
+            button.handle_event(&down(10.0, 10.0)),
+            EventResult::Handled
+        ));
         assert!(button.pressed);
-        assert!(matches!(button.handle_event(&up(10.0, 10.0)), EventResult::Handled));
+        assert!(matches!(
+            button.handle_event(&up(10.0, 10.0)),
+            EventResult::Handled
+        ));
         assert!(!button.pressed);
         assert_eq!(count.load(Ordering::SeqCst), 1);
 
@@ -240,7 +252,10 @@ mod tests {
 
         button.handle_event(&down(10.0, 10.0));
         assert!(button.pressed);
-        assert!(matches!(button.handle_event(&up(500.0, 500.0)), EventResult::Ignored));
+        assert!(matches!(
+            button.handle_event(&up(500.0, 500.0)),
+            EventResult::Ignored
+        ));
         assert_eq!(count.load(Ordering::SeqCst), 0);
         assert!(!button.take_clicked());
     }
@@ -256,12 +271,18 @@ mod tests {
 
         button.handle_event(&down(10.0, 10.0));
         assert!(button.pressed);
-        assert!(matches!(button.handle_event(&Event::MouseLeave), EventResult::Handled));
+        assert!(matches!(
+            button.handle_event(&Event::MouseLeave),
+            EventResult::Handled
+        ));
         assert!(!button.pressed);
 
         // Even if a MouseUp later lands back inside the rect, the cancelled
         // press must not fire.
-        assert!(matches!(button.handle_event(&up(10.0, 10.0)), EventResult::Ignored));
+        assert!(matches!(
+            button.handle_event(&up(10.0, 10.0)),
+            EventResult::Ignored
+        ));
         assert_eq!(count.load(Ordering::SeqCst), 0);
     }
 
@@ -272,11 +293,20 @@ mod tests {
 
         // Press inside, release outside (delivered via pointer capture).
         button.handle_event(&down(10.0, 10.0));
-        assert!(matches!(button.handle_event(&up(500.0, 500.0)), EventResult::Ignored));
-        assert!(!button.pressed, "press must be cancelled, not left dangling");
+        assert!(matches!(
+            button.handle_event(&up(500.0, 500.0)),
+            EventResult::Ignored
+        ));
+        assert!(
+            !button.pressed,
+            "press must be cancelled, not left dangling"
+        );
 
         // A later unrelated release inside must not fire the stale press.
-        assert!(matches!(button.handle_event(&up(10.0, 10.0)), EventResult::Ignored));
+        assert!(matches!(
+            button.handle_event(&up(10.0, 10.0)),
+            EventResult::Ignored
+        ));
         assert!(!button.take_clicked());
     }
 
@@ -337,7 +367,10 @@ mod tests {
             point: Point::new(500.0, 500.0),
             modifiers: Modifiers::NONE,
         };
-        assert!(matches!(button.handle_event(&outside), EventResult::Ignored));
+        assert!(matches!(
+            button.handle_event(&outside),
+            EventResult::Ignored
+        ));
         assert!(!button.state.hovered);
     }
 }

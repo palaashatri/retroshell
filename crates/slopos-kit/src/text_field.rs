@@ -1,8 +1,8 @@
 use crate::{
     event::{KeyCode, MouseButton},
     theme::ThemeContext,
-    AccessibilityNode, AccessibilityRole, Event, EventResult, LayoutConstraint, Rect, Size,
-    Widget, WidgetState,
+    AccessibilityNode, AccessibilityRole, Event, EventResult, LayoutConstraint, Rect, Size, Widget,
+    WidgetState,
 };
 
 pub struct TextField {
@@ -180,9 +180,8 @@ impl Widget for TextField {
                 // good enough to land the caret near the click without real
                 // text shaping here.
                 const CHAR_WIDTH: f32 = 7.0;
-                let clicked_chars = ((point.x - self.rect().x) / CHAR_WIDTH)
-                    .round()
-                    .max(0.0) as usize;
+                let clicked_chars =
+                    ((point.x - self.rect().x) / CHAR_WIDTH).round().max(0.0) as usize;
                 self.set_cursor_to_char_index(clicked_chars);
                 EventResult::Handled
             }

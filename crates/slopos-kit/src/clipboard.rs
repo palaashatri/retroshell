@@ -49,9 +49,7 @@ impl Clipboard {
         }
 
         // Fall back to file-based clipboard.
-        if let Some(content) =
-            clipboard_path().and_then(|path| fs::read_to_string(path).ok())
-        {
+        if let Some(content) = clipboard_path().and_then(|path| fs::read_to_string(path).ok()) {
             let mut guard = CLIPBOARD_CONTENT.lock();
             *guard = content.clone();
             return content;

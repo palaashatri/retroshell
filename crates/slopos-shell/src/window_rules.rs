@@ -17,6 +17,7 @@ pub enum MatchKind {
     Glob,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for MatchKind {
     fn default() -> Self {
         Self::Contains

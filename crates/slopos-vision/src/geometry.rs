@@ -62,10 +62,7 @@ pub fn convex_hull(mut points: Vec<Point>) -> Vec<Point> {
     points.sort_by(|a, b| {
         a[0].partial_cmp(&b[0])
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(
-                a[1].partial_cmp(&b[1])
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
+            .then(a[1].partial_cmp(&b[1]).unwrap_or(std::cmp::Ordering::Equal))
     });
     points.dedup();
     if points.len() <= 2 {
@@ -109,10 +106,22 @@ impl RotatedRect {
         let hw = self.width / 2.0;
         let hh = self.height / 2.0;
         [
-            [self.center[0] - hw * ux - hh * nx, self.center[1] - hw * uy - hh * ny],
-            [self.center[0] + hw * ux - hh * nx, self.center[1] + hw * uy - hh * ny],
-            [self.center[0] + hw * ux + hh * nx, self.center[1] + hw * uy + hh * ny],
-            [self.center[0] - hw * ux + hh * nx, self.center[1] - hw * uy + hh * ny],
+            [
+                self.center[0] - hw * ux - hh * nx,
+                self.center[1] - hw * uy - hh * ny,
+            ],
+            [
+                self.center[0] + hw * ux - hh * nx,
+                self.center[1] + hw * uy - hh * ny,
+            ],
+            [
+                self.center[0] + hw * ux + hh * nx,
+                self.center[1] + hw * uy + hh * ny,
+            ],
+            [
+                self.center[0] - hw * ux + hh * nx,
+                self.center[1] - hw * uy + hh * ny,
+            ],
         ]
     }
 
@@ -144,7 +153,10 @@ pub fn min_area_rect(points: &[Point]) -> RotatedRect {
             let dy = hull[1][1] - hull[0][1];
             let len = dx.hypot(dy);
             RotatedRect {
-                center: [(hull[0][0] + hull[1][0]) / 2.0, (hull[0][1] + hull[1][1]) / 2.0],
+                center: [
+                    (hull[0][0] + hull[1][0]) / 2.0,
+                    (hull[0][1] + hull[1][1]) / 2.0,
+                ],
                 width: len,
                 height: 0.0,
                 angle: dy.atan2(dx),
@@ -204,8 +216,16 @@ pub fn get_mini_boxes(rect: &RotatedRect) -> (Quad, f64) {
     let mut points = corners.to_vec();
     points.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(std::cmp::Ordering::Equal));
 
-    let (index_1, index_4) = if points[1][1] > points[0][1] { (0, 1) } else { (1, 0) };
-    let (index_2, index_3) = if points[3][1] > points[2][1] { (2, 3) } else { (3, 2) };
+    let (index_1, index_4) = if points[1][1] > points[0][1] {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    let (index_2, index_3) = if points[3][1] > points[2][1] {
+        (2, 3)
+    } else {
+        (3, 2)
+    };
 
     let quad = Quad {
         p: [
@@ -333,7 +353,7 @@ pub fn expand_polygon(pts: &[Point], distance: f64) -> Vec<Point> {
 
 /// Solve a small square linear system via Gaussian elimination with partial
 /// pivoting.
-fn solve_linear(a: &mut Vec<Vec<f64>>, b: &mut Vec<f64>) -> Option<Vec<f64>> {
+fn solve_linear(a: &mut [Vec<f64>], b: &mut [f64]) -> Option<Vec<f64>> {
     let n = b.len();
     for col in 0..n {
         let mut pivot = col;
@@ -350,8 +370,9 @@ fn solve_linear(a: &mut Vec<Vec<f64>>, b: &mut Vec<f64>) -> Option<Vec<f64>> {
         for row in 0..n {
             if row != col {
                 let factor = a[row][col] / a[col][col];
-                for k in col..n {
-                    a[row][k] -= factor * a[col][k];
+                let a_col_val = a[col].clone();
+                for (a_row_k, a_col_k) in a[row][col..n].iter_mut().zip(&a_col_val[col..n]) {
+                    *a_row_k -= factor * a_col_k;
                 }
                 b[row] -= factor * b[col];
             }
@@ -378,11 +399,7 @@ pub fn homography(src: &[Point; 4], dst: &[Point; 4]) -> Option<[[f64; 3]; 3]> {
         b.push(dy);
     }
     let h = solve_linear(&mut a, &mut b)?;
-    Some([
-        [h[0], h[1], h[2]],
-        [h[3], h[4], h[5]],
-        [h[6], h[7], 1.0],
-    ])
+    Some([[h[0], h[1], h[2]], [h[3], h[4], h[5]], [h[6], h[7], 1.0]])
 }
 
 fn invert_homography(h: &[[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
@@ -393,9 +410,8 @@ fn invert_homography(h: &[[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
         return None;
     }
     let inv = 1.0 / det;
-    let co = |r0: usize, c0: usize, r1: usize, c1: usize| {
-        h[r0][c0] * h[r1][c1] - h[r0][c1] * h[r1][c0]
-    };
+    let co =
+        |r0: usize, c0: usize, r1: usize, c1: usize| h[r0][c0] * h[r1][c1] - h[r0][c1] * h[r1][c0];
     Some([
         [
             inv * co(1, 1, 2, 2),
@@ -581,12 +597,7 @@ mod tests {
     #[test]
     fn quad_contains() {
         let quad = Quad {
-            p: [
-                [0.0, 0.0],
-                [10.0, 0.0],
-                [10.0, 5.0],
-                [0.0, 5.0],
-            ],
+            p: [[0.0, 0.0], [10.0, 0.0], [10.0, 5.0], [0.0, 5.0]],
         };
         assert!(quad.contains([5.0, 2.0]));
         assert!(!quad.contains([11.0, 2.0]));
@@ -595,12 +606,7 @@ mod tests {
 
     #[test]
     fn homography_identity() {
-        let quad = [
-            [0.0, 0.0],
-            [10.0, 0.0],
-            [10.0, 10.0],
-            [0.0, 10.0],
-        ];
+        let quad = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]];
         let h = homography(&quad, &quad).unwrap();
         for (i, p) in quad.iter().enumerate() {
             let w = h[2][0] * p[0] + h[2][1] * p[1] + h[2][2];
@@ -620,12 +626,7 @@ mod tests {
             }
         }
         let src = Quad {
-            p: [
-                [2.0, 2.0],
-                [18.0, 2.0],
-                [18.0, 18.0],
-                [2.0, 18.0],
-            ],
+            p: [[2.0, 2.0], [18.0, 2.0], [18.0, 18.0], [2.0, 18.0]],
         };
         let out = warp_perspective(&img, &src, 16, 16);
         assert_eq!(out.width(), 16);

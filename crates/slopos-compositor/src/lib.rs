@@ -1,11 +1,16 @@
 //! Shared compositor policy that can be tested without a live Wayland server.
 
+pub mod client_spawn;
 pub mod frame_timing;
 pub mod hdr;
 pub mod perf_budget;
+pub mod window_state;
 pub mod workspace_focus;
-pub mod client_spawn;
 
+pub use window_state::{
+    calculate_presentation_geometry, TilePlacement, WindowPresentationState, WindowRestoreState,
+    ZoomAction, ZoomPolicyConfig,
+};
 pub use workspace_focus::{
     assign_new_window_to_active, focus_window_after_workspace_switch, hit_test_allowed,
     move_window_to_index, should_clear_focus_after_workspace_switch, visible_paint_order,
@@ -24,6 +29,7 @@ pub mod drm_props;
 /// theme dependency).
 #[cfg(target_os = "linux")]
 pub mod cursor_theme;
+#[cfg(target_os = "linux")]
 pub mod screenshot;
 
 use std::collections::HashMap;
@@ -111,7 +117,11 @@ pub fn session_mode_summary(kind: CompositorBackendKind) -> String {
 /// Scale is pure compositor policy (logical→physical). Nested X11 may still
 /// present a 1:1 framebuffer until the backend applies buffer scale.
 pub fn session_mode_note(kind: CompositorBackendKind, scale: OutputScale) -> String {
-    format!("{}; {}", session_mode_summary(kind), output_scale_summary(scale))
+    format!(
+        "{}; {}",
+        session_mode_summary(kind),
+        output_scale_summary(scale)
+    )
 }
 
 pub const DEFAULT_OUTPUT_W: i32 = 1024;
@@ -167,7 +177,10 @@ pub fn discover_drm_nodes_from_names(dir: &Path, names: &[String]) -> Vec<DrmNod
 
 /// Pick the preferred DRM primary node for session bootstrap.
 pub fn preferred_primary_drm_node(nodes: &[DrmNodePath]) -> Option<&DrmNodePath> {
-    nodes.iter().find(|n| n.is_primary).or_else(|| nodes.first())
+    nodes
+        .iter()
+        .find(|n| n.is_primary)
+        .or_else(|| nodes.first())
 }
 
 /// Layer-shell role labels used by shell chrome (bar/dock/notifications).
@@ -297,8 +310,7 @@ pub fn plan_compose_order(layer_z: &[u8]) -> ComposeOrder {
     }
     under.sort_by_key(|(z, i)| (*z, *i));
     over.sort_by_key(|(z, i)| (*z, *i));
-    let mut layer_indices_bottom_first: Vec<usize> =
-        under.into_iter().map(|(_, i)| i).collect();
+    let mut layer_indices_bottom_first: Vec<usize> = under.into_iter().map(|(_, i)| i).collect();
     layer_indices_bottom_first.extend(over.into_iter().map(|(_, i)| i));
     ComposeOrder {
         layer_indices_bottom_first,
@@ -372,6 +384,7 @@ pub struct DrmModesetPlan {
 ///
 /// Prefers the first connected connector with a preferred mode; falls back to env-sized
 /// virtual mode when none are connected (nested/test).
+#[allow(clippy::type_complexity)]
 pub fn plan_drm_modeset(
     connectors: &[(String, bool, Option<(i32, i32, i32)>)],
     fallback_w: i32,
@@ -517,10 +530,7 @@ pub fn parse_outputs_spec(spec: &str) -> Vec<OutputConfig> {
         if part.is_empty() {
             continue;
         }
-        let Some((w_str, h_str)) = part
-            .split_once('x')
-            .or_else(|| part.split_once('X'))
-        else {
+        let Some((w_str, h_str)) = part.split_once('x').or_else(|| part.split_once('X')) else {
             continue;
         };
         let Ok(w) = w_str.trim().parse::<i32>() else {
@@ -602,7 +612,12 @@ fn parse_one_outputs_layout_entry(part: &str) -> Option<LayoutOutputEntry> {
     // Optional trailing :sSCALE (shell always emits it; tolerate absence).
     let (geom, scale_percent) = match rest.rsplit_once(":s") {
         Some((g, s)) => {
-            let pct = s.trim().parse::<u32>().ok().filter(|&p| p > 0).unwrap_or(100);
+            let pct = s
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .filter(|&p| p > 0)
+                .unwrap_or(100);
             (g, pct)
         }
         None => (rest, 100u32),
@@ -610,9 +625,7 @@ fn parse_one_outputs_layout_entry(part: &str) -> Option<LayoutOutputEntry> {
 
     // geom = WIDTHxHEIGHT@x,y
     let (size, pos) = geom.split_once('@')?;
-    let (w_str, h_str) = size
-        .split_once('x')
-        .or_else(|| size.split_once('X'))?;
+    let (w_str, h_str) = size.split_once('x').or_else(|| size.split_once('X'))?;
     let (x_str, y_str) = pos.split_once(',')?;
 
     let w = w_str.trim().parse::<i32>().ok()?;
@@ -814,11 +827,7 @@ impl ResolvedOutputsLayout {
             .iter()
             .enumerate()
             .map(|(i, o)| {
-                let name = self
-                    .names
-                    .get(i)
-                    .map(|s| s.as_str())
-                    .unwrap_or("?");
+                let name = self.names.get(i).map(|s| s.as_str()).unwrap_or("?");
                 format!(
                     "{} {}x{}@({},{})",
                     name, o.config.width, o.config.height, o.x, o.y
@@ -896,9 +905,7 @@ pub fn resolve_laid_out_outputs_from_env_values(
 /// else WIDTH/HEIGHT defaults.
 pub fn resolve_laid_out_outputs_from_env() -> ResolvedOutputsLayout {
     resolve_laid_out_outputs_from_env_values(
-        std::env::var("SLOPOS_OUTPUTS_LAYOUT")
-            .ok()
-            .as_deref(),
+        std::env::var("SLOPOS_OUTPUTS_LAYOUT").ok().as_deref(),
         std::env::var("SLOPOS_OUTPUTS").ok(),
         std::env::var("SLOPOS_COMPOSITOR_WIDTH").ok(),
         std::env::var("SLOPOS_COMPOSITOR_HEIGHT").ok(),
@@ -937,11 +944,13 @@ impl OutputScale {
         if numerator == 0 || denominator == 0 {
             return None;
         }
-        Some(Self {
-            numerator,
-            denominator,
-        }
-        .reduced())
+        Some(
+            Self {
+                numerator,
+                denominator,
+            }
+            .reduced(),
+        )
     }
 
     /// Floating-point scale factor (`numerator / denominator`).
@@ -1317,7 +1326,6 @@ impl WindowGeometry {
     }
 }
 
-
 /// Edges involved in a compositor-owned interactive resize operation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ResizeEdges {
@@ -1328,14 +1336,54 @@ pub struct ResizeEdges {
 }
 
 impl ResizeEdges {
-    pub const TOP: Self = Self { top: true, bottom: false, left: false, right: false };
-    pub const BOTTOM: Self = Self { top: false, bottom: true, left: false, right: false };
-    pub const LEFT: Self = Self { top: false, bottom: false, left: true, right: false };
-    pub const RIGHT: Self = Self { top: false, bottom: false, left: false, right: true };
-    pub const TOP_LEFT: Self = Self { top: true, bottom: false, left: true, right: false };
-    pub const TOP_RIGHT: Self = Self { top: true, bottom: false, left: false, right: true };
-    pub const BOTTOM_LEFT: Self = Self { top: false, bottom: true, left: true, right: false };
-    pub const BOTTOM_RIGHT: Self = Self { top: false, bottom: true, left: false, right: true };
+    pub const TOP: Self = Self {
+        top: true,
+        bottom: false,
+        left: false,
+        right: false,
+    };
+    pub const BOTTOM: Self = Self {
+        top: false,
+        bottom: true,
+        left: false,
+        right: false,
+    };
+    pub const LEFT: Self = Self {
+        top: false,
+        bottom: false,
+        left: true,
+        right: false,
+    };
+    pub const RIGHT: Self = Self {
+        top: false,
+        bottom: false,
+        left: false,
+        right: true,
+    };
+    pub const TOP_LEFT: Self = Self {
+        top: true,
+        bottom: false,
+        left: true,
+        right: false,
+    };
+    pub const TOP_RIGHT: Self = Self {
+        top: true,
+        bottom: false,
+        left: false,
+        right: true,
+    };
+    pub const BOTTOM_LEFT: Self = Self {
+        top: false,
+        bottom: true,
+        left: true,
+        right: false,
+    };
+    pub const BOTTOM_RIGHT: Self = Self {
+        top: false,
+        bottom: true,
+        left: false,
+        right: true,
+    };
 
     pub fn is_empty(self) -> bool {
         !(self.top || self.bottom || self.left || self.right)
@@ -1449,7 +1497,9 @@ pub fn geometry_for_interactive_grab(
     result.width = result.width.clamp(min_width, output_width);
     result.height = result.height.clamp(min_height, output_height);
     result.x = result.x.clamp(0, output_width.saturating_sub(result.width));
-    result.y = result.y.clamp(0, output_height.saturating_sub(result.height));
+    result.y = result
+        .y
+        .clamp(0, output_height.saturating_sub(result.height));
     result
 }
 
@@ -1632,7 +1682,6 @@ fn settings_conf_path() -> Option<PathBuf> {
     }
     None
 }
-
 
 // ---------------------------------------------------------------------------
 // Text-input / IME policy (pure) — Phase D8 scaffold
@@ -2045,10 +2094,7 @@ impl WorkspaceState {
     /// One-line label for compositor / session logs.
     pub fn summary_line(&self) -> String {
         let counts = self.counts_per_workspace();
-        let visible = counts
-            .get(self.active.as_usize())
-            .copied()
-            .unwrap_or(0);
+        let visible = counts.get(self.active.as_usize()).copied().unwrap_or(0);
         let dist: String = counts
             .iter()
             .enumerate()
@@ -2096,7 +2142,11 @@ impl WorkspaceState {
     }
 
     /// Apply a workspace assignment from window rules (clamped id).
-    pub fn apply_rule_workspace(&mut self, window_id: impl Into<String>, workspace_index: u8) -> bool {
+    pub fn apply_rule_workspace(
+        &mut self,
+        window_id: impl Into<String>,
+        workspace_index: u8,
+    ) -> bool {
         match WorkspaceId::new(workspace_index) {
             Some(ws) => self.assign_window(window_id, ws),
             None => false,
@@ -2246,8 +2296,14 @@ mod tests {
         );
         assert_eq!(resolved.source, OutputsLayoutSource::LayoutSpec);
         assert_eq!(resolved.laid_out.len(), 2);
-        assert_eq!(resolved.names, vec!["eDP-1".to_string(), "HDMI-1".to_string()]);
-        assert_eq!((resolved.laid_out[1].x, resolved.laid_out[1].y), (1920, 100));
+        assert_eq!(
+            resolved.names,
+            vec!["eDP-1".to_string(), "HDMI-1".to_string()]
+        );
+        assert_eq!(
+            (resolved.laid_out[1].x, resolved.laid_out[1].y),
+            (1920, 100)
+        );
         assert_eq!(resolved.laid_out[1].config.width, 1280);
         let s = resolved.summary();
         assert!(s.contains("SLOPOS_OUTPUTS_LAYOUT"), "summary={s}");
@@ -2300,11 +2356,23 @@ mod tests {
     fn parse_layout_mode_side_stack_grid_and_default() {
         assert_eq!(parse_layout_mode(None), OutputLayoutMode::SideBySide);
         assert_eq!(parse_layout_mode(Some("")), OutputLayoutMode::SideBySide);
-        assert_eq!(parse_layout_mode(Some("nope")), OutputLayoutMode::SideBySide);
-        assert_eq!(parse_layout_mode(Some("side")), OutputLayoutMode::SideBySide);
-        assert_eq!(parse_layout_mode(Some("SIDE")), OutputLayoutMode::SideBySide);
+        assert_eq!(
+            parse_layout_mode(Some("nope")),
+            OutputLayoutMode::SideBySide
+        );
+        assert_eq!(
+            parse_layout_mode(Some("side")),
+            OutputLayoutMode::SideBySide
+        );
+        assert_eq!(
+            parse_layout_mode(Some("SIDE")),
+            OutputLayoutMode::SideBySide
+        );
         assert_eq!(parse_layout_mode(Some("stack")), OutputLayoutMode::Stacked);
-        assert_eq!(parse_layout_mode(Some("stacked")), OutputLayoutMode::Stacked);
+        assert_eq!(
+            parse_layout_mode(Some("stacked")),
+            OutputLayoutMode::Stacked
+        );
         assert_eq!(parse_layout_mode(Some("grid")), OutputLayoutMode::Grid);
         assert_eq!(OutputLayoutMode::default(), OutputLayoutMode::SideBySide);
     }
@@ -2444,16 +2512,8 @@ mod tests {
     fn client_window_stack_map_focus_z_order() {
         let mut stack = ClientWindowStack::new();
         // Non-overlapping geometries so click-to-raise is unambiguous.
-        let a = stack.map_window_at(
-            "Finder",
-            101,
-            WindowGeometry::new(0, 0, 100, 100),
-        );
-        let b = stack.map_window_at(
-            "Terminal",
-            102,
-            WindowGeometry::new(200, 0, 100, 100),
-        );
+        let a = stack.map_window_at("Finder", 101, WindowGeometry::new(0, 0, 100, 100));
+        let b = stack.map_window_at("Terminal", 102, WindowGeometry::new(200, 0, 100, 100));
         assert_eq!(stack.len(), 2);
         assert_eq!(stack.focused().map(|w| w.id.clone()), Some(b.clone()));
         assert_eq!(stack.z_order_ids(), vec![a.clone(), b.clone()]);
@@ -2464,10 +2524,7 @@ mod tests {
 
         let hit = stack.focus_at(210.0, 10.0).expect("hit terminal");
         assert_eq!(hit, b);
-        assert_eq!(
-            stack.focused().map(|w| w.title.as_str()),
-            Some("Terminal")
-        );
+        assert_eq!(stack.focused().map(|w| w.title.as_str()), Some("Terminal"));
 
         assert!(stack.unmap(&a));
         assert_eq!(stack.len(), 1);
@@ -2801,7 +2858,7 @@ mod tests {
     fn scale_zero_and_negative_dims_do_not_inflate() {
         let two = OutputScale::new(2, 1).unwrap();
         assert_eq!(scale_logical_to_physical((0, 0), two), (0, 0));
-        assert_eq!(scale_logical_to_physical((-4, 10), two), (0.min(-4), 20));
+        assert_eq!(scale_logical_to_physical((-4, 10), two), (-4, 20));
     }
 
     #[test]
@@ -2904,7 +2961,10 @@ mod tests {
 
     #[test]
     fn text_input_capability_env_parses() {
-        assert_eq!(text_input_capability_from_env(None), TextInputCapability::None);
+        assert_eq!(
+            text_input_capability_from_env(None),
+            TextInputCapability::None
+        );
         assert_eq!(
             text_input_capability_from_env(Some("v3")),
             TextInputCapability::TextInputV3
@@ -3210,5 +3270,4 @@ mod tests {
             WindowGeometry::new(190, 40, 160, 200)
         );
     }
-
 }

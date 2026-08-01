@@ -1,3 +1,11 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    clippy::manual_clamp,
+    clippy::io_other_error,
+    clippy::if_same_then_else
+)]
+
 pub mod a11y_actions;
 pub mod a11y_prefs;
 pub mod application_registry;
@@ -482,8 +490,7 @@ impl ShellDesktop {
 
     /// Lay out the dock at the origin for painting onto a dock-height strip surface.
     pub(crate) fn prepare_dock_strip_layout(&mut self, width: f32, dock_h: f32) {
-        self.dock_view
-            .set_rect(Rect::new(0.0, 0.0, width, dock_h));
+        self.dock_view.set_rect(Rect::new(0.0, 0.0, width, dock_h));
         let _ = self
             .dock_view
             .layout(LayoutConstraint::tight(Size::new(width, dock_h)));
@@ -491,8 +498,7 @@ impl ShellDesktop {
 
     /// Lay out the menu bar at the origin for a menu-height strip surface.
     pub(crate) fn prepare_menu_strip_layout(&mut self, width: f32, menu_h: f32) {
-        self.menu_bar
-            .set_rect(Rect::new(0.0, 0.0, width, menu_h));
+        self.menu_bar.set_rect(Rect::new(0.0, 0.0, width, menu_h));
         let _ = self
             .menu_bar
             .layout(LayoutConstraint::tight(Size::new(width, menu_h)));
@@ -737,14 +743,12 @@ impl ShellDesktop {
                         .title()
                         .to_ascii_lowercase()
                         .contains(&app_id.to_ascii_lowercase());
-                if title_match || app_title_match {
-                    if shell_window.workspace != ws {
-                        shell_window.workspace = ws;
-                        self.window_manager
-                            .write()
-                            .assign_workspace(shell_window.id, ws);
-                        moved += 1;
-                    }
+                if (title_match || app_title_match) && shell_window.workspace != ws {
+                    shell_window.workspace = ws;
+                    self.window_manager
+                        .write()
+                        .assign_workspace(shell_window.id, ws);
+                    moved += 1;
                 }
             }
         }
@@ -990,10 +994,10 @@ impl ShellDesktop {
         let mut window = build_message_window(&title, lines);
         window.set_rect(rect);
         let workspace = self.active_workspace();
-        let id = self
-            .window_manager
-            .write()
-            .create_window("com.slopos.shell", window.title(), rect);
+        let id =
+            self.window_manager
+                .write()
+                .create_window("com.slopos.shell", window.title(), rect);
         self.window_manager.write().assign_workspace(id, workspace);
         self.windows.push(ShellWindow {
             id,
@@ -1339,10 +1343,10 @@ impl ShellDesktop {
         window.set_rect(rect);
 
         let workspace = self.active_workspace();
-        let id = self
-            .window_manager
-            .write()
-            .create_window("com.slopos.shell", window.title(), rect);
+        let id =
+            self.window_manager
+                .write()
+                .create_window("com.slopos.shell", window.title(), rect);
         self.window_manager.write().assign_workspace(id, workspace);
         self.windows.push(ShellWindow {
             id,
@@ -2450,10 +2454,10 @@ impl ShellDesktop {
         window.set_rect(rect);
 
         let workspace = self.active_workspace();
-        let id = self
-            .window_manager
-            .write()
-            .create_window("com.slopos.shell", window.title(), rect);
+        let id =
+            self.window_manager
+                .write()
+                .create_window("com.slopos.shell", window.title(), rect);
         self.window_manager.write().assign_workspace(id, workspace);
         self.windows.push(ShellWindow {
             id,
@@ -2571,10 +2575,10 @@ impl ShellDesktop {
         window.set_rect(rect);
 
         let workspace = self.active_workspace();
-        let id = self
-            .window_manager
-            .write()
-            .create_window("com.slopos.shell", window.title(), rect);
+        let id =
+            self.window_manager
+                .write()
+                .create_window("com.slopos.shell", window.title(), rect);
         self.window_manager.write().assign_workspace(id, workspace);
         self.windows.push(ShellWindow {
             id,
@@ -3200,8 +3204,7 @@ impl Widget for ShellDesktop {
         self.layout_windows();
 
         if self.spotlight_ui.is_visible() {
-            self.spotlight_ui
-                .layout_for_screen(size.width, size.height);
+            self.spotlight_ui.layout_for_screen(size.width, size.height);
         }
 
         size
@@ -3669,11 +3672,11 @@ impl Widget for ShellDesktop {
                 inhibit.add(*reason);
             }
             let phase = idle_phase(&self.idle_config, idle_secs, self.locked, &inhibit);
-            if recommended_action(phase, self.locked) == IdleRecommendedAction::Lock {
-                if self.expected_lock_password.is_some() {
-                    tracing::info!(idle_secs, "idle policy: auto-lock");
-                    self.handle_session_action(session_actions::SessionAction::Lock);
-                }
+            if recommended_action(phase, self.locked) == IdleRecommendedAction::Lock
+                && self.expected_lock_password.is_some()
+            {
+                tracing::info!(idle_secs, "idle policy: auto-lock");
+                self.handle_session_action(session_actions::SessionAction::Lock);
             }
         }
 
@@ -5384,7 +5387,13 @@ mod tests {
 
         // Show overlay
         desktop.spotlight_ui.show();
-        let apps = desktop.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
+        let apps = desktop
+            .launch_services
+            .read()
+            .bundles
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         desktop.spotlight_ui.update_results(&apps);
 
         // Type 's' to match settings
@@ -5427,7 +5436,13 @@ mod tests {
 
         // Show overlay and populate results
         desktop.spotlight_ui.show();
-        let apps = desktop.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
+        let apps = desktop
+            .launch_services
+            .read()
+            .bundles
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         desktop.spotlight_ui.update_results(&apps);
 
         // Initial selection at index 0
@@ -5456,7 +5471,13 @@ mod tests {
 
         // Show overlay
         desktop.spotlight_ui.show();
-        let apps = desktop.launch_services.read().bundles.values().cloned().collect::<Vec<_>>();
+        let apps = desktop
+            .launch_services
+            .read()
+            .bundles
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         desktop.spotlight_ui.update_results(&apps);
 
         // Search for 'vol' to match Volume setting

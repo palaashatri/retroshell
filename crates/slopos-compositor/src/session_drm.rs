@@ -26,16 +26,16 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
+use smithay::backend::allocator::Fourcc as DrmFourcc;
 use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::DrmDeviceFd;
+use smithay::backend::egl::{EGLContext, EGLDisplay};
+use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::element::surface::{
     render_elements_from_surface_tree, WaylandSurfaceRenderElement,
 };
 use smithay::backend::renderer::element::Kind;
-use smithay::backend::allocator::Fourcc as DrmFourcc;
-use smithay::backend::egl::{EGLContext, EGLDisplay};
-use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
@@ -46,17 +46,17 @@ use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::{EventLoop, LoopSignal};
 // Use smithay's rustix reexport so OFlags matches Session::open.
+use smithay::desktop::utils::send_frames_surface_tree;
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
-use smithay::reexports::wayland_server::backend::{
-    ClientData, ClientId, DisconnectReason,
-};
+use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::{
     wl_buffer, wl_data_source::WlDataSource, wl_seat, wl_surface::WlSurface,
 };
 use smithay::reexports::wayland_server::{Client, Display, DisplayHandle, Resource};
-use smithay::desktop::utils::send_frames_surface_tree;
-use smithay::utils::{Clock, DeviceFd, Logical, Monotonic, Point, Rectangle, Serial, Size, Transform};
+use smithay::utils::{
+    Clock, DeviceFd, Logical, Monotonic, Point, Rectangle, Serial, Size, Transform,
+};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     with_states, CompositorClientState, CompositorHandler, CompositorState,
@@ -73,6 +73,9 @@ use smithay::wayland::selection::primary_selection::{
     set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
 };
 use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
+use smithay::wayland::session_lock::{
+    LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
+};
 use smithay::wayland::shell::wlr_layer::{
     Layer, LayerSurface, LayerSurfaceCachedState, WlrLayerShellHandler, WlrLayerShellState,
 };
@@ -82,24 +85,21 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
-use smithay::wayland::session_lock::{
-    LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
-};
 use smithay::{
-    delegate_compositor, delegate_data_device, delegate_foreign_toplevel_list, delegate_layer_shell,
-    delegate_output, delegate_primary_selection, delegate_seat, delegate_session_lock,
-    delegate_shm, delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_foreign_toplevel_list,
+    delegate_layer_shell, delegate_output, delegate_primary_selection, delegate_seat,
+    delegate_session_lock, delegate_shm, delegate_xdg_shell,
 };
 
 use crate::frame_timing::{FrameScheduler, RefreshRate};
 use crate::hdr::HdrCapabilities;
 use crate::{
     assign_new_window_to_active, discover_drm_nodes, drm_presentation_pipeline,
-    focus_window_after_workspace_switch, plan_drm_modeset, preferred_primary_drm_node,
-    geometry_for_interactive_grab, session_mode_summary, visible_paint_order,
-    CompositorBackendKind, DisplayPolicy, DrmPresentationStage, InteractiveGrab,
-    InteractiveGrabKind, ResizeEdges, WindowGeometry, WorkspaceId, WorkspaceState,
-    DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+    focus_window_after_workspace_switch, geometry_for_interactive_grab, plan_drm_modeset,
+    preferred_primary_drm_node, session_mode_summary, visible_paint_order, CompositorBackendKind,
+    DisplayPolicy, DrmPresentationStage, InteractiveGrab, InteractiveGrabKind, ResizeEdges,
+    WindowGeometry, WorkspaceId, WorkspaceState, DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W,
+    DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
 };
 // Workspace cycle helpers (`cycle_workspace_*` / `activate_workspace_index`) request a
 // full redraw and re-focus the topmost visible window. Super+key bindings can call them
@@ -110,12 +110,8 @@ type MimePayload = Arc<HashMap<String, Vec<u8>>>;
 
 /// The concrete `DrmCompositor` this session uses: GBM-allocated buffers,
 /// GBM framebuffer export, no per-frame user data, over a DRM device fd.
-type RetroDrmCompositor = DrmCompositor<
-    GbmAllocator<DrmDeviceFd>,
-    GbmFramebufferExporter<DrmDeviceFd>,
-    (),
-    DrmDeviceFd,
->;
+type RetroDrmCompositor =
+    DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 
 /// Desktop background behind all client surfaces (classic retro gray).
 const DRM_CLEAR_COLOR: [f32; 4] = [0.596, 0.596, 0.580, 1.0];
@@ -241,17 +237,17 @@ fn collect_render_elements(
     // client-provided surface can be drawn here; a named cursor needs a theme
     // (XCursor) which the DRM path does not load yet.
     if let CursorImageStatus::Surface(ref surface) = state.cursor_status {
-            let hotspot = with_states(surface, |states| {
-                states
-                    .data_map
-                    .get::<CursorImageSurfaceData>()
-                    .and_then(|attrs| attrs.lock().ok().map(|attrs| attrs.hotspot))
-                    .unwrap_or_else(|| Point::from((0, 0)))
-            });
-            let loc = (
-                state.pointer_location.x.round() as i32 - hotspot.x,
-                state.pointer_location.y.round() as i32 - hotspot.y,
-            );
+        let hotspot = with_states(surface, |states| {
+            states
+                .data_map
+                .get::<CursorImageSurfaceData>()
+                .and_then(|attrs| attrs.lock().ok().map(|attrs| attrs.hotspot))
+                .unwrap_or_else(|| Point::from((0, 0)))
+        });
+        let loc = (
+            state.pointer_location.x.round() as i32 - hotspot.x,
+            state.pointer_location.y.round() as i32 - hotspot.y,
+        );
         elements.extend(render_elements_from_surface_tree(
             renderer,
             surface,
@@ -374,7 +370,10 @@ fn resolve_primary_drm_path(seat_name: &str) -> PathBuf {
 /// Returns `Err` with context if seat/DRM cannot be opened (no privileges,
 /// nested container without `/dev/dri`). Callers may fall back to nested X11.
 pub fn run_drm_session() -> Result<()> {
-    tracing::info!("{}", session_mode_summary(CompositorBackendKind::SessionDrm));
+    tracing::info!(
+        "{}",
+        session_mode_summary(CompositorBackendKind::SessionDrm)
+    );
     eprintln!(
         "[slopos-compositor] starting DRM/KMS session path ({})",
         session_mode_summary(CompositorBackendKind::SessionDrm)
@@ -432,10 +431,7 @@ pub fn run_drm_session() -> Result<()> {
 
     // ---- Open primary GPU via seat ----
     let primary = resolve_primary_drm_path(&seat_name);
-    eprintln!(
-        "[slopos-compositor] opening DRM node {}",
-        primary.display()
-    );
+    eprintln!("[slopos-compositor] opening DRM node {}", primary.display());
 
     let owned: OwnedFd = session
         .open(
@@ -696,12 +692,8 @@ pub fn run_drm_session() -> Result<()> {
         match arm_scanout_framebuffer(surface, modeset_plan.mode_w, modeset_plan.mode_h) {
             Ok((buffer, fb)) => {
                 let handle = *fb.as_ref();
-                match present_armed_frame(
-                    surface,
-                    handle,
-                    modeset_plan.mode_w,
-                    modeset_plan.mode_h,
-                ) {
+                match present_armed_frame(surface, handle, modeset_plan.mode_w, modeset_plan.mode_h)
+                {
                     Ok(()) => {
                         scanout_armed = true;
                         armed_fb = Some(handle);
@@ -745,7 +737,10 @@ pub fn run_drm_session() -> Result<()> {
     println!("WAYLAND_DISPLAY={socket_name}");
     if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
         let _ = std::fs::write(Path::new(&runtime).join("wayland-display"), &socket_name);
-        let _ = std::fs::write(Path::new(&runtime).join("slopos-client-wayland-display"), &socket_name);
+        let _ = std::fs::write(
+            Path::new(&runtime).join("slopos-client-wayland-display"),
+            &socket_name,
+        );
     }
     std::env::set_var("SLOPOS_CLIENT_WAYLAND_DISPLAY", &socket_name);
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
@@ -950,12 +945,7 @@ pub fn run_drm_session() -> Result<()> {
                 .drm_compositor
                 .as_mut()
                 .expect("checked is_some above");
-            match comp.render_frame::<_, _>(
-                &mut renderer,
-                &elements,
-                clear,
-                FrameFlags::DEFAULT,
-            ) {
+            match comp.render_frame::<_, _>(&mut renderer, &elements, clear, FrameFlags::DEFAULT) {
                 Ok(result) => {
                     if !result.is_empty {
                         // Drop the borrow of `result` before queueing.
@@ -1127,10 +1117,7 @@ fn layer_geometry_for(
 fn layer_geo_contains(geo: &Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> bool {
     let x = pos.x as i32;
     let y = pos.y as i32;
-    x >= geo.loc.x
-        && y >= geo.loc.y
-        && x < geo.loc.x + geo.size.w
-        && y < geo.loc.y + geo.size.h
+    x >= geo.loc.x && y >= geo.loc.y && x < geo.loc.x + geo.size.w && y < geo.loc.y + geo.size.h
 }
 
 fn layer_configure_size(namespace: &str, output: (i32, i32)) -> (i32, i32) {
@@ -1325,11 +1312,7 @@ impl DrmSessionState {
             .map(|(i, _)| i)
     }
 
-    fn begin_interactive_grab(
-        &mut self,
-        surface: &ToplevelSurface,
-        kind: InteractiveGrabKind,
-    ) {
+    fn begin_interactive_grab(&mut self, surface: &ToplevelSurface, kind: InteractiveGrabKind) {
         if !self.left_button_down {
             tracing::debug!("ignoring xdg move/resize without pressed left button");
             return;
@@ -1354,7 +1337,11 @@ impl DrmSessionState {
         let Some(grab) = self.interactive_grab.clone() else {
             return;
         };
-        let Some(idx) = self.windows.iter().position(|w| w.window_id == grab.window_id) else {
+        let Some(idx) = self
+            .windows
+            .iter()
+            .position(|w| w.window_id == grab.window_id)
+        else {
             self.interactive_grab = None;
             return;
         };
@@ -1464,51 +1451,58 @@ impl DrmSessionState {
                         self.focus_surface(Some(surf));
                     }
                 }
-                kb.input::<(), _>(self, keycode, key_state, serial, time, |data, mods, keysym| {
-                    if data.locked {
+                kb.input::<(), _>(
+                    self,
+                    keycode,
+                    key_state,
+                    serial,
+                    time,
+                    |data, mods, keysym| {
+                        if data.locked {
+                            if key_state == KeyState::Pressed && mods.logo {
+                                return FilterResult::Intercept(());
+                            }
+                            return FilterResult::Forward;
+                        }
+                        // Super+Left/Right/PageUp/PageDown and Super+1..8 switch
+                        // workspaces, matching the nested X11 bindings.
                         if key_state == KeyState::Pressed && mods.logo {
-                            return FilterResult::Intercept(());
+                            let sym = keysym.modified_sym();
+                            if sym == Keysym::o || sym == Keysym::O {
+                                data.spawn_client("finder");
+                                return FilterResult::Intercept(());
+                            }
+                            if sym == Keysym::l || sym == Keysym::L {
+                                data.spawn_client("slopos-lock");
+                                return FilterResult::Intercept(());
+                            }
+                            if sym == Keysym::Right || sym == Keysym::Page_Down {
+                                data.cycle_workspace_next();
+                                return FilterResult::Intercept(());
+                            }
+                            if sym == Keysym::Left || sym == Keysym::Page_Up {
+                                data.cycle_workspace_prev();
+                                return FilterResult::Intercept(());
+                            }
+                            let digit = match sym {
+                                Keysym::_1 => Some(0u8),
+                                Keysym::_2 => Some(1),
+                                Keysym::_3 => Some(2),
+                                Keysym::_4 => Some(3),
+                                Keysym::_5 => Some(4),
+                                Keysym::_6 => Some(5),
+                                Keysym::_7 => Some(6),
+                                Keysym::_8 => Some(7),
+                                _ => None,
+                            };
+                            if let Some(i) = digit {
+                                data.activate_workspace_index(i);
+                                return FilterResult::Intercept(());
+                            }
                         }
-                        return FilterResult::Forward;
-                    }
-                    // Super+Left/Right/PageUp/PageDown and Super+1..8 switch
-                    // workspaces, matching the nested X11 bindings.
-                    if key_state == KeyState::Pressed && mods.logo {
-                        let sym = keysym.modified_sym();
-                        if sym == Keysym::o || sym == Keysym::O {
-                            data.spawn_client("finder");
-                            return FilterResult::Intercept(());
-                        }
-                        if sym == Keysym::l || sym == Keysym::L {
-                            data.spawn_client("slopos-lock");
-                            return FilterResult::Intercept(());
-                        }
-                        if sym == Keysym::Right || sym == Keysym::Page_Down {
-                            data.cycle_workspace_next();
-                            return FilterResult::Intercept(());
-                        }
-                        if sym == Keysym::Left || sym == Keysym::Page_Up {
-                            data.cycle_workspace_prev();
-                            return FilterResult::Intercept(());
-                        }
-                        let digit = match sym {
-                            Keysym::_1 => Some(0u8),
-                            Keysym::_2 => Some(1),
-                            Keysym::_3 => Some(2),
-                            Keysym::_4 => Some(3),
-                            Keysym::_5 => Some(4),
-                            Keysym::_6 => Some(5),
-                            Keysym::_7 => Some(6),
-                            Keysym::_8 => Some(7),
-                            _ => None,
-                        };
-                        if let Some(i) = digit {
-                            data.activate_workspace_index(i);
-                            return FilterResult::Intercept(());
-                        }
-                    }
-                    FilterResult::Forward
-                });
+                        FilterResult::Forward
+                    },
+                );
             }
             InputEvent::PointerMotionAbsolute { event } => {
                 let x = event.x_transformed(self.output_size.0);
@@ -1578,10 +1572,7 @@ impl DrmSessionState {
     /// coordinate space as `MotionEvent.location`** (smithay sends
     /// `location - origin` to the client as surface-local coords).
     /// Layer strips only hit when the pointer is inside their geo.
-    fn surface_under(
-        &self,
-        pos: Point<f64, Logical>,
-    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+    fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         for layer in self.layer_surfaces.iter().rev() {
             if matches!(layer.layer, Layer::Overlay | Layer::Top) {
                 if layer_geo_contains(&layer.geo, pos) {
@@ -1691,8 +1682,16 @@ impl CompositorHandler for DrmSessionState {
         for w in self.windows.iter_mut() {
             if w.toplevel.wl_surface() == surface {
                 let st = w.toplevel.current_state();
-                let sw = st.size.map(|s| s.w).filter(|v| *v > 0).unwrap_or(DEFAULT_WINDOW_W);
-                let sh = st.size.map(|s| s.h).filter(|v| *v > 0).unwrap_or(DEFAULT_WINDOW_H);
+                let sw = st
+                    .size
+                    .map(|s| s.w)
+                    .filter(|v| *v > 0)
+                    .unwrap_or(DEFAULT_WINDOW_W);
+                let sh = st
+                    .size
+                    .map(|s| s.h)
+                    .filter(|v| *v > 0)
+                    .unwrap_or(DEFAULT_WINDOW_H);
                 w.size = Size::from((sw, sh));
                 break;
             }
@@ -1701,12 +1700,11 @@ impl CompositorHandler for DrmSessionState {
         for layer in self.layer_surfaces.iter_mut() {
             if layer.surface.wl_surface() == surface {
                 let (ow, oh) = self.output_size;
-                let (req_w, req_h, margin_top, margin_left) =
-                    with_states(surface, |states| {
-                        let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
-                        let cur = *cached.current();
-                        (cur.size.w, cur.size.h, cur.margin.top, cur.margin.left)
-                    });
+                let (req_w, req_h, margin_top, margin_left) = with_states(surface, |states| {
+                    let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                    let cur = *cached.current();
+                    (cur.size.w, cur.size.h, cur.margin.top, cur.margin.left)
+                });
                 let (default_w, default_h) = layer_configure_size(&layer.namespace, (ow, oh));
                 let w = if req_w > 0 {
                     req_w.min(ow).max(1)
@@ -1719,10 +1717,7 @@ impl CompositorHandler for DrmSessionState {
                     default_h
                 };
                 let cur = layer.surface.current_state();
-                let needs_configure = cur
-                    .size
-                    .map(|s| s.w != w || s.h != h)
-                    .unwrap_or(true);
+                let needs_configure = cur.size.map(|s| s.w != w || s.h != h).unwrap_or(true);
                 if needs_configure {
                     layer.surface.with_pending_state(|state| {
                         state.size = Some(Size::from((w, h)));
@@ -1960,12 +1955,7 @@ impl XdgShellHandler for DrmSessionState {
         self.focus_surface(Some(surface.wl_surface().clone()));
     }
 
-    fn move_request(
-        &mut self,
-        surface: ToplevelSurface,
-        _seat: wl_seat::WlSeat,
-        _serial: Serial,
-    ) {
+    fn move_request(&mut self, surface: ToplevelSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
         self.begin_interactive_grab(&surface, InteractiveGrabKind::Move);
     }
 

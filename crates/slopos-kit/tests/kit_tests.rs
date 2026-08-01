@@ -215,7 +215,6 @@ fn test_layout_arrange_reflows_nested_layout_view_children() {
     assert_eq!(children[0].rect().y, 25.0);
 }
 
-
 // ---------------------------------------------------------------------------
 // Accessibility tests
 // ---------------------------------------------------------------------------
@@ -310,7 +309,10 @@ fn accessibility_tree_add_and_clear() {
 fn accessibility_tree_to_atspi_objects_format() {
     let mut tree = AccessibilityTree::new();
     tree.add(AccessibilityNode::new(AccessibilityRole::Button, "OK"));
-    tree.add(AccessibilityNode::new(AccessibilityRole::TextField, "Username"));
+    tree.add(AccessibilityNode::new(
+        AccessibilityRole::TextField,
+        "Username",
+    ));
 
     let objects = tree.to_atspi_objects();
     assert_eq!(objects[0], "role:push button label:OK");

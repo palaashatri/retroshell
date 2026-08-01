@@ -138,7 +138,10 @@ mod tests {
             }
         }
         assert!(has_black, "expected at least one opaque black fill pixel");
-        assert!(has_white, "expected at least one opaque white outline pixel");
+        assert!(
+            has_white,
+            "expected at least one opaque white outline pixel"
+        );
     }
 
     #[test]

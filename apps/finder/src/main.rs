@@ -7,8 +7,8 @@ use slopos_kit::toolbar::Toolbar;
 use slopos_kit::tree_view::{TreeNode, TreeView};
 use slopos_kit::window::Window;
 use slopos_kit::{
-    AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint, PointerDispatcher,
-    Rect, Size, ThemeContext, Widget, WidgetState,
+    AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint, PointerDispatcher, Rect,
+    Size, ThemeContext, Widget, WidgetState,
 };
 use slopos_sdk::{build_menu, Application};
 use std::path::PathBuf;
@@ -923,7 +923,10 @@ mod tests {
             point,
             modifiers: Modifiers::NONE,
         });
-        assert!(matches!(down, EventResult::Handled), "press must land on the button");
+        assert!(
+            matches!(down, EventResult::Handled),
+            "press must land on the button"
+        );
         view.handle_event(&Event::MouseUp {
             button: MouseButton::Left,
             point,
@@ -1195,7 +1198,9 @@ mod tests {
         });
 
         assert!(matches!(handled, EventResult::Handled));
-        assert!(view.selected_item().is_some_and(|item| item.label == "note.txt"));
+        assert!(view
+            .selected_item()
+            .is_some_and(|item| item.label == "note.txt"));
         assert_eq!(view.status_bar.items[0].text, "1 of 1 selected");
 
         fs::remove_dir_all(root).unwrap();

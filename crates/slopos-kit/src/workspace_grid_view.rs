@@ -151,10 +151,7 @@ mod tests {
         for i in 0..4 {
             let mut g = grid();
             let c = g.cell_rect(i);
-            let result = g.handle_event(&press(
-                c.x + c.width * 0.5,
-                c.y + c.height * 0.5,
-            ));
+            let result = g.handle_event(&press(c.x + c.width * 0.5, c.y + c.height * 0.5));
             assert!(matches!(result, EventResult::Handled), "cell {i}");
             assert_eq!(g.take_activated(), Some(i));
             assert_eq!(g.take_activated(), None, "drains exactly once");

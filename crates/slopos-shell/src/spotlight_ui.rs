@@ -71,7 +71,7 @@ impl SpotlightUI {
     /// Update the search results based on current query and available apps.
     pub fn update_results(&mut self, apps: &[crate::launch_services::AppBundle]) {
         self.current_results = self.spotlight.search_results(apps);
-        self.selected_index = 0.min(self.current_results.len().saturating_sub(1));
+        self.selected_index = 0;
         self.sync_widgets();
     }
 

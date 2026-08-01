@@ -137,7 +137,10 @@ fn filter_components(
 /// Fill background holes (enclosed zero-regions) whose area is below `max_area`.
 fn fill_holes(binary: &mut [u8], width: u32, height: u32, max_area: u32) {
     let (w, h) = (width as usize, height as usize);
-    let background: Vec<u8> = binary.iter().map(|&v| if v == 0 { 255 } else { 0 }).collect();
+    let background: Vec<u8> = binary
+        .iter()
+        .map(|&v| if v == 0 { 255 } else { 0 })
+        .collect();
     let (labels, areas) = label_components(&background, w, h);
     if areas.is_empty() {
         return;
@@ -241,7 +244,7 @@ mod tests {
             .map(|(i, _)| (i % 10, i / 10))
             .collect();
         assert_eq!(fg.len(), 16, "only the 4x4 component should remain");
-        assert!(fg.contains(&(9, 9)) == false);
+        assert!(!fg.contains(&(9, 9)));
     }
 
     #[test]
@@ -261,7 +264,9 @@ mod tests {
     fn fills_enclosed_holes() {
         // A solid 6x6 block with a 2x2 hole in the middle.
         let p = prob_map(8, 8, |x, y| {
-            x >= 1 && x < 7 && y >= 1 && y < 7 && !(x >= 3 && x < 5 && y >= 3 && y < 5)
+            (1..7).contains(&x)
+                && (1..7).contains(&y)
+                && !((3..5).contains(&x) && (3..5).contains(&y))
         });
         let opts = MaskPostProcessOptions {
             fill_holes_below: 100,
@@ -276,7 +281,7 @@ mod tests {
 
     #[test]
     fn feather_softens_but_keeps_interior() {
-        let p = prob_map(20, 20, |x, y| x >= 5 && x < 15 && y >= 5 && y < 15);
+        let p = prob_map(20, 20, |x, y| (5..15).contains(&x) && (5..15).contains(&y));
         let opts = MaskPostProcessOptions {
             feather_radius: 2,
             ..Default::default()

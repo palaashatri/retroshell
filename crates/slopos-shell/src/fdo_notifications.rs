@@ -212,6 +212,7 @@ impl NotificationServerState {
     }
 
     /// Convenience: construct payload fields then [`notify`](Self::notify).
+    #[allow(clippy::too_many_arguments)]
     pub fn notify_fields(
         &mut self,
         app_name: &str,
@@ -402,6 +403,7 @@ impl NotificationDaemon {
         id
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn notify_fields(
         &mut self,
         app_name: &str,

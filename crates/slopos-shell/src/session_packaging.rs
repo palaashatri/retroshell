@@ -190,8 +190,7 @@ pub fn check_greeter_session_readiness(layout: &SessionPackagingLayout) -> Greet
         && desktop_names_present(&layout.xsession_desktop);
     if !desktop_names_ok {
         notes.push(
-            "DesktopNames=SLOPOS-I required on both wayland-sessions and xsessions entries"
-                .into(),
+            "DesktopNames=SLOPOS-I required on both wayland-sessions and xsessions entries".into(),
         );
     }
 
@@ -409,10 +408,7 @@ DesktopNames=SLOPOS-I
 ";
         let keys = parse_desktop_keys(content);
         assert_eq!(keys.get("Name").map(String::as_str), Some("SLOPOS-I"));
-        assert_eq!(
-            keys.get("Exec").map(String::as_str),
-            Some("start-slopos-i")
-        );
+        assert_eq!(keys.get("Exec").map(String::as_str), Some("start-slopos-i"));
         assert_eq!(keys.get("Type").map(String::as_str), Some("Application"));
         assert_eq!(
             keys.get("DesktopNames").map(String::as_str),

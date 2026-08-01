@@ -7,9 +7,7 @@ pub enum VisionError {
     #[error("model manifest does not contain an entry for: {0}")]
     ManifestEntry(String),
 
-    #[error(
-        "model hash verification failed for {path}: expected {expected}, computed {actual}"
-    )]
+    #[error("model hash verification failed for {path}: expected {expected}, computed {actual}")]
     HashMismatch {
         path: String,
         expected: String,
@@ -34,9 +32,7 @@ pub enum VisionError {
     #[error("image could not be decoded: {0}")]
     Decode(String),
 
-    #[error(
-        "image exceeds the maximum allowed size ({max} pixels); got {pixels} pixels"
-    )]
+    #[error("image exceeds the maximum allowed size ({max} pixels); got {pixels} pixels")]
     ImageTooLarge { max: u64, pixels: u64 },
 
     #[error("no confident subject was found in the image")]

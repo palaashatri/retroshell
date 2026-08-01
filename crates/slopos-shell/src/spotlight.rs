@@ -26,12 +26,11 @@ impl SearchResult {
     pub fn display_name(&self) -> String {
         match self {
             SearchResult::App(app) => app.name.clone(),
-            SearchResult::File { path, .. } => {
-                path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("File")
-                    .to_string()
-            }
+            SearchResult::File { path, .. } => path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("File")
+                .to_string(),
             SearchResult::Setting { title, .. } => title.clone(),
         }
     }
@@ -179,7 +178,9 @@ impl Spotlight {
         if self.query.is_empty() {
             // Show featured apps when query is empty.
             apps.iter()
-                .filter(|app| ["Finder", "Settings", "TextEdit", "Terminal"].contains(&app.name.as_str()))
+                .filter(|app| {
+                    ["Finder", "Settings", "TextEdit", "Terminal"].contains(&app.name.as_str())
+                })
                 .map(|app| SearchResult::App(app.clone()))
                 .collect()
         } else {
@@ -232,7 +233,9 @@ mod tests {
         let backend = SearchBackend::new();
         let results = backend.search_settings("volume");
         assert!(!results.is_empty());
-        assert!(results.iter().any(|r| matches!(r, SearchResult::Setting { title, .. } if title.contains("Volume"))));
+        assert!(results
+            .iter()
+            .any(|r| matches!(r, SearchResult::Setting { title, .. } if title.contains("Volume"))));
     }
 
     #[test]

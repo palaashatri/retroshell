@@ -22,7 +22,9 @@ fn main() {
                 }
                 println!("  outputs: {}", model.output_ids().len());
                 for i in 0..model.output_ids().len() {
-                    let name = model.node_info(model.output_ids()[i]).and_then(|n| n.name());
+                    let name = model
+                        .node_info(model.output_ids()[i])
+                        .and_then(|n| n.name());
                     let shape = model
                         .node_info(model.output_ids()[i])
                         .and_then(|n| n.shape())

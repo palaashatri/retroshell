@@ -30,21 +30,32 @@ mod linux {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use slopos_compositor::frame_timing::{FrameScheduler, RefreshRate};
+    use slopos_compositor::hdr::HdrCapabilities;
     use slopos_compositor::{
         accumulate_damage_for_window_move, accumulate_damage_rect, apply_scale_to_output_config,
-        assign_new_window_to_active, cascade_position, detect_dri3_from_env,
-        detect_output_scale_from_env, focus_window_after_workspace_switch, move_to_top,
-        geometry_for_interactive_grab, next_cascade_offset, output_scale_summary,
+        assign_new_window_to_active, calculate_presentation_geometry, cascade_position,
+        detect_dri3_from_env, detect_output_scale_from_env, focus_window_after_workspace_switch,
+        geometry_for_interactive_grab, move_to_top, next_cascade_offset, output_scale_summary,
         prefer_full_redraw, resolve_laid_out_outputs_from_env,
         selection_bytes_for_mime_with_text_fallback, session_mode_note,
         text_input_capability_from_env, text_input_capability_summary, topmost_window_at,
         total_output_size, window_paint_source, CompositorBackendKind, DamageRect, DisplayPolicy,
-        InteractiveGrab, InteractiveGrabKind, LaidOutOutput, OutputScale,
-        PlaceholderPresentStats, ResizeEdges, TextInputCapability, WindowGeometry,
-        WindowPaintSource, WorkspaceId, WorkspaceState, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+        InteractiveGrab, InteractiveGrabKind, LaidOutOutput, OutputScale, PlaceholderPresentStats,
+        ResizeEdges, TextInputCapability, TilePlacement, WindowGeometry, WindowPaintSource,
+        WindowPresentationState, WindowRestoreState, WorkspaceId, WorkspaceState, ZoomAction,
+        ZoomPolicyConfig, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
     };
-    use slopos_compositor::frame_timing::{FrameScheduler, RefreshRate};
-    use slopos_compositor::hdr::HdrCapabilities;
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+    use smithay::reexports::wayland_server::protocol::{
+        wl_buffer, wl_data_source::WlDataSource, wl_seat,
+    };
+    use smithay::utils::Serial as WlSerial;
+    use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
+    use smithay::xwayland::xwm::{Reorder, ResizeEdge, X11Window, XwmId};
+    use smithay::xwayland::{
+        X11Surface as X11WmSurface, X11Wm, XWayland, XWaylandEvent, XwmHandler,
+    };
     use smithay::{
         backend::{
             allocator::{
@@ -53,8 +64,8 @@ mod linux {
             },
             egl::{EGLContext, EGLDisplay},
             input::{
-                ButtonState, InputEvent as BackendInputEvent, KeyboardKeyEvent,
-                PointerButtonEvent, PointerMotionAbsoluteEvent,
+                ButtonState, InputEvent as BackendInputEvent, KeyboardKeyEvent, PointerButtonEvent,
+                PointerMotionAbsoluteEvent,
             },
             renderer::{
                 element::{
@@ -67,14 +78,12 @@ mod linux {
             },
             x11::{WindowBuilder, X11Backend, X11Event, X11Input, X11Surface},
         },
-        desktop::utils::send_frames_surface_tree,
         delegate_compositor, delegate_foreign_toplevel_list, delegate_layer_shell, delegate_output,
         delegate_seat, delegate_shm, delegate_xdg_shell,
+        desktop::utils::send_frames_surface_tree,
         input::{
             keyboard::{FilterResult, XkbConfig},
-            pointer::{
-                ButtonEvent, CursorImageStatus, CursorImageSurfaceData, MotionEvent,
-            },
+            pointer::{ButtonEvent, CursorImageStatus, CursorImageSurfaceData, MotionEvent},
             Seat, SeatHandler, SeatState,
         },
         output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
@@ -87,30 +96,27 @@ mod linux {
             },
         },
         utils::{
-            Clock, DeviceFd, Logical, Monotonic, Physical, Point, Rectangle, Serial, Size, Transform,
+            Clock, DeviceFd, Logical, Monotonic, Physical, Point, Rectangle, Serial, Size,
+            Transform,
         },
         wayland::{
             buffer::BufferHandler,
-            compositor::{
-                with_states, CompositorClientState, CompositorHandler, CompositorState,
-            },
+            compositor::{with_states, CompositorClientState, CompositorHandler, CompositorState},
             foreign_toplevel_list::{
                 ForeignToplevelHandle, ForeignToplevelListHandler, ForeignToplevelListState,
             },
             output::{OutputHandler, OutputManagerState},
             selection::{
                 data_device::{
-                    set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
-                    ServerDndGrabHandler,
+                    set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler,
+                    DataDeviceState, ServerDndGrabHandler,
                 },
                 primary_selection::{
                     set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
                 },
                 SelectionHandler, SelectionSource, SelectionTarget,
             },
-            shell::wlr_layer::{
-                Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState,
-            },
+            shell::wlr_layer::{Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState},
             shell::xdg::{
                 decoration::{XdgDecorationHandler, XdgDecorationState},
                 PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
@@ -119,14 +125,6 @@ mod linux {
             shm::{ShmHandler, ShmState},
             socket::ListeningSocketSource,
         },
-    };
-    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
-    use smithay::reexports::wayland_server::protocol::{wl_buffer, wl_data_source::WlDataSource, wl_seat};
-    use smithay::utils::Serial as WlSerial;
-    use smithay::xwayland::{X11Surface as X11WmSurface, X11Wm, XWayland, XWaylandEvent, XwmHandler};
-    use smithay::xwayland::xwm::{Reorder, ResizeEdge, X11Window, XwmId};
-    use smithay::wayland::xwayland_shell::{
-        XWaylandShellHandler, XWaylandShellState,
     };
     use smithay::{delegate_primary_selection, delegate_xwayland_shell};
 
@@ -182,6 +180,10 @@ mod linux {
         size: Size<i32, Logical>,
         /// Geometry restored after maximize/fullscreen.
         restore_geometry: Option<WindowGeometry>,
+        /// Single-authority presentation state (Normal, Minimized, SmartZoomed, Filled, Fullscreen, Tiled).
+        presentation_state: WindowPresentationState,
+        /// Saved restore state prior to zoom/fill/fullscreen/tiling.
+        restore_state: Option<WindowRestoreState>,
         /// Minimized windows stay mapped but are excluded from hit-testing/painting.
         minimized: bool,
     }
@@ -383,8 +385,8 @@ mod linux {
                 .filter(|w| !w.minimized)
                 .map(|w| w.window_id.as_str())
                 .collect();
-            let target =
-                focus_window_after_workspace_switch(&self.workspace_state, &order).map(str::to_owned);
+            let target = focus_window_after_workspace_switch(&self.workspace_state, &order)
+                .map(str::to_owned);
             if let Some(id) = target {
                 if let Some(idx) = self.windows.iter().position(|w| w.window_id == id) {
                     self.focus_window(idx);
@@ -440,11 +442,7 @@ mod linux {
             self.note_window_geometry_change(&id, old, new);
         }
 
-        fn begin_interactive_grab(
-            &mut self,
-            surface: &ToplevelSurface,
-            kind: InteractiveGrabKind,
-        ) {
+        fn begin_interactive_grab(&mut self, surface: &ToplevelSurface, kind: InteractiveGrabKind) {
             if !self.left_button_down {
                 tracing::debug!("ignoring xdg move/resize without pressed left button");
                 return;
@@ -478,7 +476,11 @@ mod linux {
             let Some(grab) = self.interactive_grab.clone() else {
                 return;
             };
-            let Some(idx) = self.windows.iter().position(|w| w.window_id == grab.window_id) else {
+            let Some(idx) = self
+                .windows
+                .iter()
+                .position(|w| w.window_id == grab.window_id)
+            else {
                 self.interactive_grab = None;
                 return;
             };
@@ -634,23 +636,38 @@ mod linux {
 
             let cursor_status = self.cursor_status.clone();
             let cursor_position = self.pointer_pos;
-            let (renderer, x11_surface) = match (self.renderer.as_mut(), self.x11_surface.as_mut()) {
-                (Some(r), Some(s)) => (r, s),
-                _ => {
-                    let now = self.clock.now();
-                    if let Some(output) = self.outputs.first().cloned() {
-                        let workspace_state = &self.workspace_state;
-                        for w in self.windows.iter().filter(|w| !w.minimized && workspace_state.is_visible(&w.window_id)) {
-                            send_frames_surface_tree(w.toplevel.wl_surface(), &output, now, Some(Duration::ZERO), |_, _| None);
+            let (renderer, x11_surface) =
+                match (self.renderer.as_mut(), self.x11_surface.as_mut()) {
+                    (Some(r), Some(s)) => (r, s),
+                    _ => {
+                        let now = self.clock.now();
+                        if let Some(output) = self.outputs.first().cloned() {
+                            let workspace_state = &self.workspace_state;
+                            for w in self.windows.iter().filter(|w| {
+                                !w.minimized && workspace_state.is_visible(&w.window_id)
+                            }) {
+                                send_frames_surface_tree(
+                                    w.toplevel.wl_surface(),
+                                    &output,
+                                    now,
+                                    Some(Duration::ZERO),
+                                    |_, _| None,
+                                );
+                            }
+                            for layer in &self.layer_surfaces {
+                                send_frames_surface_tree(
+                                    layer.surface.wl_surface(),
+                                    &output,
+                                    now,
+                                    Some(Duration::ZERO),
+                                    |_, _| None,
+                                );
+                            }
                         }
-                        for layer in &self.layer_surfaces {
-                            send_frames_surface_tree(layer.surface.wl_surface(), &output, now, Some(Duration::ZERO), |_, _| None);
-                        }
+                        self.frame_dirty = false;
+                        return;
                     }
-                    self.frame_dirty = false;
-                    return;
-                }
-            };
+                };
 
             // Paint order: bottom layers → xdg windows → top/overlay layers.
             use slopos_compositor::{plan_compose_order, ChromeLayer};
@@ -682,10 +699,7 @@ mod linux {
             // Per-window: real surface elements when available; placeholders only when empty.
             let mut surface_elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
             // (rect, color) for windows with no committed buffer on the active workspace.
-            let mut placeholders: Vec<(
-                Rectangle<i32, Physical>,
-                Color32F,
-            )> = Vec::new();
+            let mut placeholders: Vec<(Rectangle<i32, Physical>, Color32F)> = Vec::new();
 
             for &i in &under {
                 let layer = &self.layer_surfaces[i];
@@ -809,10 +823,8 @@ mod linux {
                 RETRO_GRAY.2 as f32 / 255.0,
                 1.0_f32,
             ]);
-            let full_screen = Rectangle::from_loc_and_size(
-                Point::<i32, Physical>::from((0, 0)),
-                output_size,
-            );
+            let full_screen =
+                Rectangle::from_loc_and_size(Point::<i32, Physical>::from((0, 0)), output_size);
             if let Err(e) = frame.clear(retro_gray, &[full_screen]) {
                 eprintln!("[render] clear failed: {e}");
             }
@@ -848,8 +860,8 @@ mod linux {
             // Permanent compositor-owned software cursor fallback.  It remains
             // visible for Named cursors and whenever a client cursor surface has
             // not committed a buffer. Hidden is respected exactly.
-            let fallback_cursor = !matches!(cursor_status, CursorImageStatus::Hidden)
-                && !client_cursor_drawn;
+            let fallback_cursor =
+                !matches!(cursor_status, CursorImageStatus::Hidden) && !client_cursor_drawn;
             if fallback_cursor {
                 let origin_x = cursor_position.x.round() as i32;
                 let origin_y = cursor_position.y.round() as i32;
@@ -857,17 +869,41 @@ mod linux {
                 let white = Color32F::from([1.0, 1.0, 1.0, 1.0]);
                 // Classic high-contrast arrow, represented as horizontal runs.
                 const OUTLINE: &[(i32, i32, i32)] = &[
-                    (0, 0, 1), (0, 1, 2), (0, 2, 3), (0, 3, 4),
-                    (0, 4, 5), (0, 5, 6), (0, 6, 7), (0, 7, 8),
-                    (0, 8, 9), (0, 9, 10), (0, 10, 11), (0, 11, 12),
-                    (0, 12, 8), (0, 13, 5), (0, 14, 4), (0, 15, 3),
-                    (5, 12, 4), (6, 13, 4), (7, 14, 4), (8, 15, 4),
-                    (9, 16, 3), (10, 17, 3),
+                    (0, 0, 1),
+                    (0, 1, 2),
+                    (0, 2, 3),
+                    (0, 3, 4),
+                    (0, 4, 5),
+                    (0, 5, 6),
+                    (0, 6, 7),
+                    (0, 7, 8),
+                    (0, 8, 9),
+                    (0, 9, 10),
+                    (0, 10, 11),
+                    (0, 11, 12),
+                    (0, 12, 8),
+                    (0, 13, 5),
+                    (0, 14, 4),
+                    (0, 15, 3),
+                    (5, 12, 4),
+                    (6, 13, 4),
+                    (7, 14, 4),
+                    (8, 15, 4),
+                    (9, 16, 3),
+                    (10, 17, 3),
                 ];
                 const FILL: &[(i32, i32, i32)] = &[
-                    (1, 2, 1), (1, 3, 2), (1, 4, 3), (1, 5, 4),
-                    (1, 6, 5), (1, 7, 6), (1, 8, 7), (1, 9, 8),
-                    (1, 10, 9), (1, 11, 6), (1, 12, 3),
+                    (1, 2, 1),
+                    (1, 3, 2),
+                    (1, 4, 3),
+                    (1, 5, 4),
+                    (1, 6, 5),
+                    (1, 7, 6),
+                    (1, 8, 7),
+                    (1, 9, 8),
+                    (1, 10, 9),
+                    (1, 11, 6),
+                    (1, 12, 3),
                 ];
                 for &(x, y, width) in OUTLINE {
                     let rect = Rectangle::from_loc_and_size(
@@ -1072,10 +1108,7 @@ mod linux {
             source: Option<SelectionSource>,
             _seat: Seat<Self>,
         ) {
-            let mime_types = source
-                .as_ref()
-                .map(|s| s.mime_types())
-                .unwrap_or_default();
+            let mime_types = source.as_ref().map(|s| s.mime_types()).unwrap_or_default();
             match ty {
                 SelectionTarget::Clipboard => {
                     self.clipboard_source = source;
@@ -1177,27 +1210,18 @@ mod linux {
             tracing::debug!("client DnD started");
         }
 
-        fn dropped(
-            &mut self,
-            _target: Option<WlSurface>,
-            _validated: bool,
-            _seat: Seat<Self>,
-        ) {
+        fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
             self.dnd_icon = None;
             tracing::debug!("client DnD dropped");
         }
     }
 
     impl ServerDndGrabHandler for SloposCompositor {
-        fn send(
-            &mut self,
-            mime_type: String,
-            fd: OwnedFd,
-            _seat: Seat<Self>,
-        ) {
+        fn send(&mut self, mime_type: String, fd: OwnedFd, _seat: Seat<Self>) {
             // Server-initiated DnD: write tracked mime payloads, or EOF if none.
-            let data = selection_bytes_for_mime_with_text_fallback(&self.server_dnd_data, &mime_type)
-                .map(|b| b.to_vec());
+            let data =
+                selection_bytes_for_mime_with_text_fallback(&self.server_dnd_data, &mime_type)
+                    .map(|b| b.to_vec());
             if data.is_none() {
                 tracing::debug!(
                     %mime_type,
@@ -1299,6 +1323,8 @@ mod linux {
                 position,
                 size: Size::from((DEFAULT_WINDOW_W, DEFAULT_WINDOW_H)),
                 restore_geometry: None,
+                presentation_state: WindowPresentationState::Normal,
+                restore_state: None,
                 minimized: false,
             });
             self.request_full_redraw();
@@ -1550,17 +1576,11 @@ mod linux {
 
         fn popup_repositioned(&mut self, _surface: smithay::wayland::input_method::PopupSurface) {}
 
-        fn parent_geometry(
-            &self,
-            parent: &WlSurface,
-        ) -> smithay::utils::Rectangle<i32, Logical> {
+        fn parent_geometry(&self, parent: &WlSurface) -> smithay::utils::Rectangle<i32, Logical> {
             // Use focused window geometry when the parent matches a toplevel.
             for w in &self.windows {
                 if w.toplevel.wl_surface() == parent {
-                    return smithay::utils::Rectangle::new(
-                        w.position,
-                        w.size,
-                    );
+                    return smithay::utils::Rectangle::new(w.position, w.size);
                 }
             }
             smithay::utils::Rectangle::default()
@@ -1717,8 +1737,8 @@ mod linux {
                 SelectionTarget::Clipboard => &self.clipboard_data,
                 SelectionTarget::Primary => &self.primary_data,
             };
-            let data = selection_bytes_for_mime_with_text_fallback(store, &mime_type)
-                .map(|b| b.to_vec());
+            let data =
+                selection_bytes_for_mime_with_text_fallback(store, &mime_type).map(|b| b.to_vec());
             write_selection_fd(mime_type, fd, data);
         }
 
@@ -1831,10 +1851,7 @@ mod linux {
         // Find which window (if any) the pointer is over
         let focus = state.window_at(pos).map(|idx| {
             let w = &state.windows[idx];
-            let local = Point::from((
-                pos.x - w.position.x as f64,
-                pos.y - w.position.y as f64,
-            ));
+            let local = Point::from((pos.x - w.position.x as f64, pos.y - w.position.y as f64));
             (w.toplevel.wl_surface().clone(), local)
         });
 
@@ -1965,8 +1982,7 @@ mod linux {
             outputs.push(output);
         }
 
-        let output_size =
-            Size::<i32, Physical>::from((total_phys.width, total_phys.height));
+        let output_size = Size::<i32, Physical>::from((total_phys.width, total_phys.height));
         (outputs, output_size)
     }
 
@@ -2053,12 +2069,15 @@ mod linux {
         }
     }
 
-pub fn parse_bool_env(key: &str) -> bool {
-    match std::env::var(key) {
-        Ok(v) => matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"),
-        Err(_) => false,
+    pub fn parse_bool_env(key: &str) -> bool {
+        match std::env::var(key) {
+            Ok(v) => matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
+            Err(_) => false,
+        }
     }
-}
 
     // -----------------------------------------------------------------------
     // Entry point
@@ -2153,7 +2172,8 @@ pub fn parse_bool_env(key: &str) -> bool {
         let mut seat_state = SeatState::new();
         let xdg_shell_state = XdgShellState::new::<SloposCompositor>(&display_handle);
         let data_device_state = DataDeviceState::new::<SloposCompositor>(&display_handle);
-        let primary_selection_state = PrimarySelectionState::new::<SloposCompositor>(&display_handle);
+        let primary_selection_state =
+            PrimarySelectionState::new::<SloposCompositor>(&display_handle);
         let output_manager_state =
             OutputManagerState::new_with_xdg_output::<SloposCompositor>(&display_handle);
         let xwayland_shell_state = XWaylandShellState::new::<SloposCompositor>(&display_handle);
@@ -2189,24 +2209,21 @@ pub fn parse_bool_env(key: &str) -> bool {
             );
             None
         };
-        let input_method_state = if matches!(
-            text_input_cap,
-            TextInputCapability::InputMethodAndTextInput
-        ) {
-            eprintln!("[slopos-compositor] input_method=zwp_input_method_v2");
-            Some(
-                smithay::wayland::input_method::InputMethodManagerState::new::<SloposCompositor, _>(
-                    &display_handle,
-                    |_client| true,
-                ),
-            )
-        } else {
-            None
-        };
+        let input_method_state =
+            if matches!(text_input_cap, TextInputCapability::InputMethodAndTextInput) {
+                eprintln!("[slopos-compositor] input_method=zwp_input_method_v2");
+                Some(
+                    smithay::wayland::input_method::InputMethodManagerState::new::<
+                        SloposCompositor,
+                        _,
+                    >(&display_handle, |_client| true),
+                )
+            } else {
+                None
+            };
 
         // Seat: keyboard + pointer
-        let mut seat: Seat<SloposCompositor> =
-            seat_state.new_wl_seat(&display_handle, "seat0");
+        let mut seat: Seat<SloposCompositor> = seat_state.new_wl_seat(&display_handle, "seat0");
         seat.add_keyboard(XkbConfig::default(), 200, 25)?;
         seat.add_pointer();
 
@@ -2271,7 +2288,10 @@ pub fn parse_bool_env(key: &str) -> bool {
                                     .collect();
                                 if let Ok(surf) = x11_handle.create_surface(
                                     &window,
-                                    DmabufAllocator(GbmAllocator::new(device, GbmBufferFlags::RENDERING)),
+                                    DmabufAllocator(GbmAllocator::new(
+                                        device,
+                                        GbmBufferFlags::RENDERING,
+                                    )),
                                     modifiers.into_iter(),
                                 ) {
                                     x11_surface_opt = Some(surf);
@@ -2334,20 +2354,18 @@ pub fn parse_bool_env(key: &str) -> bool {
                     X11Event::Resized { new_size, .. } => {
                         tracing::debug!("resized: {:?}", new_size);
                     }
-                    X11Event::Input { event, .. } => {
-                        match event {
-                            BackendInputEvent::Keyboard { event: ev } => {
-                                handle_keyboard_event(state, &ev);
-                            }
-                            BackendInputEvent::PointerMotionAbsolute { event: ev } => {
-                                handle_pointer_motion(state, &ev);
-                            }
-                            BackendInputEvent::PointerButton { event: ev } => {
-                                handle_pointer_button(state, &ev);
-                            }
-                            _ => {}
+                    X11Event::Input { event, .. } => match event {
+                        BackendInputEvent::Keyboard { event: ev } => {
+                            handle_keyboard_event(state, &ev);
                         }
-                    }
+                        BackendInputEvent::PointerMotionAbsolute { event: ev } => {
+                            handle_pointer_motion(state, &ev);
+                        }
+                        BackendInputEvent::PointerButton { event: ev } => {
+                            handle_pointer_button(state, &ev);
+                        }
+                        _ => {}
+                    },
                     X11Event::Focus { .. } => {}
                 })
                 .expect("failed to insert x11 backend source");
@@ -2450,7 +2468,7 @@ pub fn parse_bool_env(key: &str) -> bool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use linux::parse_bool_env;

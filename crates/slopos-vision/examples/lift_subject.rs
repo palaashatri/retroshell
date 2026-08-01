@@ -11,7 +11,9 @@ use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
-    let image_path = args.next().unwrap_or_else(|| "models/vision/subject_test.png".into());
+    let image_path = args
+        .next()
+        .unwrap_or_else(|| "models/vision/subject_test.png".into());
     let out_path = args.next().unwrap_or_else(|| "target/lifted.png".into());
     let models_dir = args.next().unwrap_or_else(|| "models/vision".into());
 

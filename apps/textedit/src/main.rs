@@ -336,9 +336,7 @@ impl TextEditView {
             .map(|e| format!(" | {e}"))
             .unwrap_or_default();
 
-        self.status.text = format!(
-            "{state} | {path} | Ln {line} | {words}w{error_part}"
-        );
+        self.status.text = format!("{state} | {path} | Ln {line} | {words}w{error_part}");
     }
 
     /// Show a notification in the status bar; it will be displayed once then cleared.
@@ -487,10 +485,7 @@ impl TextEditView {
 
     fn save_document(&mut self) -> bool {
         // Use the set document path, or fall back to TEXTEDIT_FILE / /tmp default.
-        let path = self
-            .document_path
-            .clone()
-            .unwrap_or_else(default_file_path);
+        let path = self.document_path.clone().unwrap_or_else(default_file_path);
 
         match fs::write(&path, self.editor.text()) {
             Ok(()) => {
@@ -683,12 +678,8 @@ impl Widget for TextEditView {
 
         // FIND row (conditionally visible)
         let find_row_y = rect.y + toolbar_h + path_h;
-        self.find_label.set_rect(Rect::new(
-            rect.x + 8.0,
-            find_row_y + 4.0,
-            46.0,
-            22.0,
-        ));
+        self.find_label
+            .set_rect(Rect::new(rect.x + 8.0, find_row_y + 4.0, 46.0, 22.0));
         let _ = self
             .find_label
             .layout(LayoutConstraint::tight(Size::new(46.0, 22.0)));
@@ -959,7 +950,10 @@ mod tests {
             point,
             modifiers: Modifiers::NONE,
         });
-        assert!(matches!(down, EventResult::Handled), "press must land on the button");
+        assert!(
+            matches!(down, EventResult::Handled),
+            "press must land on the button"
+        );
         view.handle_event(&Event::MouseUp {
             button: MouseButton::Left,
             point,
@@ -1162,7 +1156,10 @@ mod tests {
         let mut view = TextEditView::open(None);
         view.layout(LayoutConstraint::tight(Size::new(700.0, 460.0)));
         assert!(!view.find_visible);
-        assert!(!view.find_field.focusable(), "hidden find field must not join tab order");
+        assert!(
+            !view.find_field.focusable(),
+            "hidden find field must not join tab order"
+        );
 
         // Tab through every focusable widget; the find field must never
         // become focused while hidden.
@@ -1180,7 +1177,11 @@ mod tests {
         let typed = view.handle_event(&Event::Char { character: 'q' });
         assert!(matches!(typed, EventResult::Handled));
         assert_eq!(view.find_field.text(), "q");
-        assert_eq!(view.editor.text(), view.saved_text, "editor must not receive the keystroke");
+        assert_eq!(
+            view.editor.text(),
+            view.saved_text,
+            "editor must not receive the keystroke"
+        );
     }
 
     #[test]
@@ -1251,7 +1252,10 @@ mod tests {
         for _ in 0..60 {
             view.handle_event(&Event::Char { character: 'a' });
         }
-        assert!(view.undo_stack.len() <= 50, "undo stack exceeded 50 entries");
+        assert!(
+            view.undo_stack.len() <= 50,
+            "undo stack exceeded 50 entries"
+        );
     }
 
     #[test]
@@ -1380,8 +1384,16 @@ mod tests {
         view.notification = None;
         view.refresh_status();
 
-        assert!(view.status.text.contains("4w"), "expected '4w' in status: {}", view.status.text);
-        assert!(view.status.text.contains("Ln 2"), "expected 'Ln 2' in status: {}", view.status.text);
+        assert!(
+            view.status.text.contains("4w"),
+            "expected '4w' in status: {}",
+            view.status.text
+        );
+        assert!(
+            view.status.text.contains("Ln 2"),
+            "expected 'Ln 2' in status: {}",
+            view.status.text
+        );
     }
 
     #[test]

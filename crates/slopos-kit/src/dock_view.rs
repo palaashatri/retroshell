@@ -131,10 +131,7 @@ impl Widget for DockView {
     }
 
     fn accessibility(&self) -> Option<AccessibilityNode> {
-        Some(AccessibilityNode::new(
-            AccessibilityRole::Toolbar,
-            "dock",
-        ))
+        Some(AccessibilityNode::new(AccessibilityRole::Toolbar, "dock"))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -202,7 +199,10 @@ mod tests {
         let first = dock.item_rect(0);
         // Just right of the first icon, inside the spacing gap.
         let result = dock.handle_event(&press(first.x + first.width + 2.0, first.y + 10.0));
-        assert!(matches!(result, EventResult::Handled), "dock strip is chrome");
+        assert!(
+            matches!(result, EventResult::Handled),
+            "dock strip is chrome"
+        );
         assert_eq!(dock.take_clicked(), None);
     }
 

@@ -322,8 +322,10 @@ mod tests {
 
     #[test]
     fn merge_flat_rejects_invalid_arrange_mode() {
-        let mut config = DisplayConfig::default();
-        config.arrange_mode = "extend_right".into();
+        let mut config = DisplayConfig {
+            arrange_mode: "extend_right".into(),
+            ..Default::default()
+        };
         config.merge_flat_settings_conf("arrange_mode=not_a_mode\nscale_percent=12\n");
         assert_eq!(config.arrange_mode, "extend_right");
         assert_eq!(config.scale_percent, 100);

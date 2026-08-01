@@ -36,11 +36,7 @@ impl OcrEngine {
     ///
     /// Model files are expected to have been hash-verified by the caller
     /// against the model manifest.
-    pub fn load(
-        det_path: &Path,
-        rec_path: &Path,
-        dict_path: &Path,
-    ) -> Result<Self, VisionError> {
+    pub fn load(det_path: &Path, rec_path: &Path, dict_path: &Path) -> Result<Self, VisionError> {
         let det = Model::load_file(det_path)
             .map_err(|err| VisionError::ModelLoad(format!("{}: {err}", det_path.display())))?;
         let rec = Model::load_file(rec_path)
@@ -65,9 +61,9 @@ impl OcrEngine {
             _ => None,
         };
 
-        let dict = CharDict::load(dict_path).map_err(|err| VisionError::Unsupported(format!(
-            "recognition dictionary could not be loaded: {err}"
-        )))?;
+        let dict = CharDict::load(dict_path).map_err(|err| {
+            VisionError::Unsupported(format!("recognition dictionary could not be loaded: {err}"))
+        })?;
         log::info!(
             "OCR engine loaded: {} classes, rec model width = {:?}",
             dict.num_classes(),
@@ -90,9 +86,15 @@ impl OcrEngine {
     }
 
     /// Run a 4D f32 model and return `(shape, data)`.
-    fn run(&self, model: &Model, input: Vec<f32>, shape: [usize; 4]) -> Result<([usize; 4], Vec<f32>), VisionError> {
-        let value = Value::from_shape(shape, input)
-            .map_err(|err| VisionError::InvalidOutput(format!("input construction failed: {err}")))?;
+    fn run(
+        &self,
+        model: &Model,
+        input: Vec<f32>,
+        shape: [usize; 4],
+    ) -> Result<([usize; 4], Vec<f32>), VisionError> {
+        let value = Value::from_shape(shape, input).map_err(|err| {
+            VisionError::InvalidOutput(format!("input construction failed: {err}"))
+        })?;
         let opts = RunOptions::default().with_thread_pool(Some(self.pool.clone()));
         let out = model
             .run_one(value.into(), Some(opts))
@@ -103,9 +105,15 @@ impl OcrEngine {
 
     /// Run a model whose output is 3D `[1, T, C]` and return `(shape, data)`.
     /// The recognition model emits logits as `[1, time_steps, classes]`.
-    fn run_3d(&self, model: &Model, input: Vec<f32>, shape: [usize; 4]) -> Result<([usize; 3], Vec<f32>), VisionError> {
-        let value = Value::from_shape(shape, input)
-            .map_err(|err| VisionError::InvalidOutput(format!("input construction failed: {err}")))?;
+    fn run_3d(
+        &self,
+        model: &Model,
+        input: Vec<f32>,
+        shape: [usize; 4],
+    ) -> Result<([usize; 3], Vec<f32>), VisionError> {
+        let value = Value::from_shape(shape, input).map_err(|err| {
+            VisionError::InvalidOutput(format!("input construction failed: {err}"))
+        })?;
         let opts = RunOptions::default().with_thread_pool(Some(self.pool.clone()));
         let out = model
             .run_one(value.into(), Some(opts))
@@ -130,7 +138,11 @@ impl OcrEngine {
     }
 
     /// Crop a detected quad, rectify it, and recognize the text line.
-    fn recognize_quad(&self, rgba: &image::RgbaImage, quad: &Quad) -> Result<(String, f32), VisionError> {
+    fn recognize_quad(
+        &self,
+        rgba: &image::RgbaImage,
+        quad: &Quad,
+    ) -> Result<(String, f32), VisionError> {
         let w = quad.width();
         let h = quad.height();
         let w = w.round().max(1.0) as u32;
@@ -272,8 +284,16 @@ mod tests {
     #[test]
     fn group_lines_splits_far_rows() {
         let words = vec![
-            TextWord { text: "one".into(), bounds: PixelRect::new(0, 0, 20, 10), confidence: Some(0.9) },
-            TextWord { text: "two".into(), bounds: PixelRect::new(0, 100, 20, 10), confidence: Some(0.9) },
+            TextWord {
+                text: "one".into(),
+                bounds: PixelRect::new(0, 0, 20, 10),
+                confidence: Some(0.9),
+            },
+            TextWord {
+                text: "two".into(),
+                bounds: PixelRect::new(0, 100, 20, 10),
+                confidence: Some(0.9),
+            },
         ];
         let lines = group_lines(words);
         assert_eq!(lines.len(), 2);
@@ -284,8 +304,16 @@ mod tests {
     #[test]
     fn group_lines_joins_same_row() {
         let words = vec![
-            TextWord { text: "one".into(), bounds: PixelRect::new(0, 0, 20, 10), confidence: Some(0.9) },
-            TextWord { text: "two".into(), bounds: PixelRect::new(20, 0, 20, 10), confidence: Some(0.8) },
+            TextWord {
+                text: "one".into(),
+                bounds: PixelRect::new(0, 0, 20, 10),
+                confidence: Some(0.9),
+            },
+            TextWord {
+                text: "two".into(),
+                bounds: PixelRect::new(20, 0, 20, 10),
+                confidence: Some(0.8),
+            },
         ];
         let lines = group_lines(words);
         assert_eq!(lines.len(), 1);
@@ -298,7 +326,10 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(false));
         assert!(check_cancel(Some(&flag)).is_ok());
         flag.store(true, Ordering::Relaxed);
-        assert!(matches!(check_cancel(Some(&flag)), Err(VisionError::Cancelled)));
+        assert!(matches!(
+            check_cancel(Some(&flag)),
+            Err(VisionError::Cancelled)
+        ));
         assert!(check_cancel(None).is_ok());
     }
 }

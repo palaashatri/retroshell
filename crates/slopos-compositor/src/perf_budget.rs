@@ -25,7 +25,7 @@ impl PerfMetric {
     /// Default budgets for a "daily driver" laptop-class target.
     pub fn default_budget_ms(self) -> u64 {
         match self {
-            Self::FrameTimeMs => 16,        // ~60 Hz
+            Self::FrameTimeMs => 16, // ~60 Hz
             Self::InputLatencyMs => 50,
             Self::CompositorReadyMs => 3000,
         }

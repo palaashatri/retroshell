@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn output_dir_is_absolute() {
         let dir = capture_output_dir();
-        assert!(dir.is_absolute() || dir == PathBuf::from("/tmp") || dir.starts_with("/"));
+        assert!(dir.is_absolute() || dir == std::path::Path::new("/tmp") || dir.starts_with("/"));
     }
 
     #[test]

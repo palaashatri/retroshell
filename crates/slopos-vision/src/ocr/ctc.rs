@@ -23,11 +23,12 @@ impl CharDict {
     /// Load from a PaddleOCR `ppocr_keys_v1.txt`-style file: one character
     /// per line. An empty line is treated as a space character.
     pub fn load(path: &Path) -> Result<Self, VisionError> {
-        let text = fs::read_to_string(path)
-            .map_err(|err| VisionError::Io(std::io::Error::new(err.kind(), format!(
-                "failed to read dictionary {}: {err}",
-                path.display()
-            ))))?;
+        let text = fs::read_to_string(path).map_err(|err| {
+            VisionError::Io(std::io::Error::new(
+                err.kind(),
+                format!("failed to read dictionary {}: {err}", path.display()),
+            ))
+        })?;
         Ok(Self::from_lines(&text))
     }
 

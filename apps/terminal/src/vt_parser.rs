@@ -1,3 +1,5 @@
+#![allow(unused_imports, clippy::collapsible_match, clippy::unnecessary_cast)]
+
 use crate::terminal::Terminal;
 use vte::{Params, Perform};
 
@@ -20,7 +22,10 @@ impl<'a> Perform for VtHandler<'a> {
                 // Outside the region, LF just moves the cursor down, stopping at
                 // the last row of the screen without scrolling.
                 let top = self.term.scroll_top;
-                let bottom = self.term.scroll_bottom.min(self.term.rows.saturating_sub(1));
+                let bottom = self
+                    .term
+                    .scroll_bottom
+                    .min(self.term.rows.saturating_sub(1));
                 if self.term.cursor_y == bottom && self.term.cursor_y >= top {
                     self.term.scroll_up();
                 } else if self.term.cursor_y + 1 < self.term.rows {
@@ -62,13 +67,7 @@ impl<'a> Perform for VtHandler<'a> {
         }
     }
 
-    fn csi_dispatch(
-        &mut self,
-        params: &Params,
-        intermediates: &[u8],
-        _ignore: bool,
-        action: char,
-    ) {
+    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
         // Handle DEC private modes (CSI ? Ps h/l)
         if intermediates.contains(&b'?') {
             let mode: u16 = params
@@ -350,12 +349,7 @@ fn map_256_color(idx: u16) -> slopos_kit::Color {
         let r = (cube_idx / 36) % 6;
         let g = (cube_idx / 6) % 6;
         let b = cube_idx % 6;
-        slopos_kit::Color::new(
-            r as f32 / 5.0,
-            g as f32 / 5.0,
-            b as f32 / 5.0,
-            1.0,
-        )
+        slopos_kit::Color::new(r as f32 / 5.0, g as f32 / 5.0, b as f32 / 5.0, 1.0)
     } else {
         let gray = (idx - 232) as f32 / 23.0;
         slopos_kit::Color::new(gray, gray, gray, 1.0)
@@ -481,7 +475,7 @@ mod tests {
         assert_eq!(term.grid[3].c, ' '); // cleared
         assert_eq!(term.grid[4].c, ' '); // cleared (whole next row erased too)
         assert_eq!(term.grid[7].c, ' '); // cleared
-        // ED does not move the cursor.
+                                         // ED does not move the cursor.
         assert_eq!(term.cursor_x, 2);
         assert_eq!(term.cursor_y, 0);
     }
@@ -524,7 +518,7 @@ mod tests {
         assert_eq!(term.grid[2 * term.cols].c, '3');
         assert_eq!(term.grid[3 * term.cols].c, ' '); // new blank line at the margin
         assert_eq!(term.grid[4 * term.cols].c, '4'); // below region: untouched
-        // Cursor stays pinned to the bottom margin, not the screen bottom.
+                                                     // Cursor stays pinned to the bottom margin, not the screen bottom.
         assert_eq!(term.cursor_y, 3);
     }
 

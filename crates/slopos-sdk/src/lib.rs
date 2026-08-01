@@ -1,4 +1,7 @@
+#![allow(dead_code)]
+
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use slopos_bus::SloposBus;
 use slopos_kit::button::Button;
 use slopos_kit::dialog::Dialog;
@@ -24,7 +27,6 @@ use slopos_kit::tree_view::{TreeNode, TreeView};
 use slopos_kit::window::Window;
 use slopos_kit::workspace_grid_view::WorkspaceGridView;
 use slopos_kit::{Color, LayoutConstraint, MonospaceView, Point, Rect, Size, Widget};
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -298,7 +300,6 @@ fn ui(light: [f32; 4], dark: [f32; 4]) -> [f32; 4] {
         light
     }
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WindowChromeHit {
@@ -642,10 +643,8 @@ impl Application {
                                         *last_button == button
                                             && now.duration_since(*last_time)
                                                 <= std::time::Duration::from_millis(500)
-                                            && distance_squared(
-                                                *last_point,
-                                                self.cursor_position,
-                                            ) <= 16.0
+                                            && distance_squared(*last_point, self.cursor_position)
+                                                <= 16.0
                                     })
                                     .unwrap_or(false);
 
@@ -683,7 +682,9 @@ impl Application {
                                             if let Err(err) = window.drag_resize_window(
                                                 winit::window::ResizeDirection::SouthEast,
                                             ) {
-                                                tracing::warn!("failed to request compositor resize: {err}");
+                                                tracing::warn!(
+                                                    "failed to request compositor resize: {err}"
+                                                );
                                             }
                                             return;
                                         }
@@ -763,7 +764,8 @@ impl Application {
                             if let Some(ref text) = key_event.text {
                                 for character in text.chars() {
                                     if !character.is_control() {
-                                        let _ = self.dispatch(slopos_kit::Event::Char { character });
+                                        let _ =
+                                            self.dispatch(slopos_kit::Event::Char { character });
                                     }
                                 }
                             }
@@ -1273,7 +1275,8 @@ impl WgpuPresenter {
     /// created outside winit. `display` = `*mut wl_display`, `surface` =
     /// `*mut wl_surface`.
     ///
-    /// SAFETY: both pointers must reference a valid `wl_display` / `wl_surface`
+    /// # Safety
+    /// both pointers must reference a valid `wl_display` / `wl_surface`
     /// that outlive the returned presenter.
     pub async unsafe fn new_raw(
         display: *mut std::ffi::c_void,
@@ -1769,7 +1772,10 @@ fn draw_desktop_backdrop(canvas: &mut Canvas<'_>) {
         canvas.rect(Rect::new(0.0, 24.0, canvas.width, 1.0), S7_FG);
     } else {
         canvas.rect(Rect::new(0.0, 0.0, canvas.width, 24.0), COLOR_DARK_MENU);
-        canvas.rect(Rect::new(0.0, 24.0, canvas.width, 1.0), COLOR_DARK_EDGE_LIGHT);
+        canvas.rect(
+            Rect::new(0.0, 24.0, canvas.width, 1.0),
+            COLOR_DARK_EDGE_LIGHT,
+        );
     }
 }
 
@@ -1846,7 +1852,14 @@ fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str, is_ac
             S7_BG
         };
         canvas.rect(rect, bg);
-        canvas.stroke(rect, if render_dark_mode() { COLOR_DARK_BORDER } else { S7_FG });
+        canvas.stroke(
+            rect,
+            if render_dark_mode() {
+                COLOR_DARK_BORDER
+            } else {
+                S7_FG
+            },
+        );
         let text_color = if render_dark_mode() {
             [0.43, 0.44, 0.45, 1.0]
         } else {
@@ -1869,9 +1882,21 @@ fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str, is_ac
         S7_GRAY100
     };
     canvas.rect(rect, rail);
-    let inner = Rect::new(rect.x + 1.0, rect.y + 1.0, rect.width - 2.0, rect.height - 2.0);
+    let inner = Rect::new(
+        rect.x + 1.0,
+        rect.y + 1.0,
+        rect.width - 2.0,
+        rect.height - 2.0,
+    );
     canvas.rect(inner, face);
-    canvas.stroke(rect, if render_dark_mode() { COLOR_DARK_BORDER } else { S7_FG });
+    canvas.stroke(
+        rect,
+        if render_dark_mode() {
+            COLOR_DARK_BORDER
+        } else {
+            S7_FG
+        },
+    );
 
     // Boxes layout
     let box_size = 13.0;
@@ -1883,7 +1908,14 @@ fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str, is_ac
     x += 7.0;
     let close_box = Rect::new(x, box_y, box_size, box_size);
     draw_beveled_rect(canvas, close_box, face, true);
-    canvas.stroke(close_box, if render_dark_mode() { COLOR_DARK_TEXT } else { S7_FG });
+    canvas.stroke(
+        close_box,
+        if render_dark_mode() {
+            COLOR_DARK_TEXT
+        } else {
+            S7_FG
+        },
+    );
     let left_end = close_box.x + close_box.width + 2.0;
 
     // Right zoom box
@@ -1899,13 +1931,25 @@ fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str, is_ac
     // Left & Right Grips (Symmetrical around title pill)
     let left_grip_w = (pill_x - 2.0 - left_end).max(0.0);
     if left_grip_w > 4.0 {
-        draw_window_grip(canvas, left_end, inner.y + 2.0, left_grip_w, inner.height - 4.0);
+        draw_window_grip(
+            canvas,
+            left_end,
+            inner.y + 2.0,
+            left_grip_w,
+            inner.height - 4.0,
+        );
     }
 
     let right_grip_x = pill_x + pill_w + 2.0;
     let right_grip_w = (right_start - right_grip_x).max(0.0);
     if right_grip_w > 4.0 {
-        draw_window_grip(canvas, right_grip_x, inner.y + 2.0, right_grip_w, inner.height - 4.0);
+        draw_window_grip(
+            canvas,
+            right_grip_x,
+            inner.y + 2.0,
+            right_grip_w,
+            inner.height - 4.0,
+        );
     }
 
     // Title face pill + text
@@ -1916,16 +1960,43 @@ fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str, is_ac
 
     // Zoom box (right)
     draw_beveled_rect(canvas, zoom_box, face, true);
-    canvas.stroke(zoom_box, if render_dark_mode() { COLOR_DARK_TEXT } else { S7_FG });
-    draw_window_grip(canvas, zoom_box.x + zoom_box.width + 2.0, inner.y + 2.0, 5.0, inner.height - 4.0);
+    canvas.stroke(
+        zoom_box,
+        if render_dark_mode() {
+            COLOR_DARK_TEXT
+        } else {
+            S7_FG
+        },
+    );
+    draw_window_grip(
+        canvas,
+        zoom_box.x + zoom_box.width + 2.0,
+        inner.y + 2.0,
+        5.0,
+        inner.height - 4.0,
+    );
     // Inner zoom mark
     canvas.rect(
-        Rect::new(zoom_box.x + 3.0, zoom_box.y + 3.0, zoom_box.width - 6.0, zoom_box.height - 6.0),
+        Rect::new(
+            zoom_box.x + 3.0,
+            zoom_box.y + 3.0,
+            zoom_box.width - 6.0,
+            zoom_box.height - 6.0,
+        ),
         face,
     );
     canvas.stroke(
-        Rect::new(zoom_box.x + 3.0, zoom_box.y + 3.0, zoom_box.width - 6.0, zoom_box.height - 6.0),
-        if render_dark_mode() { COLOR_DARK_TEXT } else { S7_FG },
+        Rect::new(
+            zoom_box.x + 3.0,
+            zoom_box.y + 3.0,
+            zoom_box.width - 6.0,
+            zoom_box.height - 6.0,
+        ),
+        if render_dark_mode() {
+            COLOR_DARK_TEXT
+        } else {
+            S7_FG
+        },
     );
 
     draw_window_grip(
@@ -2016,7 +2087,11 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
             button.label(),
             rect.x + 12.0,
             rect.y + 9.0,
-            if render_dark_mode() { COLOR_DARK_TEXT } else { COLOR_TEXT_PRIMARY },
+            if render_dark_mode() {
+                COLOR_DARK_TEXT
+            } else {
+                COLOR_TEXT_PRIMARY
+            },
         );
         if button.widget_state().focused {
             canvas.stroke(rect, COLOR_FOCUS_RING);
@@ -2039,7 +2114,11 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
             text,
             rect.x + 6.0,
             rect.y + 8.0,
-            if render_dark_mode() { COLOR_DARK_TEXT } else { COLOR_TEXT_PRIMARY },
+            if render_dark_mode() {
+                COLOR_DARK_TEXT
+            } else {
+                COLOR_TEXT_PRIMARY
+            },
         );
     } else if let Some(slider) = widget.as_any().downcast_ref::<Slider>() {
         let track = Rect::new(
@@ -2248,7 +2327,12 @@ fn draw_dialog(canvas: &mut Canvas<'_>, rect: Rect, dialog: &Dialog) {
     );
 
     // Message text
-    canvas.text(&dialog.message, rect.x + 12.0, rect.y + 42.0, theme_color("text"));
+    canvas.text(
+        &dialog.message,
+        rect.x + 12.0,
+        rect.y + 42.0,
+        theme_color("text"),
+    );
 
     // Draw buttons right-aligned at the bottom
     let btn_h = 24.0;
@@ -2264,12 +2348,7 @@ fn draw_dialog(canvas: &mut Canvas<'_>, rect: Rect, dialog: &Dialog) {
         canvas.rect(btn_rect, btn_bg);
         draw_beveled_rect(canvas, btn_rect, btn_bg, true);
         let text_x = (btn_rect.x + (btn_w - label_w) * 0.5).round();
-        canvas.text(
-            label,
-            text_x,
-            btn_rect.y + 6.0,
-            theme_color("text"),
-        );
+        canvas.text(label, text_x, btn_rect.y + 6.0, theme_color("text"));
         btn_x -= 8.0;
     }
 }
@@ -2282,7 +2361,12 @@ fn draw_popup_button(canvas: &mut Canvas<'_>, rect: Rect, pb: &PopupButton) {
 
     // Selected title text, left-aligned with some padding
     let label = pb.selected_title().unwrap_or("");
-    canvas.text(label, rect.x + 8.0, rect.y + (rect.height - 12.0) * 0.5, theme_color("text"));
+    canvas.text(
+        label,
+        rect.x + 8.0,
+        rect.y + (rect.height - 12.0) * 0.5,
+        theme_color("text"),
+    );
 
     // Down-arrow indicator on the right side
     // Draw a small triangle using three thin horizontal rects
@@ -2584,7 +2668,11 @@ fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
     );
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 2.0, rect.width, 1.0),
-        if render_dark_mode() { [0.4, 0.4, 0.4, 1.0] } else { [0.37, 0.37, 0.37, 1.0] },
+        if render_dark_mode() {
+            [0.4, 0.4, 0.4, 1.0]
+        } else {
+            [0.37, 0.37, 0.37, 1.0]
+        },
     );
     canvas.rect(
         Rect::new(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0),
@@ -2716,7 +2804,11 @@ fn draw_slopos_menu_logo(canvas: &mut Canvas<'_>, x: f32, y: f32, active: bool) 
     // Monitor screen interior (6x5)
     canvas.rect(Rect::new(x + 2.0, y + 1.5, 6.0, 5.0), accent_color);
     // 'S' logo symbol inside screen
-    let s_color = if active { [0.0, 0.0, 0.0, 1.0] } else { theme_paper() };
+    let s_color = if active {
+        [0.0, 0.0, 0.0, 1.0]
+    } else {
+        theme_paper()
+    };
     canvas.rect(Rect::new(x + 3.0, y + 2.0, 4.0, 1.0), s_color);
     canvas.rect(Rect::new(x + 3.0, y + 3.0, 2.0, 1.0), s_color);
     canvas.rect(Rect::new(x + 3.0, y + 4.0, 4.0, 1.0), s_color);
@@ -3063,7 +3155,12 @@ fn draw_beveled_rect(canvas: &mut Canvas<'_>, rect: Rect, fill: [f32; 4], raised
             COLOR_DARK_EDGE_LIGHT
         };
         stroke_edges(canvas, rect, light, dark);
-        let inner = Rect::new(rect.x + 1.0, rect.y + 1.0, rect.width - 2.0, rect.height - 2.0);
+        let inner = Rect::new(
+            rect.x + 1.0,
+            rect.y + 1.0,
+            rect.width - 2.0,
+            rect.height - 2.0,
+        );
         if inner.width > 2.0 && inner.height > 2.0 {
             stroke_edges(canvas, inner, light, dark);
         }
@@ -3074,7 +3171,12 @@ fn draw_beveled_rect(canvas: &mut Canvas<'_>, rect: Rect, fill: [f32; 4], raised
     if raised {
         // Outer: top/left Gray500, bottom/right Foreground
         stroke_edges(canvas, rect, S7_GRAY500, S7_FG);
-        let mid = Rect::new(rect.x + 1.0, rect.y + 1.0, rect.width - 2.0, rect.height - 2.0);
+        let mid = Rect::new(
+            rect.x + 1.0,
+            rect.y + 1.0,
+            rect.width - 2.0,
+            rect.height - 2.0,
+        );
         if mid.width > 2.0 && mid.height > 2.0 {
             // Mid: top/left Gray100, bottom/right Gray300
             stroke_edges(canvas, mid, S7_GRAY100, S7_GRAY300);
@@ -3087,7 +3189,12 @@ fn draw_beveled_rect(canvas: &mut Canvas<'_>, rect: Rect, fill: [f32; 4], raised
     } else {
         // Pressed: edges reverse (inset)
         stroke_edges(canvas, rect, S7_FG, S7_GRAY100);
-        let mid = Rect::new(rect.x + 1.0, rect.y + 1.0, rect.width - 2.0, rect.height - 2.0);
+        let mid = Rect::new(
+            rect.x + 1.0,
+            rect.y + 1.0,
+            rect.width - 2.0,
+            rect.height - 2.0,
+        );
         if mid.width > 2.0 && mid.height > 2.0 {
             stroke_edges(canvas, mid, S7_GRAY500, S7_GRAY100);
             let inner = Rect::new(mid.x + 1.0, mid.y + 1.0, mid.width - 2.0, mid.height - 2.0);
@@ -3138,10 +3245,7 @@ fn draw_tree_node(
         } else {
             [0.25, 0.43, 0.67, 1.0]
         };
-        canvas.rect(
-            Rect::new(x - 4.0, *y - 3.0, 170.0, 16.0),
-            selection_color,
-        );
+        canvas.rect(Rect::new(x - 4.0, *y - 3.0, 170.0, 16.0), selection_color);
     }
     canvas.text(
         &node.label,
@@ -3319,8 +3423,8 @@ fn draw_desktop_icon(canvas: &mut Canvas<'_>, item: &IconItem) {
 
     // Prefer known desktop/app labels over generic icon kind tags.
     match item.label.as_str() {
-        "Hard Disk" | "Home" | "Trash" | "Applications" | "App Store" | "Finder"
-        | "Settings" | "Terminal" | "TextEdit" => {
+        "Hard Disk" | "Home" | "Trash" | "Applications" | "App Store" | "Finder" | "Settings"
+        | "Terminal" | "TextEdit" => {
             draw_labeled_icon(canvas, item.label.as_str(), x, y);
             return;
         }
@@ -3393,93 +3497,149 @@ fn draw_labeled_icon(canvas: &mut Canvas<'_>, label: &str, x: f32, y: f32) {
 
 fn draw_material_icon(canvas: &mut Canvas<'_>, label: &str, x: f32, y: f32) {
     let card_color = match label {
-        "Hard Disk" => rgb(66, 133, 244),   // Material Blue
-        "Home" => rgb(251, 188, 4),         // Material Amber
-        "Trash" => rgb(234, 67, 53),        // Material Red
-        "Applications" => rgb(103, 58, 183),// Material Purple
-        "App Store" => rgb(52, 168, 83),    // Material Green
-        "Finder" => rgb(0, 172, 193),       // Material Cyan
-        "Settings" => rgb(96, 125, 139),    // Material Blue Grey
-        "Terminal" => rgb(38, 50, 56),      // Material Dark Slate
-        "TextEdit" => rgb(255, 112, 67),    // Material Deep Orange
+        "Hard Disk" => rgb(66, 133, 244),    // Material Blue
+        "Home" => rgb(251, 188, 4),          // Material Amber
+        "Trash" => rgb(234, 67, 53),         // Material Red
+        "Applications" => rgb(103, 58, 183), // Material Purple
+        "App Store" => rgb(52, 168, 83),     // Material Green
+        "Finder" => rgb(0, 172, 193),        // Material Cyan
+        "Settings" => rgb(96, 125, 139),     // Material Blue Grey
+        "Terminal" => rgb(38, 50, 56),       // Material Dark Slate
+        "TextEdit" => rgb(255, 112, 67),     // Material Deep Orange
         _ => rgb(120, 144, 156),
     };
 
     // Rounded Material card base
     canvas.rect(Rect::new(x, y, 32.0, 32.0), card_color);
-    canvas.rect(Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), [1.0, 1.0, 1.0, 0.15]);
+    canvas.rect(
+        Rect::new(x + 2.0, y + 2.0, 28.0, 28.0),
+        [1.0, 1.0, 1.0, 0.15],
+    );
 
     // Material inner glyph symbol
     match label {
         "Hard Disk" => {
-            canvas.rect(Rect::new(x + 8.0, y + 10.0, 16.0, 12.0), [1.0, 1.0, 1.0, 0.9]);
+            canvas.rect(
+                Rect::new(x + 8.0, y + 10.0, 16.0, 12.0),
+                [1.0, 1.0, 1.0, 0.9],
+            );
             canvas.rect(Rect::new(x + 12.0, y + 14.0, 8.0, 4.0), card_color);
         }
         "Home" | "folder" => {
-            canvas.rect(Rect::new(x + 6.0, y + 10.0, 20.0, 14.0), [1.0, 1.0, 1.0, 0.9]);
+            canvas.rect(
+                Rect::new(x + 6.0, y + 10.0, 20.0, 14.0),
+                [1.0, 1.0, 1.0, 0.9],
+            );
             canvas.rect(Rect::new(x + 6.0, y + 8.0, 8.0, 4.0), [1.0, 1.0, 1.0, 0.9]);
         }
         "Trash" => {
-            canvas.rect(Rect::new(x + 10.0, y + 10.0, 12.0, 14.0), [1.0, 1.0, 1.0, 0.9]);
+            canvas.rect(
+                Rect::new(x + 10.0, y + 10.0, 12.0, 14.0),
+                [1.0, 1.0, 1.0, 0.9],
+            );
             canvas.rect(Rect::new(x + 8.0, y + 8.0, 16.0, 2.0), [1.0, 1.0, 1.0, 0.9]);
         }
         "Settings" => {
-            canvas.rect(Rect::new(x + 10.0, y + 10.0, 12.0, 12.0), [1.0, 1.0, 1.0, 0.9]);
+            canvas.rect(
+                Rect::new(x + 10.0, y + 10.0, 12.0, 12.0),
+                [1.0, 1.0, 1.0, 0.9],
+            );
             canvas.rect(Rect::new(x + 14.0, y + 14.0, 4.0, 4.0), card_color);
         }
         "Terminal" => {
             canvas.rect(Rect::new(x + 8.0, y + 12.0, 6.0, 2.0), rgb(80, 220, 120));
             canvas.rect(Rect::new(x + 12.0, y + 14.0, 2.0, 4.0), rgb(80, 220, 120));
-            canvas.rect(Rect::new(x + 14.0, y + 18.0, 10.0, 2.0), [1.0, 1.0, 1.0, 0.9]);
+            canvas.rect(
+                Rect::new(x + 14.0, y + 18.0, 10.0, 2.0),
+                [1.0, 1.0, 1.0, 0.9],
+            );
         }
         _ => {
-            canvas.rect(Rect::new(x + 10.0, y + 10.0, 12.0, 12.0), [1.0, 1.0, 1.0, 0.8]);
+            canvas.rect(
+                Rect::new(x + 10.0, y + 10.0, 12.0, 12.0),
+                [1.0, 1.0, 1.0, 0.8],
+            );
         }
     }
 }
 
 fn draw_image_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(canvas, Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), rgb(180, 130, 210), true);
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x + 2.0, y + 2.0, 28.0, 28.0),
+        rgb(180, 130, 210),
+        true,
+    );
     canvas.rect(Rect::new(x + 6.0, y + 6.0, 20.0, 20.0), theme_paper());
     canvas.rect(Rect::new(x + 10.0, y + 14.0, 12.0, 8.0), rgb(100, 160, 220));
     canvas.rect(Rect::new(x + 18.0, y + 9.0, 4.0, 4.0), rgb(240, 200, 80));
 }
 
 fn draw_audio_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(canvas, Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), rgb(240, 160, 80), true);
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x + 2.0, y + 2.0, 28.0, 28.0),
+        rgb(240, 160, 80),
+        true,
+    );
     canvas.rect(Rect::new(x + 8.0, y + 16.0, 6.0, 8.0), theme_ink());
     canvas.rect(Rect::new(x + 18.0, y + 10.0, 6.0, 8.0), theme_ink());
     canvas.rect(Rect::new(x + 12.0, y + 10.0, 12.0, 3.0), theme_ink());
 }
 
 fn draw_video_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(canvas, Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), rgb(220, 80, 80), true);
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x + 2.0, y + 2.0, 28.0, 28.0),
+        rgb(220, 80, 80),
+        true,
+    );
     canvas.rect(Rect::new(x + 6.0, y + 8.0, 20.0, 16.0), theme_paper());
     canvas.rect(Rect::new(x + 13.0, y + 12.0, 6.0, 8.0), rgb(220, 80, 80));
 }
 
 fn draw_code_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(canvas, Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), rgb(60, 80, 120), true);
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x + 2.0, y + 2.0, 28.0, 28.0),
+        rgb(60, 80, 120),
+        true,
+    );
     canvas.rect(Rect::new(x + 7.0, y + 12.0, 4.0, 8.0), rgb(80, 220, 120));
     canvas.rect(Rect::new(x + 21.0, y + 12.0, 4.0, 8.0), rgb(80, 220, 120));
     canvas.rect(Rect::new(x + 13.0, y + 10.0, 6.0, 12.0), theme_paper());
 }
 
 fn draw_archive_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(canvas, Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), rgb(200, 140, 60), true);
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x + 2.0, y + 2.0, 28.0, 28.0),
+        rgb(200, 140, 60),
+        true,
+    );
     canvas.rect(Rect::new(x + 6.0, y + 8.0, 20.0, 6.0), theme_paper());
     canvas.rect(Rect::new(x + 8.0, y + 14.0, 16.0, 12.0), theme_paper());
     canvas.rect(Rect::new(x + 14.0, y + 16.0, 4.0, 4.0), theme_ink());
 }
 
 fn draw_network_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(canvas, Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), rgb(60, 160, 200), true);
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x + 2.0, y + 2.0, 28.0, 28.0),
+        rgb(60, 160, 200),
+        true,
+    );
     canvas.rect(Rect::new(x + 8.0, y + 8.0, 16.0, 16.0), theme_paper());
     canvas.rect(Rect::new(x + 10.0, y + 10.0, 12.0, 12.0), rgb(60, 160, 200));
 }
 
 fn draw_user_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(canvas, Rect::new(x + 2.0, y + 2.0, 28.0, 28.0), rgb(0, 150, 136), true);
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x + 2.0, y + 2.0, 28.0, 28.0),
+        rgb(0, 150, 136),
+        true,
+    );
     canvas.rect(Rect::new(x + 12.0, y + 8.0, 8.0, 8.0), theme_paper());
     canvas.rect(Rect::new(x + 8.0, y + 18.0, 16.0, 8.0), theme_paper());
 }
@@ -3575,7 +3735,12 @@ fn draw_terminal_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
 }
 
 fn draw_textedit_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(canvas, Rect::new(x + 4.0, y + 2.0, 24.0, 28.0), theme_paper(), true);
+    draw_beveled_rect(
+        canvas,
+        Rect::new(x + 4.0, y + 2.0, 24.0, 28.0),
+        theme_paper(),
+        true,
+    );
     canvas.rect(Rect::new(x + 20.0, y + 2.0, 8.0, 8.0), theme_face());
     canvas.rect(Rect::new(x + 8.0, y + 12.0, 16.0, 2.0), theme_ink());
     canvas.rect(Rect::new(x + 8.0, y + 17.0, 14.0, 2.0), theme_muted());
@@ -3600,7 +3765,10 @@ fn draw_applications_icon(canvas: &mut Canvas<'_>, x: f32, y: f32) {
     let tile = theme_muted();
     for (dx, dy) in [(5.0, 5.0), (17.0, 5.0), (5.0, 17.0), (17.0, 17.0)] {
         canvas.rect(Rect::new(x + dx, y + dy, 10.0, 10.0), tile);
-        canvas.rect(Rect::new(x + dx + 2.0, y + dy + 2.0, 6.0, 2.0), theme_paper());
+        canvas.rect(
+            Rect::new(x + dx + 2.0, y + dy + 2.0, 6.0, 2.0),
+            theme_paper(),
+        );
     }
 }
 

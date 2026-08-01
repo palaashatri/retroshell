@@ -15,8 +15,8 @@ use crate::types::{SegmentationOptions, SubjectMask};
 use image::{imageops, DynamicImage, RgbImage};
 use rten::{Model, NodeId, RunOptions, ThreadPool, Value, ValueOrView};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 /// Model input size (square).
 pub const SEG_IMG_SIZE: u32 = 320;
@@ -52,7 +52,12 @@ impl SegmentEngine {
         image: &DynamicImage,
         options: &SegmentationOptions,
     ) -> Result<SubjectMask, VisionError> {
-        if options.cancel.as_deref().map(|c| c.load(Ordering::Relaxed)).unwrap_or(false) {
+        if options
+            .cancel
+            .as_deref()
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(false)
+        {
             return Err(VisionError::Cancelled);
         }
         let (src_w, src_h) = (image.width(), image.height());
@@ -85,13 +90,18 @@ impl SegmentEngine {
             }
         }
 
-        let value = Value::from_shape([1, 3, side, side], data)
-            .map_err(|err| VisionError::InvalidOutput(format!("input construction failed: {err}")))?;
+        let value = Value::from_shape([1, 3, side, side], data).map_err(|err| {
+            VisionError::InvalidOutput(format!("input construction failed: {err}"))
+        })?;
         let opts = RunOptions::default().with_thread_pool(Some(self.pool.clone()));
         let output_id = self.model.output_ids()[0];
         let mut results = self
             .model
-            .run(vec![(self.input_id, ValueOrView::Value(value))], &[output_id], Some(opts))
+            .run(
+                vec![(self.input_id, ValueOrView::Value(value))],
+                &[output_id],
+                Some(opts),
+            )
             .map_err(|err| VisionError::Inference(err.to_string()))?;
         let out = results.pop().expect("run returned the requested output");
         let ([_, channels, oh, ow], prob) = out

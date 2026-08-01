@@ -135,10 +135,7 @@ mod tests {
 
     #[test]
     fn scan_applications_reads_app_dirs_from_disk() {
-        let root = std::env::temp_dir().join(format!(
-            "rs_scan_apps_{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("rs_scan_apps_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let app = root.join("Foo.app");
         let res = app.join("Resources");
@@ -156,7 +153,9 @@ mod tests {
         };
         services.scan_applications();
 
-        let bundle = services.bundle_for_id("com.slopos.foo").expect("registered");
+        let bundle = services
+            .bundle_for_id("com.slopos.foo")
+            .expect("registered");
         assert_eq!(bundle.name, "Foo");
         assert_eq!(bundle.entrypoint, "bin/foo");
         assert!(bundle.path.ends_with("Foo.app"));
@@ -176,9 +175,6 @@ mod tests {
                 services.search_paths
             );
         }
-        assert!(services
-            .search_paths
-            .iter()
-            .any(|p| p == "/Applications"));
+        assert!(services.search_paths.iter().any(|p| p == "/Applications"));
     }
 }

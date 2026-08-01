@@ -1,11 +1,18 @@
+#![allow(
+    dead_code,
+    unused_imports,
+    clippy::manual_div_ceil,
+    clippy::field_reassign_with_default
+)]
+
 use slopos_kit::button::Button;
 use slopos_kit::event::{KeyCode, Modifiers};
 use slopos_kit::label::Label;
 use slopos_kit::slider::Slider;
 use slopos_kit::window::Window;
 use slopos_kit::{
-    AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint, PointerDispatcher,
-    Rect, Size, ThemeContext, Widget, WidgetState,
+    AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint, PointerDispatcher, Rect,
+    Size, ThemeContext, Widget, WidgetState,
 };
 use slopos_sdk::{build_menu, Application};
 use slopos_shell::DisplayConfig;
@@ -605,8 +612,14 @@ impl SettingsStore {
                 "arrange_mode"
                     if matches!(
                         value,
-                        "extend_right" | "extend_down" | "mirror" | "primary_only"
-                            | "extend" | "stack" | "clone" | "primary"
+                        "extend_right"
+                            | "extend_down"
+                            | "mirror"
+                            | "primary_only"
+                            | "extend"
+                            | "stack"
+                            | "clone"
+                            | "primary"
                     ) =>
                 {
                     // Normalize aliases to canonical snake_case used by DisplayConfig.
@@ -677,10 +690,7 @@ impl SettingsStore {
         map.insert("refresh_rate".into(), state.refresh_rate.clone());
         map.insert("color_space".into(), state.color_space.clone());
         map.insert("arrange_mode".into(), state.arrange_mode.clone());
-        map.insert(
-            "scale_percent".into(),
-            state.scale_percent.to_string(),
-        );
+        map.insert("scale_percent".into(), state.scale_percent.to_string());
         map.insert("sound_effects".into(), state.sound_effects.to_string());
         map.insert("volume_percent".into(), state.volume_percent.to_string());
         map.insert("network_profile".into(), state.network_profile.clone());
@@ -1008,7 +1018,11 @@ impl SettingsView {
 
         match self.store.save(&self.settings) {
             Ok(()) => {
-                if self.last_error.as_deref().is_none_or(|e| !e.starts_with("VOLUME APPLY")) {
+                if self
+                    .last_error
+                    .as_deref()
+                    .is_none_or(|e| !e.starts_with("VOLUME APPLY"))
+                {
                     self.last_error = None;
                 }
                 self.refresh_labels();
@@ -1521,7 +1535,10 @@ mod tests {
             .unwrap()
             .filter_map(|entry| entry.ok())
             .any(|entry| entry.file_name().to_string_lossy().contains(".tmp."));
-        assert!(!leftover_tmp, "atomic save must not leave temp files behind");
+        assert!(
+            !leftover_tmp,
+            "atomic save must not leave temp files behind"
+        );
     }
 
     #[test]
@@ -1638,7 +1655,9 @@ mod tests {
         // Press on General, drag to Display, release: pointer capture sends
         // the release to General (outside its rect -> press cancelled), so
         // neither category activates.
-        assert_handled(view.handle_event(&mouse_down(Point::new(general.x + 2.0, general.y + 2.0))));
+        assert_handled(
+            view.handle_event(&mouse_down(Point::new(general.x + 2.0, general.y + 2.0))),
+        );
         let _ = view.handle_event(&mouse_up(Point::new(display.x + 2.0, display.y + 2.0)));
         assert_eq!(view.selected_category, Category::Appearance);
     }
@@ -1691,10 +1710,9 @@ mod tests {
             point: Point::new(slider.x - 200.0, slider.y + 150.0),
             modifiers: Modifiers::NONE,
         }));
-        assert_handled(view.handle_event(&mouse_up(Point::new(
-            slider.x - 200.0,
-            slider.y + 150.0,
-        ))));
+        assert_handled(
+            view.handle_event(&mouse_up(Point::new(slider.x - 200.0, slider.y + 150.0))),
+        );
 
         // Dragged all the way left of the track -> clamped to 0 and saved.
         let loaded = SettingsStore::new(path).load();

@@ -20,6 +20,7 @@ impl ColorSpace {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         Self::from_str_flexible(s)
     }
@@ -91,15 +92,13 @@ impl HdrCapabilities {
         }
         if hdr_requested && self.hdr_supported {
             if !self.supported_color_spaces.contains(&ColorSpace::Rec2020) {
-                self.supported_color_spaces
-                    .push(ColorSpace::Rec2020);
+                self.supported_color_spaces.push(ColorSpace::Rec2020);
             }
             if !self.supported_color_spaces.contains(&ColorSpace::ScRgb) {
                 self.supported_color_spaces.push(ColorSpace::ScRgb);
             }
         }
-        self.set_color_space(color_space)
-            || self.set_color_space(ColorSpace::SRgb)
+        self.set_color_space(color_space) || self.set_color_space(ColorSpace::SRgb)
     }
 }
 

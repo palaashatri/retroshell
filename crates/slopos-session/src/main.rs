@@ -123,7 +123,10 @@ fn remove_readiness_file(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("cannot remove stale readiness file {}: {e}", path.display())),
+        Err(e) => Err(format!(
+            "cannot remove stale readiness file {}: {e}",
+            path.display()
+        )),
     }
 }
 

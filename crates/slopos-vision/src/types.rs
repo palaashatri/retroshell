@@ -33,7 +33,9 @@ impl PixelRect {
         let x1 = a.x.min(b.x);
         let y1 = a.y.min(b.y);
         let x2 = a.x.saturating_add(a.width).max(b.x.saturating_add(b.width));
-        let y2 = a.y.saturating_add(a.height).max(b.y.saturating_add(b.height));
+        let y2 =
+            a.y.saturating_add(a.height)
+                .max(b.y.saturating_add(b.height));
         Self::new(x1, y1, x2.saturating_sub(x1), y2.saturating_sub(y1))
     }
 }

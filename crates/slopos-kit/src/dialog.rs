@@ -193,8 +193,11 @@ impl Widget for Dialog {
                 if !self.rect().contains(at) {
                     return EventResult::Ignored;
                 }
-                let mut children: Vec<&mut dyn Widget> =
-                    self.buttons.iter_mut().map(|b| b as &mut dyn Widget).collect();
+                let mut children: Vec<&mut dyn Widget> = self
+                    .buttons
+                    .iter_mut()
+                    .map(|b| b as &mut dyn Widget)
+                    .collect();
                 let result = dispatch_positional(&mut children, at, event);
                 if !matches!(result, EventResult::Ignored) {
                     for (index, button) in self.buttons.iter_mut().enumerate() {

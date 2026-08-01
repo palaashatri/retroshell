@@ -67,7 +67,12 @@ fn label_components(mask: &[bool], ow: usize, oh: usize) -> Vec<Vec<(usize, usiz
 
 /// Boundary pixels of a component (any pixel with a neighbor outside the
 /// component or at the image edge).
-fn boundary_points(component: &[(usize, usize)], mask: &[bool], ow: usize, oh: usize) -> Vec<Point> {
+fn boundary_points(
+    component: &[(usize, usize)],
+    mask: &[bool],
+    ow: usize,
+    oh: usize,
+) -> Vec<Point> {
     let mut pts = Vec::new();
     for &(x, y) in component {
         let mut on_boundary = false;
@@ -129,7 +134,12 @@ fn scale_quad(quad: &Quad, ow: f64, oh: f64, src_w: u32, src_h: u32) -> Quad {
         [x, y]
     };
     Quad {
-        p: [map(quad.p[0]), map(quad.p[1]), map(quad.p[2]), map(quad.p[3])],
+        p: [
+            map(quad.p[0]),
+            map(quad.p[1]),
+            map(quad.p[2]),
+            map(quad.p[3]),
+        ],
     }
 }
 
@@ -137,13 +147,7 @@ fn scale_quad(quad: &Quad, ow: f64, oh: f64, src_w: u32, src_h: u32) -> Quad {
 ///
 /// `prob` holds `oh * ow` values in `[0, 1]`. `src_w`/`src_h` are the original
 /// source-image dimensions the map was resized from.
-pub fn db_postprocess(
-    prob: &[f32],
-    oh: usize,
-    ow: usize,
-    src_w: u32,
-    src_h: u32,
-) -> Vec<DetBox> {
+pub fn db_postprocess(prob: &[f32], oh: usize, ow: usize, src_w: u32, src_h: u32) -> Vec<DetBox> {
     let mask: Vec<bool> = prob.iter().map(|&p| p > DB_THRESHOLD).collect();
     let components = label_components(&mask, ow, oh);
 
@@ -242,12 +246,7 @@ mod tests {
 
     fn make_quad(x: f64, y: f64, w: f64, h: f64) -> Quad {
         Quad {
-            p: [
-                [x, y],
-                [x + w, y],
-                [x + w, y + h],
-                [x, y + h],
-            ],
+            p: [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
         }
     }
 
@@ -275,10 +274,10 @@ mod tests {
         assert_eq!(boxes.len(), 1);
         let b = &boxes[0];
         let (x0, y0, x1, y1) = b.quad.bbox();
-        assert!(x0 >= 10.0 && x0 <= 25.0, "x0 = {x0}");
-        assert!(x1 <= 90.0 && x1 >= 75.0, "x1 = {x1}");
-        assert!(y0 >= 10.0 && y0 <= 25.0, "y0 = {y0}");
-        assert!(y1 <= 90.0 && y1 >= 75.0, "y1 = {y1}");
+        assert!((10.0..=25.0).contains(&x0), "x0 = {x0}");
+        assert!((75.0..=90.0).contains(&x1), "x1 = {x1}");
+        assert!((10.0..=25.0).contains(&y0), "y0 = {y0}");
+        assert!((75.0..=90.0).contains(&y1), "y1 = {y1}");
         assert!(b.score > 0.85);
     }
 
@@ -307,19 +306,31 @@ mod tests {
         let boxes = db_postprocess(&prob, oh, ow, 100, 100);
         assert_eq!(boxes.len(), 1);
         let (x0, y0, x1, y1) = boxes[0].quad.bbox();
-        assert!(x0 >= 15.0 && x0 <= 30.0, "x0 = {x0}");
-        assert!(x1 >= 70.0 && x1 <= 85.0, "x1 = {x1}");
-        assert!(y0 >= 15.0 && y0 <= 30.0, "y0 = {y0}");
-        assert!(y1 >= 70.0 && y1 <= 85.0, "y1 = {y1}");
+        assert!((15.0..=30.0).contains(&x0), "x0 = {x0}");
+        assert!((70.0..=85.0).contains(&x1), "x1 = {x1}");
+        assert!((15.0..=30.0).contains(&y0), "y0 = {y0}");
+        assert!((70.0..=85.0).contains(&y1), "y1 = {y1}");
     }
 
     #[test]
     fn sorted_boxes_orders_by_row_then_column() {
         let mut boxes = vec![
-            DetBox { quad: make_quad(50.0, 0.0, 10.0, 5.0), score: 1.0 },
-            DetBox { quad: make_quad(0.0, 0.0, 10.0, 5.0), score: 1.0 },
-            DetBox { quad: make_quad(0.0, 20.0, 10.0, 5.0), score: 1.0 },
-            DetBox { quad: make_quad(50.0, 20.0, 10.0, 5.0), score: 1.0 },
+            DetBox {
+                quad: make_quad(50.0, 0.0, 10.0, 5.0),
+                score: 1.0,
+            },
+            DetBox {
+                quad: make_quad(0.0, 0.0, 10.0, 5.0),
+                score: 1.0,
+            },
+            DetBox {
+                quad: make_quad(0.0, 20.0, 10.0, 5.0),
+                score: 1.0,
+            },
+            DetBox {
+                quad: make_quad(50.0, 20.0, 10.0, 5.0),
+                score: 1.0,
+            },
         ];
         boxes = sorted_boxes(boxes);
         // Reading order: (0,0), (50,0), (0,20), (50,20)

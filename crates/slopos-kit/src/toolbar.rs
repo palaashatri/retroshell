@@ -142,7 +142,7 @@ impl Widget for Toolbar {
 mod tests {
     use super::*;
     use crate::button::Button;
-    use crate::event::{MouseButton, Modifiers};
+    use crate::event::{Modifiers, MouseButton};
 
     #[test]
     fn toolbar_only_delivers_click_to_the_item_under_the_point() {

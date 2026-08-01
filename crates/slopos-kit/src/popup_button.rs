@@ -1,7 +1,7 @@
 use crate::theme::ThemeContext;
 use crate::{
-    event::MouseButton, AccessibilityNode, AccessibilityRole, Event, EventResult,
-    LayoutConstraint, Rect, Size, Widget, WidgetState,
+    event::MouseButton, AccessibilityNode, AccessibilityRole, Event, EventResult, LayoutConstraint,
+    Rect, Size, Widget, WidgetState,
 };
 use std::any::Any;
 

@@ -39,7 +39,10 @@ pub fn hit_test_allowed(state: &WorkspaceState, window_id: &str) -> bool {
 }
 
 /// Assign a newly mapped window to the **active** workspace (default policy).
-pub fn assign_new_window_to_active(state: &mut WorkspaceState, window_id: impl Into<String>) -> bool {
+pub fn assign_new_window_to_active(
+    state: &mut WorkspaceState,
+    window_id: impl Into<String>,
+) -> bool {
     let ws = state.active;
     state.assign_window(window_id, ws)
 }
@@ -119,10 +122,7 @@ mod tests {
     fn focus_none_when_no_visible_windows() {
         let mut st = WorkspaceState::new();
         assert!(st.assign_window("a", WorkspaceId(1)));
-        assert_eq!(
-            focus_window_after_workspace_switch(&st, &["a"]),
-            None
-        );
+        assert_eq!(focus_window_after_workspace_switch(&st, &["a"]), None);
         assert!(should_clear_focus_after_workspace_switch(&st, Some("a")));
         assert!(!should_clear_focus_after_workspace_switch(&st, None));
         st.activate(WorkspaceId(1));
@@ -142,14 +142,8 @@ mod tests {
 
     #[test]
     fn paint_source_prefers_surface_tree() {
-        assert_eq!(
-            window_paint_source(true),
-            WindowPaintSource::SurfaceTree
-        );
-        assert_eq!(
-            window_paint_source(false),
-            WindowPaintSource::Placeholder
-        );
+        assert_eq!(window_paint_source(true), WindowPaintSource::SurfaceTree);
+        assert_eq!(window_paint_source(false), WindowPaintSource::Placeholder);
     }
 
     #[test]
@@ -158,10 +152,7 @@ mod tests {
         assert!(st.assign_window("a", WorkspaceId(0)));
         assert!(st.assign_window("b", WorkspaceId(2)));
         assert!(st.assign_window("c", WorkspaceId(0)));
-        assert_eq!(
-            visible_paint_order(&st, &["a", "b", "c"]),
-            vec!["a", "c"]
-        );
+        assert_eq!(visible_paint_order(&st, &["a", "b", "c"]), vec!["a", "c"]);
         st.activate(WorkspaceId(2));
         assert_eq!(visible_paint_order(&st, &["a", "b", "c"]), vec!["b"]);
     }
