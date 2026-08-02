@@ -6,9 +6,9 @@ the next acceptance gate. Product requirements live in `AGENTS.md`.
 
 **Original snapshot audited:** `retroshell(2).zip`
 **Original archive Git HEAD:** `5ed6f74f700ead25ccfbd4a9c81ef3226ae73203`
-**Current Git HEAD:** r16 evidence commit on `docs/program-design` (resolve the exact hash with `git log -1`)
-**Current working tree:** clean after the r16 Spaces, font-discovery, Preview-output, and QA-evidence commit
-**Audit date:** 2026-08-01  
+**Current Git HEAD:** `7a455cfeb98ef73f4d839182eebb69c8646c6044` (`docs/program-design`)
+**Current working tree:** tracked tree clean before the 2026-08-02 QA evidence commit; live r18/r19 evidence is retained under `artifacts/qa/`
+**Audit date:** 2026-08-02  
 **Audit type:** source review plus Ubuntu Server VM build/test/runtime verification and UTM visual QA.
 
 ## 1. Evidence language
@@ -937,3 +937,89 @@ profiling, true fractional rasterization, production text/font integration,
 dynamic Spaces UI, Lift Subject UI, Finder Vision integration, and later P2–P10
 requirements remain open. SLOPOS-I remains experimental/developing rather than
 a complete daily-driver desktop.
+
+## 20. 2026-08-02 — current-source DRM r19 provenance and UTM visual/input QA
+
+Environment: Ubuntu 26.04 LTS aarch64 in UTM at `192.168.64.15`, Linux
+`7.0.0-28-generic`, Rust/Cargo `1.97.1`, explicit DRM backend, `Virtual-1`
+at `1280x800`, and the guest source tree
+`/home/ubuntu/qa/2026-08-02-luna-max-r19-src`. The current-source build log and
+status are under
+`artifacts/qa/2026-08-02-luna-max-r19/evidence/guest-build-current.log` and
+`guest-build-current.status`; the status is `0`, and the log ends with
+`Finished dev profile` after compiling the session, compositor, shell, Vision
+daemon, Finder, Settings, Terminal, TextEdit, App Store, and Preview targets.
+The launched executable hashes are recorded in
+`evidence/current-source/binary-hashes.txt`; every runtime executable is under
+the same `r19-src/target/debug` tree.
+
+The clean runtime was launched with the absolute current-source
+`slopos-session` binary and `--backend drm`, with the exact model directory
+`/home/ubuntu/qa/2026-08-02-luna-max-r19-src/models/vision`. The compositor log
+records explicit `SessionDrm`, `DRM GL compositor ready (1280x800)`, private
+`WAYLAND_DISPLAY=wayland-1`, and Background/Top/Bottom/Overlay layer surfaces.
+The process tree, client environments, readiness, socket metadata, and runtime
+listing are under
+`artifacts/qa/2026-08-02-luna-max-r19/evidence/current-source/`.
+The session launched `slopos-session` PID 31161, `slopos-visiond` PID 31164,
+`slopos-compositor` PID 31165, and `slopos-shell` PID 31175. Finder, Settings,
+and Terminal were launched directly as current-source Wayland clients for
+multi-window protocol/visual coverage; their environments show the same
+private socket and session runtime.
+
+Result: **BUILD VERIFIED** and **RUNTIME OBSERVED** for the scoped claims below;
+the nested acceptance gate is not passed.
+
+- UTM screenshots are saved with their actual format as `.jpg`, validated with
+  `file` as JPEG `1174x768`, and visually inspected from disk. The initial
+  desktop shows the SLOPOS menu bar, patterned desktop, desktop icons, visible
+  cursor, and Dock. The multi-window capture shows real Finder, Settings, and
+  Terminal client surfaces with compositor window chrome. Representative files
+  are `current-utm-initial.jpg`,
+  `current-utm-current-source-apps.jpg`, and
+  `current-utm-terminal-key-partial.jpg`.
+- The llvmpipe launch path removed the earlier ZINK/DRI2 initialization errors
+  from the visible current-source session; WGPU logs identify the llvmpipe
+  Vulkan adapter. The DRM compositor still reports the UTM virgl EGL renderer,
+  so this is software/virtualized graphics evidence, not hardware proof.
+- UTM pointer clicks on the Finder desktop icon and the SLOPOS File menu did
+  not open or raise the expected UI. The matching captures
+  `current-utm-finder-single-click.jpg`,
+  `current-utm-finder-double-click.jpg`, and
+  `current-utm-file-menu.jpg` show the unchanged desktop. Settings title-bar
+  focus likewise did not raise Settings. No pointer-driven move/resize,
+  popup-open/dismiss, or Dock-click restore claim is made.
+- The Terminal prompt eventually rendered. A subsequent Computer Use key
+  sequence produced repeated prompts and malformed visible command input; the
+  raw capture is `current-utm-terminal-key-partial.jpg`. Because the automation
+  also exercised a modifier/interrupt sequence, this is recorded as an input
+  defect/diagnostic and not attributed to a specific keyboard source bug until
+  reproduced with a native guest input tool.
+- The active resource sample in
+  `evidence/current-source/cpu-memory.csv` contains 31 timestamped samples from
+  `2026-08-02T07:51:57Z` through `2026-08-02T07:52:58Z` for session, compositor,
+  shell, Vision daemon, Finder, Settings, and Terminal. It is an active-client
+  sample, not a clean idle benchmark. The log also contains frequent
+  compositor client connect/disconnect messages; the shell/SDK idle repaint
+  path remains a resource and log-noise defect.
+- SIGTERM stopped the session after the sample. `shutdown.txt` records empty
+  matching-process output and `readiness_count=0`; the session log records
+  compositor/shell reaping and Vision daemon exit status 0. This proves clean
+  teardown for this run.
+
+The two root causes found while repairing the abandoned VM evidence are
+independent. The old r18/r19 screenshot names ending in `.png` contained JPEG
+bytes; current captures are corrected to `.jpg`. The earlier r19 runtime
+evidence also built current source but launched stale r18/r16 binaries; the
+current run uses absolute paths and records binary hashes. The current-source
+input failures remain open. Source inspection additionally shows the nested and
+DRM `surface_under` paths still use compositor rectangles and popup geometry
+without traversing surface trees or honoring input regions, which is the next
+P1 implementation slice.
+
+Remaining risk: this run does not prove a human pointer serial/grab sequence,
+surface-tree hit testing, popup compatibility, XWayland, nested mode,
+display-manager login, physical hardware, clean idle CPU, true fractional
+rasterization, production text/fonts, dynamic Spaces, or successful Vision
+inference/UI output. SLOPOS-I remains experimental/developing rather than a
+complete daily-driver desktop.
