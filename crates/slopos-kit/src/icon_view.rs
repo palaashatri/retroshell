@@ -16,16 +16,28 @@ pub struct IconItem {
     pub rect: Rect,
 }
 
+/// Selects how an [`IconView`] positions its items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IconViewLayoutMode {
+    /// Arrange items in the normal Finder-style grid.
+    #[default]
+    Grid,
+    /// Arrange items in the SLOPOS desktop column layout.
+    Desktop,
+}
+
 /// A grid or desktop-style icon grid view widget.
-/// Supports both file list grids (like Finder) and standard desktop desktop layouts.
+/// Supports both file list grids (like Finder) and the standard desktop layout.
 pub struct IconView {
     state: WidgetState,
     /// The list of icons rendered inside this view.
     pub items: Vec<IconItem>,
     /// The target icon square dimensions (width/height).
     pub icon_size: f32,
-    /// The spacing margin between items (desktop mode).
+    /// The spacing margin between items.
     pub spacing: f32,
+    /// The explicit item layout strategy. Defaults to [`IconViewLayoutMode::Grid`].
+    pub layout_mode: IconViewLayoutMode,
     /// Callback triggered upon double-clicking an icon item.
     pub on_double_click: Option<Box<dyn FnMut(usize) + Send>>,
     /// Index of the most recently double-clicked item, drained by
@@ -49,6 +61,7 @@ impl IconView {
             items: vec![],
             icon_size: 64.0,
             spacing: 8.0,
+            layout_mode: IconViewLayoutMode::Grid,
             on_double_click: None,
             activated: None,
         }
@@ -71,11 +84,6 @@ impl Widget for IconView {
 
     /// Lays out icon items.
     ///
-    /// # Assumptions/Shortcuts:
-    /// - **FIXME**: Detects "desktop" mode using a heuristic matching screen dimensions and specific
-    ///   system item names ("Hard Disk", "Trash"). This should be controlled by an explicit boolean flag instead.
-    /// - **FIXME**: Non-desktop mode grid sizing uses a hardcoded cell width/height of 90.0px.
-    ///   This does not dynamically adapt to UI scaling (DPI) or changes in font/icon size.
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
         let width = constraint.max_width;
         let height = constraint.max_height;
@@ -83,12 +91,8 @@ impl Widget for IconView {
         let r = Rect::new(self.rect().x, self.rect().y, size.width, size.height);
         self.set_rect(r);
 
-        let is_desktop = size.width >= 600.0
-            && size.height >= 360.0
-            && self.items.iter().any(|item| item.label == "Hard Disk")
-            && self.items.iter().any(|item| item.label == "Trash");
         let icon_size = self.icon_size;
-        if is_desktop {
+        if self.layout_mode == IconViewLayoutMode::Desktop {
             let right_x = r.x + size.width - icon_size - 28.0;
             let mut app_y = r.y + 28.0;
             let trash_y = r.y + size.height - icon_size - 34.0;
@@ -187,8 +191,25 @@ mod tests {
     }
 
     #[test]
+    fn default_layout_stays_grid_for_desktop_named_items() {
+        let mut icons = IconView::new();
+        icons.icon_size = 56.0;
+        icons.items = vec![desktop_item("Hard Disk"), desktop_item("Trash")];
+        icons.set_rect(Rect::new(0.0, 24.0, 1280.0, 776.0));
+
+        icons.layout(LayoutConstraint::tight(Size::new(1280.0, 776.0)));
+
+        let desktop_column_x = 1280.0 - icons.icon_size - 28.0;
+        assert_ne!(icons.items[0].rect.x, desktop_column_x);
+        assert_ne!(icons.items[1].rect.x, desktop_column_x);
+        assert_eq!(icons.items[0].rect.x, 14.0);
+        assert_eq!(icons.items[1].rect.x, 98.0);
+    }
+
+    #[test]
     fn desktop_layout_uses_right_aligned_column_with_bottom_trash() {
         let mut icons = IconView::new();
+        icons.layout_mode = IconViewLayoutMode::Desktop;
         icons.icon_size = 56.0;
         icons.items = vec![
             desktop_item("Hard Disk"),

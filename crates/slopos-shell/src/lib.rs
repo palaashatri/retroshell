@@ -213,7 +213,7 @@ use slopos_kit::button::Button;
 use slopos_kit::design_tokens::{MENU_BAR_HEIGHT, MENU_BAR_HEIGHT_PX, WINDOW_TITLE_BAR_HEIGHT};
 use slopos_kit::dispatch::{for_each_widget_mut, hit_test};
 use slopos_kit::event::MouseButton;
-use slopos_kit::icon_view::{IconItem, IconView};
+use slopos_kit::icon_view::{IconItem, IconView, IconViewLayoutMode};
 use slopos_kit::label::Label;
 use slopos_kit::layout::LayoutView;
 use slopos_kit::list_view::ListView;
@@ -631,6 +631,7 @@ impl ShellDesktop {
         session_manager: Arc<RwLock<SessionManager>>,
     ) -> Self {
         let mut desktop = IconView::new();
+        desktop.layout_mode = IconViewLayoutMode::Desktop;
         desktop.icon_size = 56.0;
         desktop.spacing = 18.0;
         desktop.items = vec![
