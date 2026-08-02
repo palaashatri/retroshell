@@ -1023,3 +1023,43 @@ display-manager login, physical hardware, clean idle CPU, true fractional
 rasterization, production text/fonts, dynamic Spaces, or successful Vision
 inference/UI output. SLOPOS-I remains experimental/developing rather than a
 complete daily-driver desktop.
+
+## 21. 2026-08-02 — P1 surface-tree hit-testing implementation
+
+The next bounded P1 source slice is implemented in
+`crates/slopos-compositor/src/main.rs`,
+`crates/slopos-compositor/src/session_drm.rs`, and
+`crates/slopos-shell/src/lib.rs`.
+
+- Nested and DRM hit testing now use Smithay committed surface-tree traversal
+  with `WindowSurfaceType::ALL`, including actual subsurface offsets, committed
+  buffer bounds, and client input regions, for layer surfaces, popups, and
+  ordinary toplevels.
+- Nested button delivery replays pointer motion at the current compositor
+  location immediately before the button event so the press is retargeted to
+  the surface under the click.
+- Shell layer-surface dispatch now uses the active input filter when selecting
+  mutable widget children, so menu, popup, Dock, and background protocol
+  surfaces route events to their own widget trees while retaining independent
+  paint filters.
+- A shell regression test covers Dock input routing while the background paint
+  filter is active.
+
+Fresh verification after the edit:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo check -p slopos-compositor -p slopos-shell --all-targets` passed with
+  0 errors; the existing `block v0.1.6` future-incompatibility warning remains.
+- `cargo test -p slopos-compositor -p slopos-shell --all-targets` passed with
+  455 tests across 7 suites.
+- `cargo clippy -p slopos-compositor -p slopos-shell --all-targets
+  --all-features -- -D warnings` exited 0 with 0 errors and the same one
+  future-incompatibility warning.
+- `git diff --check` passed.
+
+This source change has not yet been exercised in a post-edit UTM runtime. The
+r19 visual/input captures in section 20 therefore remain valid evidence of the
+pre-fix observed failure and do not prove that pointer activation, popup input,
+or move/resize now works. The next acceptance action is a fresh absolute-path
+current-source UTM run with screenshots and event logs correlated to this
+commit.

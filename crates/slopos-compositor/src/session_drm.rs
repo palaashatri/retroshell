@@ -54,10 +54,10 @@ use smithay::reexports::calloop::{
     generic::Generic, EventLoop, Interest, Mode as CalloopMode, PostAction,
 };
 // Use smithay's rustix reexport so OFlags matches Session::open.
-use smithay::desktop::utils::send_frames_surface_tree;
+use smithay::desktop::utils::{send_frames_surface_tree, under_from_surface_tree};
 use smithay::desktop::{
     find_popup_root_surface, PopupGrab, PopupKeyboardGrab, PopupKind, PopupManager,
-    PopupPointerGrab,
+    PopupPointerGrab, WindowSurfaceType,
 };
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
@@ -1430,12 +1430,6 @@ fn layer_surface_request(surface: &LayerSurface) -> ((i32, i32), Anchor, Margins
     })
 }
 
-fn layer_geo_contains(geo: &Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> bool {
-    let x = pos.x as i32;
-    let y = pos.y as i32;
-    x >= geo.loc.x && y >= geo.loc.y && x < geo.loc.x + geo.size.w && y < geo.loc.y + geo.size.h
-}
-
 // ---------------------------------------------------------------------------
 // Main session state
 // ---------------------------------------------------------------------------
@@ -2156,7 +2150,7 @@ impl DrmSessionState {
                 if btn_state == ButtonState::Pressed && !self.locked {
                     let pos = self.pointer_location;
                     let hit = self.surface_under(pos);
-                    let target_surface = self.surface_under(pos).map(|(surface, _)| surface);
+                    let target_surface = hit.as_ref().map(|(surface, _)| surface.clone());
                     if button == 0x110 || button == 1 {
                         self.last_pointer_press = target_surface
                             .clone()
@@ -2203,21 +2197,35 @@ impl DrmSessionState {
         }
     }
 
-    /// Hit-test: Overlay/Top layers → windows → Bottom/Background layers.
+    /// Find the topmost surface under a compositor-space point.
     ///
-    /// The Point in the returned pair is the **surface origin in the same
-    /// coordinate space as `MotionEvent.location`** (smithay sends
-    /// `location - origin` to the client as surface-local coords).
-    /// Layer strips only hit when the pointer is inside their geo.
+    /// Hit testing follows the committed surface trees rather than the
+    /// compositor's configured rectangles. This preserves subsurface
+    /// offsets, actual committed buffer sizes, and client input regions.
+    fn layer_surface_under(
+        layer: &MappedLayer,
+        pos: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let local = Point::from((
+            pos.x - layer.geo.loc.x as f64,
+            pos.y - layer.geo.loc.y as f64,
+        ));
+        let (surface, origin) = layer.surface.surface_under(local, WindowSurfaceType::ALL)?;
+        Some((
+            surface,
+            Point::from((
+                layer.geo.loc.x as f64 + origin.x as f64,
+                layer.geo.loc.y as f64 + origin.y as f64,
+            )),
+        ))
+    }
+
     fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         for layer in self.layer_surfaces.iter().rev() {
-            if matches!(layer.layer, Layer::Overlay | Layer::Top)
-                && layer_geo_contains(&layer.geo, pos)
-            {
-                return Some((
-                    layer.surface.wl_surface().clone(),
-                    Point::from((layer.geo.loc.x as f64, layer.geo.loc.y as f64)),
-                ));
+            if matches!(layer.layer, Layer::Overlay | Layer::Top) {
+                if let Some(hit) = Self::layer_surface_under(layer, pos) {
+                    return Some(hit);
+                }
             }
         }
         for w in self
@@ -2226,42 +2234,31 @@ impl DrmSessionState {
             .rev()
             .filter(|w| !w.minimized && self.workspace_state.is_visible(&w.window_id))
         {
-            let popups: Vec<_> =
-                PopupManager::popups_for_surface(w.toplevel.wl_surface()).collect();
-            for (popup, popup_offset) in popups.into_iter().rev() {
-                let geometry = popup.geometry();
+            for (popup, popup_offset) in PopupManager::popups_for_surface(w.toplevel.wl_surface()) {
                 let origin: Point<i32, Logical> = Point::from((
-                    w.position.x + popup_offset.x - geometry.loc.x,
-                    w.position.y + popup_offset.y - geometry.loc.y,
+                    w.position.x + popup_offset.x - popup.geometry().loc.x,
+                    w.position.y + popup_offset.y - popup.geometry().loc.y,
                 ));
-                if geometry.size.w > 0
-                    && geometry.size.h > 0
-                    && (pos.x as i32) >= origin.x
-                    && (pos.y as i32) >= origin.y
-                    && (pos.x as i32) < origin.x + geometry.size.w
-                    && (pos.y as i32) < origin.y + geometry.size.h
+                if let Some((surface, surface_origin)) =
+                    under_from_surface_tree(popup.wl_surface(), pos, origin, WindowSurfaceType::ALL)
                 {
-                    return Some((
-                        popup.wl_surface().clone(),
-                        Point::from((origin.x as f64, origin.y as f64)),
-                    ));
+                    return Some((surface, surface_origin.to_f64()));
                 }
             }
-            if w.geometry().contains_f64(pos.x, pos.y) {
-                return Some((
-                    w.toplevel.wl_surface().clone(),
-                    Point::from((w.position.x as f64, w.position.y as f64)),
-                ));
+            if let Some((surface, surface_origin)) = under_from_surface_tree(
+                w.toplevel.wl_surface(),
+                pos,
+                w.position,
+                WindowSurfaceType::ALL,
+            ) {
+                return Some((surface, surface_origin.to_f64()));
             }
         }
         for layer in self.layer_surfaces.iter().rev() {
-            if matches!(layer.layer, Layer::Bottom | Layer::Background)
-                && layer_geo_contains(&layer.geo, pos)
-            {
-                return Some((
-                    layer.surface.wl_surface().clone(),
-                    Point::from((layer.geo.loc.x as f64, layer.geo.loc.y as f64)),
-                ));
+            if matches!(layer.layer, Layer::Bottom | Layer::Background) {
+                if let Some(hit) = Self::layer_surface_under(layer, pos) {
+                    return Some(hit);
+                }
             }
         }
         None

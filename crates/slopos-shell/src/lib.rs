@@ -4122,15 +4122,16 @@ impl Widget for ShellDesktop {
         if self.locked {
             return vec![&mut self.lock_screen_widget as &mut dyn Widget];
         }
-        match self.paint_filter {
+        let active_filter = self.input_filter.unwrap_or(self.paint_filter);
+        match active_filter {
             ShellPaintFilter::MenuBar | ShellPaintFilter::MenuPopup => {
                 return vec![&mut self.menu_bar as &mut dyn Widget];
             }
             ShellPaintFilter::Dock => return vec![&mut self.dock_view as &mut dyn Widget],
             ShellPaintFilter::Background | ShellPaintFilter::All => {}
         }
-        let paint_chrome = matches!(self.paint_filter, ShellPaintFilter::All)
-            && should_paint_kit_chrome(self.layer_shell_bound);
+        let paint_chrome = matches!(active_filter, ShellPaintFilter::All)
+            && (self.input_filter.is_some() || should_paint_kit_chrome(self.layer_shell_bound));
         let compositor_owns_windows = self.compositor_owns_ordinary_windows();
         let shell_window_count = if compositor_owns_windows {
             0
@@ -4159,7 +4160,7 @@ impl Widget for ShellDesktop {
         }
         if self.spotlight_ui.is_visible()
             && matches!(
-                self.paint_filter,
+                active_filter,
                 ShellPaintFilter::Background | ShellPaintFilter::All
             )
         {
@@ -4666,6 +4667,20 @@ mod tests {
         assert!(!close_box_rect(window).contains(Point::new(92.0, 78.0)));
         assert!(zoom_box_rect(window).contains(Point::new(554.0, 78.0)));
         assert!(!titlebar_rect(window).contains(Point::new(554.0, 96.0)));
+    }
+
+    #[test]
+    fn mutable_pointer_routing_uses_active_layer_input_filter() {
+        let (mut desktop, _) = test_desktop();
+        desktop.set_layer_shell_bound(true);
+        desktop.prepare_dock_strip_layout(960.0, 80.0);
+        desktop.set_paint_filter(ShellPaintFilter::Background);
+        desktop.set_input_filter(Some(ShellPaintFilter::Dock));
+
+        let children = desktop.children_mut();
+
+        assert_eq!(children.len(), 1);
+        assert_rect_eq(children[0].rect(), Rect::new(0.0, 0.0, 960.0, 80.0));
     }
 
     #[test]

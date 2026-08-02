@@ -51,8 +51,8 @@ mod linux {
         WorkspaceState, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
     };
     use smithay::desktop::{
-        find_popup_root_surface, PopupGrab, PopupKeyboardGrab, PopupKind, PopupManager,
-        PopupPointerGrab,
+        find_popup_root_surface, utils::under_from_surface_tree, PopupGrab, PopupKeyboardGrab,
+        PopupKind, PopupManager, PopupPointerGrab, WindowSurfaceType,
     };
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
     use smithay::reexports::wayland_server::protocol::{
@@ -635,24 +635,35 @@ mod linux {
             ))
         }
 
-        /// Find a popup or toplevel surface under a compositor-space point.
-        /// Popup trees are checked before the parent window and are independent
-        /// of the parent rectangle, as required for menus that extend outside
-        /// their parent surface.
+        /// Find the topmost surface under a compositor-space point.
+        ///
+        /// Hit testing follows the committed surface trees rather than the
+        /// compositor's configured rectangles. This preserves subsurface
+        /// offsets, actual committed buffer sizes, and client input regions.
+        fn layer_surface_under(
+            layer: &MappedLayer,
+            pt: Point<f64, Logical>,
+        ) -> Option<(WlSurface, Point<f64, Logical>)> {
+            let local = Point::from((pt.x - layer.geo.loc.x as f64, pt.y - layer.geo.loc.y as f64));
+            let (surface, origin) = layer.surface.surface_under(local, WindowSurfaceType::ALL)?;
+            Some((
+                surface,
+                Point::from((
+                    layer.geo.loc.x as f64 + origin.x as f64,
+                    layer.geo.loc.y as f64 + origin.y as f64,
+                )),
+            ))
+        }
+
         fn surface_under(
             &self,
             pt: Point<f64, Logical>,
         ) -> Option<(WlSurface, Point<f64, Logical>)> {
             for layer in self.layer_surfaces.iter().rev() {
-                if matches!(layer.layer, Layer::Overlay | Layer::Top)
-                    && layer
-                        .geo
-                        .contains(Point::<i32, Logical>::from((pt.x as i32, pt.y as i32)))
-                {
-                    return Some((
-                        layer.surface.wl_surface().clone(),
-                        Point::from((layer.geo.loc.x as f64, layer.geo.loc.y as f64)),
-                    ));
+                if matches!(layer.layer, Layer::Overlay | Layer::Top) {
+                    if let Some(hit) = Self::layer_surface_under(layer, pt) {
+                        return Some(hit);
+                    }
                 }
             }
 
@@ -662,42 +673,34 @@ mod linux {
                 .rev()
                 .filter(|w| !w.minimized && self.workspace_state.is_visible(&w.window_id))
             {
-                let popups: Vec<_> =
-                    PopupManager::popups_for_surface(window.toplevel.wl_surface()).collect();
-                for (popup, popup_offset) in popups.into_iter().rev() {
-                    let geometry = popup.geometry();
+                for (popup, popup_offset) in
+                    PopupManager::popups_for_surface(window.toplevel.wl_surface())
+                {
                     let origin = Self::popup_origin(window, &popup, popup_offset);
-                    if geometry.size.w > 0
-                        && geometry.size.h > 0
-                        && (pt.x as i32) >= origin.x
-                        && (pt.y as i32) >= origin.y
-                        && (pt.x as i32) < origin.x + geometry.size.w
-                        && (pt.y as i32) < origin.y + geometry.size.h
-                    {
-                        return Some((
-                            popup.wl_surface().clone(),
-                            Point::from((origin.x as f64, origin.y as f64)),
-                        ));
+                    if let Some((surface, surface_origin)) = under_from_surface_tree(
+                        popup.wl_surface(),
+                        pt,
+                        origin,
+                        WindowSurfaceType::ALL,
+                    ) {
+                        return Some((surface, surface_origin.to_f64()));
                     }
                 }
-                if window.geometry().contains_f64(pt.x, pt.y) {
-                    return Some((
-                        window.toplevel.wl_surface().clone(),
-                        Point::from((window.position.x as f64, window.position.y as f64)),
-                    ));
+                if let Some((surface, surface_origin)) = under_from_surface_tree(
+                    window.toplevel.wl_surface(),
+                    pt,
+                    window.position,
+                    WindowSurfaceType::ALL,
+                ) {
+                    return Some((surface, surface_origin.to_f64()));
                 }
             }
 
             for layer in self.layer_surfaces.iter().rev() {
-                if matches!(layer.layer, Layer::Bottom | Layer::Background)
-                    && layer
-                        .geo
-                        .contains(Point::<i32, Logical>::from((pt.x as i32, pt.y as i32)))
-                {
-                    return Some((
-                        layer.surface.wl_surface().clone(),
-                        Point::from((layer.geo.loc.x as f64, layer.geo.loc.y as f64)),
-                    ));
+                if matches!(layer.layer, Layer::Bottom | Layer::Background) {
+                    if let Some(hit) = Self::layer_surface_under(layer, pt) {
+                        return Some(hit);
+                    }
                 }
             }
             None
@@ -846,6 +849,30 @@ mod linux {
             let client = surface.and_then(|surface| surface.client());
             set_data_device_focus(&self.display_handle, &self.seat, client.clone());
             set_primary_focus(&self.display_handle, &self.seat, client);
+        }
+
+        /// Retarget pointer focus immediately before button delivery.
+        ///
+        /// A button event carries no position. Replaying motion at the last
+        /// compositor pointer location ensures Smithay sends the press to the
+        /// surface currently under the click even when the backend did not
+        /// report a motion immediately beforehand.
+        fn forward_pointer_motion(&mut self, time: u32) {
+            let pos = self.pointer_pos;
+            let focus = self.surface_under(pos);
+            let serial = self.next_serial();
+            if let Some(ptr) = self.seat.get_pointer() {
+                ptr.motion(
+                    self,
+                    focus,
+                    &MotionEvent {
+                        location: pos,
+                        serial,
+                        time,
+                    },
+                );
+                ptr.frame(self);
+            }
         }
 
         /// Remove dead windows (client disconnected / surface destroyed).
@@ -2897,6 +2924,9 @@ mod linux {
                 }
                 None => state.focus_surface(None),
             }
+            // Retarget pointer focus so the button is delivered to the
+            // surface under the current click coordinates.
+            state.forward_pointer_motion(time);
         }
 
         if let Some(ptr) = state.seat.get_pointer() {
