@@ -6,7 +6,7 @@ the next acceptance gate. Product requirements live in `AGENTS.md`.
 
 **Original snapshot audited:** `retroshell(2).zip`
 **Original archive Git HEAD:** `5ed6f74f700ead25ccfbd4a9c81ef3226ae73203`
-**Current Git HEAD:** `7a455cfeb98ef73f4d839182eebb69c8646c6044` (`docs/program-design`)
+**Current Git HEAD:** `ea3fe7d` (`docs/program-design`)
 **Current working tree:** tracked tree clean before the 2026-08-02 QA evidence commit; live r18/r19 evidence is retained under `artifacts/qa/`
 **Audit date:** 2026-08-02  
 **Audit type:** source review plus Ubuntu Server VM build/test/runtime verification and UTM visual QA.
