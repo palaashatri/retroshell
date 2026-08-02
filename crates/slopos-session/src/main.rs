@@ -238,9 +238,39 @@ fn runtime_dir() -> Result<PathBuf, String> {
     let path = env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })));
-    fs::create_dir_all(&path)
-        .map_err(|e| format!("cannot create XDG_RUNTIME_DIR {}: {e}", path.display()))?;
+    validate_runtime_dir(&path)?;
     Ok(path)
+}
+
+fn validate_runtime_dir(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect XDG_RUNTIME_DIR {}: {error}", path.display()))?;
+    if !metadata.file_type().is_dir() {
+        return Err(format!(
+            "XDG_RUNTIME_DIR {} is not a directory",
+            path.display()
+        ));
+    }
+
+    let effective_uid = unsafe { libc::geteuid() };
+    if metadata.uid() != effective_uid {
+        return Err(format!(
+            "XDG_RUNTIME_DIR {} is owned by uid {}, expected {}",
+            path.display(),
+            metadata.uid(),
+            effective_uid
+        ));
+    }
+
+    let mode = metadata.mode() & 0o777;
+    if mode != 0o700 {
+        return Err(format!(
+            "XDG_RUNTIME_DIR {} must have mode 0700, found {:o}",
+            path.display(),
+            mode
+        ));
+    }
+    Ok(())
 }
 
 struct SessionRuntime {
@@ -736,7 +766,16 @@ fn wait_for_private_socket(
     }
 }
 
-fn signal_owned_group(group: OwnedProcessGroup, signal: libc::c_int) -> Result<(), String> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcessGroupSignal {
+    Sent,
+    Missing,
+}
+
+fn signal_owned_group(
+    group: OwnedProcessGroup,
+    signal: libc::c_int,
+) -> Result<ProcessGroupSignal, String> {
     if group.id <= 1 {
         return Err(format!(
             "refusing to signal unsafe process-group id {}",
@@ -745,11 +784,11 @@ fn signal_owned_group(group: OwnedProcessGroup, signal: libc::c_int) -> Result<(
     }
     let result = unsafe { libc::kill(group.signal_target(), signal) };
     if result == 0 {
-        return Ok(());
+        return Ok(ProcessGroupSignal::Sent);
     }
     let error = std::io::Error::last_os_error();
     if error.raw_os_error() == Some(libc::ESRCH) {
-        Ok(())
+        Ok(ProcessGroupSignal::Missing)
     } else {
         Err(format!(
             "cannot send signal {signal} to owned process group {}: {error}",
@@ -759,6 +798,13 @@ fn signal_owned_group(group: OwnedProcessGroup, signal: libc::c_int) -> Result<(
 }
 
 fn reap_owned_group(child: &mut OwnedChild) -> Result<ExitStatus, String> {
+    reap_owned_group_with_grace(child, SHUTDOWN_GRACE)
+}
+
+fn reap_owned_group_with_grace(
+    child: &mut OwnedChild,
+    grace: Duration,
+) -> Result<ExitStatus, String> {
     if let Some(status) = child
         .try_wait()
         .map_err(|error| format!("cannot inspect {}: {error}", child.role))?
@@ -766,8 +812,8 @@ fn reap_owned_group(child: &mut OwnedChild) -> Result<ExitStatus, String> {
         return Ok(status);
     }
 
-    let term_error = signal_owned_group(child.process_group, libc::SIGTERM).err();
-    let deadline = Instant::now() + SHUTDOWN_GRACE;
+    let term_result = signal_owned_group(child.process_group, libc::SIGTERM);
+    let deadline = Instant::now() + grace;
     while Instant::now() < deadline {
         match child
             .try_wait()
@@ -781,10 +827,12 @@ fn reap_owned_group(child: &mut OwnedChild) -> Result<ExitStatus, String> {
         }
     }
 
-    let kill_error = signal_owned_group(child.process_group, libc::SIGKILL).err();
-    if term_error.is_some() || kill_error.is_some() {
+    let kill_result = signal_owned_group(child.process_group, libc::SIGKILL);
+    if matches!(term_result, Err(_) | Ok(ProcessGroupSignal::Missing))
+        || matches!(kill_result, Err(_) | Ok(ProcessGroupSignal::Missing))
+    {
         // The direct child PID is still owned by this supervisor. It is a
-        // safe last resort when a process-group signal raced with exit or was
+        // safe last resort when a process-group signal found no group or was
         // rejected by the kernel; never broaden this to process-name scans.
         let _ = child.child.kill();
     }
@@ -1051,6 +1099,27 @@ mod tests {
     }
 
     #[test]
+    fn runtime_directory_must_be_private_owned_and_not_a_symlink() {
+        let path = env::temp_dir().join(format!("slopos-session-runtime-base-{}", session_nonce()));
+        fs::create_dir(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert!(validate_runtime_dir(&path).is_ok());
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let error = validate_runtime_dir(&path).unwrap_err();
+        assert!(error.contains("mode 0700"));
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        let link = path.with_extension("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(validate_runtime_dir(&link).is_err());
+
+        fs::remove_file(link).unwrap();
+        fs::remove_dir(path).unwrap();
+    }
+
+    #[test]
     fn runtime_is_nonce_scoped_private_and_cleans_its_owned_directory() {
         let base = env::temp_dir().join(format!("slopos-session-runtime-{}", session_nonce()));
         fs::create_dir(&base).unwrap();
@@ -1164,6 +1233,30 @@ mod tests {
         assert_eq!(group.signal_target(), -42);
         assert!(OwnedProcessGroup::for_child_pid(0).is_err());
         assert!(OwnedProcessGroup::for_child_pid(1).is_err());
+    }
+
+    #[test]
+    fn missing_process_group_falls_back_to_direct_child_kill() {
+        let mut command = child_command(Path::new("/bin/sleep"));
+        command.arg("1");
+        let mut child = OwnedChild::spawn(&mut command, "test-child").unwrap();
+        child.process_group = OwnedProcessGroup {
+            id: i32::MAX as libc::pid_t,
+        };
+
+        assert_eq!(
+            signal_owned_group(child.process_group, libc::SIGTERM).unwrap(),
+            ProcessGroupSignal::Missing
+        );
+        let started = Instant::now();
+        let status = reap_owned_group_with_grace(&mut child, Duration::ZERO).unwrap();
+
+        assert!(!status.success());
+        assert!(
+            started.elapsed() < Duration::from_millis(750),
+            "direct child fallback took too long: {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
