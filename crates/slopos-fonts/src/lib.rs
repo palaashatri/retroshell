@@ -119,7 +119,7 @@ pub enum FontManagerError {
 pub enum FontResolutionError {
     #[error("font profile is invalid")]
     InvalidProfile,
-    #[error("font family must not be empty or contain control characters")]
+    #[error("font family must not be empty, whitespace-only, or contain control characters")]
     InvalidFamily,
     #[error("font size {size} is outside the supported range {minimum}..={maximum}")]
     InvalidSize {
@@ -452,7 +452,14 @@ pub enum FontProfile {
 }
 
 impl FontProfile {
-    pub fn parse(s: &str) -> Result<Self, FontResolutionError> {
+    /// Parse a profile using the historical lossy behavior: unknown values
+    /// select the Modern profile.
+    pub fn parse(s: &str) -> Self {
+        Self::try_parse(s).unwrap_or(Self::Modern)
+    }
+
+    /// Parse a profile while reporting malformed input to new callers.
+    pub fn try_parse(s: &str) -> Result<Self, FontResolutionError> {
         match s.trim().to_lowercase().as_str() {
             "classic" => Ok(Self::Classic),
             "modern" => Ok(Self::Modern),
@@ -463,7 +470,7 @@ impl FontProfile {
     }
 
     pub fn parse_lossy(s: &str) -> Self {
-        Self::parse(s).unwrap_or(Self::Modern)
+        Self::parse(s)
     }
 }
 
@@ -476,24 +483,27 @@ pub struct FontRoleSpec {
 }
 
 impl FontRoleSpec {
-    pub fn try_new(
-        family: impl Into<String>,
-        size: u32,
-        weight: u16,
-    ) -> Result<Self, FontResolutionError> {
-        Self::new(family, size, weight)
+    /// Construct a role specification using the historical clamping behavior.
+    pub fn new(family: impl Into<String>, size: u32, weight: u16) -> Self {
+        Self {
+            family: family.into(),
+            size: size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE),
+            weight: weight.clamp(100, 900),
+        }
     }
 
     /// Construct a role specification after validating every caller-provided
     /// value. Invalid sizes, weights, and family names are returned to the
     /// caller; the authoritative profile path never clamps them silently.
-    pub fn new(
+    pub fn try_new(
         family: impl Into<String>,
         size: u32,
         weight: u16,
     ) -> Result<Self, FontResolutionError> {
+        let family = family.into();
+        validate_family_name(&family)?;
         let spec = Self {
-            family: canonical_family_name(&family.into()),
+            family: canonical_family_name(&family),
             size,
             weight,
         };
@@ -512,9 +522,7 @@ impl FontRoleSpec {
     }
 
     pub fn validate(&self) -> Result<(), FontResolutionError> {
-        if self.family.is_empty() || self.family.chars().any(|character| character.is_control()) {
-            return Err(FontResolutionError::InvalidFamily);
-        }
+        validate_family_name(&self.family)?;
         validate_font_size(self.size)?;
         if (100..=900).contains(&self.weight) {
             Ok(())
@@ -559,7 +567,7 @@ fn default_role_spec(
             return default_role_spec(FontProfile::Modern, role);
         }
     };
-    FontRoleSpec::new(family, size, weight)
+    FontRoleSpec::try_new(family, size, weight)
 }
 
 /// Active font profile configuration with per-role font specs.
@@ -572,12 +580,18 @@ pub struct FontProfileConfig {
 impl Default for FontProfileConfig {
     fn default() -> Self {
         Self::for_profile(FontProfile::Modern)
-            .expect("built-in Modern font profile defaults must be valid")
     }
 }
 
 impl FontProfileConfig {
-    pub fn for_profile(profile: FontProfile) -> Result<Self, FontResolutionError> {
+    /// Construct a built-in profile using the historical infallible API.
+    pub fn for_profile(profile: FontProfile) -> Self {
+        Self::try_for_profile(profile)
+            .expect("built-in SLOPOS-I font profile defaults must be valid")
+    }
+
+    /// Construct a built-in profile while exposing validation failures.
+    pub fn try_for_profile(profile: FontProfile) -> Result<Self, FontResolutionError> {
         let roles = FontRole::all()
             .iter()
             .copied()
@@ -586,7 +600,19 @@ impl FontProfileConfig {
         Ok(Self { profile, roles })
     }
 
-    pub fn get_spec(&self, role: FontRole) -> Result<FontRoleSpec, FontResolutionError> {
+    /// Return a role specification using the historical infallible API.
+    pub fn get_spec(&self, role: FontRole) -> FontRoleSpec {
+        self.roles.get(&role).cloned().unwrap_or_else(|| {
+            FontRoleSpec::new(
+                LOGICAL_RECOVERY_FONT_FAMILY,
+                role.default_size() as u32,
+                400,
+            )
+        })
+    }
+
+    /// Return a role specification after validating stored configuration.
+    pub fn try_get_spec(&self, role: FontRole) -> Result<FontRoleSpec, FontResolutionError> {
         if let Some(spec) = self.roles.get(&role).cloned() {
             spec.validate()?;
             Ok(spec)
@@ -624,7 +650,7 @@ impl FontProfileConfig {
     /// Return the complete, ordered role fallback chain, ending in the
     /// logical recovery family supplied by this crate's renderer boundary.
     pub fn fallback_chain(&self, role: FontRole) -> Result<Vec<String>, FontResolutionError> {
-        let spec = self.get_spec(role)?;
+        let spec = self.try_get_spec(role)?;
         Ok(fallback_chain(self.profile, role, &spec.family))
     }
 
@@ -633,11 +659,7 @@ impl FontProfileConfig {
     /// Profile names are preferences only. A family is selected only when the
     /// caller reports a matching available family; otherwise the ordered
     /// fallback chain reaches the embedded recovery family.
-    pub fn resolve<I, S>(
-        &self,
-        available_families: I,
-        scale: f32,
-    ) -> Result<ResolvedFontProfile, FontResolutionError>
+    pub fn resolve<I, S>(&self, available_families: I, scale: f32) -> ResolvedFontProfile
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
@@ -654,7 +676,7 @@ impl FontProfileConfig {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.resolve(available_families, scale)
+        FontProfileResolver::new(available_families).try_resolve(self, scale)
     }
 
     pub fn resolve_with_user_and_system<U, US, T, TS>(
@@ -662,7 +684,7 @@ impl FontProfileConfig {
         user_families: U,
         system_families: T,
         scale: f32,
-    ) -> Result<ResolvedFontProfile, FontResolutionError>
+    ) -> ResolvedFontProfile
     where
         U: IntoIterator<Item = US>,
         US: AsRef<str>,
@@ -685,16 +707,20 @@ impl FontProfileConfig {
         T: IntoIterator<Item = TS>,
         TS: AsRef<str>,
     {
-        self.resolve_with_user_and_system(user_families, system_families, scale)
+        FontProfileResolver::from_user_and_system(user_families, system_families)
+            .try_resolve(self, scale)
     }
 }
 
 /// Provenance of a family selected by the resolver.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum FontSource {
     User,
     System,
+    #[default]
     RendererBitmapFallback,
 }
 
@@ -797,12 +823,20 @@ pub struct ResolvedFontRole {
     pub used_fallback: bool,
     /// Whether the result came from user fonts, system fonts, or the embedded
     /// recovery path.
+    #[serde(default)]
     pub source: FontSource,
 }
 
 impl ResolvedFontRole {
-    pub fn as_spec(&self) -> Result<FontRoleSpec, FontResolutionError> {
+    /// Convert to a role specification using the historical infallible API.
+    pub fn as_spec(&self) -> FontRoleSpec {
         FontRoleSpec::new(self.family.clone(), self.size, self.weight)
+    }
+
+    /// Convert to a role specification while reporting invalid serialized
+    /// values to new callers.
+    pub fn try_as_spec(&self) -> Result<FontRoleSpec, FontResolutionError> {
+        FontRoleSpec::try_new(self.family.clone(), self.size, self.weight)
     }
 }
 
@@ -818,12 +852,27 @@ impl ResolvedFontProfile {
         self.roles.get(&role)
     }
 
-    pub fn get_spec(&self, role: FontRole) -> Result<FontRoleSpec, FontResolutionError> {
+    /// Return a role specification using the historical infallible API.
+    pub fn get_spec(&self, role: FontRole) -> FontRoleSpec {
         self.roles
             .get(&role)
             .map(ResolvedFontRole::as_spec)
             .unwrap_or_else(|| {
                 FontRoleSpec::new(
+                    LOGICAL_RECOVERY_FONT_FAMILY,
+                    role.default_size() as u32,
+                    400,
+                )
+            })
+    }
+
+    /// Return a role specification while reporting invalid serialized values.
+    pub fn try_get_spec(&self, role: FontRole) -> Result<FontRoleSpec, FontResolutionError> {
+        self.roles
+            .get(&role)
+            .map(ResolvedFontRole::try_as_spec)
+            .unwrap_or_else(|| {
+                FontRoleSpec::try_new(
                     LOGICAL_RECOVERY_FONT_FAMILY,
                     role.default_size() as u32,
                     400,
@@ -871,16 +920,42 @@ impl FontProfileResolver {
         &self.availability
     }
 
-    /// Resolve after validating the scale and every configured role. Invalid
-    /// user configuration is returned to the caller instead of being clamped.
-    pub fn resolve(
-        &self,
-        config: &FontProfileConfig,
-        scale: f32,
-    ) -> Result<ResolvedFontProfile, FontResolutionError> {
-        validate_font_scale(scale)?;
-        config.validate()?;
-        self.resolve_validated(config, scale)
+    /// Resolve using the historical lossy behavior for malformed values.
+    pub fn resolve(&self, config: &FontProfileConfig, scale: f32) -> ResolvedFontProfile {
+        let scale = if scale.is_finite() {
+            scale.clamp(MIN_FONT_SCALE, MAX_FONT_SCALE)
+        } else {
+            1.0
+        };
+        let roles = FontRole::all()
+            .iter()
+            .copied()
+            .map(|role| {
+                let configured = config.get_spec(role);
+                let requested_family = canonical_family_name(&configured.family);
+                let (family, used_fallback, source) =
+                    resolve_family(config.profile, role, &requested_family, &self.availability);
+                let size = scaled_font_size(configured.size, scale);
+                let weight = configured.weight.clamp(100, 900);
+
+                (
+                    role,
+                    ResolvedFontRole {
+                        requested_family,
+                        family,
+                        size,
+                        weight,
+                        used_fallback,
+                        source,
+                    },
+                )
+            })
+            .collect();
+
+        ResolvedFontProfile {
+            profile: config.profile,
+            roles,
+        }
     }
 
     pub fn try_resolve(
@@ -888,7 +963,9 @@ impl FontProfileResolver {
         config: &FontProfileConfig,
         scale: f32,
     ) -> Result<ResolvedFontProfile, FontResolutionError> {
-        self.resolve(config, scale)
+        validate_font_scale(scale)?;
+        config.validate()?;
+        self.resolve_validated(config, scale)
     }
 
     fn resolve_validated(
@@ -900,11 +977,11 @@ impl FontProfileResolver {
             .iter()
             .copied()
             .map(|role| -> Result<_, FontResolutionError> {
-                let configured = config.get_spec(role)?;
+                let configured = config.try_get_spec(role)?;
                 let requested_family = canonical_family_name(&configured.family);
                 let (family, used_fallback, source) =
                     resolve_family(config.profile, role, &requested_family, &self.availability);
-                let size = scaled_font_size(configured.size, scale)?;
+                let size = try_scaled_font_size(configured.size, scale)?;
                 let weight = configured.weight.clamp(100, 900);
 
                 Ok((
@@ -980,6 +1057,10 @@ pub fn fallback_chain(profile: FontProfile, role: FontRole, requested_family: &s
 }
 
 fn canonical_family_name(family: &str) -> String {
+    if family.chars().any(|character| character.is_control()) {
+        return String::new();
+    }
+
     let family = family
         .chars()
         .map(|character| match character {
@@ -990,10 +1071,19 @@ fn canonical_family_name(family: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    if family.chars().any(|character| character.is_control()) {
-        String::new()
+    family
+}
+
+fn validate_family_name(family: &str) -> Result<(), FontResolutionError> {
+    if family.is_empty()
+        || family.chars().any(|character| character.is_control())
+        || family
+            .chars()
+            .all(|character| character.is_whitespace() || character.is_control())
+    {
+        Err(FontResolutionError::InvalidFamily)
     } else {
-        family
+        Ok(())
     }
 }
 
@@ -1035,10 +1125,15 @@ fn resolve_family(
     )
 }
 
-fn scaled_font_size(size: u32, scale: f32) -> Result<u32, FontResolutionError> {
+fn scaled_font_size(size: u32, scale: f32) -> u32 {
+    ((size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE) as f32 * scale).round() as u32)
+        .clamp(MIN_FONT_SIZE, MAX_FONT_SIZE)
+}
+
+fn try_scaled_font_size(size: u32, scale: f32) -> Result<u32, FontResolutionError> {
     validate_font_size(size)?;
     validate_font_scale(scale)?;
-    Ok(((size as f32 * scale).round() as u32).clamp(MIN_FONT_SIZE, MAX_FONT_SIZE))
+    Ok(scaled_font_size(size, scale))
 }
 
 /// Font discovery service searching user and system directories.
@@ -1173,7 +1268,7 @@ mod tests {
     }
 
     fn profile(profile: FontProfile) -> FontProfileConfig {
-        FontProfileConfig::for_profile(profile).expect("built-in profile defaults are valid")
+        FontProfileConfig::for_profile(profile)
     }
 
     #[test]
@@ -1187,39 +1282,22 @@ mod tests {
     fn test_font_profile_config() {
         let classic = profile(FontProfile::Classic);
         assert_eq!(classic.profile, FontProfile::Classic);
-        let spec = classic
-            .get_spec(FontRole::SystemUi)
-            .expect("built-in role is valid");
+        let spec = classic.get_spec(FontRole::SystemUi);
         assert_eq!(spec.family, "Noto Sans");
 
         let modern = profile(FontProfile::Modern);
-        assert_eq!(
-            modern
-                .get_spec(FontRole::SystemUi)
-                .expect("built-in role is valid")
-                .family,
-            "Inter"
-        );
+        assert_eq!(modern.get_spec(FontRole::SystemUi).family, "Inter");
 
         let accessible = profile(FontProfile::Accessible);
         assert_eq!(
-            accessible
-                .get_spec(FontRole::SystemUi)
-                .expect("built-in role is valid")
-                .family,
+            accessible.get_spec(FontRole::SystemUi).family,
             "Atkinson Hyperlegible"
         );
 
         let custom = profile(FontProfile::Custom);
         assert_eq!(custom.profile, FontProfile::Custom);
         assert_eq!(custom.roles.len(), FontRole::all().len());
-        assert_eq!(
-            custom
-                .get_spec(FontRole::Body)
-                .expect("built-in role is valid")
-                .family,
-            "Inter"
-        );
+        assert_eq!(custom.get_spec(FontRole::Body).family, "Inter");
     }
 
     #[test]
@@ -1234,7 +1312,7 @@ mod tests {
             let config = profile(selected_profile);
             assert_eq!(config.roles.len(), FontRole::all().len());
             for role in FontRole::all() {
-                let spec = config.get_spec(*role).expect("built-in role is valid");
+                let spec = config.get_spec(*role);
                 assert!(spec.validate().is_ok());
                 assert!(!proprietary_names.contains(&spec.family.as_str()));
             }
@@ -1243,22 +1321,21 @@ mod tests {
 
     #[test]
     fn checked_font_inputs_reject_invalid_sizes_weights_and_scales() {
-        assert!(FontRoleSpec::new("Noto Sans", MIN_FONT_SIZE, 400).is_ok());
         assert!(FontRoleSpec::try_new("Noto Sans", MIN_FONT_SIZE, 400).is_ok());
         assert!(matches!(
-            FontRoleSpec::new("Noto Sans", 0, 400),
+            FontRoleSpec::try_new("Noto Sans", 0, 400),
             Err(FontResolutionError::InvalidSize { size: 0, .. })
         ));
         assert!(matches!(
-            FontRoleSpec::new("Noto Sans", MAX_FONT_SIZE + 1, 400),
+            FontRoleSpec::try_new("Noto Sans", MAX_FONT_SIZE + 1, 400),
             Err(FontResolutionError::InvalidSize { .. })
         ));
         assert!(matches!(
-            FontRoleSpec::new("Noto Sans", 13, 99),
+            FontRoleSpec::try_new("Noto Sans", 13, 99),
             Err(FontResolutionError::InvalidWeight { weight: 99 })
         ));
         assert!(matches!(
-            FontRoleSpec::new("\u{0}", 13, 400),
+            FontRoleSpec::try_new("\u{0}", 13, 400),
             Err(FontResolutionError::InvalidFamily)
         ));
         let lossy = FontRoleSpec::lossy("Noto Sans", 0, 99);
@@ -1268,11 +1345,11 @@ mod tests {
         let config = profile(FontProfile::Modern);
         for scale in [0.0, -1.0, f32::NAN, f32::INFINITY, 4.1] {
             assert!(matches!(
-                config.resolve(["Inter"], scale),
+                config.try_resolve(["Inter"], scale),
                 Err(FontResolutionError::InvalidScale { .. })
             ));
         }
-        assert!(config.resolve(["Inter"], 1.25).is_ok());
+        assert!(config.try_resolve(["Inter"], 1.25).is_ok());
 
         let mut malformed = config;
         malformed.roles.insert(
@@ -1284,9 +1361,75 @@ mod tests {
             },
         );
         assert!(matches!(
-            malformed.resolve(["Inter"], 1.0),
+            malformed.try_resolve(["Inter"], 1.0),
             Err(FontResolutionError::InvalidSize { size: 0, .. })
         ));
+    }
+
+    #[test]
+    fn legacy_infallible_calls_keep_their_original_return_types() {
+        assert_eq!(FontProfile::parse("unknown-profile"), FontProfile::Modern);
+
+        let spec = FontRoleSpec::new("Inter", 0, 99);
+        assert_eq!(spec.size, MIN_FONT_SIZE);
+        assert_eq!(spec.weight, 100);
+
+        let config = FontProfileConfig::for_profile(FontProfile::Modern);
+        assert_eq!(config.get_spec(FontRole::SystemUi).family, "Inter");
+
+        let resolved = config.resolve(["Inter"], 1.0);
+        let resolved_again = FontProfileResolver::new(["Inter"]).resolve(&config, 1.0);
+        assert_eq!(resolved, resolved_again);
+        assert_eq!(resolved.get_spec(FontRole::SystemUi).family, "Inter");
+        assert_eq!(
+            resolved
+                .get_role(FontRole::SystemUi)
+                .expect("system UI role")
+                .as_spec()
+                .family,
+            "Inter"
+        );
+    }
+
+    #[test]
+    fn family_validation_rejects_whitespace_and_control_only_names() {
+        for family in ["", "   ", "\u{2003}\u{2003}", "\u{0}\u{1}"] {
+            assert!(matches!(
+                FontRoleSpec::try_new(family, 13, 400),
+                Err(FontResolutionError::InvalidFamily)
+            ));
+
+            let stored = FontRoleSpec {
+                family: family.to_string(),
+                size: 13,
+                weight: 400,
+            };
+            assert!(matches!(
+                stored.validate(),
+                Err(FontResolutionError::InvalidFamily)
+            ));
+        }
+
+        assert_eq!(normalize_family_name("\tInter"), "");
+        assert!(FontRoleSpec::try_new("\tInter", 13, 400).is_err());
+    }
+
+    #[test]
+    fn resolved_font_role_deserializes_payloads_without_new_provenance_field() {
+        let role: ResolvedFontRole = serde_json::from_str(
+            r#"{
+                "requested_family": "Inter",
+                "family": "Inter",
+                "size": 13,
+                "weight": 400,
+                "used_fallback": false
+            }"#,
+        )
+        .expect("legacy resolved role payload is compatible");
+
+        assert_eq!(role.requested_family, "Inter");
+        assert_eq!(role.family, "Inter");
+        assert_eq!(role.source, FontSource::RendererBitmapFallback);
     }
 
     #[test]
@@ -1294,36 +1437,36 @@ mod tests {
         let mut config = profile(FontProfile::Custom);
         config.roles.insert(
             FontRole::Body,
-            FontRoleSpec::new("Nimbus Sans", 20, 500).expect("valid custom role"),
+            FontRoleSpec::try_new("Nimbus Sans", 20, 500).expect("valid custom role"),
         );
 
         let resolved = config
-            .resolve(["Nimbus Sans", "Inter", "Noto Sans Mono"], 1.25)
+            .try_resolve(["Nimbus Sans", "Inter", "Noto Sans Mono"], 1.25)
             .expect("valid custom profile");
         assert_eq!(
             resolved
-                .get_spec(FontRole::Body)
+                .try_get_spec(FontRole::Body)
                 .expect("resolved role is valid")
                 .family,
             "Nimbus Sans"
         );
         assert_eq!(
             resolved
-                .get_spec(FontRole::Body)
+                .try_get_spec(FontRole::Body)
                 .expect("resolved role is valid")
                 .size,
             25
         );
         assert_eq!(
             resolved
-                .get_spec(FontRole::Body)
+                .try_get_spec(FontRole::Body)
                 .expect("resolved role is valid")
                 .weight,
             500
         );
         assert_eq!(
             resolved
-                .get_spec(FontRole::SystemUi)
+                .try_get_spec(FontRole::SystemUi)
                 .expect("resolved role is valid")
                 .family,
             "Inter"
@@ -1347,21 +1490,21 @@ mod tests {
 
         let config = profile(FontProfile::Modern);
         let one = config
-            .resolve(["Liberation Sans", "Noto Sans"], 1.0)
+            .try_resolve(["Liberation Sans", "Noto Sans"], 1.0)
             .expect("valid profile resolution");
         let two = config
-            .resolve(["Noto Sans", "Liberation Sans"], 1.0)
+            .try_resolve(["Noto Sans", "Liberation Sans"], 1.0)
             .expect("valid profile resolution");
         assert_eq!(one, two);
         assert_eq!(
-            one.get_spec(FontRole::Body)
+            one.try_get_spec(FontRole::Body)
                 .expect("resolved role is valid")
                 .family,
             "Noto Sans"
         );
 
         let empty = config
-            .resolve(std::iter::empty::<&str>(), 1.0)
+            .try_resolve(std::iter::empty::<&str>(), 1.0)
             .expect("recovery resolution is valid");
         assert!(empty.roles.values().all(|role| {
             role.family == LOGICAL_RECOVERY_FONT_FAMILY
@@ -1416,7 +1559,7 @@ mod tests {
         );
         let config = profile(FontProfile::Modern);
         let resolved = resolver
-            .resolve(&config, 1.0)
+            .try_resolve(&config, 1.0)
             .expect("valid profile resolution");
         let body = resolved.get_role(FontRole::Body).expect("body role");
 
@@ -1427,11 +1570,11 @@ mod tests {
             profile: FontProfile::Custom,
             roles: HashMap::from([(
                 FontRole::Body,
-                FontRoleSpec::new("Noto Sans", 13, 400).expect("valid custom role"),
+                FontRoleSpec::try_new("Noto Sans", 13, 400).expect("valid custom role"),
             )]),
         };
         let resolved = resolver
-            .resolve(&user_requested, 1.0)
+            .try_resolve(&user_requested, 1.0)
             .expect("valid profile resolution");
         let body = resolved.get_role(FontRole::Body).expect("body role");
         assert_eq!(body.family, "Noto Sans");
@@ -1442,62 +1585,62 @@ mod tests {
     #[test]
     fn font_profile_resolver_resolves_classic_modern_accessible_and_custom_profiles() {
         let classic = profile(FontProfile::Classic)
-            .resolve(["noto sans", "noto sans mono"], 1.0)
+            .try_resolve(["noto sans", "noto sans mono"], 1.0)
             .expect("valid profile resolution");
         assert_eq!(classic.profile, FontProfile::Classic);
         assert_eq!(
             classic
-                .get_spec(FontRole::SystemUi)
+                .try_get_spec(FontRole::SystemUi)
                 .expect("resolved role is valid")
                 .family,
             "Noto Sans"
         );
         assert_eq!(
             classic
-                .get_spec(FontRole::Body)
+                .try_get_spec(FontRole::Body)
                 .expect("resolved role is valid")
                 .family,
             "Noto Sans"
         );
         assert_eq!(
             classic
-                .get_spec(FontRole::Monospace)
+                .try_get_spec(FontRole::Monospace)
                 .expect("resolved role is valid")
                 .family,
             "Noto Sans Mono"
         );
 
         let modern = profile(FontProfile::Modern)
-            .resolve([" INTER ", "jetbrains-mono"], 1.0)
+            .try_resolve([" INTER ", "jetbrains-mono"], 1.0)
             .expect("valid profile resolution");
         assert_eq!(
             modern
-                .get_spec(FontRole::SystemUi)
+                .try_get_spec(FontRole::SystemUi)
                 .expect("resolved role is valid")
                 .family,
             "Inter"
         );
         assert_eq!(
             modern
-                .get_spec(FontRole::Monospace)
+                .try_get_spec(FontRole::Monospace)
                 .expect("resolved role is valid")
                 .family,
             "JetBrains Mono"
         );
 
         let accessible = profile(FontProfile::Accessible)
-            .resolve(["atkinson hyperlegible", "JETBRAINS MONO"], 1.0)
+            .try_resolve(["atkinson hyperlegible", "JETBRAINS MONO"], 1.0)
             .expect("valid profile resolution");
         assert_eq!(
             accessible
-                .get_spec(FontRole::SystemUi)
+                .try_get_spec(FontRole::SystemUi)
                 .expect("resolved role is valid")
                 .family,
             "Atkinson Hyperlegible"
         );
         assert_eq!(
             accessible
-                .get_spec(FontRole::Monospace)
+                .try_get_spec(FontRole::Monospace)
                 .expect("resolved role is valid")
                 .family,
             "JetBrains Mono"
@@ -1506,40 +1649,40 @@ mod tests {
         let mut custom = profile(FontProfile::Custom);
         custom.roles.insert(
             FontRole::SystemUi,
-            FontRoleSpec::new("  Nimbus   Sans ", 20, 500).expect("valid custom role"),
+            FontRoleSpec::try_new("  Nimbus   Sans ", 20, 500).expect("valid custom role"),
         );
         custom.roles.insert(
             FontRole::Monospace,
-            FontRoleSpec::new("My_Mono", 10, 300).expect("valid custom role"),
+            FontRoleSpec::try_new("My_Mono", 10, 300).expect("valid custom role"),
         );
         let custom = custom
-            .resolve(["nImBuS sAnS", "my mono"], 1.25)
+            .try_resolve(["nImBuS sAnS", "my mono"], 1.25)
             .expect("valid profile resolution");
         assert_eq!(custom.profile, FontProfile::Custom);
         assert_eq!(
             custom
-                .get_spec(FontRole::SystemUi)
+                .try_get_spec(FontRole::SystemUi)
                 .expect("resolved role is valid")
                 .family,
             "Nimbus Sans"
         );
         assert_eq!(
             custom
-                .get_spec(FontRole::SystemUi)
+                .try_get_spec(FontRole::SystemUi)
                 .expect("resolved role is valid")
                 .size,
             25
         );
         assert_eq!(
             custom
-                .get_spec(FontRole::Monospace)
+                .try_get_spec(FontRole::Monospace)
                 .expect("resolved role is valid")
                 .family,
             "My Mono"
         );
         assert_eq!(
             custom
-                .get_spec(FontRole::Monospace)
+                .try_get_spec(FontRole::Monospace)
                 .expect("resolved role is valid")
                 .size,
             13
@@ -1549,26 +1692,26 @@ mod tests {
     #[test]
     fn font_profile_resolver_uses_safe_fallbacks_for_unavailable_families() {
         let classic = profile(FontProfile::Classic)
-            .resolve(["DejaVu Sans", "Noto Sans Mono"], 1.0)
+            .try_resolve(["DejaVu Sans", "Noto Sans Mono"], 1.0)
             .expect("valid profile resolution");
 
         assert_eq!(
             classic
-                .get_spec(FontRole::SystemUi)
+                .try_get_spec(FontRole::SystemUi)
                 .expect("resolved role is valid")
                 .family,
             "DejaVu Sans"
         );
         assert_eq!(
             classic
-                .get_spec(FontRole::Body)
+                .try_get_spec(FontRole::Body)
                 .expect("resolved role is valid")
                 .family,
             "DejaVu Sans"
         );
         assert_eq!(
             classic
-                .get_spec(FontRole::Monospace)
+                .try_get_spec(FontRole::Monospace)
                 .expect("resolved role is valid")
                 .family,
             "Noto Sans Mono"
@@ -1581,7 +1724,7 @@ mod tests {
         );
         assert!(!["Chicago", "Geneva", "Monaco"].contains(
             &classic
-                .get_spec(FontRole::SystemUi)
+                .try_get_spec(FontRole::SystemUi)
                 .expect("resolved role is valid")
                 .family
                 .as_str()
@@ -1590,14 +1733,14 @@ mod tests {
         let mut custom = profile(FontProfile::Custom);
         custom.roles.insert(
             FontRole::Body,
-            FontRoleSpec::new("Unavailable Family", 13, 400).expect("valid custom role"),
+            FontRoleSpec::try_new("Unavailable Family", 13, 400).expect("valid custom role"),
         );
         let custom = custom
-            .resolve(["DejaVu Sans"], 1.0)
+            .try_resolve(["DejaVu Sans"], 1.0)
             .expect("valid profile resolution");
         assert_eq!(
             custom
-                .get_spec(FontRole::Body)
+                .try_get_spec(FontRole::Body)
                 .expect("resolved role is valid")
                 .family,
             "DejaVu Sans"
@@ -1610,18 +1753,18 @@ mod tests {
         );
 
         let empty = profile(FontProfile::Classic)
-            .resolve(std::iter::empty::<&str>(), 1.0)
+            .try_resolve(std::iter::empty::<&str>(), 1.0)
             .expect("recovery resolution is valid");
         assert_eq!(
             empty
-                .get_spec(FontRole::SystemUi)
+                .try_get_spec(FontRole::SystemUi)
                 .expect("resolved role is valid")
                 .family,
             LOGICAL_RECOVERY_FONT_FAMILY
         );
         assert_eq!(
             empty
-                .get_spec(FontRole::Monospace)
+                .try_get_spec(FontRole::Monospace)
                 .expect("resolved role is valid")
                 .family,
             LOGICAL_RECOVERY_FONT_FAMILY
@@ -1632,7 +1775,7 @@ mod tests {
     fn font_profile_resolver_has_stable_fallback_order_and_matching() {
         let config = profile(FontProfile::Modern);
         let first = config
-            .resolve(
+            .try_resolve(
                 [
                     "Liberation Sans",
                     "DejaVu Sans",
@@ -1644,7 +1787,7 @@ mod tests {
             )
             .expect("valid profile resolution");
         let second = config
-            .resolve(
+            .try_resolve(
                 [
                     "DejaVu Sans Mono",
                     "Noto Sans",
@@ -1659,14 +1802,14 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(
             first
-                .get_spec(FontRole::SystemUi)
+                .try_get_spec(FontRole::SystemUi)
                 .expect("resolved role is valid")
                 .family,
             "Noto Sans"
         );
         assert_eq!(
             first
-                .get_spec(FontRole::Monospace)
+                .try_get_spec(FontRole::Monospace)
                 .expect("resolved role is valid")
                 .family,
             "DejaVu Sans Mono"
@@ -1680,15 +1823,15 @@ mod tests {
     #[test]
     fn font_profile_resolver_rejects_malformed_profile_values() {
         assert_eq!(
-            FontProfile::parse("  ACCESSIBLE ").expect("known profile"),
+            FontProfile::try_parse("  ACCESSIBLE ").expect("known profile"),
             FontProfile::Accessible
         );
         assert!(matches!(
-            FontProfile::parse("unknown-profile"),
+            FontProfile::try_parse("unknown-profile"),
             Err(FontResolutionError::InvalidProfile)
         ));
         assert!(matches!(
-            FontProfile::parse(""),
+            FontProfile::try_parse(""),
             Err(FontResolutionError::InvalidProfile)
         ));
         assert_eq!(
@@ -1707,11 +1850,11 @@ mod tests {
             },
         );
         assert!(matches!(
-            malformed.resolve(std::iter::empty::<&str>(), f32::NAN),
+            malformed.try_resolve(std::iter::empty::<&str>(), f32::NAN),
             Err(FontResolutionError::InvalidScale { .. })
         ));
         assert!(matches!(
-            malformed.resolve(std::iter::empty::<&str>(), 1.0),
+            malformed.try_resolve(std::iter::empty::<&str>(), 1.0),
             Err(FontResolutionError::InvalidFamily)
         ));
 
@@ -1724,7 +1867,7 @@ mod tests {
             },
         );
         assert!(matches!(
-            malformed.resolve(["Inter"], 2.0),
+            malformed.try_resolve(["Inter"], 2.0),
             Err(FontResolutionError::InvalidFamily)
         ));
     }
@@ -1742,7 +1885,7 @@ mod tests {
         );
 
         assert!(matches!(
-            malformed.get_spec(FontRole::SystemUi),
+            malformed.try_get_spec(FontRole::SystemUi),
             Err(FontResolutionError::InvalidFamily)
         ));
         assert!(matches!(

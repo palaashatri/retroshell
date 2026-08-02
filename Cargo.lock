@@ -3502,6 +3502,7 @@ dependencies = [
  "log",
  "parking_lot",
  "serde",
+ "slopos-fonts",
  "thiserror 1.0.69",
  "tracing",
  "wgpu",

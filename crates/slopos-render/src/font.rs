@@ -3,6 +3,7 @@ use cosmic_text::{Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping,
 use cosmic_text::{SwashContent, Wrap};
 use fontdb::{Query, Stretch, Style, Weight};
 use parking_lot::Mutex;
+use slopos_fonts::RecoveryFallbackContract;
 use std::collections::HashMap;
 use std::fs;
 use std::ops::Range;
@@ -217,6 +218,7 @@ pub struct TextLayout {
     scale: f32,
     physical_font_size: f32,
     bitmap_fallback: bool,
+    fallback_family: Option<&'static str>,
 }
 
 impl TextLayout {
@@ -256,6 +258,12 @@ impl TextLayout {
 
     pub fn uses_bitmap_fallback(&self) -> bool {
         self.bitmap_fallback
+    }
+
+    /// Logical font-service family handled by the renderer's bitmap fallback,
+    /// when this layout needed that recovery path.
+    pub fn fallback_family(&self) -> Option<&'static str> {
+        self.fallback_family
     }
 }
 
@@ -453,6 +461,7 @@ fn build_text_layout(
         scale: options.scale,
         physical_font_size,
         bitmap_fallback,
+        fallback_family: bitmap_fallback.then_some(RecoveryFallbackContract::family()),
     }
 }
 
@@ -539,6 +548,7 @@ fn build_bitmap_fallback_layout(text: &str, options: TextLayoutOptions) -> TextL
         scale: options.scale,
         physical_font_size,
         bitmap_fallback: true,
+        fallback_family: Some(RecoveryFallbackContract::family()),
     }
 }
 
@@ -902,6 +912,26 @@ mod tests {
             layout.glyphs()
         );
         assert_eq!(layout.glyphs().len(), 1);
+    }
+
+    #[test]
+    fn bitmap_recovery_reports_the_font_service_contract_family() {
+        let font_system =
+            FontSystem::new_with_locale_and_db("en-US".to_owned(), fontdb::Database::new());
+        let mut cache = TextLayoutCache::with_font_system(font_system);
+        let layout = cache.layout("A", TextLayoutOptions::new(13.0, 1.0));
+
+        assert!(layout.uses_bitmap_fallback());
+        assert_eq!(
+            layout.fallback_family(),
+            Some(slopos_fonts::RecoveryFallbackContract::family())
+        );
+        assert_eq!(
+            slopos_fonts::RecoveryFallbackContract::provider(),
+            "slopos-render bitmap fallback"
+        );
+        assert!(!slopos_fonts::RecoveryFallbackContract::has_embedded_font_bytes());
+        assert_eq!(layout.glyphs()[0].fallback_char(), Some('A'));
     }
 
     #[test]
