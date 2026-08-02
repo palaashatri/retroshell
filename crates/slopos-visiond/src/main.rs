@@ -25,7 +25,7 @@ use std::env;
 use std::fs::{self, OpenOptions};
 use std::future::Future;
 use std::io::{self, Cursor, Write};
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -47,6 +47,7 @@ const METADATA_FILE_NAME: &str = ".metadata.json";
 const ARTIFACT_CACHE_FULL: &str = "artifact cache is full";
 const ASSET_UNAVAILABLE: &str = "asset is unavailable";
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+const TASK_REAP_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug)]
 pub struct DaemonConfig {
@@ -470,13 +471,42 @@ fn prune_job_history(jobs: &mut HashMap<String, JobRecord>) {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum TrackedTaskKind {
+    Worker,
+    Connection,
+}
+
+impl TrackedTaskKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Worker => "worker",
+            Self::Connection => "connection",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TrackedTaskLabel {
+    kind: TrackedTaskKind,
+    id: u64,
+}
+
+fn record_tracked_task_exit(result: Result<TrackedTaskLabel, tokio::task::JoinError>) {
+    match result {
+        Ok(label) => log::debug!("Vision {} task {} finished", label.kind.name(), label.id),
+        Err(error) => log::warn!("Vision tracked task ended abnormally: {error}"),
+    }
+}
+
 struct DaemonInner {
     config: DaemonConfig,
     engine: Arc<VisionEngine>,
     artifacts: ArtifactStore,
     jobs: Mutex<HashMap<String, JobRecord>>,
-    tasks: Mutex<JoinSet<()>>,
+    tasks: Mutex<JoinSet<TrackedTaskLabel>>,
     next_job: AtomicU64,
+    next_task: AtomicU64,
     shutting_down: AtomicBool,
     shutdown: watch::Sender<bool>,
 }
@@ -518,6 +548,7 @@ impl Daemon {
                 jobs: Mutex::new(HashMap::new()),
                 tasks: Mutex::new(JoinSet::new()),
                 next_job: AtomicU64::new(1),
+                next_task: AtomicU64::new(1),
                 shutting_down: AtomicBool::new(false),
                 shutdown,
             }),
@@ -528,17 +559,21 @@ impl Daemon {
         if self.inner.shutting_down.swap(true, Ordering::AcqRel) {
             return;
         }
+        let mut cancelled_jobs = 0;
         self.inner.shutdown.send_replace(true);
         {
             let mut jobs = self.inner.jobs.lock();
             for job in jobs.values_mut() {
                 if matches!(job.status, JobStatus::Queued | JobStatus::Running) {
                     mark_cancelled(job);
+                    cancelled_jobs += 1;
                 }
             }
         }
+        log::info!("Vision daemon shutdown requested; cancelling {cancelled_jobs} active job(s)");
         let tasks = std::mem::replace(&mut *self.inner.tasks.lock(), JoinSet::new());
         wait_for_tracked_tasks(tasks).await;
+        log::info!("Vision daemon shutdown complete");
     }
 
     pub async fn handle_request(
@@ -589,7 +624,7 @@ impl Daemon {
             return error_response(map_validation_error(error, None));
         }
         let operation = request.job.operation();
-        self.reap_finished_job_tasks();
+        self.reap_finished_tasks();
         let mut jobs = self.inner.jobs.lock();
         prune_job_history(&mut jobs);
         if jobs.len() >= MAX_RETAINED_JOBS {
@@ -642,19 +677,22 @@ impl Daemon {
             .await;
             match job_result {
                 Ok((result, error)) => daemon.finish_job(&queued_job_id, result, error),
-                Err(_) => daemon.finish_job(
-                    &queued_job_id,
-                    None,
-                    Some(VisionError {
-                        code: ErrorCode::Internal,
-                        message: "Vision worker failed".to_string(),
-                        operation: Some(operation),
-                        retryable: true,
-                    }),
-                ),
+                Err(error) => {
+                    log::warn!("Vision worker execution task failed: {error}");
+                    daemon.finish_job(
+                        &queued_job_id,
+                        None,
+                        Some(VisionError {
+                            code: ErrorCode::Internal,
+                            message: "Vision worker failed".to_string(),
+                            operation: Some(operation),
+                            retryable: true,
+                        }),
+                    );
+                }
             }
         };
-        if !self.spawn_tracked(task) {
+        if !self.spawn_tracked(TrackedTaskKind::Worker, task) {
             let mut jobs = self.inner.jobs.lock();
             if let Some(job) = jobs.get_mut(&job_id.0) {
                 if matches!(job.status, JobStatus::Queued | JobStatus::Running) {
@@ -670,20 +708,35 @@ impl Daemon {
         })
     }
 
-    fn reap_finished_job_tasks(&self) {
+    fn reap_finished_tasks(&self) {
         let mut tasks = self.inner.tasks.lock();
-        while tasks.try_join_next().is_some() {}
+        while let Some(result) = tasks.try_join_next() {
+            record_tracked_task_exit(result);
+        }
     }
 
-    fn spawn_tracked<F>(&self, task: F) -> bool
+    fn spawn_tracked<F>(&self, kind: TrackedTaskKind, task: F) -> bool
     where
         F: Future<Output = ()> + Send + 'static,
     {
+        let label = TrackedTaskLabel {
+            kind,
+            id: self.inner.next_task.fetch_add(1, Ordering::Relaxed),
+        };
         let mut tasks = self.inner.tasks.lock();
         if self.inner.shutting_down.load(Ordering::Acquire) {
+            log::debug!(
+                "Vision {} task {} rejected during shutdown",
+                label.kind.name(),
+                label.id
+            );
             return false;
         }
-        tasks.spawn(task);
+        log::debug!("Vision {} task {} started", label.kind.name(), label.id);
+        tasks.spawn(async move {
+            task.await;
+            label
+        });
         true
     }
 
@@ -949,6 +1002,7 @@ impl Daemon {
             return error_response(missing_job_error());
         };
         if matches!(job.status, JobStatus::Queued | JobStatus::Running) {
+            log::debug!("Vision job cancellation requested");
             mark_cancelled(job);
         }
         VisionResponse::JobStatus(JobStatusResponse {
@@ -1043,14 +1097,19 @@ impl Daemon {
         }
         let listener = UnixListener::bind(&self.inner.config.socket_path)
             .map_err(|error| format!("cannot bind Vision socket: {error}"))?;
+        let mut cleanup = SocketCleanup::new(self.inner.config.socket_path.clone());
+        cleanup.capture_identity()?;
+        let _cleanup = cleanup;
         let mut permissions = fs::metadata(&self.inner.config.socket_path)
             .map_err(|error| format!("cannot inspect Vision socket: {error}"))?
             .permissions();
         permissions.set_mode(0o600);
         fs::set_permissions(&self.inner.config.socket_path, permissions)
             .map_err(|error| format!("cannot secure Vision socket: {error}"))?;
-        let _cleanup = SocketCleanup(self.inner.config.socket_path.clone());
+        log::info!("Vision daemon is listening on its private Unix socket");
         let mut shutdown = self.inner.shutdown.subscribe();
+        let mut reap_tick = tokio::time::interval(TASK_REAP_INTERVAL);
+        reap_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             if self.inner.shutting_down.load(Ordering::Acquire) {
                 return Ok(());
@@ -1062,8 +1121,17 @@ impl Daemon {
                     }
                     return Ok(());
                 }
+                _ = reap_tick.tick() => {
+                    self.reap_finished_tasks();
+                }
                 accepted = listener.accept() => {
-                    let (stream, _) = accepted.map_err(|error| format!("Vision accept failed: {error}"))?;
+                    let (stream, _) = match accepted {
+                        Ok(accepted) => accepted,
+                        Err(error) => {
+                            log::error!("Vision accept loop failed: {error}");
+                            return Err("Vision accept loop failed".to_string());
+                        }
+                    };
                     let daemon = self.clone();
                     let connection_shutdown = daemon.inner.shutdown.subscribe();
                     let connection_daemon = daemon.clone();
@@ -1075,37 +1143,105 @@ impl Daemon {
                             log::debug!("Vision client connection closed: {error}");
                         }
                     };
-                    daemon.spawn_tracked(task);
+                    daemon.spawn_tracked(TrackedTaskKind::Connection, task);
                 }
             }
         }
     }
 }
 
-async fn wait_for_tracked_tasks(mut tasks: JoinSet<()>) {
+async fn wait_for_tracked_tasks(mut tasks: JoinSet<TrackedTaskLabel>) {
     let grace = tokio::time::sleep(SHUTDOWN_GRACE);
     tokio::pin!(grace);
     loop {
         tokio::select! {
             result = tasks.join_next() => {
-                if result.is_none() {
-                    return;
+                match result {
+                    Some(result) => record_tracked_task_exit(result),
+                    None => return,
                 }
             }
             _ = &mut grace => {
+                log::warn!("Vision shutdown grace period expired; aborting tracked tasks");
                 tasks.abort_all();
-                while tasks.join_next().await.is_some() {}
+                while let Some(result) = tasks.join_next().await {
+                    record_tracked_task_exit(result);
+                }
                 return;
             }
         }
     }
 }
 
-struct SocketCleanup(PathBuf);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SocketIdentity {
+    device: u64,
+    inode: u64,
+}
+
+struct SocketCleanup {
+    path: PathBuf,
+    identity: Option<SocketIdentity>,
+}
+
+impl SocketCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            identity: None,
+        }
+    }
+
+    fn capture_identity(&mut self) -> Result<(), String> {
+        self.identity = Some(bound_socket_identity(&self.path)?);
+        Ok(())
+    }
+}
 
 impl Drop for SocketCleanup {
     fn drop(&mut self) {
-        let _ = remove_exact_socket(&self.0);
+        let result = match self.identity {
+            Some(identity) => remove_exact_socket_if_identity(&self.path, identity),
+            None => remove_exact_socket(&self.path).map(|()| true),
+        };
+        match result {
+            Ok(true) => log::debug!("Vision private Unix socket cleaned up"),
+            Ok(false) => {
+                log::debug!("Vision private Unix socket was already absent or replaced")
+            }
+            Err(error) => log::error!("Vision private Unix socket cleanup failed: {error}"),
+        }
+    }
+}
+
+fn bound_socket_identity(path: &Path) -> Result<SocketIdentity, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() => Ok(SocketIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }),
+        Ok(_) => Err("Vision socket path is not a Unix socket".to_string()),
+        Err(_) => Err("cannot inspect bound Vision socket".to_string()),
+    }
+}
+
+fn remove_exact_socket_if_identity(path: &Path, expected: SocketIdentity) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() => {
+            let actual = SocketIdentity {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+            };
+            if actual != expected {
+                return Ok(false);
+            }
+            fs::remove_file(path)
+                .map(|()| true)
+                .map_err(|_| "cannot remove Vision socket".to_string())
+        }
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err("cannot inspect Vision socket path".to_string()),
     }
 }
 
@@ -1278,8 +1414,17 @@ async fn run(daemon: Daemon) -> Result<(), String> {
     let serving = daemon.clone();
     let mut server = tokio::spawn(async move { serving.serve().await });
     tokio::select! {
-        result = &mut server => result
-            .map_err(|error| format!("Vision server task failed: {error}"))?,
+        result = &mut server => {
+            let result = match result {
+                Ok(result) => result,
+                Err(error) => Err(format!("Vision server task failed: {error}")),
+            };
+            if !daemon.inner.shutting_down.load(Ordering::Acquire) {
+                log::error!("Vision server stopped before shutdown; cleaning up daemon tasks");
+                daemon.shutdown().await;
+            }
+            result
+        }
         signal = wait_for_shutdown_signal() => {
             let signal_error = match signal {
                 Ok(name) => {
@@ -1306,6 +1451,7 @@ async fn run(daemon: Daemon) -> Result<(), String> {
 #[tokio::main]
 async fn main() {
     let _ = env_logger::try_init();
+    log::info!("Vision daemon starting");
     let config = match parse_args() {
         Ok(config) => config,
         Err(error) => {
@@ -1320,6 +1466,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    log::info!("Vision daemon initialized");
     if let Err(error) = run(daemon).await {
         eprintln!("slopos-visiond: {error}");
         std::process::exit(1);
@@ -1555,16 +1702,138 @@ mod tests {
         ))
         .unwrap();
         let mut wake = daemon.inner.shutdown.subscribe();
+        let cancel = Arc::new(AtomicBool::new(false));
+        daemon.inner.jobs.lock().insert(
+            "synthetic-job".to_string(),
+            JobRecord {
+                operation: VisionOperation::ExtractText,
+                status: JobStatus::Running,
+                result: None,
+                error: None,
+                cancel: cancel.clone(),
+            },
+        );
 
         assert!(!daemon.inner.shutting_down.load(Ordering::Acquire));
         daemon.shutdown().await;
         assert!(daemon.inner.shutting_down.load(Ordering::Acquire));
+        assert!(cancel.load(Ordering::Acquire));
+        assert_eq!(
+            daemon.inner.jobs.lock()["synthetic-job"].status,
+            JobStatus::Cancelled
+        );
         assert!(wake.has_changed().unwrap());
         assert!(*wake.borrow_and_update());
         assert!(!wake.has_changed().unwrap());
 
         daemon.shutdown().await;
         assert!(!wake.has_changed().unwrap());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn server_failure_shuts_down_tracked_tasks_and_preserves_non_socket() {
+        let root = tempdir().unwrap();
+        let models_dir = root.path().join("models");
+        std::fs::create_dir(&models_dir).unwrap();
+        std::fs::write(models_dir.join("manifest.toml"), "models = []").unwrap();
+        let socket_path = root.path().join("runtime").join("vision.sock");
+        let daemon = Daemon::new(DaemonConfig::for_test(
+            socket_path.clone(),
+            models_dir,
+            root.path().join("artifacts"),
+        ))
+        .unwrap();
+
+        let mut shutdown = daemon.inner.shutdown.subscribe();
+        let started = Arc::new(AtomicBool::new(false));
+        let task_started = started.clone();
+        assert!(
+            daemon.spawn_tracked(TrackedTaskKind::Connection, async move {
+                task_started.store(true, Ordering::Release);
+                let _ = shutdown.changed().await;
+            })
+        );
+        for _ in 0..10 {
+            if started.load(Ordering::Acquire) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(started.load(Ordering::Acquire));
+
+        std::fs::write(&socket_path, b"not a socket").unwrap();
+        assert!(run(daemon.clone()).await.is_err());
+        assert!(daemon.inner.shutting_down.load(Ordering::Acquire));
+        assert!(daemon.inner.tasks.lock().is_empty());
+        assert!(socket_path.is_file());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tracked_tasks_are_reaped_without_waiting_for_shutdown() {
+        let root = tempdir().unwrap();
+        let models_dir = root.path().join("models");
+        std::fs::create_dir(&models_dir).unwrap();
+        std::fs::write(models_dir.join("manifest.toml"), "models = []").unwrap();
+        let daemon = Daemon::new(DaemonConfig::for_test(
+            root.path().join("runtime").join("vision.sock"),
+            models_dir,
+            root.path().join("artifacts"),
+        ))
+        .unwrap();
+
+        assert!(daemon.spawn_tracked(TrackedTaskKind::Worker, async {}));
+        for _ in 0..10 {
+            daemon.reap_finished_tasks();
+            if daemon.inner.tasks.lock().is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(daemon.inner.tasks.lock().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn socket_cleanup_is_exact_and_does_not_touch_siblings() {
+        let root = tempdir().unwrap();
+        let socket_path = root.path().join("vision.sock");
+        let sibling_path = root.path().join("other.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let sibling = UnixListener::bind(&sibling_path).unwrap();
+        let mut cleanup = SocketCleanup::new(socket_path.clone());
+        cleanup.capture_identity().unwrap();
+
+        drop(listener);
+        drop(cleanup);
+
+        assert!(!socket_path.exists());
+        assert!(sibling_path.exists());
+        drop(sibling);
+        remove_exact_socket(&sibling_path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn sigterm_is_observed_as_a_shutdown_signal() {
+        let waiter = tokio::spawn(wait_for_shutdown_signal());
+        tokio::task::yield_now().await;
+        let pid = std::process::id().to_string();
+        let status = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("/bin/kill")
+                .args(["-TERM", &pid])
+                .status()
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(status.success());
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), waiter)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            "SIGTERM"
+        );
     }
 
     fn one_pixel_png() -> Vec<u8> {
