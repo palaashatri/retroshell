@@ -5,10 +5,11 @@
 # Runtime protocol smoke test for the SLOPOS-I compositor's own headless backend.
 # This is intentionally narrower than hardware QA: it proves that the exact
 # built compositor can own a private Wayland socket, publish authenticated
-# readiness, answer a real Wayland client, and terminate on request. The
-# slopos-session supervisor, not a standalone compositor process, owns removal
-# of the per-session runtime directory. This test does not claim DRM/KMS,
-# rendering, input, HDR, VRR, or XWayland.
+# readiness, answer a registry client, complete a real xdg-toplevel configure
+# handshake, and terminate on request. The slopos-session supervisor, not a
+# standalone compositor process, owns removal of the per-session runtime
+# directory. This test does not claim DRM/KMS, rendering, input, HDR, VRR, or
+# XWayland.
 
 set -euo pipefail
 
@@ -35,6 +36,7 @@ mkdir -p "$artifact_dir"
 artifact="$artifact_dir/${commit_sha}.json"
 compositor_log="$artifact_dir/${commit_sha}-compositor.log"
 globals_log="$artifact_dir/${commit_sha}-wayland-info.log"
+toplevel_log="$artifact_dir/${commit_sha}-xdg-toplevel.log"
 runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/slopos-headless-runtime.XXXXXX")"
 chmod 700 "$runtime_dir"
 
@@ -58,6 +60,8 @@ write_artifact() {
   "evidence_level": "headless_runtime_protocol_smoke",
   "backend": "headless",
   "runtime_verified": $([[ "$status" == "passed" ]] && printf true || printf false),
+  "registry_client_verified": $([[ -s "$globals_log" ]] && printf true || printf false),
+  "xdg_toplevel_configure_verified": $([[ -s "$toplevel_log" ]] && grep -q '^SLOPOS_XDG_TOPLEVEL_CONFIGURED ' "$toplevel_log" && printf true || printf false),
   "hardware_verified": false,
   "drm_verified": false,
   "rendering_verified": false,
@@ -68,7 +72,8 @@ write_artifact() {
   "socket_cleanup": "$socket_cleanup",
   "runtime_directory_owner": "slopos-session",
   "compositor_log": "$(basename "$compositor_log")",
-  "wayland_info_log": "$(basename "$globals_log")"
+  "wayland_info_log": "$(basename "$globals_log")",
+  "xdg_toplevel_log": "$(basename "$toplevel_log")"
 }
 JSON
   mv "$artifact.tmp" "$artifact"
@@ -169,7 +174,7 @@ if [[ "$runtime_mode" != "700" ]]; then
   exit 1
 fi
 
-printf 'Connecting a real Wayland protocol client to %s\n' "$socket_name"
+printf 'Connecting registry client to %s\n' "$socket_name"
 WAYLAND_DISPLAY="$socket_name" timeout 10s wayland-info >"$globals_log" 2>&1
 
 for required_global in wl_compositor wl_shm wl_seat xdg_wm_base; do
@@ -179,6 +184,16 @@ for required_global in wl_compositor wl_shm wl_seat xdg_wm_base; do
     exit 1
   fi
 done
+
+printf 'Completing a real xdg-toplevel configure handshake\n'
+WAYLAND_DISPLAY="$socket_name" timeout 30s \
+  cargo run --quiet -p slopos-compositor --example headless_toplevel_client --locked \
+  >"$toplevel_log" 2>&1
+if ! grep -q '^SLOPOS_XDG_TOPLEVEL_CONFIGURED ' "$toplevel_log"; then
+  write_artifact failed "xdg_toplevel_configure_missing"
+  cat "$toplevel_log" >&2
+  exit 1
+fi
 
 kill -TERM "$compositor_pid"
 for _ in $(seq 1 50); do
