@@ -10,9 +10,8 @@ name: CI
 # Pull requests in this repository may represent long-lived implementation
 # branches whose base predates workspace-wide renames and lockfile replacement.
 # GitHub's synthetic refs/pull/*/merge snapshot can therefore contain a
-# mechanically merged but internally stale Cargo.lock. Source validation must
-# run against the exact proposed head commit; GitHub still reports mergeability
-# separately on the pull request.
+# mechanically merged but internally stale Cargo.lock. Source validation runs
+# against the exact proposed head commit; GitHub reports mergeability separately.
 
 on:
   push:
@@ -103,9 +102,9 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace --locked
 
-      # Not -D warnings yet: the tree carries pre-existing warnings and turning
-      # them into errors now would make CI red for reasons unrelated to the
-      # change under review. This still fails on genuine clippy errors.
+      # The tree still carries warning debt outside the compositor. This job
+      # fails on clippy errors while leaving warning promotion for a separate
+      # cleanup milestone.
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked
 
@@ -193,15 +192,12 @@ jobs:
         run: cargo build --workspace --release --locked
 
   formatting:
-    name: compositor finalization + rustfmt
+    name: rustfmt
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.SOURCE_SHA }}
-          fetch-depth: 0
 
       - name: Confirm exact source revision
         run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
@@ -210,33 +206,5 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Apply guarded compositor finalization
-        run: python3 scripts/apply-compositor-finalization.py
-
-      - name: Format workspace
-        run: cargo fmt --all
-
-      - name: Validate patch shape
-        run: |
-          git diff --check
-          git diff --exit-code -- .github/workflows/ci.yml
-          test -n "$(git status --porcelain -- crates/slopos-compositor/src)"
-
-      - name: Commit compositor finalization
-        if: >-
-          (github.event_name == 'push' && github.ref == 'refs/heads/docs/program-design') ||
-          (github.event_name == 'pull_request' &&
-           github.event.pull_request.head.repo.full_name == github.repository &&
-           github.event.pull_request.head.ref == 'docs/program-design')
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add crates/slopos-compositor/src/lib.rs \
-                  crates/slopos-compositor/src/main.rs \
-                  crates/slopos-compositor/src/session_drm.rs \
-                  crates/slopos-compositor/src/work_area.rs
-          git rm scripts/apply-compositor-finalization.py
-          git commit -m "fix(compositor): finalize backend state and work-area invariants"
-          git fetch origin docs/program-design
-          git rebase origin/docs/program-design
-          git push origin HEAD:docs/program-design
+      - name: Verify formatting
+        run: cargo fmt --all --check
