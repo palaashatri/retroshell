@@ -3,13 +3,11 @@
 # SPDX-License-Identifier: MIT
 
 # Runtime protocol smoke test for the SLOPOS-I compositor's own headless backend.
-# This is intentionally narrower than hardware QA: it proves that the exact
-# built compositor can own a private Wayland socket, publish authenticated
-# readiness, answer a registry client, complete xdg-toplevel and xdg-popup
-# configure handshakes, acknowledge popup repositioning, and terminate on
-# request. The slopos-session supervisor, not a standalone compositor process,
-# owns removal of the per-session runtime directory. This test does not claim
-# DRM/KMS, rendering, input, popup grabs, HDR, VRR, or XWayland.
+# It proves that the exact build owns a private socket, publishes authenticated
+# readiness, serves registry clients, completes xdg-toplevel and xdg-popup
+# lifecycles, acknowledges popup repositioning, survives repeated abrupt client
+# disconnects, accepts a healthy client afterwards, and terminates on request.
+# It does not claim DRM/KMS, rendering, input, popup grabs, HDR, VRR or XWayland.
 
 set -euo pipefail
 
@@ -36,6 +34,7 @@ mkdir -p "$artifact_dir"
 artifact="$artifact_dir/${commit_sha}.json"
 compositor_log="$artifact_dir/${commit_sha}-compositor.log"
 globals_log="$artifact_dir/${commit_sha}-wayland-info.log"
+stress_log="$artifact_dir/${commit_sha}-disconnect-stress.log"
 protocol_log="$artifact_dir/${commit_sha}-xdg-protocol.log"
 runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/slopos-headless-runtime.XXXXXX")"
 chmod 700 "$runtime_dir"
@@ -45,9 +44,13 @@ socket_name=""
 shutdown_status="not_started"
 socket_cleanup="not_observed"
 
-has_marker() {
+has_protocol_marker() {
   local marker="$1"
   [[ -s "$protocol_log" ]] && grep -q "^${marker} " "$protocol_log"
+}
+
+stress_passed() {
+  [[ -s "$stress_log" ]] && grep -q '^SLOPOS_ABRUPT_DISCONNECT_STRESS cycles=' "$stress_log"
 }
 
 write_artifact() {
@@ -55,7 +58,7 @@ write_artifact() {
   local failure="${2:-}"
   cat >"$artifact.tmp" <<JSON
 {
-  "schema": 2,
+  "schema": 3,
   "component": "slopos-compositor",
   "commit": "$commit_sha",
   "branch": "$branch",
@@ -66,9 +69,10 @@ write_artifact() {
   "backend": "headless",
   "runtime_verified": $([[ "$status" == "passed" ]] && printf true || printf false),
   "registry_client_verified": $([[ -s "$globals_log" ]] && printf true || printf false),
-  "xdg_toplevel_configure_verified": $(has_marker SLOPOS_XDG_TOPLEVEL_CONFIGURED && printf true || printf false),
-  "xdg_popup_configure_verified": $(has_marker SLOPOS_XDG_POPUP_CONFIGURED && printf true || printf false),
-  "xdg_popup_reposition_verified": $(has_marker SLOPOS_XDG_POPUP_REPOSITIONED && printf true || printf false),
+  "abrupt_disconnect_recovery_verified": $(stress_passed && printf true || printf false),
+  "xdg_toplevel_configure_verified": $(has_protocol_marker SLOPOS_XDG_TOPLEVEL_CONFIGURED && printf true || printf false),
+  "xdg_popup_configure_verified": $(has_protocol_marker SLOPOS_XDG_POPUP_CONFIGURED && printf true || printf false),
+  "xdg_popup_reposition_verified": $(has_protocol_marker SLOPOS_XDG_POPUP_REPOSITIONED && printf true || printf false),
   "hardware_verified": false,
   "drm_verified": false,
   "rendering_verified": false,
@@ -81,6 +85,7 @@ write_artifact() {
   "runtime_directory_owner": "slopos-session",
   "compositor_log": "$(basename "$compositor_log")",
   "wayland_info_log": "$(basename "$globals_log")",
+  "disconnect_stress_log": "$(basename "$stress_log")",
   "xdg_protocol_log": "$(basename "$protocol_log")"
 }
 JSON
@@ -118,7 +123,7 @@ if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
 fi
 
 printf 'Building exact-commit compositor %s\n' "$commit_sha"
-cargo build -p slopos-compositor --locked
+cargo build -p slopos-compositor --examples --locked
 
 export XDG_RUNTIME_DIR="$runtime_dir"
 export SLOPOS_SESSION_RUNTIME_DIR="$runtime_dir"
@@ -184,7 +189,6 @@ fi
 
 printf 'Connecting registry client to %s\n' "$socket_name"
 WAYLAND_DISPLAY="$socket_name" timeout 10s wayland-info >"$globals_log" 2>&1
-
 for required_global in wl_compositor wl_shm wl_seat xdg_wm_base; do
   if ! grep -q "interface: '${required_global}'" "$globals_log"; then
     write_artifact failed "missing_global_${required_global}"
@@ -193,16 +197,31 @@ for required_global in wl_compositor wl_shm wl_seat xdg_wm_base; do
   fi
 done
 
-printf 'Completing xdg-toplevel and xdg-popup lifecycle handshakes\n'
-WAYLAND_DISPLAY="$socket_name" timeout 30s \
-  cargo run --quiet -p slopos-compositor --example headless_toplevel_client --locked \
-  >"$protocol_log" 2>&1
+printf 'Stressing abrupt toplevel and popup disconnect cleanup\n'
+WAYLAND_DISPLAY="$socket_name" SLOPOS_DISCONNECT_STRESS_CYCLES=64 timeout 45s \
+  target/debug/examples/headless_disconnect_stress >"$stress_log" 2>&1
+if ! stress_passed; then
+  write_artifact failed "abrupt_disconnect_stress_failed"
+  cat "$stress_log" >&2
+  cat "$compositor_log" >&2
+  exit 1
+fi
+if ! kill -0 "$compositor_pid" 2>/dev/null; then
+  write_artifact failed "compositor_died_after_disconnect_stress"
+  cat "$compositor_log" >&2
+  exit 1
+fi
 
+# Run a healthy lifecycle after the hostile/disorderly sequence. This proves
+# the server did not merely survive as a wedged process.
+printf 'Completing healthy xdg-toplevel and xdg-popup lifecycle after stress\n'
+WAYLAND_DISPLAY="$socket_name" timeout 30s \
+  target/debug/examples/headless_toplevel_client >"$protocol_log" 2>&1
 for marker in \
   SLOPOS_XDG_TOPLEVEL_CONFIGURED \
   SLOPOS_XDG_POPUP_CONFIGURED \
   SLOPOS_XDG_POPUP_REPOSITIONED; do
-  if ! has_marker "$marker"; then
+  if ! has_protocol_marker "$marker"; then
     write_artifact failed "missing_${marker}"
     cat "$protocol_log" >&2
     exit 1
@@ -224,9 +243,6 @@ fi
 wait "$compositor_pid" 2>/dev/null || true
 shutdown_status="terminated"
 
-# A standalone compositor may leave its socket pathname after a signal because
-# the session supervisor normally owns and removes the entire private runtime
-# directory. Record this distinction instead of fabricating graceful cleanup.
 if [[ -e "$runtime_dir/$socket_name" ]]; then
   socket_cleanup="supervisor_required"
 else
