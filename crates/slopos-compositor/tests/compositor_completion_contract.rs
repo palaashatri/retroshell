@@ -5,13 +5,15 @@
 //!
 //! These tests intentionally exercise public policy APIs as a consumer would.
 //! They protect the state invariants that the nested and DRM backends must
-//! share: reversible presentation transitions, gapless tiling, dynamic Spaces,
-//! and deterministic output migration.
+//! share: reversible presentation transitions, deterministic frame pacing,
+//! gapless tiling, dynamic Spaces, and deterministic output migration.
 
+use slopos_compositor::frame_timing::{FrameScheduler, RefreshRate};
 use slopos_compositor::{
     calculate_presentation_geometry, transition_presentation_state, MultiMonitorPolicy,
     SpaceTarget, SpacesModel, TilePlacement, WindowGeometry, WindowPresentationState,
 };
+use std::time::{Duration, Instant};
 
 #[test]
 fn presentation_round_trip_preserves_the_original_normal_frame() {
@@ -85,6 +87,47 @@ fn presentation_round_trip_preserves_the_original_normal_frame() {
             .normal_geometry,
         normal
     );
+}
+
+#[test]
+fn restore_after_output_change_clamps_the_saved_frame_into_the_new_work_area() {
+    let old_normal = WindowGeometry::new(5000, -200, 2000, 1200);
+    let old_work_area = WindowGeometry::new(0, 24, 3840, 2136);
+    let old_output_area = WindowGeometry::new(0, 0, 3840, 2160);
+
+    let fullscreen = transition_presentation_state(
+        WindowPresentationState::Normal,
+        old_normal,
+        None,
+        WindowPresentationState::Fullscreen,
+        old_work_area,
+        old_output_area,
+        None,
+        "DP-1",
+        2,
+    );
+
+    let laptop_work_area = WindowGeometry::new(0, 24, 1280, 776);
+    let laptop_output_area = WindowGeometry::new(0, 0, 1280, 800);
+    let restored = transition_presentation_state(
+        fullscreen.state,
+        fullscreen.geometry,
+        fullscreen.restore_state.as_ref(),
+        WindowPresentationState::Normal,
+        laptop_work_area,
+        laptop_output_area,
+        None,
+        "eDP-1",
+        2,
+    );
+
+    assert_eq!(restored.geometry, laptop_work_area);
+    let metadata = restored
+        .restored_from
+        .expect("restore metadata must survive output migration");
+    assert_eq!(metadata.normal_geometry, old_normal);
+    assert_eq!(metadata.output_id, "DP-1");
+    assert_eq!(metadata.space_id, 2);
 }
 
 #[test]
@@ -202,6 +245,68 @@ fn odd_sized_tiling_partitions_the_work_area_without_gaps() {
 }
 
 #[test]
+fn tiling_stays_positive_and_inside_many_small_and_odd_work_areas() {
+    let normal = WindowGeometry::new(-100, -100, 10_000, 10_000);
+    let placements = [
+        TilePlacement::Left,
+        TilePlacement::Right,
+        TilePlacement::TopLeft,
+        TilePlacement::TopRight,
+        TilePlacement::BottomLeft,
+        TilePlacement::BottomRight,
+    ];
+
+    for width in 2..=65 {
+        for height in 2..=65 {
+            let area = WindowGeometry::new(17, 31, width, height);
+            for placement in placements {
+                let geometry = calculate_presentation_geometry(
+                    area,
+                    WindowPresentationState::Tiled(placement),
+                    None,
+                    normal,
+                );
+                assert!(geometry.width > 0, "{placement:?} width in {area:?}");
+                assert!(geometry.height > 0, "{placement:?} height in {area:?}");
+                assert!(geometry.x >= area.x, "{placement:?} x in {area:?}");
+                assert!(geometry.y >= area.y, "{placement:?} y in {area:?}");
+                assert!(
+                    geometry.x + geometry.width <= area.x + area.width,
+                    "{placement:?} right edge in {area:?}: {geometry:?}"
+                );
+                assert!(
+                    geometry.y + geometry.height <= area.y + area.height,
+                    "{placement:?} bottom edge in {area:?}: {geometry:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn fixed_and_adaptive_frame_pacing_do_not_share_deadlines_or_samples() {
+    let start = Instant::now();
+    let mut scheduler = FrameScheduler::new(RefreshRate::Hz60);
+    assert!(scheduler.record_frame_at(start));
+    assert!(scheduler.record_frame_at(start + Duration::from_millis(16)));
+    assert_eq!(scheduler.sample_count(), 1);
+    assert!(scheduler.time_until_next_frame_at(start + Duration::from_millis(20)).is_zero());
+
+    scheduler.set_refresh_rate(RefreshRate::Adaptive);
+    assert_eq!(scheduler.sample_count(), 0);
+    assert!(!scheduler.record_frame_at(start + Duration::from_millis(21)));
+    assert!(scheduler
+        .time_until_next_frame_at(start + Duration::from_secs(10))
+        .is_zero());
+
+    scheduler.set_refresh_rate(RefreshRate::Hz120);
+    assert_eq!(scheduler.sample_count(), 0);
+    assert!(scheduler
+        .time_until_next_frame_at(start + Duration::from_secs(10))
+        .is_zero());
+}
+
+#[test]
 fn dynamic_spaces_keep_window_membership_valid_during_removal() {
     let mut spaces = SpacesModel::with_initial_name("Personal").unwrap();
     let personal = spaces.active_space();
@@ -231,6 +336,36 @@ fn dynamic_spaces_keep_window_membership_valid_during_removal() {
 }
 
 #[test]
+fn repeated_space_removal_never_strands_exclusive_or_all_space_windows() {
+    let mut spaces = SpacesModel::with_initial_name("One").unwrap();
+    let two = spaces.create_space("Two").unwrap();
+    let three = spaces.create_space("Three").unwrap();
+    let four = spaces.create_space("Four").unwrap();
+
+    spaces
+        .assign_window("exclusive-two", SpaceTarget::Named("Two".into()))
+        .unwrap();
+    spaces
+        .assign_window("exclusive-three", SpaceTarget::Named("Three".into()))
+        .unwrap();
+    spaces.assign_window("everywhere", SpaceTarget::All).unwrap();
+    spaces.activate_space(three).unwrap();
+
+    for removed in [three, two, four] {
+        spaces.remove_space(removed).unwrap();
+        spaces.validate().unwrap();
+        for window in ["exclusive-two", "exclusive-three", "everywhere"] {
+            assert!(
+                !spaces.window_spaces(window).is_empty(),
+                "{window} was stranded after removing {removed:?}"
+            );
+        }
+    }
+    assert_eq!(spaces.spaces().len(), 1);
+    assert_eq!(spaces.window_spaces("everywhere").len(), 1);
+}
+
+#[test]
 fn independent_display_spaces_migrate_without_changing_identity_or_order() {
     let mut spaces = SpacesModel::with_initial_name("Laptop").unwrap();
     let laptop = spaces.active_space();
@@ -238,12 +373,8 @@ fn independent_display_spaces_migrate_without_changing_identity_or_order() {
     let reference_order = spaces.space_ids();
 
     spaces.set_multi_monitor_policy(MultiMonitorPolicy::IndependentPerDisplay);
-    spaces
-        .assign_space_to_output(laptop, "eDP-1")
-        .unwrap();
-    spaces
-        .assign_space_to_output(external, "DP-1")
-        .unwrap();
+    spaces.assign_space_to_output(laptop, "eDP-1").unwrap();
+    spaces.assign_space_to_output(external, "DP-1").unwrap();
 
     assert_eq!(spaces.spaces_for_output("eDP-1").unwrap(), vec![laptop]);
     assert_eq!(spaces.spaces_for_output("DP-1").unwrap(), vec![external]);
