@@ -13,6 +13,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   # Fail fast on a machine with limited RAM rather than OOM-killing rustc.
@@ -61,6 +68,48 @@ jobs:
       # TODO: clear the backlog, then add `-- -D warnings`.
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked
+
+  compositor-contract:
+    name: compositor completion contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install compositor dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libwayland-dev libwayland-egl-backend-dev \
+            libvulkan-dev libegl1-mesa-dev libgles2-mesa-dev \
+            libxkbcommon-dev libdbus-1-dev \
+            libfontconfig-dev libfreetype6-dev \
+            libdrm-dev libgbm-dev \
+            libxcb1-dev libxcb-icccm4-dev libxcb-keysyms1-dev \
+            libxcb-randr0-dev libxcb-util0-dev libxcb-xfixes0-dev \
+            libinput-dev libudev-dev libseat-dev libsystemd-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: compositor-contract
+
+      - name: Run exact-commit compositor gate
+        run: bash scripts/verify-compositor-completion.sh
+
+      - name: Upload compositor evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compositor-contract-${{ github.sha }}
+          path: artifacts/qa/compositor-contract/
+          if-no-files-found: error
+          retention-days: 30
 
   release-build:
     name: release build (linux)
