@@ -4,9 +4,9 @@
 
 # Runtime protocol smoke test for the SLOPOS-I compositor's own headless backend.
 # It proves that the exact build owns a private socket, publishes authenticated
-# readiness, serves registry clients, completes xdg-toplevel and xdg-popup
-# lifecycles, acknowledges popup repositioning, survives repeated abrupt client
-# disconnects, accepts a healthy client afterwards, and terminates on request.
+# readiness, serves registry clients, survives abrupt role disconnects, applies
+# live xdg-toplevel presentation transitions, completes xdg-popup configure and
+# reposition lifecycles, accepts a healthy client after stress, and terminates.
 # It does not claim DRM/KMS, rendering, input, popup grabs, HDR, VRR or XWayland.
 
 set -euo pipefail
@@ -58,7 +58,7 @@ write_artifact() {
   local failure="${2:-}"
   cat >"$artifact.tmp" <<JSON
 {
-  "schema": 3,
+  "schema": 4,
   "component": "slopos-compositor",
   "commit": "$commit_sha",
   "branch": "$branch",
@@ -71,6 +71,9 @@ write_artifact() {
   "registry_client_verified": $([[ -s "$globals_log" ]] && printf true || printf false),
   "abrupt_disconnect_recovery_verified": $(stress_passed && printf true || printf false),
   "xdg_toplevel_configure_verified": $(has_protocol_marker SLOPOS_XDG_TOPLEVEL_CONFIGURED && printf true || printf false),
+  "xdg_toplevel_maximize_verified": $(has_protocol_marker SLOPOS_XDG_TOPLEVEL_MAXIMIZED && printf true || printf false),
+  "xdg_toplevel_fullscreen_verified": $(has_protocol_marker SLOPOS_XDG_TOPLEVEL_FULLSCREEN && printf true || printf false),
+  "xdg_toplevel_restore_verified": $(has_protocol_marker SLOPOS_XDG_TOPLEVEL_RESTORED && printf true || printf false),
   "xdg_popup_configure_verified": $(has_protocol_marker SLOPOS_XDG_POPUP_CONFIGURED && printf true || printf false),
   "xdg_popup_reposition_verified": $(has_protocol_marker SLOPOS_XDG_POPUP_REPOSITIONED && printf true || printf false),
   "hardware_verified": false,
@@ -212,13 +215,14 @@ if ! kill -0 "$compositor_pid" 2>/dev/null; then
   exit 1
 fi
 
-# Run a healthy lifecycle after the hostile/disorderly sequence. This proves
-# the server did not merely survive as a wedged process.
-printf 'Completing healthy xdg-toplevel and xdg-popup lifecycle after stress\n'
+printf 'Completing healthy presentation and popup lifecycles after stress\n'
 WAYLAND_DISPLAY="$socket_name" timeout 30s \
   target/debug/examples/headless_toplevel_client >"$protocol_log" 2>&1
 for marker in \
   SLOPOS_XDG_TOPLEVEL_CONFIGURED \
+  SLOPOS_XDG_TOPLEVEL_MAXIMIZED \
+  SLOPOS_XDG_TOPLEVEL_FULLSCREEN \
+  SLOPOS_XDG_TOPLEVEL_RESTORED \
   SLOPOS_XDG_POPUP_CONFIGURED \
   SLOPOS_XDG_POPUP_REPOSITIONED; do
   if ! has_protocol_marker "$marker"; then
