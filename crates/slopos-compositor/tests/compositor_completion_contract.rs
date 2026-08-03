@@ -290,8 +290,12 @@ fn fixed_and_adaptive_frame_pacing_do_not_share_deadlines_or_samples() {
     assert!(scheduler.record_frame_at(start));
     assert!(scheduler.record_frame_at(start + Duration::from_millis(16)));
     assert_eq!(scheduler.sample_count(), 1);
+    assert_eq!(
+        scheduler.time_until_next_frame_at(start + Duration::from_millis(20)),
+        Duration::from_nanos(12_666_666)
+    );
     assert!(scheduler
-        .time_until_next_frame_at(start + Duration::from_millis(20))
+        .time_until_next_frame_at(start + Duration::from_millis(33))
         .is_zero());
 
     scheduler.set_refresh_rate(RefreshRate::Adaptive);
