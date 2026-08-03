@@ -64,11 +64,15 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # Temporary implementation-branch repair path. It is deliberately gated
-      # to a direct push event and this one branch, so pull requests and forks
-      # remain read-only. Remove this step once the regenerated lockfile lands.
+      # Temporary implementation-branch repair path. Direct pushes and this
+      # same-repository implementation PR may update only Cargo.lock. Fork pull
+      # requests remain read-only. Remove this step once the lockfile lands.
       - name: Commit repaired lockfile
-        if: github.event_name == 'push' && github.ref == 'refs/heads/docs/program-design'
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/docs/program-design') ||
+          (github.event_name == 'pull_request' &&
+           github.event.pull_request.head.repo.full_name == github.repository &&
+           github.event.pull_request.head.ref == 'docs/program-design')
         run: |
           if git diff --quiet -- Cargo.lock; then
             exit 0
