@@ -35,7 +35,7 @@ extern "C" fn on_sigusr1(_signal: libc::c_int) {
 pub fn install_signal_handler() {
     let result = unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
-        action.sa_sigaction = on_sigusr1 as usize;
+        action.sa_sigaction = on_sigusr1 as *const () as usize;
         action.sa_flags = libc::SA_RESTART;
         libc::sigemptyset(&mut action.sa_mask);
         if libc::sigaction(libc::SIGUSR1, &action, std::ptr::null_mut()) == 0 {
@@ -125,13 +125,15 @@ fn capture(
             .map_err(|error| anyhow::anyhow!("clear screenshot frame: {error}"))?;
         draw_render_elements::<GlesRenderer, _, _>(&mut frame, 1.0, elements, &damage)
             .map_err(|error| anyhow::anyhow!("draw screenshot elements: {error}"))?;
-        frame
+        let _render_sync = frame
             .finish()
             .map_err(|error| anyhow::anyhow!("finish screenshot frame: {error}"))?;
     }
 
     // Mesa accepts BGRA readback for Argb8888 here. Little-endian Argb8888 is
-    // [B, G, R, A] in memory; PNG expects [R, G, B, A].
+    // [B, G, R, A] in memory; PNG expects [R, G, B, A]. copy_framebuffer is
+    // issued after finish on the same renderer/context, so command ordering is
+    // preserved even when the returned synchronization point has no CPU wait.
     let mapping = renderer
         .copy_framebuffer(&framebuffer, Rectangle::from_size(buffer), Fourcc::Argb8888)
         .map_err(|error| anyhow::anyhow!("copy screenshot framebuffer: {error}"))?;
