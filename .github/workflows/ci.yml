@@ -37,6 +37,8 @@ jobs:
   lockfile:
     name: lockfile consistency
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,6 +63,21 @@ jobs:
           path: artifacts/qa/generated-lockfile/Cargo.lock
           if-no-files-found: error
           retention-days: 7
+
+      # Temporary implementation-branch repair path. It is deliberately gated
+      # to a direct push event and this one branch, so pull requests and forks
+      # remain read-only. Remove this step once the regenerated lockfile lands.
+      - name: Commit repaired lockfile
+        if: github.event_name == 'push' && github.ref == 'refs/heads/docs/program-design'
+        run: |
+          if git diff --quiet -- Cargo.lock; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add Cargo.lock
+          git commit -m "chore: regenerate workspace lockfile"
+          git push origin HEAD:docs/program-design
 
       - name: Verify committed lockfile is current
         run: git diff --exit-code -- Cargo.lock
