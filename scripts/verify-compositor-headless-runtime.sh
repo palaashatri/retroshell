@@ -5,11 +5,11 @@
 # Runtime protocol smoke test for the SLOPOS-I compositor's own headless backend.
 # This is intentionally narrower than hardware QA: it proves that the exact
 # built compositor can own a private Wayland socket, publish authenticated
-# readiness, answer a registry client, complete a real xdg-toplevel configure
-# handshake, and terminate on request. The slopos-session supervisor, not a
-# standalone compositor process, owns removal of the per-session runtime
-# directory. This test does not claim DRM/KMS, rendering, input, HDR, VRR, or
-# XWayland.
+# readiness, answer a registry client, complete xdg-toplevel and xdg-popup
+# configure handshakes, acknowledge popup repositioning, and terminate on
+# request. The slopos-session supervisor, not a standalone compositor process,
+# owns removal of the per-session runtime directory. This test does not claim
+# DRM/KMS, rendering, input, popup grabs, HDR, VRR, or XWayland.
 
 set -euo pipefail
 
@@ -36,7 +36,7 @@ mkdir -p "$artifact_dir"
 artifact="$artifact_dir/${commit_sha}.json"
 compositor_log="$artifact_dir/${commit_sha}-compositor.log"
 globals_log="$artifact_dir/${commit_sha}-wayland-info.log"
-toplevel_log="$artifact_dir/${commit_sha}-xdg-toplevel.log"
+protocol_log="$artifact_dir/${commit_sha}-xdg-protocol.log"
 runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/slopos-headless-runtime.XXXXXX")"
 chmod 700 "$runtime_dir"
 
@@ -45,12 +45,17 @@ socket_name=""
 shutdown_status="not_started"
 socket_cleanup="not_observed"
 
+has_marker() {
+  local marker="$1"
+  [[ -s "$protocol_log" ]] && grep -q "^${marker} " "$protocol_log"
+}
+
 write_artifact() {
   local status="$1"
   local failure="${2:-}"
   cat >"$artifact.tmp" <<JSON
 {
-  "schema": 1,
+  "schema": 2,
   "component": "slopos-compositor",
   "commit": "$commit_sha",
   "branch": "$branch",
@@ -61,11 +66,14 @@ write_artifact() {
   "backend": "headless",
   "runtime_verified": $([[ "$status" == "passed" ]] && printf true || printf false),
   "registry_client_verified": $([[ -s "$globals_log" ]] && printf true || printf false),
-  "xdg_toplevel_configure_verified": $([[ -s "$toplevel_log" ]] && grep -q '^SLOPOS_XDG_TOPLEVEL_CONFIGURED ' "$toplevel_log" && printf true || printf false),
+  "xdg_toplevel_configure_verified": $(has_marker SLOPOS_XDG_TOPLEVEL_CONFIGURED && printf true || printf false),
+  "xdg_popup_configure_verified": $(has_marker SLOPOS_XDG_POPUP_CONFIGURED && printf true || printf false),
+  "xdg_popup_reposition_verified": $(has_marker SLOPOS_XDG_POPUP_REPOSITIONED && printf true || printf false),
   "hardware_verified": false,
   "drm_verified": false,
   "rendering_verified": false,
   "input_verified": false,
+  "popup_grab_verified": false,
   "socket": "$socket_name",
   "compositor_pid": "${compositor_pid:-}",
   "shutdown_status": "$shutdown_status",
@@ -73,7 +81,7 @@ write_artifact() {
   "runtime_directory_owner": "slopos-session",
   "compositor_log": "$(basename "$compositor_log")",
   "wayland_info_log": "$(basename "$globals_log")",
-  "xdg_toplevel_log": "$(basename "$toplevel_log")"
+  "xdg_protocol_log": "$(basename "$protocol_log")"
 }
 JSON
   mv "$artifact.tmp" "$artifact"
@@ -185,15 +193,21 @@ for required_global in wl_compositor wl_shm wl_seat xdg_wm_base; do
   fi
 done
 
-printf 'Completing a real xdg-toplevel configure handshake\n'
+printf 'Completing xdg-toplevel and xdg-popup lifecycle handshakes\n'
 WAYLAND_DISPLAY="$socket_name" timeout 30s \
   cargo run --quiet -p slopos-compositor --example headless_toplevel_client --locked \
-  >"$toplevel_log" 2>&1
-if ! grep -q '^SLOPOS_XDG_TOPLEVEL_CONFIGURED ' "$toplevel_log"; then
-  write_artifact failed "xdg_toplevel_configure_missing"
-  cat "$toplevel_log" >&2
-  exit 1
-fi
+  >"$protocol_log" 2>&1
+
+for marker in \
+  SLOPOS_XDG_TOPLEVEL_CONFIGURED \
+  SLOPOS_XDG_POPUP_CONFIGURED \
+  SLOPOS_XDG_POPUP_REPOSITIONED; do
+  if ! has_marker "$marker"; then
+    write_artifact failed "missing_${marker}"
+    cat "$protocol_log" >&2
+    exit 1
+  fi
+done
 
 kill -TERM "$compositor_pid"
 for _ in $(seq 1 50); do
@@ -222,4 +236,4 @@ fi
 write_artifact passed
 printf 'Headless runtime protocol smoke passed for %s\n' "$commit_sha"
 printf 'Evidence: %s\n' "$artifact"
-printf 'This does not prove DRM/KMS, rendering, input, XWayland, HDR, VRR, or hardware compatibility.\n'
+printf 'This does not prove DRM/KMS, rendering, input, popup grabs, XWayland, HDR, VRR, or hardware compatibility.\n'
