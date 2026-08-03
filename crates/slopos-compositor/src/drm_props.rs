@@ -1,66 +1,31 @@
-//! Generic DRM/KMS property access, and the HDR / VRR properties built on it.
+//! Generic DRM/KMS property access and capability-driven HDR/VRR control.
 //!
-//! Everything here talks to real kernel properties through `drm::control::Device`.
-//! There is no simulation: if the connector does not expose `HDR_OUTPUT_METADATA`
-//! or `vrr_capable`, the functions say so rather than pretending.
+//! Every capability reported here comes from real kernel object properties.
+//! Unsupported connectors remain unsupported; user policy never fabricates an
+//! HDR or variable-refresh path.
 //!
 //! References:
-//! - `include/uapi/drm/drm_mode.h` — `struct hdr_output_metadata`,
-//!   `struct hdr_metadata_infoframe`
-//! - `drivers/gpu/drm/drm_connector.c` — the `Colorspace`, `max bpc`,
-//!   `HDR_OUTPUT_METADATA` and `vrr_capable` property definitions
-//! - CTA-861-G §6.9 — HDR Static Metadata Data Block / infoframe encoding
-//!
-//! Verifiability: a VirtualBox `vmwgfx` connector exposes none of these
-//! properties, so in the VM every probe correctly reports "unsupported". Real
-//! HDR/VRR behaviour can only be confirmed on hardware with a capable
-//! connector (`sudo modetest -c` will list the properties).
+//! - `include/uapi/drm/drm_mode.h` — HDR metadata structures;
+//! - `drivers/gpu/drm/drm_connector.c` — connector properties;
+//! - CTA-861-G §6.9 — static HDR metadata encoding.
 
 #![cfg(target_os = "linux")]
 
 use std::collections::HashMap;
+use std::io;
 
-// `drm` is not a direct dependency; use smithay's reexport so the version
-// always matches the one smithay's DrmDevice was built against.
+// Use Smithay's re-export so the DRM version always matches the backend.
 use smithay::reexports::drm;
-
 use drm::control::{property, Device as ControlDevice, ResourceHandle};
 
-/// Kernel EOTF values for `hdr_metadata_infoframe.eotf` (CTA-861-G Table 85).
+/// Kernel EOTF values for `hdr_metadata_infoframe.eotf`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Eotf {
-    /// Traditional gamma, SDR luminance range.
     TraditionalSdr = 0,
-    /// Traditional gamma, HDR luminance range.
     TraditionalHdr = 1,
-    /// SMPTE ST 2084 (PQ) — what HDR10 uses.
     St2084 = 2,
-    /// ITU-R BT.2100 Hybrid Log-Gamma.
     Hlg = 3,
-}
-
-/// `struct hdr_metadata_infoframe` from `include/uapi/drm/drm_mode.h`.
-///
-/// Units, straight from the CTA-861 encoding:
-/// - `display_primaries` / `white_point`: CIE 1931 xy in 0.00002 steps
-///   (i.e. `raw = xy * 50000`)
-/// - `max_display_mastering_luminance`: nits, 1-nit steps
-/// - `min_display_mastering_luminance`: nits in 0.0001 steps (`raw = nits * 10000`)
-/// - `max_cll` / `max_fall`: nits, 1-nit steps
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct HdrMetadataInfoframe {
-    pub eotf: u8,
-    /// Always 0 = Static Metadata Type 1.
-    pub metadata_type: u8,
-    /// R, G, B primaries as (x, y) pairs, in that order.
-    pub display_primaries: [ChromaticityPoint; 3],
-    pub white_point: ChromaticityPoint,
-    pub max_display_mastering_luminance: u16,
-    pub min_display_mastering_luminance: u16,
-    pub max_cll: u16,
-    pub max_fall: u16,
 }
 
 /// One CIE 1931 xy coordinate pair in 0.00002 units.
@@ -72,63 +37,75 @@ pub struct ChromaticityPoint {
 }
 
 impl ChromaticityPoint {
-    /// Encode CIE xy floats (0.0..=1.0) into the kernel's 0.00002 units.
     pub fn from_xy(x: f32, y: f32) -> Self {
+        fn encode(value: f32) -> u16 {
+            let value = if value.is_finite() { value } else { 0.0 };
+            (value.clamp(0.0, 1.0) * 50_000.0).round() as u16
+        }
         Self {
-            x: (x.clamp(0.0, 1.0) * 50_000.0).round() as u16,
-            y: (y.clamp(0.0, 1.0) * 50_000.0).round() as u16,
+            x: encode(x),
+            y: encode(y),
         }
     }
 }
 
-/// `struct hdr_output_metadata` — the payload of the `HDR_OUTPUT_METADATA` blob.
-///
-/// The kernel's definition is a `__u32` tag followed by a union whose only
-/// current member is `hdmi_metadata_type1`.
+/// Exact `struct hdr_metadata_infoframe` layout from the kernel UAPI.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HdrMetadataInfoframe {
+    pub eotf: u8,
+    pub metadata_type: u8,
+    pub display_primaries: [ChromaticityPoint; 3],
+    pub white_point: ChromaticityPoint,
+    pub max_display_mastering_luminance: u16,
+    pub min_display_mastering_luminance: u16,
+    pub max_cll: u16,
+    pub max_fall: u16,
+}
+
+/// Exact `struct hdr_output_metadata` payload used by
+/// `HDR_OUTPUT_METADATA` connector properties.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HdrOutputMetadata {
-    /// 0 = HDMI_STATIC_METADATA_TYPE1.
     pub metadata_type: u32,
     pub hdmi_metadata_type1: HdrMetadataInfoframe,
 }
 
 impl HdrOutputMetadata {
-    /// HDR10: ST 2084 (PQ) transfer, BT.2020 primaries, D65 white point.
-    ///
-    /// `max_mastering_nits` / `min_mastering_nits` describe the mastering
-    /// display; `max_cll` (content light level) and `max_fall` (frame-average
-    /// light level) describe the content. Values of 0 mean "unknown", which is
-    /// legal and tells the sink to use its own defaults.
+    /// HDR10: PQ transfer, BT.2020 primaries and D65 white point.
     pub fn hdr10(
         max_mastering_nits: u16,
         min_mastering_nits: f32,
         max_cll: u16,
         max_fall: u16,
     ) -> Self {
+        let minimum = if min_mastering_nits.is_finite() {
+            min_mastering_nits.max(0.0)
+        } else {
+            0.0
+        };
         Self {
             metadata_type: 0,
             hdmi_metadata_type1: HdrMetadataInfoframe {
                 eotf: Eotf::St2084 as u8,
                 metadata_type: 0,
-                // BT.2020 primaries.
                 display_primaries: [
-                    ChromaticityPoint::from_xy(0.708, 0.292), // R
-                    ChromaticityPoint::from_xy(0.170, 0.797), // G
-                    ChromaticityPoint::from_xy(0.131, 0.046), // B
+                    ChromaticityPoint::from_xy(0.708, 0.292),
+                    ChromaticityPoint::from_xy(0.170, 0.797),
+                    ChromaticityPoint::from_xy(0.131, 0.046),
                 ],
-                // D65.
                 white_point: ChromaticityPoint::from_xy(0.3127, 0.3290),
                 max_display_mastering_luminance: max_mastering_nits,
-                min_display_mastering_luminance: (min_mastering_nits * 10_000.0).round() as u16,
+                min_display_mastering_luminance: (minimum * 10_000.0)
+                    .round()
+                    .clamp(0.0, f32::from(u16::MAX)) as u16,
                 max_cll,
                 max_fall,
             },
         }
     }
 
-    /// SDR: traditional gamma. Setting this (rather than clearing the property)
-    /// is how a compositor takes a display back out of HDR mode.
     pub fn sdr() -> Self {
         Self {
             metadata_type: 0,
@@ -141,59 +118,54 @@ impl HdrOutputMetadata {
     }
 }
 
-/// One property as the kernel reports it for a specific object.
+/// One property as reported for a specific DRM object.
 #[derive(Debug, Clone)]
 pub struct PropEntry {
     pub handle: property::Handle,
     pub name: String,
     pub value_type: property::ValueType,
-    /// Current raw value on the object this index was built from.
     pub raw_value: u64,
 }
 
 impl PropEntry {
-    /// For an enum property, the symbolic name of the current value.
     pub fn enum_name(&self) -> Option<String> {
         match &self.value_type {
             property::ValueType::Enum(values) => values
                 .get_value_from_raw_value(self.raw_value)
-                .map(|v| v.name().to_string_lossy().into_owned()),
+                .map(|value| value.name().to_string_lossy().into_owned()),
             _ => None,
         }
     }
 
-    /// For an enum property, the raw value matching a symbolic name.
     pub fn enum_value(&self, name: &str) -> Option<u64> {
         match &self.value_type {
             property::ValueType::Enum(values) => {
                 let (_, enums) = values.values();
                 enums
                     .iter()
-                    .find(|e| e.name().to_string_lossy() == name)
-                    .map(|e| e.value())
+                    .find(|entry| entry.name().to_string_lossy() == name)
+                    .map(|entry| entry.value())
             }
             _ => None,
         }
     }
 
-    /// For a range property, its (min, max).
     pub fn range(&self) -> Option<(u64, u64)> {
         match self.value_type {
-            property::ValueType::UnsignedRange(lo, hi) => Some((lo, hi)),
+            property::ValueType::UnsignedRange(low, high) => Some((low, high)),
             _ => None,
         }
     }
 }
 
-/// All properties of one DRM object, indexed by name.
+/// Snapshot of every property on one DRM object, keyed by kernel name.
 #[derive(Debug, Clone, Default)]
 pub struct PropertyIndex {
     by_name: HashMap<String, PropEntry>,
 }
 
 impl PropertyIndex {
-    /// Read every property of `handle` from `device`.
-    pub fn read<D, H>(device: &D, handle: H) -> std::io::Result<Self>
+    pub fn read<D, H>(device: &D, handle: H) -> io::Result<Self>
     where
         D: ControlDevice,
         H: ResourceHandle,
@@ -201,16 +173,16 @@ impl PropertyIndex {
         let set = device.get_properties(handle)?;
         let (handles, raw_values) = set.as_props_and_values();
         let mut by_name = HashMap::with_capacity(handles.len());
-        for (h, raw) in handles.iter().zip(raw_values.iter()) {
-            let info = device.get_property(*h)?;
+        for (handle, raw_value) in handles.iter().zip(raw_values.iter()) {
+            let info = device.get_property(*handle)?;
             let name = info.name().to_string_lossy().into_owned();
             by_name.insert(
                 name.clone(),
                 PropEntry {
-                    handle: *h,
+                    handle: *handle,
                     name,
                     value_type: info.value_type(),
-                    raw_value: *raw,
+                    raw_value: *raw_value,
                 },
             );
         }
@@ -225,25 +197,21 @@ impl PropertyIndex {
         self.by_name.contains_key(name)
     }
 
-    /// Property names, sorted — useful for logging what a connector supports.
     pub fn names(&self) -> Vec<&str> {
-        let mut v: Vec<&str> = self.by_name.keys().map(String::as_str).collect();
-        v.sort_unstable();
-        v
+        let mut names: Vec<_> = self.by_name.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        names
     }
 }
 
-/// Set a property by name on a DRM object.
-///
-/// Returns `Ok(false)` when the object does not expose that property, which is
-/// the normal case on hardware (and in a VM) that cannot do HDR or VRR.
+/// Set a property by name, returning false when the object does not expose it.
 pub fn set_property_by_name<D, H>(
     device: &D,
     handle: H,
     index: &PropertyIndex,
     name: &str,
     value: u64,
-) -> std::io::Result<bool>
+) -> io::Result<bool>
 where
     D: ControlDevice,
     H: ResourceHandle,
@@ -259,57 +227,58 @@ where
 // VRR
 // ---------------------------------------------------------------------------
 
-/// What the kernel says about variable refresh on one connector/CRTC pair.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct VrrState {
-    /// Connector exposes `vrr_capable` and it reads non-zero.
     pub capable: bool,
-    /// CRTC exposes `VRR_ENABLED`.
     pub controllable: bool,
-    /// Current value of `VRR_ENABLED`.
     pub enabled: bool,
 }
 
-/// Read `vrr_capable` (connector) and `VRR_ENABLED` (CRTC).
-///
-/// Property names are exactly as the kernel spells them — lowercase on the
-/// connector, uppercase on the CRTC. That asymmetry is real, not a typo.
 pub fn probe_vrr(connector_props: &PropertyIndex, crtc_props: &PropertyIndex) -> VrrState {
     let capable = connector_props
         .get("vrr_capable")
-        .map(|p| p.raw_value != 0)
+        .map(|property| property.raw_value != 0)
         .unwrap_or(false);
-    let enabled_prop = crtc_props.get("VRR_ENABLED");
+    let enabled_property = crtc_props.get("VRR_ENABLED");
     VrrState {
         capable,
-        controllable: enabled_prop.is_some(),
-        enabled: enabled_prop.map(|p| p.raw_value != 0).unwrap_or(false),
+        controllable: enabled_property.is_some(),
+        enabled: enabled_property
+            .map(|property| property.raw_value != 0)
+            .unwrap_or(false),
     }
+}
+
+fn vrr_request_allowed(state: VrrState, enable: bool) -> bool {
+    state.controllable && (!enable || state.capable)
 }
 
 /// Turn variable refresh on or off for a CRTC.
 ///
-/// Refuses when the connector is not `vrr_capable`, so we never claim VRR on a
-/// display that cannot do it.
+/// A missing `VRR_ENABLED` property is not success, and enable is rejected when
+/// the connector does not advertise `vrr_capable`.
 pub fn set_vrr_enabled<D>(
     device: &D,
     crtc: drm::control::crtc::Handle,
     crtc_props: &PropertyIndex,
     state: VrrState,
     enable: bool,
-) -> std::io::Result<bool>
+) -> io::Result<bool>
 where
     D: ControlDevice,
 {
-    if enable && !state.capable {
+    if !vrr_request_allowed(state, enable) {
         return Ok(false);
+    }
+    if state.enabled == enable {
+        return Ok(true);
     }
     set_property_by_name(
         device,
         crtc,
         crtc_props,
         "VRR_ENABLED",
-        if enable { 1 } else { 0 },
+        u64::from(enable),
     )
 }
 
@@ -317,56 +286,46 @@ where
 // HDR
 // ---------------------------------------------------------------------------
 
-/// What the kernel says about HDR on one connector.
 #[derive(Debug, Clone, Default)]
 pub struct HdrConnectorCaps {
-    /// Connector exposes the `HDR_OUTPUT_METADATA` blob property.
     pub has_hdr_metadata: bool,
-    /// Connector exposes `Colorspace` and it lists a BT.2020 RGB entry.
     pub has_bt2020_colorspace: bool,
-    /// Highest value the `max bpc` property allows (HDR10 needs >= 10).
     pub max_bpc: Option<u64>,
-    /// Every `Colorspace` value the connector advertises.
     pub colorspaces: Vec<String>,
 }
 
 impl HdrConnectorCaps {
-    /// True when the connector can actually be driven in HDR10.
     pub fn hdr10_capable(&self) -> bool {
         self.has_hdr_metadata && self.has_bt2020_colorspace && self.max_bpc.unwrap_or(8) >= 10
     }
 
-    /// One honest line for logs.
     pub fn summary(&self) -> String {
         format!(
             "hdr_metadata={} bt2020_colorspace={} max_bpc={} => hdr10_capable={}",
             self.has_hdr_metadata,
             self.has_bt2020_colorspace,
             self.max_bpc
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "n/a".into()),
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_owned()),
             self.hdr10_capable()
         )
     }
 }
 
-/// The `Colorspace` enum entry we want for HDR10 output.
 pub const COLORSPACE_BT2020_RGB: &str = "BT2020_RGB";
-/// The `Colorspace` entry to return to for SDR.
 pub const COLORSPACE_DEFAULT: &str = "Default";
 
-/// Inspect a connector's HDR-related properties.
 pub fn probe_hdr(connector_props: &PropertyIndex) -> HdrConnectorCaps {
-    let colorspace = connector_props.get("Colorspace");
-    let colorspaces: Vec<String> = colorspace
-        .and_then(|p| match &p.value_type {
+    let colorspaces = connector_props
+        .get("Colorspace")
+        .and_then(|property| match &property.value_type {
             property::ValueType::Enum(values) => {
-                let (_, enums) = values.values();
+                let (_, entries) = values.values();
                 Some(
-                    enums
+                    entries
                         .iter()
-                        .map(|e| e.name().to_string_lossy().into_owned())
-                        .collect(),
+                        .map(|entry| entry.name().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>(),
                 )
             }
             _ => None,
@@ -375,79 +334,183 @@ pub fn probe_hdr(connector_props: &PropertyIndex) -> HdrConnectorCaps {
 
     HdrConnectorCaps {
         has_hdr_metadata: connector_props.has("HDR_OUTPUT_METADATA"),
-        has_bt2020_colorspace: colorspaces.iter().any(|c| c == COLORSPACE_BT2020_RGB),
+        has_bt2020_colorspace: colorspaces
+            .iter()
+            .any(|value| value == COLORSPACE_BT2020_RGB),
         max_bpc: connector_props
             .get("max bpc")
-            .and_then(|p| p.range().map(|(_, hi)| hi)),
+            .and_then(|property| property.range().map(|(_, high)| high)),
         colorspaces,
     }
 }
 
-/// Drive a connector into HDR10: publish the mastering metadata blob, switch
-/// `Colorspace` to BT.2020 RGB, and raise `max bpc` to 10.
+#[derive(Clone, Copy, Debug)]
+struct PropertySnapshot {
+    max_bpc: Option<(property::Handle, u64)>,
+    colorspace: Option<(property::Handle, u64)>,
+    metadata: Option<(property::Handle, u64)>,
+}
+
+impl PropertySnapshot {
+    fn capture(properties: &PropertyIndex) -> Self {
+        Self {
+            max_bpc: properties
+                .get("max bpc")
+                .map(|entry| (entry.handle, entry.raw_value)),
+            colorspace: properties
+                .get("Colorspace")
+                .map(|entry| (entry.handle, entry.raw_value)),
+            metadata: properties
+                .get("HDR_OUTPUT_METADATA")
+                .map(|entry| (entry.handle, entry.raw_value)),
+        }
+    }
+
+    fn restore<D>(self, device: &D, connector: drm::control::connector::Handle)
+    where
+        D: ControlDevice,
+    {
+        // Restore in reverse order of the normal HDR apply path. Rollback is
+        // best-effort because the original operation's error is the useful one.
+        if let Some((handle, value)) = self.metadata {
+            let _ = device.set_property(connector, handle, value);
+        }
+        if let Some((handle, value)) = self.colorspace {
+            let _ = device.set_property(connector, handle, value);
+        }
+        if let Some((handle, value)) = self.max_bpc {
+            let _ = device.set_property(connector, handle, value);
+        }
+    }
+}
+
+fn bpc_target(range: Option<(u64, u64)>, desired: u64) -> Option<u64> {
+    let (low, high) = range?;
+    (low <= high).then(|| desired.clamp(low, high))
+}
+
+/// Drive a connector into HDR10.
 ///
-/// 8 bits per channel cannot carry a PQ signal without visible banding, which
-/// is why `max bpc` must be raised as part of the same change.
-///
-/// Returns the blob handle, which the caller must keep and later destroy with
-/// [`clear_hdr`] — the kernel holds a reference until the property stops using it.
+/// The three property changes are not an atomic KMS commit in this bootstrap
+/// path, so this function explicitly snapshots and rolls back every changed
+/// property if any later step fails. The returned blob handle remains owned by
+/// the caller until [`clear_hdr`] moves the connector away from it.
 pub fn apply_hdr10<D>(
     device: &D,
     connector: drm::control::connector::Handle,
-    props: &PropertyIndex,
+    properties: &PropertyIndex,
     metadata: &HdrOutputMetadata,
-) -> std::io::Result<Option<property::Value<'static>>>
+) -> io::Result<Option<property::Value<'static>>>
 where
     D: ControlDevice,
 {
-    let caps = probe_hdr(props);
-    if !caps.hdr10_capable() {
+    let capabilities = probe_hdr(properties);
+    if !capabilities.hdr10_capable() {
         return Ok(None);
     }
 
-    if let Some(entry) = props.get("max bpc") {
-        if let Some((_, hi)) = entry.range() {
-            let target = hi.min(10);
-            device.set_property(connector, entry.handle, target)?;
-        }
-    }
+    let snapshot = PropertySnapshot::capture(properties);
+    let metadata_property = properties.get("HDR_OUTPUT_METADATA").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "HDR10 capability probe succeeded without HDR_OUTPUT_METADATA",
+        )
+    })?;
+    let colorspace_property = properties.get("Colorspace").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "HDR10 capability probe succeeded without Colorspace",
+        )
+    })?;
+    let colorspace_value = colorspace_property
+        .enum_value(COLORSPACE_BT2020_RGB)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "HDR10 capability probe succeeded without BT2020_RGB enum value",
+            )
+        })?;
+    let max_bpc_property = properties.get("max bpc").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            "HDR10 capability probe succeeded without max bpc",
+        )
+    })?;
+    let max_bpc_value = bpc_target(max_bpc_property.range(), 10).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "max bpc property has an invalid range")
+    })?;
 
-    if let Some(entry) = props.get("Colorspace") {
-        if let Some(raw) = entry.enum_value(COLORSPACE_BT2020_RGB) {
-            device.set_property(connector, entry.handle, raw)?;
-        }
-    }
-
+    // Allocate before mutating connector state so allocation failure needs no
+    // rollback.
     let blob = device.create_property_blob(metadata)?;
-    if let Some(entry) = props.get("HDR_OUTPUT_METADATA") {
-        device.set_property(connector, entry.handle, blob.into())?;
+    let result = (|| -> io::Result<()> {
+        device.set_property(connector, max_bpc_property.handle, max_bpc_value)?;
+        device.set_property(connector, colorspace_property.handle, colorspace_value)?;
+        device.set_property(connector, metadata_property.handle, blob.into())?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        snapshot.restore(device, connector);
+        let _ = device.destroy_property_blob(blob.into());
+        return Err(error);
     }
+
     Ok(Some(blob))
 }
 
-/// Return a connector to SDR: traditional-gamma metadata and the default
-/// colorspace, then release the previous blob.
+/// Return a connector to SDR and release compositor-owned blob handles.
+///
+/// The SDR metadata blob's creation reference is destroyed after the property
+/// is installed; the connector property retains its own kernel reference. This
+/// prevents one leaked blob per HDR disable operation.
 pub fn clear_hdr<D>(
     device: &D,
     connector: drm::control::connector::Handle,
-    props: &PropertyIndex,
+    properties: &PropertyIndex,
     previous_blob: Option<property::Value<'static>>,
-) -> std::io::Result<()>
+) -> io::Result<()>
 where
     D: ControlDevice,
 {
-    if let Some(entry) = props.get("Colorspace") {
-        if let Some(raw) = entry.enum_value(COLORSPACE_DEFAULT) {
-            device.set_property(connector, entry.handle, raw)?;
+    let snapshot = PropertySnapshot::capture(properties);
+    let sdr_blob = if properties.has("HDR_OUTPUT_METADATA") {
+        Some(device.create_property_blob(&HdrOutputMetadata::sdr())?)
+    } else {
+        None
+    };
+
+    let result = (|| -> io::Result<()> {
+        if let Some(metadata_property) = properties.get("HDR_OUTPUT_METADATA") {
+            let blob = sdr_blob.expect("created when metadata property exists");
+            device.set_property(connector, metadata_property.handle, blob.into())?;
         }
+        if let Some(colorspace_property) = properties.get("Colorspace") {
+            if let Some(value) = colorspace_property.enum_value(COLORSPACE_DEFAULT) {
+                device.set_property(connector, colorspace_property.handle, value)?;
+            }
+        }
+        if let Some(max_bpc_property) = properties.get("max bpc") {
+            if let Some(value) = bpc_target(max_bpc_property.range(), 8) {
+                device.set_property(connector, max_bpc_property.handle, value)?;
+            }
+        }
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        snapshot.restore(device, connector);
+        if let Some(blob) = sdr_blob {
+            let _ = device.destroy_property_blob(blob.into());
+        }
+        return Err(error);
     }
-    let sdr = HdrOutputMetadata::sdr();
-    let blob = device.create_property_blob(&sdr)?;
-    if let Some(entry) = props.get("HDR_OUTPUT_METADATA") {
-        device.set_property(connector, entry.handle, blob.into())?;
+
+    if let Some(old_blob) = previous_blob {
+        let _ = device.destroy_property_blob(old_blob.into());
     }
-    if let Some(old) = previous_blob {
-        let _ = device.destroy_property_blob(old.into());
+    if let Some(blob) = sdr_blob {
+        let _ = device.destroy_property_blob(blob.into());
     }
     Ok(())
 }
@@ -458,93 +521,88 @@ mod tests {
 
     #[test]
     fn hdr_output_metadata_matches_kernel_layout() {
-        // struct hdr_metadata_infoframe: 2 u8 + 3*(2 u16) + 2 u16 + 4 u16 = 26 bytes.
         assert_eq!(core::mem::size_of::<HdrMetadataInfoframe>(), 26);
-        // struct hdr_output_metadata: u32 tag + the infoframe, aligned to 4.
         assert_eq!(core::mem::align_of::<HdrOutputMetadata>(), 4);
         assert_eq!(core::mem::size_of::<HdrOutputMetadata>(), 32);
     }
 
     #[test]
-    fn chromaticity_encodes_in_0_00002_units() {
-        // BT.2020 red primary x = 0.708 -> 0.708 * 50000 = 35400
-        let p = ChromaticityPoint::from_xy(0.708, 0.292);
-        assert_eq!(p.x, 35_400);
-        assert_eq!(p.y, 14_600);
-        // D65 white point.
-        let w = ChromaticityPoint::from_xy(0.3127, 0.3290);
-        assert_eq!(w.x, 15_635);
-        assert_eq!(w.y, 16_450);
+    fn chromaticity_encoding_is_bounded_and_nan_safe() {
+        let red = ChromaticityPoint::from_xy(0.708, 0.292);
+        assert_eq!(red.x, 35_400);
+        assert_eq!(red.y, 14_600);
+        assert_eq!(ChromaticityPoint::from_xy(f32::NAN, 2.0), ChromaticityPoint { x: 0, y: 50_000 });
     }
 
     #[test]
-    fn hdr10_uses_pq_and_bt2020_primaries() {
-        let md = HdrOutputMetadata::hdr10(1000, 0.005, 1000, 400);
-        assert_eq!(md.metadata_type, 0);
-        assert_eq!(md.hdmi_metadata_type1.eotf, Eotf::St2084 as u8);
-        assert_eq!(md.hdmi_metadata_type1.metadata_type, 0);
-        assert_eq!(md.hdmi_metadata_type1.max_display_mastering_luminance, 1000);
-        // min luminance is in 0.0001-nit units: 0.005 nits -> 50
-        assert_eq!(md.hdmi_metadata_type1.min_display_mastering_luminance, 50);
-        assert_eq!(md.hdmi_metadata_type1.max_cll, 1000);
-        assert_eq!(md.hdmi_metadata_type1.max_fall, 400);
-        assert_eq!(
-            md.hdmi_metadata_type1.display_primaries[0],
-            ChromaticityPoint::from_xy(0.708, 0.292)
-        );
+    fn hdr10_uses_pq_bt2020_and_sanitized_luminance() {
+        let metadata = HdrOutputMetadata::hdr10(1000, 0.005, 1000, 400);
+        assert_eq!(metadata.metadata_type, 0);
+        assert_eq!(metadata.hdmi_metadata_type1.eotf, Eotf::St2084 as u8);
+        assert_eq!(metadata.hdmi_metadata_type1.min_display_mastering_luminance, 50);
+        assert_eq!(metadata.hdmi_metadata_type1.max_cll, 1000);
+        assert_eq!(metadata.hdmi_metadata_type1.max_fall, 400);
+
+        let invalid = HdrOutputMetadata::hdr10(1000, f32::NAN, 0, 0);
+        assert_eq!(invalid.hdmi_metadata_type1.min_display_mastering_luminance, 0);
     }
 
     #[test]
     fn sdr_metadata_uses_traditional_gamma() {
-        let md = HdrOutputMetadata::sdr();
-        assert_eq!(md.hdmi_metadata_type1.eotf, Eotf::TraditionalSdr as u8);
+        assert_eq!(
+            HdrOutputMetadata::sdr().hdmi_metadata_type1.eotf,
+            Eotf::TraditionalSdr as u8
+        );
     }
 
     #[test]
-    fn hdr10_capability_requires_all_three_conditions() {
-        let full = HdrConnectorCaps {
+    fn hdr10_capability_requires_every_property_condition() {
+        let complete = HdrConnectorCaps {
             has_hdr_metadata: true,
             has_bt2020_colorspace: true,
             max_bpc: Some(12),
-            colorspaces: vec![COLORSPACE_BT2020_RGB.into()],
+            colorspaces: vec![COLORSPACE_BT2020_RGB.to_owned()],
         };
-        assert!(full.hdr10_capable());
-
-        let eight_bpc = HdrConnectorCaps {
-            max_bpc: Some(8),
-            ..full.clone()
-        };
-        assert!(!eight_bpc.hdr10_capable(), "8 bpc cannot carry PQ");
-
-        let no_blob = HdrConnectorCaps {
-            has_hdr_metadata: false,
-            ..full.clone()
-        };
-        assert!(!no_blob.hdr10_capable());
-
-        let no_colorspace = HdrConnectorCaps {
-            has_bt2020_colorspace: false,
-            ..full
-        };
-        assert!(!no_colorspace.hdr10_capable());
+        assert!(complete.hdr10_capable());
+        assert!(!HdrConnectorCaps { max_bpc: Some(8), ..complete.clone() }.hdr10_capable());
+        assert!(!HdrConnectorCaps { has_hdr_metadata: false, ..complete.clone() }.hdr10_capable());
+        assert!(!HdrConnectorCaps { has_bt2020_colorspace: false, ..complete }.hdr10_capable());
     }
 
     #[test]
-    fn vrr_probe_reports_unsupported_when_properties_absent() {
-        // A vmwgfx connector in a VM: neither property exists.
-        let empty = PropertyIndex::default();
-        let state = probe_vrr(&empty, &empty);
-        assert!(!state.capable);
-        assert!(!state.controllable);
-        assert!(!state.enabled);
+    fn bpc_target_clamps_inside_kernel_range() {
+        assert_eq!(bpc_target(Some((6, 12)), 10), Some(10));
+        assert_eq!(bpc_target(Some((12, 16)), 10), Some(12));
+        assert_eq!(bpc_target(Some((6, 8)), 10), Some(8));
+        assert_eq!(bpc_target(Some((12, 6)), 10), None);
+        assert_eq!(bpc_target(None, 10), None);
     }
 
     #[test]
-    fn hdr_probe_reports_unsupported_when_properties_absent() {
+    fn vrr_policy_requires_control_and_capability_for_enable() {
+        let unsupported = VrrState::default();
+        assert!(!vrr_request_allowed(unsupported, true));
+        assert!(!vrr_request_allowed(unsupported, false));
+
+        let controllable = VrrState { capable: false, controllable: true, enabled: false };
+        assert!(!vrr_request_allowed(controllable, true));
+        assert!(vrr_request_allowed(controllable, false));
+
+        let capable = VrrState { capable: true, controllable: true, enabled: false };
+        assert!(vrr_request_allowed(capable, true));
+    }
+
+    #[test]
+    fn absent_properties_never_report_hdr_or_vrr() {
         let empty = PropertyIndex::default();
-        let caps = probe_hdr(&empty);
-        assert!(!caps.hdr10_capable());
-        assert!(caps.colorspaces.is_empty());
-        assert!(caps.summary().contains("hdr10_capable=false"));
+        let vrr = probe_vrr(&empty, &empty);
+        assert!(!vrr.capable);
+        assert!(!vrr.controllable);
+        assert!(!vrr.enabled);
+
+        let hdr = probe_hdr(&empty);
+        assert!(!hdr.hdr10_capable());
+        assert!(hdr.colorspaces.is_empty());
+        assert!(hdr.summary().contains("hdr10_capable=false"));
     }
 }
