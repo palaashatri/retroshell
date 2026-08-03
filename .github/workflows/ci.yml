@@ -33,6 +33,42 @@ env:
   SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
+  session-runtime-hardening:
+    name: one-shot session runtime hardening
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/program-design
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Apply guarded runtime identity fix
+        run: python3 scripts/apply-session-runtime-identity-fix.py
+
+      - name: Format and validate patch
+        run: |
+          cargo fmt --all
+          git diff --check
+          test -n "$(git status --porcelain -- crates/slopos-session/src/main.rs)"
+          git diff --exit-code -- Cargo.toml Cargo.lock
+
+      - name: Commit runtime identity fix
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add crates/slopos-session/src/main.rs
+          git rm scripts/apply-session-runtime-identity-fix.py
+          git commit -m "fix(session): pin owned runtime directory identity"
+          git fetch origin docs/program-design
+          git rebase origin/docs/program-design
+          git push origin HEAD:docs/program-design
+
   lockfile:
     name: lockfile consistency
     runs-on: ubuntu-latest
