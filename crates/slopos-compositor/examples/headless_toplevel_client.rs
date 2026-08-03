@@ -3,14 +3,15 @@
 
 //! Real Wayland protocol client used by the compositor headless runtime gate.
 //!
-//! It verifies, without attaching a render buffer:
+//! Without attaching a render buffer it verifies:
 //! - xdg-toplevel initial configure/ack;
+//! - maximize, fullscreen and normal restore configure state;
 //! - xdg-popup initial configure/ack;
 //! - xdg-popup reposition acknowledgement and reconfigure;
 //! - orderly role destruction.
 //!
-//! This is protocol/lifecycle evidence only. It does not claim rendering,
-//! pointer grabs, input delivery, DRM/KMS, HDR, VRR, or hardware support.
+//! This is protocol and state-machine evidence only. It does not claim
+//! rendering, pointer grabs, input delivery, DRM/KMS, HDR, VRR or hardware.
 
 use std::error::Error;
 
@@ -27,9 +28,25 @@ enum SurfaceRole {
     Popup,
 }
 
+#[derive(Clone, Debug, Default)]
+struct ToplevelConfigure {
+    width: i32,
+    height: i32,
+    states: Vec<u32>,
+}
+
+impl ToplevelConfigure {
+    fn contains(&self, state: xdg_toplevel::State) -> bool {
+        self.states.contains(&(state as u32))
+    }
+}
+
 #[derive(Default)]
 struct State {
-    toplevel_configured: bool,
+    toplevel_surface_configure_count: u32,
+    toplevel_configure_count: u32,
+    last_toplevel_configure: Option<ToplevelConfigure>,
+    malformed_toplevel_states: bool,
     popup_surface_configured: bool,
     popup_geometry: Option<(i32, i32, i32, i32)>,
     popup_done: bool,
@@ -47,7 +64,6 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
         _connection: &Connection,
         _queue_handle: &QueueHandle<Self>,
     ) {
-        // GlobalList owns registry bookkeeping. No application event is needed.
     }
 }
 
@@ -82,7 +98,10 @@ impl Dispatch<xdg_surface::XdgSurface, SurfaceRole> for State {
         if let xdg_surface::Event::Configure { serial } = event {
             surface.ack_configure(serial);
             match role {
-                SurfaceRole::Toplevel => state.toplevel_configured = true,
+                SurfaceRole::Toplevel => {
+                    state.toplevel_surface_configure_count =
+                        state.toplevel_surface_configure_count.saturating_add(1);
+                }
                 SurfaceRole::Popup => state.popup_surface_configured = true,
             }
         }
@@ -98,8 +117,30 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
         _connection: &Connection,
         _queue_handle: &QueueHandle<Self>,
     ) {
-        if matches!(event, xdg_toplevel::Event::Close) {
-            state.close_requested = true;
+        match event {
+            xdg_toplevel::Event::Configure {
+                width,
+                height,
+                states,
+            } => {
+                if states.len() % 4 != 0 {
+                    state.malformed_toplevel_states = true;
+                    return;
+                }
+                let states = states
+                    .chunks_exact(4)
+                    .map(|bytes| u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+                    .collect();
+                state.last_toplevel_configure = Some(ToplevelConfigure {
+                    width,
+                    height,
+                    states,
+                });
+                state.toplevel_configure_count =
+                    state.toplevel_configure_count.saturating_add(1);
+            }
+            xdg_toplevel::Event::Close => state.close_requested = true,
+            _ => {}
         }
     }
 }
@@ -139,6 +180,9 @@ fn dispatch_until(
     failure: &'static str,
 ) -> Result<(), Box<dyn Error>> {
     while !predicate(state) {
+        if state.malformed_toplevel_states {
+            return Err(format!("{failure}: malformed xdg_toplevel state array").into());
+        }
         if state.close_requested {
             return Err(format!("{failure}: compositor closed the parent toplevel").into());
         }
@@ -150,9 +194,29 @@ fn dispatch_until(
     Ok(())
 }
 
+fn wait_for_toplevel_transition(
+    event_queue: &mut wayland_client::EventQueue<State>,
+    state: &mut State,
+    previous_toplevel_count: u32,
+    previous_surface_count: u32,
+    failure: &'static str,
+) -> Result<ToplevelConfigure, Box<dyn Error>> {
+    dispatch_until(
+        event_queue,
+        state,
+        |state| {
+            state.toplevel_configure_count > previous_toplevel_count
+                && state.toplevel_surface_configure_count > previous_surface_count
+        },
+        failure,
+    )?;
+    state
+        .last_toplevel_configure
+        .clone()
+        .ok_or_else(|| format!("{failure}: xdg_surface configure had no toplevel payload").into())
+}
+
 fn configure_positioner(positioner: &xdg_positioner::XdgPositioner, offset: i32) {
-    // size and anchor_rect are the mandatory positioner fields. Avoid relying on
-    // optional anchor/gravity policy in this lifecycle smoke test.
     positioner.set_size(180, 96);
     positioner.set_anchor_rect(12, 12, 240, 32);
     positioner.set_offset(offset, offset);
@@ -180,25 +244,100 @@ fn main() -> Result<(), Box<dyn Error>> {
     let toplevel = parent_xdg_surface.get_toplevel(&queue_handle, ());
     toplevel.set_title("SLOPOS compositor protocol smoke".to_owned());
     toplevel.set_app_id("io.github.palaashatri.slopos.compositor-smoke".to_owned());
-
-    // A newly created xdg_surface must commit without a buffer before the
-    // compositor sends the initial configure.
     parent_wl_surface.commit();
 
     let mut state = State::default();
-    dispatch_until(
+    let initial = wait_for_toplevel_transition(
         &mut event_queue,
         &mut state,
-        |state| state.toplevel_configured,
-        "toplevel configure failed",
+        0,
+        0,
+        "initial toplevel configure failed",
     )?;
+    if initial.width <= 0 || initial.height <= 0 {
+        return Err(format!("initial toplevel size was invalid: {initial:?}").into());
+    }
+    let normal_size = (initial.width, initial.height);
     parent_wl_surface.commit();
     connection.flush()?;
 
     println!(
-        "SLOPOS_XDG_TOPLEVEL_CONFIGURED id={} version={}",
+        "SLOPOS_XDG_TOPLEVEL_CONFIGURED id={} version={} size={}x{}",
         toplevel.id().protocol_id(),
-        toplevel.version()
+        toplevel.version(),
+        initial.width,
+        initial.height
+    );
+
+    let before_toplevel = state.toplevel_configure_count;
+    let before_surface = state.toplevel_surface_configure_count;
+    toplevel.set_maximized();
+    connection.flush()?;
+    let maximized = wait_for_toplevel_transition(
+        &mut event_queue,
+        &mut state,
+        before_toplevel,
+        before_surface,
+        "maximize configure failed",
+    )?;
+    if !maximized.contains(xdg_toplevel::State::Maximized)
+        || maximized.contains(xdg_toplevel::State::Fullscreen)
+        || maximized.width <= 0
+        || maximized.height <= 0
+    {
+        return Err(format!("invalid maximized configure: {maximized:?}").into());
+    }
+    parent_wl_surface.commit();
+    println!(
+        "SLOPOS_XDG_TOPLEVEL_MAXIMIZED size={}x{}",
+        maximized.width, maximized.height
+    );
+
+    let before_toplevel = state.toplevel_configure_count;
+    let before_surface = state.toplevel_surface_configure_count;
+    toplevel.set_fullscreen(None);
+    connection.flush()?;
+    let fullscreen = wait_for_toplevel_transition(
+        &mut event_queue,
+        &mut state,
+        before_toplevel,
+        before_surface,
+        "fullscreen configure failed",
+    )?;
+    if !fullscreen.contains(xdg_toplevel::State::Fullscreen)
+        || fullscreen.contains(xdg_toplevel::State::Maximized)
+        || fullscreen.width <= 0
+        || fullscreen.height <= 0
+    {
+        return Err(format!("invalid fullscreen configure: {fullscreen:?}").into());
+    }
+    parent_wl_surface.commit();
+    println!(
+        "SLOPOS_XDG_TOPLEVEL_FULLSCREEN size={}x{}",
+        fullscreen.width, fullscreen.height
+    );
+
+    let before_toplevel = state.toplevel_configure_count;
+    let before_surface = state.toplevel_surface_configure_count;
+    toplevel.unset_fullscreen();
+    connection.flush()?;
+    let restored = wait_for_toplevel_transition(
+        &mut event_queue,
+        &mut state,
+        before_toplevel,
+        before_surface,
+        "normal restore configure failed",
+    )?;
+    if restored.contains(xdg_toplevel::State::Fullscreen)
+        || restored.contains(xdg_toplevel::State::Maximized)
+        || (restored.width, restored.height) != normal_size
+    {
+        return Err(format!("invalid restored configure: {restored:?}").into());
+    }
+    parent_wl_surface.commit();
+    println!(
+        "SLOPOS_XDG_TOPLEVEL_RESTORED size={}x{}",
+        restored.width, restored.height
     );
 
     let positioner = wm_base.create_positioner(&queue_handle, ());
@@ -266,10 +405,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
         repositioner.destroy();
     } else {
-        println!(
-            "SLOPOS_XDG_POPUP_REPOSITION_SKIPPED version={}",
+        return Err(format!(
+            "server advertised xdg_popup version {}, below reposition protocol version 3",
             popup.version()
-        );
+        )
+        .into());
     }
 
     popup.destroy();
