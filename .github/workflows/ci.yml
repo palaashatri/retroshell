@@ -34,6 +34,37 @@ env:
   SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
+  lockfile:
+    name: lockfile consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Confirm exact source revision
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Regenerate workspace lockfile
+        run: |
+          cargo generate-lockfile
+          mkdir -p artifacts/qa/generated-lockfile
+          cp Cargo.lock artifacts/qa/generated-lockfile/Cargo.lock
+
+      - name: Upload regenerated lockfile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-lockfile-${{ env.SOURCE_SHA }}
+          path: artifacts/qa/generated-lockfile/Cargo.lock
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Verify committed lockfile is current
+        run: git diff --exit-code -- Cargo.lock
+
   linux:
     name: build + test (linux)
     runs-on: ubuntu-latest
