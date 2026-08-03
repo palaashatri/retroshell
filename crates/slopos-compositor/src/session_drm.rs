@@ -106,6 +106,7 @@ use smithay::{
 
 use crate::frame_timing::{FrameScheduler, RefreshRate};
 use crate::hdr::HdrCapabilities;
+use crate::work_area::{compute_exclusive_work_area, ExclusiveZoneReservation};
 use crate::{
     assign_new_window_to_active, clamp_window_to_work_area, clear_interactive_grab_state,
     detect_output_scale_from_env, discover_drm_nodes, drm_presentation_pipeline,
@@ -1523,36 +1524,53 @@ impl DrmSessionState {
 
     /// Drop dead xdg windows and keep `workspace_state` in sync.
     fn prune_dead_windows(&mut self) {
-        let stale_grab = self.interactive_grab.as_ref().is_some_and(|grab| {
-            !self
-                .windows
-                .iter()
-                .any(|window| window.window_id == grab.window_id && window.toplevel.alive())
-        });
-        if stale_grab {
+        let dead_ids: std::collections::HashSet<String> = self
+            .windows
+            .iter()
+            .filter(|window| !window.toplevel.alive())
+            .map(|window| window.window_id.clone())
+            .collect();
+        if dead_ids.is_empty() {
+            return;
+        }
+
+        if self
+            .interactive_grab
+            .as_ref()
+            .is_some_and(|grab| dead_ids.contains(&grab.window_id))
+        {
             self.cancel_interactive_grab();
         }
-        let before: Vec<String> = self.windows.iter().map(|w| w.window_id.clone()).collect();
-        self.windows.retain(|w| w.toplevel.alive());
-        let alive: std::collections::HashSet<String> =
-            self.windows.iter().map(|w| w.window_id.clone()).collect();
-        let mut removed = false;
-        for id in before {
-            if !alive.contains(&id) {
-                self.workspace_state.remove_window(&id);
-                removed = true;
+        if self
+            .last_pointer_press
+            .as_ref()
+            .is_some_and(|press| dead_ids.contains(&press.window_id))
+        {
+            self.last_pointer_press = None;
+            self.left_button_down = false;
+        }
+
+        let mut retained = Vec::with_capacity(self.windows.len().saturating_sub(dead_ids.len()));
+        for window in self.windows.drain(..) {
+            if dead_ids.contains(&window.window_id) {
+                self.workspace_state.remove_window(&window.window_id);
+                window.foreign.send_closed();
+            } else {
+                retained.push(window);
             }
         }
+        self.windows = retained;
+
         if self
             .last_minimized_window_id
             .as_ref()
-            .is_some_and(|id| !alive.contains(id))
+            .is_some_and(|id| dead_ids.contains(id))
         {
             self.last_minimized_window_id = None;
         }
-        if removed {
-            self.request_full_redraw();
-        }
+
+        self.request_full_redraw();
+        self.apply_focus_after_workspace_switch();
     }
 
     /// Window ids that should present / list on the active workspace (bottom→top order).
@@ -1951,29 +1969,21 @@ impl DrmSessionState {
     }
 
     fn work_area(&self) -> WindowGeometry {
-        let output = self.output_area();
-        let top = self
-            .layer_surfaces
-            .iter()
-            .filter(|layer| layer.layer == Layer::Top)
-            .map(|layer| layer.exclusive_zone.max(0))
-            .max()
-            .unwrap_or(0)
-            .min(output.height);
-        let bottom = self
-            .layer_surfaces
-            .iter()
-            .filter(|layer| layer.layer == Layer::Bottom)
-            .map(|layer| layer.exclusive_zone.max(0))
-            .max()
-            .unwrap_or(0)
-            .min(output.height.saturating_sub(top));
-        WindowGeometry::new(
-            0,
-            top,
-            output.width,
-            output.height.saturating_sub(top + bottom).max(1),
-        )
+        let reservations = self.layer_surfaces.iter().map(|layer| {
+            let (_, anchor, margins, _) = layer_surface_request(&layer.surface);
+            ExclusiveZoneReservation {
+                exclusive_zone: layer.exclusive_zone,
+                anchor_top: anchor.contains(Anchor::TOP),
+                anchor_bottom: anchor.contains(Anchor::BOTTOM),
+                anchor_left: anchor.contains(Anchor::LEFT),
+                anchor_right: anchor.contains(Anchor::RIGHT),
+                margin_top: margins.top,
+                margin_bottom: margins.bottom,
+                margin_left: margins.left,
+                margin_right: margins.right,
+            }
+        });
+        compute_exclusive_work_area(self.output_area(), reservations)
     }
 
     /// Keep normal windows inside the current compositor-owned work area after
@@ -2795,16 +2805,19 @@ impl XdgShellHandler for DrmSessionState {
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
-        if let Some(idx) = self
+        let Some(idx) = self
             .windows
             .iter()
-            .position(|w| w.toplevel.wl_surface() == surface.wl_surface())
-        {
-            self.last_minimized_window_id = Some(self.windows[idx].window_id.clone());
-            self.windows[idx].minimized = true;
-            self.request_full_redraw();
-            self.apply_focus_after_workspace_switch();
-        }
+            .position(|window| window.toplevel.wl_surface() == surface.wl_surface())
+        else {
+            return;
+        };
+        let window_id = self.windows[idx].window_id.clone();
+        self.set_window_presentation_state(&surface, WindowPresentationState::Minimized);
+        self.windows[idx].minimized = true;
+        self.last_minimized_window_id = Some(window_id);
+        self.request_full_redraw();
+        self.apply_focus_after_workspace_switch();
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {

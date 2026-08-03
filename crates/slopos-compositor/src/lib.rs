@@ -6,6 +6,7 @@ pub mod hdr;
 pub mod perf_budget;
 pub mod spaces;
 pub mod window_state;
+pub mod work_area;
 pub mod workspace_focus;
 
 /// Register the Wayland server's internal poll fd with the compositor event loop.

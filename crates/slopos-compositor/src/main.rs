@@ -35,6 +35,7 @@ mod linux {
     use slopos_bus::{SessionControlListener, SessionControlRequest, WindowPresentationAction};
     use slopos_compositor::frame_timing::{FrameScheduler, RefreshRate};
     use slopos_compositor::hdr::HdrCapabilities;
+    use slopos_compositor::work_area::{compute_exclusive_work_area, ExclusiveZoneReservation};
     use slopos_compositor::{
         accumulate_damage_for_window_move, accumulate_damage_rect, apply_scale_to_output_config,
         assign_new_window_to_active, cascade_position, clamp_window_to_work_area,
@@ -900,30 +901,54 @@ mod linux {
 
         /// Remove dead windows (client disconnected / surface destroyed).
         fn prune_dead_windows(&mut self) {
-            let stale_grab = self.interactive_grab.as_ref().is_some_and(|grab| {
-                !self
-                    .windows
-                    .iter()
-                    .any(|window| window.window_id == grab.window_id && window.toplevel.alive())
-            });
-            if stale_grab {
+            let dead_ids: HashSet<String> = self
+                .windows
+                .iter()
+                .filter(|window| !window.toplevel.alive())
+                .map(|window| window.window_id.clone())
+                .collect();
+            if dead_ids.is_empty() {
+                return;
+            }
+
+            if self
+                .interactive_grab
+                .as_ref()
+                .is_some_and(|grab| dead_ids.contains(&grab.window_id))
+            {
                 self.cancel_interactive_grab();
             }
-            let before: Vec<String> = self.windows.iter().map(|w| w.window_id.clone()).collect();
-            self.windows.retain(|w| w.toplevel.alive());
-            let alive: HashSet<&str> = self.windows.iter().map(|w| w.window_id.as_str()).collect();
-            for id in before {
-                if !alive.contains(id.as_str()) {
-                    self.workspace_state.remove_window(&id);
+            if self
+                .last_pointer_press
+                .as_ref()
+                .is_some_and(|press| dead_ids.contains(&press.window_id))
+            {
+                self.last_pointer_press = None;
+                self.left_button_down = false;
+            }
+
+            let mut retained =
+                Vec::with_capacity(self.windows.len().saturating_sub(dead_ids.len()));
+            for window in self.windows.drain(..) {
+                if dead_ids.contains(&window.window_id) {
+                    self.workspace_state.remove_window(&window.window_id);
+                    window.foreign.send_closed();
+                } else {
+                    retained.push(window);
                 }
             }
+            self.windows = retained;
+
             if self
                 .last_minimized_window_id
                 .as_ref()
-                .is_some_and(|id| !alive.contains(id.as_str()))
+                .is_some_and(|id| dead_ids.contains(id))
             {
                 self.last_minimized_window_id = None;
             }
+
+            self.request_full_redraw();
+            self.apply_focus_after_workspace_switch();
         }
 
         /// After Super+workspace switch: unfocus windows now hidden; focus topmost
@@ -1246,29 +1271,21 @@ mod linux {
         }
 
         fn work_area(&self) -> WindowGeometry {
-            let output = self.output_area();
-            let top = self
-                .layer_surfaces
-                .iter()
-                .filter(|layer| layer.layer == Layer::Top)
-                .map(|layer| layer.exclusive_zone.max(0))
-                .max()
-                .unwrap_or(0)
-                .min(output.height);
-            let bottom = self
-                .layer_surfaces
-                .iter()
-                .filter(|layer| layer.layer == Layer::Bottom)
-                .map(|layer| layer.exclusive_zone.max(0))
-                .max()
-                .unwrap_or(0)
-                .min(output.height.saturating_sub(top));
-            WindowGeometry::new(
-                0,
-                top,
-                output.width,
-                output.height.saturating_sub(top + bottom).max(1),
-            )
+            let reservations = self.layer_surfaces.iter().map(|layer| {
+                let (_, anchor, margins, _) = layer_surface_request(&layer.surface);
+                ExclusiveZoneReservation {
+                    exclusive_zone: layer.exclusive_zone,
+                    anchor_top: anchor.contains(Anchor::TOP),
+                    anchor_bottom: anchor.contains(Anchor::BOTTOM),
+                    anchor_left: anchor.contains(Anchor::LEFT),
+                    anchor_right: anchor.contains(Anchor::RIGHT),
+                    margin_top: margins.top,
+                    margin_bottom: margins.bottom,
+                    margin_left: margins.left,
+                    margin_right: margins.right,
+                }
+            });
+            compute_exclusive_work_area(self.output_area(), reservations)
         }
 
         /// Keep normal windows inside the current compositor-owned work area
@@ -2357,16 +2374,19 @@ mod linux {
         }
 
         fn minimize_request(&mut self, surface: ToplevelSurface) {
-            if let Some(idx) = self
+            let Some(idx) = self
                 .windows
                 .iter()
-                .position(|w| w.toplevel.wl_surface() == surface.wl_surface())
-            {
-                self.last_minimized_window_id = Some(self.windows[idx].window_id.clone());
-                self.windows[idx].minimized = true;
-                self.request_full_redraw();
-                self.apply_focus_after_workspace_switch();
-            }
+                .position(|window| window.toplevel.wl_surface() == surface.wl_surface())
+            else {
+                return;
+            };
+            let window_id = self.windows[idx].window_id.clone();
+            self.set_window_presentation_state(&surface, WindowPresentationState::Minimized);
+            self.windows[idx].minimized = true;
+            self.last_minimized_window_id = Some(window_id);
+            self.request_full_redraw();
+            self.apply_focus_after_workspace_switch();
         }
 
         fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
