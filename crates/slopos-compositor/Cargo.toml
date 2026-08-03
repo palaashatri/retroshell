@@ -41,3 +41,7 @@ input = { version = "0.9", features = ["libinput_1_19", "udev"] }
 # QA screenshot: offscreen GL readback → PNG on SIGUSR1.
 image = { workspace = true }
 libc = "0.2"
+
+[dev-dependencies]
+wayland-client = { workspace = true }
+wayland-protocols = { workspace = true, features = ["client"] }
