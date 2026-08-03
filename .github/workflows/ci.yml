@@ -81,7 +81,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config \
+            build-essential pkg-config wayland-utils \
             libwayland-dev libwayland-egl-backend-dev \
             libvulkan-dev libegl1-mesa-dev libgles2-mesa-dev \
             libxkbcommon-dev libdbus-1-dev \
@@ -99,15 +99,20 @@ jobs:
         with:
           shared-key: compositor-contract
 
-      - name: Run exact-commit compositor gate
+      - name: Run exact-commit compositor source/build gate
         run: bash scripts/verify-compositor-completion.sh
+
+      - name: Run SLOPOS headless Wayland runtime gate
+        run: bash scripts/verify-compositor-headless-runtime.sh
 
       - name: Upload compositor evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: compositor-contract-${{ github.sha }}
-          path: artifacts/qa/compositor-contract/
+          path: |
+            artifacts/qa/compositor-contract/
+            artifacts/qa/compositor-headless-runtime/
           if-no-files-found: error
           retention-days: 30
 
