@@ -136,6 +136,26 @@ fn keycode_from_linux(code: u32) -> Option<KeyCode> {
     })
 }
 
+/// Convert a `wl_keyboard.key` value to the Linux evdev code used by the map
+/// above.  The Wayland wire value is the XKB keycode with the conventional
+/// eight-code offset removed (Smithay serializes it as `raw_code - 8`).
+fn keycode_from_wayland(code: u32) -> Option<KeyCode> {
+    code.checked_add(8).and_then(keycode_from_linux)
+}
+
+/// Decode a Wayland key event into the kit key and its press/release state.
+/// Keeping this normalization together ensures releases use the same physical
+/// key as presses instead of reinterpreting the wire code independently.
+fn key_event_info_from_wayland(
+    code: u32,
+    state: &WEnum<wl_keyboard::KeyState>,
+) -> Option<(KeyCode, bool)> {
+    Some((
+        keycode_from_wayland(code)?,
+        matches!(state, WEnum::Value(wl_keyboard::KeyState::Pressed)),
+    ))
+}
+
 /// Printable char for lock-password / text fields (US QWERTY, no full xkb).
 fn char_from_keycode(code: KeyCode, shift: bool) -> Option<char> {
     let ch = match code {
@@ -934,10 +954,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for LayerDesktopState {
                 let Some(runtime) = state.runtime.as_mut() else {
                     return;
                 };
-                let Some(code) = keycode_from_linux(key) else {
+                let Some((code, pressed)) = key_event_info_from_wayland(key, &key_state) else {
                     return;
                 };
-                let pressed = matches!(key_state, WEnum::Value(wl_keyboard::KeyState::Pressed));
                 let mods = state.modifiers;
                 let ev = if pressed {
                     Event::KeyDown {
@@ -1029,5 +1048,49 @@ impl Dispatch<ZwlrLayerSurfaceV1, ChromeSurfaceKind> for LayerDesktopState {
             }
             surface.ack_configure(serial);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wayland_key_uses_xkb_offset_before_evdev_lookup() {
+        // Smithay emits KEY_A's evdev code (30) as the wire value 22.
+        assert_eq!(keycode_from_wayland(22), Some(KeyCode::A));
+        assert_eq!(keycode_from_wayland(23), Some(KeyCode::S));
+        assert_eq!(keycode_from_wayland(30), Some(KeyCode::L));
+    }
+
+    #[test]
+    fn wayland_key_mapping_rejects_overflow() {
+        assert_eq!(keycode_from_wayland(u32::MAX), None);
+    }
+
+    #[test]
+    fn wayland_key_release_uses_the_same_normalized_key() {
+        assert_eq!(
+            key_event_info_from_wayland(22, &WEnum::Value(wl_keyboard::KeyState::Pressed)),
+            Some((KeyCode::A, true)),
+        );
+        assert_eq!(
+            key_event_info_from_wayland(22, &WEnum::Value(wl_keyboard::KeyState::Released)),
+            Some((KeyCode::A, false)),
+        );
+    }
+
+    #[test]
+    fn xkb_modifier_mask_maps_standard_depressed_bits() {
+        let modifiers = modifiers_from_xkb_mask((1 << 0) | (1 << 2) | (1 << 3) | (1 << 6));
+        assert_eq!(
+            modifiers,
+            slopos_kit::event::Modifiers {
+                shift: true,
+                control: true,
+                alt: true,
+                meta: true,
+            }
+        );
     }
 }

@@ -26,6 +26,12 @@ pub enum IconViewLayoutMode {
     Desktop,
 }
 
+/// Logical width of a desktop icon hit/nameplate cell.
+///
+/// Desktop labels are painted inside this same cell, so the visible
+/// nameplate and its pointer hit target cannot diverge at the right edge.
+pub const DESKTOP_ITEM_WIDTH: f32 = 104.0;
+
 /// A grid or desktop-style icon grid view widget.
 /// Supports both file list grids (like Finder) and the standard desktop layout.
 pub struct IconView {
@@ -93,7 +99,8 @@ impl Widget for IconView {
 
         let icon_size = self.icon_size;
         if self.layout_mode == IconViewLayoutMode::Desktop {
-            let right_x = r.x + size.width - icon_size - 28.0;
+            let item_width = DESKTOP_ITEM_WIDTH.max(icon_size);
+            let right_x = r.x + size.width - item_width - 28.0;
             let mut app_y = r.y + 28.0;
             let trash_y = r.y + size.height - icon_size - 34.0;
             for item in &mut self.items {
@@ -105,7 +112,7 @@ impl Widget for IconView {
                         y
                     }
                 };
-                item.rect = Rect::new(right_x, y, icon_size, 52.0);
+                item.rect = Rect::new(right_x, y, item_width, 52.0);
             }
         } else {
             let cell_w = 84.0;
@@ -222,10 +229,15 @@ mod tests {
 
         icons.layout(LayoutConstraint::tight(Size::new(1280.0, 776.0)));
 
-        let expected_x = 1280.0 - icons.icon_size - 28.0;
+        let expected_x = 1280.0 - DESKTOP_ITEM_WIDTH - 28.0;
         for item in &icons.items {
             assert_eq!(item.rect.x, expected_x);
-            assert!(item.rect.x + item.rect.width <= icons.rect().x + icons.rect().width);
+            assert_eq!(item.rect.width, DESKTOP_ITEM_WIDTH);
+            assert!(item.rect.x >= icons.rect().x);
+            assert_eq!(
+                item.rect.x + item.rect.width,
+                icons.rect().x + icons.rect().width - 28.0
+            );
             assert!(item.rect.y >= icons.rect().y);
             assert!(item.rect.y + item.rect.height <= icons.rect().y + icons.rect().height);
         }
@@ -245,5 +257,37 @@ mod tests {
             .find(|item| item.label == "TextEdit")
             .expect("textedit icon exists");
         assert!(textedit.rect.y < trash.rect.y);
+    }
+
+    #[test]
+    fn desktop_nameplate_edges_share_the_icon_hit_target() {
+        let mut icons = IconView::new();
+        icons.layout_mode = IconViewLayoutMode::Desktop;
+        icons.icon_size = 56.0;
+        icons.items = vec![desktop_item("Applications")];
+        icons.set_rect(Rect::new(0.0, 24.0, 1280.0, 776.0));
+        icons.layout(LayoutConstraint::tight(Size::new(1280.0, 776.0)));
+
+        let rect = icons.items[0].rect;
+        for point in [
+            crate::Point::new(rect.x + 1.0, rect.y + 40.0),
+            crate::Point::new(rect.x + rect.width - 1.0, rect.y + 40.0),
+        ] {
+            let result = icons.handle_event(&Event::MouseDown {
+                button: crate::event::MouseButton::Left,
+                point,
+                modifiers: crate::event::Modifiers::NONE,
+            });
+            assert!(matches!(result, EventResult::Handled));
+            assert!(icons.items[0].selected);
+        }
+
+        let result = icons.handle_event(&Event::DoubleClick {
+            button: crate::event::MouseButton::Left,
+            point: crate::Point::new(rect.x + rect.width - 1.0, rect.y + 40.0),
+            modifiers: crate::event::Modifiers::NONE,
+        });
+        assert!(matches!(result, EventResult::Handled));
+        assert_eq!(icons.take_activated(), Some(0));
     }
 }

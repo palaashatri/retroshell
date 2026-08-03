@@ -40,9 +40,9 @@ mod linux {
         assign_new_window_to_active, cascade_position, clamp_window_to_work_area,
         clear_interactive_grab_state, detect_output_scale_from_env,
         focus_window_after_workspace_switch, geometry_for_interactive_grab, move_to_top,
-        next_cascade_offset, output_scale_summary, pointer_grab_request_is_valid,
+        next_cascade_offset, output_scale_summary, pointer_grab_request_is_valid_for_window,
         prefer_full_redraw, register_wayland_display_source, resolve_laid_out_outputs_from_env,
-        selection_bytes_for_mime_with_text_fallback, session_mode_note,
+        selection_bytes_for_mime_with_text_fallback, session_mode_note, surface_tree_root,
         text_input_capability_from_env, text_input_capability_summary, total_output_size,
         transition_presentation_state, window_paint_source, CompositorBackendKind, DamageRect,
         DisplayPolicy, InteractiveGrab, InteractiveGrabKind, LaidOutOutput, OutputScale,
@@ -222,7 +222,8 @@ mod linux {
     #[derive(Clone)]
     struct PointerPress {
         serial: Serial,
-        surface: WlSurface,
+        /// Mapped toplevel that owns the hit toplevel/popup surface tree.
+        window_id: String,
     }
 
     struct InteractivePointerGrab {
@@ -473,6 +474,18 @@ mod linux {
         })
     }
 
+    /// Convert a surface-tree hit origin (relative to the layer surface) into
+    /// compositor-space logical coordinates.
+    pub(super) fn layer_surface_hit_origin(
+        layer_origin: Point<i32, Logical>,
+        surface_origin: Point<i32, Logical>,
+    ) -> Point<f64, Logical> {
+        Point::from((
+            layer_origin.x as f64 + surface_origin.x as f64,
+            layer_origin.y as f64 + surface_origin.y as f64,
+        ))
+    }
+
     impl MappedWindow {
         fn geometry(&self) -> WindowGeometry {
             WindowGeometry::new(self.position.x, self.position.y, self.size.w, self.size.h)
@@ -645,14 +658,16 @@ mod linux {
             pt: Point<f64, Logical>,
         ) -> Option<(WlSurface, Point<f64, Logical>)> {
             let local = Point::from((pt.x - layer.geo.loc.x as f64, pt.y - layer.geo.loc.y as f64));
-            let (surface, origin) = layer.surface.surface_under(local, WindowSurfaceType::ALL)?;
-            Some((
-                surface,
-                Point::from((
-                    layer.geo.loc.x as f64 + origin.x as f64,
-                    layer.geo.loc.y as f64 + origin.y as f64,
-                )),
-            ))
+            // `LayerSurface` here is the protocol wrapper from
+            // `smithay::wayland::shell::wlr_layer`; its tree hit-test helper
+            // lives in `desktop::utils`, unlike the desktop-layer wrapper.
+            let (surface, origin) = under_from_surface_tree(
+                layer.surface.wl_surface(),
+                local,
+                (0, 0),
+                WindowSurfaceType::ALL,
+            )?;
+            Some((surface, layer_surface_hit_origin(layer.geo.loc, origin)))
         }
 
         fn surface_under(
@@ -706,20 +721,28 @@ mod linux {
             None
         }
 
-        fn activated_window_for_surface(&self, surface: &WlSurface) -> Option<String> {
-            if let Some(window) = self
+        /// Resolve a surface to its mapped toplevel owner. Subsurfaces are
+        /// normalized to their role-bearing tree root; popup roots are then
+        /// accepted only when tracked under a known mapped toplevel.
+        fn mapped_window_index_for_surface(&self, surface: &WlSurface) -> Option<usize> {
+            let tree_root = surface_tree_root(surface);
+            if let Some(index) = self
                 .windows
                 .iter()
-                .find(|w| w.toplevel.wl_surface() == surface)
+                .position(|window| window.toplevel.wl_surface() == &tree_root)
             {
-                return Some(window.window_id.clone());
+                return Some(index);
             }
-            let popup = self.popup_manager.find_popup(surface)?;
+            let popup = self.popup_manager.find_popup(&tree_root)?;
             let root = find_popup_root_surface(&popup).ok()?;
             self.windows
                 .iter()
-                .find(|w| w.toplevel.wl_surface() == &root)
-                .map(|w| w.window_id.clone())
+                .position(|window| window.toplevel.wl_surface() == &root)
+        }
+
+        fn activated_window_for_surface(&self, surface: &WlSurface) -> Option<String> {
+            self.mapped_window_index_for_surface(surface)
+                .map(|index| self.windows[index].window_id.clone())
         }
 
         /// Keep xdg_toplevel.Activated synchronized with compositor focus.
@@ -987,30 +1010,33 @@ mod linux {
                 tracing::debug!(?kind, "rejecting interactive request for an unknown window");
                 return;
             };
-            let same_surface = self
-                .last_pointer_press
-                .as_ref()
-                .is_some_and(|press| press.surface == *requested_surface);
             let pressed_serial = self
                 .last_pointer_press
                 .as_ref()
                 .map(|press| u32::from(press.serial));
+            let pressed_window_id = self
+                .last_pointer_press
+                .as_ref()
+                .map(|press| press.window_id.as_str());
             let same_client = match (requested_surface.client(), seat.client()) {
                 (Some(surface_client), Some(seat_client)) => surface_client == seat_client,
                 _ => false,
             };
-            let authorized = pointer_grab_request_is_valid(
+            let authorized = pointer_grab_request_is_valid_for_window(
                 u32::from(serial),
                 pressed_serial,
-                same_surface,
+                &window_id,
+                pressed_window_id,
                 self.left_button_down,
                 self.seat.owns(seat),
-            ) && same_client;
+                same_client,
+            );
             if !authorized {
                 tracing::debug!(
                     request_serial = u32::from(serial),
                     ?kind,
-                    same_surface,
+                    pressed_window_id,
+                    requested_window_id = %window_id,
                     same_client,
                     "rejecting unauthorized xdg move/resize request"
                 );
@@ -2353,11 +2379,12 @@ mod linux {
             });
             if destroys_grab {
                 self.cancel_interactive_grab();
-            } else if self
-                .last_pointer_press
-                .as_ref()
-                .is_some_and(|press| press.surface == *destroyed_surface)
-            {
+            } else if self.last_pointer_press.as_ref().is_some_and(|press| {
+                self.windows.iter().any(|window| {
+                    window.window_id == press.window_id
+                        && window.toplevel.wl_surface() == destroyed_surface
+                })
+            }) {
                 self.last_pointer_press = None;
                 self.left_button_down = false;
             }
@@ -2898,30 +2925,24 @@ mod linux {
         if btn_state == ButtonState::Pressed {
             let pos = state.pointer_pos;
             let hit = state.surface_under(pos);
+            let mapped_window_index = hit
+                .as_ref()
+                .and_then(|(surface, _)| state.mapped_window_index_for_surface(surface));
             if primary_button {
-                state.last_pointer_press = hit.as_ref().and_then(|(surface, _)| {
-                    state
-                        .windows
-                        .iter()
-                        .any(|window| window.toplevel.wl_surface() == surface)
-                        .then(|| PointerPress {
-                            serial,
-                            surface: surface.clone(),
-                        })
+                state.last_pointer_press = mapped_window_index.map(|index| PointerPress {
+                    serial,
+                    window_id: state.windows[index].window_id.clone(),
                 });
             }
             match hit {
-                Some((surface, _)) => {
-                    if let Some(idx) = state
-                        .windows
-                        .iter()
-                        .position(|window| window.toplevel.wl_surface() == &surface)
-                    {
+                Some((surface, _)) => match mapped_window_index {
+                    Some(idx) => {
                         state.focus_window(idx);
-                    } else {
+                    }
+                    None => {
                         state.focus_surface(Some(surface));
                     }
-                }
+                },
                 None => state.focus_surface(None),
             }
             // Retarget pointer focus so the button is delivered to the
@@ -3560,6 +3581,7 @@ mod linux {
 mod tests {
     use super::*;
     use linux::parse_bool_env;
+    use smithay::utils::Point;
 
     #[test]
     fn test_parse_bool_env() {
@@ -3602,6 +3624,14 @@ mod tests {
         assert!(linux::validate_nested_transport("nested", Some(":99")).is_ok());
         assert!(linux::validate_nested_transport("drm", None).is_ok());
         assert!(linux::validate_nested_transport("headless", None).is_ok());
+    }
+
+    #[test]
+    fn nested_layer_surface_hit_origin_is_translated_to_compositor_space() {
+        assert_eq!(
+            linux::layer_surface_hit_origin(Point::from((120, 80)), Point::from((7, 11))),
+            Point::from((127.0, 91.0)),
+        );
     }
 
     #[test]

@@ -6,6 +6,8 @@ pub enum ThemeToken {
     WindowBackground,
     WindowBorder,
     WindowTitle,
+    /// Title text used when a window is not the active/focused surface.
+    WindowTitleInactive,
     MenuBackground,
     MenuHighlight,
     MenuText,

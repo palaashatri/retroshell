@@ -110,12 +110,12 @@ use crate::{
     assign_new_window_to_active, clamp_window_to_work_area, clear_interactive_grab_state,
     detect_output_scale_from_env, discover_drm_nodes, drm_presentation_pipeline,
     focus_window_after_workspace_switch, geometry_for_interactive_grab, output_scale_summary,
-    plan_drm_modeset, pointer_grab_request_is_valid, preferred_primary_drm_node,
-    register_wayland_display_source, session_mode_summary, transition_presentation_state,
-    visible_paint_order, CompositorBackendKind, DisplayPolicy, DrmPresentationStage,
-    InteractiveGrab, InteractiveGrabKind, OutputScale, ResizeEdges, WindowGeometry,
-    WindowPresentationState, WorkspaceId, WorkspaceState, DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W,
-    DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+    plan_drm_modeset, pointer_grab_request_is_valid_for_window, preferred_primary_drm_node,
+    register_wayland_display_source, session_mode_summary, surface_tree_root,
+    transition_presentation_state, visible_paint_order, CompositorBackendKind, DisplayPolicy,
+    DrmPresentationStage, InteractiveGrab, InteractiveGrabKind, OutputScale, ResizeEdges,
+    WindowGeometry, WindowPresentationState, WorkspaceId, WorkspaceState, DEFAULT_OUTPUT_H,
+    DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
 };
 use slopos_bus::{SessionControlListener, SessionControlRequest, WindowPresentationAction};
 // Workspace cycle helpers (`cycle_workspace_*` / `activate_workspace_index`) request a
@@ -137,7 +137,8 @@ fn current_monotonic_time_millis() -> u32 {
 #[derive(Clone)]
 struct PointerPress {
     serial: Serial,
-    surface: WlSurface,
+    /// Mapped toplevel that owns the hit toplevel/popup surface tree.
+    window_id: String,
 }
 
 struct InteractivePointerGrab {
@@ -1430,6 +1431,18 @@ fn layer_surface_request(surface: &LayerSurface) -> ((i32, i32), Anchor, Margins
     })
 }
 
+/// Convert a surface-tree hit origin (relative to the layer surface) into
+/// compositor-space logical coordinates.
+fn layer_surface_hit_origin(
+    layer_origin: Point<i32, Logical>,
+    surface_origin: Point<i32, Logical>,
+) -> Point<f64, Logical> {
+    Point::from((
+        layer_origin.x as f64 + surface_origin.x as f64,
+        layer_origin.y as f64 + surface_origin.y as f64,
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Main session state
 // ---------------------------------------------------------------------------
@@ -1782,30 +1795,33 @@ impl DrmSessionState {
             tracing::debug!(?kind, "rejecting interactive request for an unknown window");
             return;
         };
-        let same_surface = self
-            .last_pointer_press
-            .as_ref()
-            .is_some_and(|press| press.surface == *requested_surface);
         let pressed_serial = self
             .last_pointer_press
             .as_ref()
             .map(|press| u32::from(press.serial));
+        let pressed_window_id = self
+            .last_pointer_press
+            .as_ref()
+            .map(|press| press.window_id.as_str());
         let same_client = match (requested_surface.client(), seat.client()) {
             (Some(surface_client), Some(seat_client)) => surface_client == seat_client,
             _ => false,
         };
-        let authorized = pointer_grab_request_is_valid(
+        let authorized = pointer_grab_request_is_valid_for_window(
             u32::from(serial),
             pressed_serial,
-            same_surface,
+            &window_id,
+            pressed_window_id,
             self.left_button_down,
             self.seat.owns(seat),
-        ) && same_client;
+            same_client,
+        );
         if !authorized {
             tracing::debug!(
                 request_serial = u32::from(serial),
                 ?kind,
-                same_surface,
+                pressed_window_id,
+                requested_window_id = %window_id,
                 same_client,
                 "rejecting unauthorized xdg move/resize request"
             );
@@ -2150,24 +2166,24 @@ impl DrmSessionState {
                 if btn_state == ButtonState::Pressed && !self.locked {
                     let pos = self.pointer_location;
                     let hit = self.surface_under(pos);
-                    let target_surface = hit.as_ref().map(|(surface, _)| surface.clone());
+                    let mapped_window_index = hit
+                        .as_ref()
+                        .and_then(|(surface, _)| self.mapped_window_index_for_surface(surface));
                     if button == 0x110 || button == 1 {
-                        self.last_pointer_press = target_surface
-                            .clone()
-                            .map(|surface| PointerPress { serial, surface });
+                        self.last_pointer_press = mapped_window_index.map(|index| PointerPress {
+                            serial,
+                            window_id: self.windows[index].window_id.clone(),
+                        });
                     }
                     match hit {
-                        Some((surface, _)) => {
-                            if let Some(idx) = self
-                                .windows
-                                .iter()
-                                .position(|window| window.toplevel.wl_surface() == &surface)
-                            {
+                        Some((surface, _)) => match mapped_window_index {
+                            Some(idx) => {
                                 self.focus_window_at_index(idx);
-                            } else {
+                            }
+                            None => {
                                 self.focus_surface(Some(surface));
                             }
-                        }
+                        },
                         None => self.focus_surface(None),
                     }
                     // Retarget pointer so the focused surface gets Enter/Motion
@@ -2210,14 +2226,18 @@ impl DrmSessionState {
             pos.x - layer.geo.loc.x as f64,
             pos.y - layer.geo.loc.y as f64,
         ));
-        let (surface, origin) = layer.surface.surface_under(local, WindowSurfaceType::ALL)?;
-        Some((
-            surface,
-            Point::from((
-                layer.geo.loc.x as f64 + origin.x as f64,
-                layer.geo.loc.y as f64 + origin.y as f64,
-            )),
-        ))
+        // `LayerSurface` here is the protocol wrapper from
+        // `smithay::wayland::shell::wlr_layer`; its tree hit-test helper lives
+        // in `desktop::utils`, unlike the desktop-layer wrapper.  Keep the
+        // query relative to the layer surface and translate the returned
+        // surface-tree origin back into compositor coordinates.
+        let (surface, origin) = under_from_surface_tree(
+            layer.surface.wl_surface(),
+            local,
+            (0, 0),
+            WindowSurfaceType::ALL,
+        )?;
+        Some((surface, layer_surface_hit_origin(layer.geo.loc, origin)))
     }
 
     fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
@@ -2264,20 +2284,28 @@ impl DrmSessionState {
         None
     }
 
-    fn activated_window_for_surface(&self, surface: &WlSurface) -> Option<String> {
-        if let Some(window) = self
+    /// Resolve a surface to its mapped toplevel owner. Subsurfaces are
+    /// normalized to their role-bearing tree root; popup roots are then
+    /// accepted only when tracked under a known mapped toplevel.
+    fn mapped_window_index_for_surface(&self, surface: &WlSurface) -> Option<usize> {
+        let tree_root = surface_tree_root(surface);
+        if let Some(index) = self
             .windows
             .iter()
-            .find(|w| w.toplevel.wl_surface() == surface)
+            .position(|window| window.toplevel.wl_surface() == &tree_root)
         {
-            return Some(window.window_id.clone());
+            return Some(index);
         }
-        let popup = self.popup_manager.find_popup(surface)?;
+        let popup = self.popup_manager.find_popup(&tree_root)?;
         let root = find_popup_root_surface(&popup).ok()?;
         self.windows
             .iter()
-            .find(|w| w.toplevel.wl_surface() == &root)
-            .map(|w| w.window_id.clone())
+            .position(|window| window.toplevel.wl_surface() == &root)
+    }
+
+    fn activated_window_for_surface(&self, surface: &WlSurface) -> Option<String> {
+        self.mapped_window_index_for_surface(surface)
+            .map(|index| self.windows[index].window_id.clone())
     }
 
     fn sync_activated_for_surface(&mut self, surface: Option<&WlSurface>) {
@@ -2789,11 +2817,12 @@ impl XdgShellHandler for DrmSessionState {
         });
         if destroys_grab {
             self.cancel_interactive_grab();
-        } else if self
-            .last_pointer_press
-            .as_ref()
-            .is_some_and(|press| press.surface == *destroyed_surface)
-        {
+        } else if self.last_pointer_press.as_ref().is_some_and(|press| {
+            self.windows.iter().any(|window| {
+                window.window_id == press.window_id
+                    && window.toplevel.wl_surface() == destroyed_surface
+            })
+        }) {
             self.last_pointer_press = None;
             self.left_button_down = false;
         }
@@ -3025,5 +3054,13 @@ mod tests {
         assert_eq!(relative_motion_time_millis(1_000), 1);
         assert_eq!(relative_motion_time_millis(2_000), 2);
         assert_eq!(relative_motion_time_millis(u64::MAX), u32::MAX);
+    }
+
+    #[test]
+    fn layer_surface_hit_origin_is_translated_to_compositor_space() {
+        assert_eq!(
+            layer_surface_hit_origin(Point::from((120, 80)), Point::from((7, 11))),
+            Point::from((127.0, 91.0)),
+        );
     }
 }

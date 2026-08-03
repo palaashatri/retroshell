@@ -14,6 +14,11 @@ pub struct TextField {
     pub expands_horizontally: bool,
     pub on_change: Option<Box<dyn FnMut(String) + Send>>,
     cursor_position: usize,
+    /// The fixed end of the active selection, stored as a UTF-8 byte offset.
+    /// The other end is [`cursor_position`]. `None` means there is no active
+    /// selection. Keeping offsets on character boundaries makes all editing
+    /// operations safe for multi-byte Unicode text.
+    selection_anchor: Option<usize>,
 }
 
 impl Default for TextField {
@@ -33,6 +38,7 @@ impl TextField {
             expands_horizontally: false,
             on_change: None,
             cursor_position: 0,
+            selection_anchor: None,
         }
     }
 
@@ -54,62 +60,202 @@ impl TextField {
     pub fn set_text<S: Into<String>>(&mut self, text: S) {
         self.text = text.into();
         self.cursor_position = self.text.len();
+        self.selection_anchor = None;
     }
 
     pub fn cursor_position(&self) -> usize {
         self.cursor_position
     }
 
-    /// Clamps to the text length and snaps down to the nearest UTF-8 char
-    /// boundary — the cursor is a byte offset and must never sit inside a
-    /// multi-byte character.
-    pub fn set_cursor_position(&mut self, pos: usize) {
+    /// Return the active selection as an ordered UTF-8 byte range.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        let range = if anchor <= self.cursor_position {
+            (anchor, self.cursor_position)
+        } else {
+            (self.cursor_position, anchor)
+        };
+        (range.0 != range.1).then_some(range)
+    }
+
+    /// Return the selected text, if a non-empty selection is active.
+    pub fn selected_text(&self) -> Option<&str> {
+        self.selection_range()
+            .map(|(start, end)| &self.text[start..end])
+    }
+
+    /// Set an ordered-independent selection using UTF-8 byte offsets.
+    ///
+    /// Both endpoints are clamped to valid character boundaries. `cursor` is
+    /// retained as the active end so Shift+Arrow can continue extending from
+    /// the same side of the selection.
+    pub fn set_selection(&mut self, anchor: usize, cursor: usize) {
+        let anchor = self.clamp_position(anchor);
+        let cursor = self.clamp_position(cursor);
+        self.cursor_position = cursor;
+        self.selection_anchor = (anchor != cursor).then_some(anchor);
+    }
+
+    /// Select the complete document. Empty text intentionally has no range.
+    pub fn select_all(&mut self) {
+        self.cursor_position = self.text.len();
+        self.selection_anchor = (!self.text.is_empty()).then_some(0);
+    }
+
+    /// Clear the active selection while retaining the current caret position.
+    pub fn clear_selection(&mut self) {
+        self.selection_anchor = None;
+    }
+
+    /// Replace the active selection, or insert at the caret when there is no
+    /// selection. Returns whether the text was updated.
+    pub fn replace_selection(&mut self, replacement: &str) -> bool {
+        let (start, end) = self
+            .selection_range()
+            .unwrap_or((self.cursor_position, self.cursor_position));
+        self.text.replace_range(start..end, replacement);
+        self.cursor_position = start + replacement.len();
+        self.selection_anchor = None;
+        self.notify_change();
+        true
+    }
+
+    /// Delete the active selection and return the removed text. With no
+    /// selection this leaves the document unchanged.
+    pub fn delete_selection(&mut self) -> Option<String> {
+        let (start, end) = self.selection_range()?;
+        let removed = self.text[start..end].to_string();
+        self.replace_selection("");
+        Some(removed)
+    }
+
+    fn notify_change(&mut self) {
+        if let Some(cb) = &mut self.on_change {
+            (cb)(self.text.clone());
+        }
+    }
+
+    fn clamp_position(&self, pos: usize) -> usize {
         let mut pos = pos.min(self.text.len());
         while pos > 0 && !self.text.is_char_boundary(pos) {
             pos -= 1;
         }
-        self.cursor_position = pos;
+        pos
     }
 
-    /// Places the cursor at the byte offset of the `char_index`-th character
-    /// (or the end, if `text` is shorter) — bridges a click's "N characters
-    /// in" position to the byte index `cursor_position` actually stores,
-    /// without ever landing inside a multi-byte character.
-    fn set_cursor_to_char_index(&mut self, char_index: usize) {
-        let byte_pos = self
-            .text
+    /// Clamps to the text length and snaps down to the nearest UTF-8 char
+    /// boundary — the cursor is a byte offset and must never sit inside a
+    /// multi-byte character.
+    pub fn set_cursor_position(&mut self, pos: usize) {
+        self.cursor_position = self.clamp_position(pos);
+        self.selection_anchor = None;
+    }
+
+    /// Return the byte offset of the `char_index`-th character (or the end if
+    /// `text` is shorter), never landing inside a multi-byte character.
+    fn byte_position_for_char_index(&self, char_index: usize) -> usize {
+        self.text
             .char_indices()
             .nth(char_index)
             .map(|(i, _)| i)
-            .unwrap_or(self.text.len());
-        self.set_cursor_position(byte_pos);
+            .unwrap_or(self.text.len())
     }
 
     /// Move the cursor back one full character (may be multi-byte) — the
     /// same char-boundary logic `Backspace` uses, just without deleting.
-    fn move_cursor_left(&mut self) {
+    fn previous_boundary(&self) -> usize {
         if self.cursor_position == 0 {
-            return;
+            return 0;
         }
-        let prev = self.text[..self.cursor_position]
+        self.text[..self.cursor_position]
             .char_indices()
             .next_back()
             .map(|(i, _)| i)
-            .unwrap_or(0);
-        self.cursor_position = prev;
+            .unwrap_or(0)
     }
 
     /// Move the cursor forward one full character (may be multi-byte).
     /// `cursor_position` is always on a char boundary already (the
     /// invariant `set_cursor_position` maintains), so slicing from it and
     /// reading the next `char` can never panic.
-    fn move_cursor_right(&mut self) {
+    fn next_boundary(&self) -> usize {
+        if self.cursor_position >= self.text.len() {
+            return self.text.len();
+        }
+        self.text[self.cursor_position..]
+            .chars()
+            .next()
+            .map(|c| self.cursor_position + c.len_utf8())
+            .unwrap_or(self.cursor_position)
+    }
+
+    fn move_horizontally(&mut self, right: bool, extend: bool) {
+        if extend {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor_position);
+            }
+            self.cursor_position = if right {
+                self.next_boundary()
+            } else {
+                self.previous_boundary()
+            };
+            if self.selection_anchor == Some(self.cursor_position) {
+                self.selection_anchor = None;
+            }
+            return;
+        }
+
+        if let Some((start, end)) = self.selection_range() {
+            self.cursor_position = if right { end } else { start };
+            self.selection_anchor = None;
+        } else {
+            self.cursor_position = if right {
+                self.next_boundary()
+            } else {
+                self.previous_boundary()
+            };
+        }
+    }
+
+    fn move_to_boundary(&mut self, end: bool, extend: bool) {
+        let target = if end { self.text.len() } else { 0 };
+        if extend {
+            if self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor_position);
+            }
+            self.cursor_position = target;
+            if self.selection_anchor == Some(self.cursor_position) {
+                self.selection_anchor = None;
+            }
+        } else {
+            self.cursor_position = target;
+            self.selection_anchor = None;
+        }
+    }
+
+    fn delete_backward(&mut self) {
+        if self.delete_selection().is_some() {
+            return;
+        }
+        if self.cursor_position == 0 {
+            return;
+        }
+        let previous = self.previous_boundary();
+        self.text.replace_range(previous..self.cursor_position, "");
+        self.cursor_position = previous;
+        self.notify_change();
+    }
+
+    fn delete_forward(&mut self) {
+        if self.delete_selection().is_some() {
+            return;
+        }
         if self.cursor_position >= self.text.len() {
             return;
         }
-        if let Some(c) = self.text[self.cursor_position..].chars().next() {
-            self.cursor_position += c.len_utf8();
-        }
+        let next = self.next_boundary();
+        self.text.replace_range(self.cursor_position..next, "");
+        self.notify_change();
     }
 }
 
@@ -169,6 +315,7 @@ impl Widget for TextField {
             Event::MouseDown {
                 button: MouseButton::Left,
                 point,
+                modifiers,
                 ..
             } => {
                 if !self.rect().contains(*point) {
@@ -177,12 +324,24 @@ impl Widget for TextField {
                 self.widget_state_mut().focused = true;
                 // ~7px per glyph is the same rough monospace advance the SDK
                 // painter uses elsewhere (see `draw_dialog`'s button sizing);
-                // good enough to land the caret near the click without real
-                // text shaping here.
+                // good enough to land the caret near the click. The resulting
+                // byte offset is still clamped to a Unicode boundary.
                 const CHAR_WIDTH: f32 = 7.0;
                 let clicked_chars =
                     ((point.x - self.rect().x) / CHAR_WIDTH).round().max(0.0) as usize;
-                self.set_cursor_to_char_index(clicked_chars);
+                let clicked = self.byte_position_for_char_index(clicked_chars);
+                if modifiers.shift {
+                    if self.selection_anchor.is_none() {
+                        self.selection_anchor = Some(self.cursor_position);
+                    }
+                    self.cursor_position = clicked;
+                    if self.selection_anchor == Some(self.cursor_position) {
+                        self.selection_anchor = None;
+                    }
+                } else {
+                    self.cursor_position = clicked;
+                    self.selection_anchor = None;
+                }
                 EventResult::Handled
             }
             Event::KeyDown {
@@ -192,68 +351,69 @@ impl Widget for TextField {
                 if !self.widget_state().focused {
                     return EventResult::Ignored;
                 }
-                if self.cursor_position > 0 {
-                    // Step back one full character (may be multi-byte).
-                    let prev = self.text[..self.cursor_position]
-                        .char_indices()
-                        .next_back()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-                    self.text.remove(prev);
-                    self.cursor_position = prev;
-                    if let Some(cb) = &mut self.on_change {
-                        (cb)(self.text.clone());
-                    }
+                self.delete_backward();
+                EventResult::Handled
+            }
+            Event::KeyDown {
+                key: KeyCode::Delete,
+                ..
+            } => {
+                if !self.widget_state().focused {
+                    return EventResult::Ignored;
                 }
+                self.delete_forward();
                 EventResult::Handled
             }
             Event::KeyDown {
                 key: KeyCode::ArrowLeft,
+                modifiers,
                 ..
             } => {
                 if !self.widget_state().focused {
                     return EventResult::Ignored;
                 }
-                self.move_cursor_left();
+                self.move_horizontally(false, modifiers.shift);
                 EventResult::Handled
             }
             Event::KeyDown {
                 key: KeyCode::ArrowRight,
+                modifiers,
                 ..
             } => {
                 if !self.widget_state().focused {
                     return EventResult::Ignored;
                 }
-                self.move_cursor_right();
+                self.move_horizontally(true, modifiers.shift);
                 EventResult::Handled
             }
             Event::KeyDown {
-                key: KeyCode::Home, ..
+                key: KeyCode::Home,
+                modifiers,
+                ..
             } => {
                 if !self.widget_state().focused {
                     return EventResult::Ignored;
                 }
-                self.set_cursor_position(0);
+                self.move_to_boundary(false, modifiers.shift);
                 EventResult::Handled
             }
             Event::KeyDown {
-                key: KeyCode::End, ..
+                key: KeyCode::End,
+                modifiers,
+                ..
             } => {
                 if !self.widget_state().focused {
                     return EventResult::Ignored;
                 }
-                self.set_cursor_position(self.text.len());
+                self.move_to_boundary(true, modifiers.shift);
                 EventResult::Handled
             }
             Event::Char { character } => {
                 if !self.widget_state().focused {
                     return EventResult::Ignored;
                 }
-                self.text.insert(self.cursor_position, *character);
-                self.cursor_position += character.len_utf8();
-                if let Some(cb) = &mut self.on_change {
-                    (cb)(self.text.clone());
-                }
+                let character = character.to_string();
+                self.replace_selection(&character);
                 EventResult::Handled
             }
             _ => EventResult::Ignored,
@@ -279,6 +439,7 @@ impl Widget for TextField {
 mod tests {
     use super::*;
     use crate::{event::Modifiers, Point};
+    use std::sync::{Arc, Mutex};
 
     fn key(key: KeyCode) -> Event {
         Event::KeyDown {
@@ -439,5 +600,71 @@ mod tests {
         let _ = field.handle_event(&key(KeyCode::Backspace));
         assert_eq!(field.text(), "h");
         assert_eq!(field.cursor_position(), 1);
+    }
+
+    #[test]
+    fn shift_navigation_selects_unicode_without_splitting_bytes() {
+        let mut field = TextField::new();
+        field.widget_state_mut().focused = true;
+        field.set_text("aé🙂z");
+
+        // End is byte 8; first move before the final `z`, then Shift+Left
+        // extends over the four-byte emoji.
+        let _ = field.handle_event(&key(KeyCode::ArrowLeft));
+        let _ = field.handle_event(&Event::KeyDown {
+            key: KeyCode::ArrowLeft,
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::NONE
+            },
+        });
+        assert_eq!(field.selection_range(), Some((3, 7)));
+        assert_eq!(field.selected_text(), Some("🙂"));
+
+        let _ = field.handle_event(&Event::KeyDown {
+            key: KeyCode::ArrowRight,
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(field.selection_range(), None);
+        assert_eq!(field.cursor_position(), 7);
+    }
+
+    #[test]
+    fn replacing_selection_preserves_unicode_boundaries_and_calls_on_change() {
+        let mut field = TextField::new();
+        field.widget_state_mut().focused = true;
+        field.set_text("aé🙂z");
+        field.set_selection(1, 7); // `é🙂`, both endpoints are boundaries.
+
+        let changes = Arc::new(Mutex::new(Vec::new()));
+        let changes_for_callback = Arc::clone(&changes);
+        field.on_change = Some(Box::new(move |text| {
+            changes_for_callback.lock().unwrap().push(text)
+        }));
+        assert_eq!(field.selected_text(), Some("é🙂"));
+        field.replace_selection("X");
+
+        assert_eq!(field.text(), "aXz");
+        assert_eq!(field.cursor_position(), 2);
+        assert_eq!(field.selection_range(), None);
+        assert_eq!(*changes.lock().unwrap(), vec!["aXz"]);
+    }
+
+    #[test]
+    fn backspace_and_delete_remove_selection_as_one_edit() {
+        let mut field = TextField::new();
+        field.widget_state_mut().focused = true;
+        field.set_text("abcd");
+        field.set_selection(1, 3);
+
+        let _ = field.handle_event(&key(KeyCode::Backspace));
+        assert_eq!(field.text(), "ad");
+        assert_eq!(field.cursor_position(), 1);
+        assert_eq!(field.selection_range(), None);
+
+        field.set_selection(0, 1);
+        let _ = field.handle_event(&key(KeyCode::Delete));
+        assert_eq!(field.text(), "d");
+        assert_eq!(field.cursor_position(), 0);
     }
 }

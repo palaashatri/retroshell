@@ -1658,6 +1658,49 @@ pub fn pointer_grab_request_is_valid(
         && pressed_serial == Some(request_serial)
 }
 
+/// Validate an xdg_toplevel move/resize against the mapped window that owned
+/// the initiating pointer press.
+///
+/// Backends must derive `pressed_window_id` only by resolving the hit surface
+/// through a known mapped toplevel or one of its tracked popup surface trees.
+/// A same-client surface that is not in either tree therefore supplies `None`
+/// and cannot authorize a grab.
+pub fn pointer_grab_request_is_valid_for_window(
+    request_serial: u32,
+    pressed_serial: Option<u32>,
+    requested_window_id: &str,
+    pressed_window_id: Option<&str>,
+    left_button_down: bool,
+    seat_owned: bool,
+    same_client: bool,
+) -> bool {
+    same_client
+        && pressed_window_id == Some(requested_window_id)
+        && pointer_grab_request_is_valid(
+            request_serial,
+            pressed_serial,
+            true,
+            left_button_down,
+            seat_owned,
+        )
+}
+
+/// Climb Smithay's committed subsurface ancestry to the role-bearing tree
+/// root. Mapping that root to a known toplevel or tracked popup remains the
+/// backend's responsibility.
+#[cfg(target_os = "linux")]
+pub fn surface_tree_root(
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) -> smithay::reexports::wayland_server::protocol::wl_surface::WlSurface {
+    use smithay::wayland::compositor::get_parent;
+
+    let mut root = surface.clone();
+    while let Some(parent) = get_parent(&root) {
+        root = parent;
+    }
+    root
+}
+
 /// Clear the shared state that is valid only while the initiating left-button
 /// press is held. The backend performs any live-surface configure cleanup
 /// after taking the grab returned here.
@@ -3785,6 +3828,50 @@ mod tests {
         ));
         assert!(!pointer_grab_request_is_valid(42, None, true, true, true));
         assert!(!pointer_grab_request_is_valid(0, Some(0), true, true, true));
+    }
+
+    #[test]
+    fn pointer_grab_accepts_only_the_normalized_requesting_window_owner() {
+        // A child/subsurface press is normalized by the backend to its mapped
+        // window owner before this policy boundary.
+        assert!(pointer_grab_request_is_valid_for_window(
+            42,
+            Some(42),
+            "finder-window",
+            Some("finder-window"),
+            true,
+            true,
+            true,
+        ));
+        // An arbitrary same-client surface has no mapped owner; a surface from
+        // another mapped window has a different owner. Neither may authorize.
+        assert!(!pointer_grab_request_is_valid_for_window(
+            42,
+            Some(42),
+            "finder-window",
+            None,
+            true,
+            true,
+            true,
+        ));
+        assert!(!pointer_grab_request_is_valid_for_window(
+            42,
+            Some(42),
+            "finder-window",
+            Some("settings-window"),
+            true,
+            true,
+            true,
+        ));
+        assert!(!pointer_grab_request_is_valid_for_window(
+            42,
+            Some(42),
+            "finder-window",
+            Some("finder-window"),
+            true,
+            true,
+            false,
+        ));
     }
 
     #[test]

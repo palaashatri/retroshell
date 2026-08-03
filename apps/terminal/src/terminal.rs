@@ -8,6 +8,20 @@ use slopos_kit::{
     MonospaceView, Rect, Size, Widget, WidgetState,
 };
 use std::any::Any;
+use std::sync::{Arc, Mutex};
+
+/// Events delivered by the background PTY reader to the SDK event-loop thread.
+///
+/// The reader never mutates terminal state directly: it queues one of these
+/// events and then wakes the application event loop. That keeps parser/widget
+/// state single-threaded while still allowing output and PTY lifecycle changes
+/// to redraw an otherwise idle client.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PtyEvent {
+    Output(Vec<u8>),
+    Exited,
+    Error(String),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GridPoint {
@@ -55,7 +69,9 @@ pub struct Terminal {
     pub current_underline: bool,
     parser: vte::Parser,
     pub pty: Option<crate::pty::Pty>,
-    pub rx: Option<std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Vec<u8>>>>>,
+    pub rx: Option<Arc<Mutex<std::sync::mpsc::Receiver<PtyEvent>>>>,
+    pub pty_exited: bool,
+    pub pty_error: Option<String>,
     display: MonospaceView,
     pub scroll_offset: usize,
     pub selection_start: Option<GridPoint>,
@@ -94,6 +110,8 @@ impl Terminal {
             parser: vte::Parser::new(),
             pty: None,
             rx: None,
+            pty_exited: false,
+            pty_error: None,
             display: MonospaceView::new(cols, rows),
             scroll_offset: 0,
             selection_start: None,
@@ -581,8 +599,18 @@ impl Widget for Terminal {
         if let Some(rx) = rx {
             if let Ok(rx_lock) = rx.try_lock() {
                 while let Ok(bytes) = rx_lock.try_recv() {
-                    for b in bytes {
-                        self.write_byte(b);
+                    match bytes {
+                        PtyEvent::Output(bytes) => {
+                            for b in bytes {
+                                self.write_byte(b);
+                            }
+                        }
+                        PtyEvent::Exited => {
+                            self.pty_exited = true;
+                        }
+                        PtyEvent::Error(error) => {
+                            self.pty_error = Some(error);
+                        }
                     }
                 }
             }
@@ -600,7 +628,7 @@ impl Widget for Terminal {
 
     fn accessibility(&self) -> Option<AccessibilityNode> {
         Some(AccessibilityNode::new(
-            AccessibilityRole::Unknown,
+            AccessibilityRole::Window,
             "Terminal window",
         ))
     }
@@ -932,5 +960,38 @@ mod tests {
 
         assert!(matches!(result, EventResult::Handled));
         assert_eq!(term.selected_text().as_deref(), Some("one\ntwo"));
+    }
+
+    #[test]
+    fn terminal_update_consumes_pty_events_and_exposes_window_role() {
+        let mut term = Terminal::new(8, 2);
+        let (tx, rx) = std::sync::mpsc::channel();
+        term.rx = Some(Arc::new(Mutex::new(rx)));
+        tx.send(PtyEvent::Output(b"ok".to_vec())).unwrap();
+        tx.send(PtyEvent::Exited).unwrap();
+
+        Widget::update(&mut term);
+
+        assert_eq!(term.visible_text().lines().next(), Some("ok"));
+        assert!(term.pty_exited);
+        assert!(term.pty_error.is_none());
+        assert_eq!(
+            term.accessibility().unwrap().role,
+            AccessibilityRole::Window
+        );
+    }
+
+    #[test]
+    fn terminal_update_retains_pty_error() {
+        let mut term = Terminal::new(8, 2);
+        let (tx, rx) = std::sync::mpsc::channel();
+        term.rx = Some(Arc::new(Mutex::new(rx)));
+        tx.send(PtyEvent::Error("reader failed".to_string()))
+            .unwrap();
+
+        Widget::update(&mut term);
+
+        assert_eq!(term.pty_error.as_deref(), Some("reader failed"));
+        assert!(!term.pty_exited);
     }
 }

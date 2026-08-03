@@ -1,5 +1,5 @@
 use crate::pty::Pty;
-use crate::terminal::Terminal;
+use crate::terminal::{PtyEvent, Terminal};
 use nix::errno::Errno;
 use nix::sys::signal::{self, Signal};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
@@ -8,6 +8,47 @@ use slopos_kit::{
     AccessibilityNode, Event, EventResult, LayoutConstraint, Rect, Size, ThemeContext, Widget,
     WidgetState,
 };
+use slopos_sdk::EventLoopWaker;
+use std::sync::{mpsc, Arc};
+
+type WakeCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+
+fn no_op_wake() -> WakeCallback {
+    Arc::new(|| {})
+}
+
+fn send_pty_event(tx: &mpsc::Sender<PtyEvent>, wake: &WakeCallback, event: PtyEvent) -> bool {
+    if tx.send(event).is_ok() {
+        wake();
+        true
+    } else {
+        false
+    }
+}
+
+fn pump_pty_reader<R>(mut read: R, tx: &mpsc::Sender<PtyEvent>, wake: &WakeCallback)
+where
+    R: FnMut(&mut [u8]) -> std::io::Result<usize>,
+{
+    let mut buf = [0u8; 1024];
+    loop {
+        match read(&mut buf) {
+            Ok(n) if n > 0 => {
+                if !send_pty_event(tx, wake, PtyEvent::Output(buf[..n].to_vec())) {
+                    return;
+                }
+            }
+            Ok(_) => {
+                let _ = send_pty_event(tx, wake, PtyEvent::Exited);
+                return;
+            }
+            Err(error) => {
+                let _ = send_pty_event(tx, wake, PtyEvent::Error(error.to_string()));
+                return;
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ChildShutdownResult {
@@ -155,6 +196,7 @@ pub struct TabManager {
     pub tabs: Vec<Tab>,
     pub active_tab_index: usize,
     next_tab_id: usize,
+    wake_callback: WakeCallback,
 }
 
 impl TabManager {
@@ -164,32 +206,39 @@ impl TabManager {
             tabs: vec![],
             active_tab_index: 0,
             next_tab_id: 1,
+            wake_callback: no_op_wake(),
         }
+    }
+
+    /// Install the SDK event-loop wake path used by future PTY reader threads.
+    ///
+    /// The callback is intentionally injectable so isolated widget tests can
+    /// count wake requests without constructing a display-backed SDK loop.
+    pub fn set_wake_callback<F>(&mut self, callback: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        self.wake_callback = Arc::new(callback);
+    }
+
+    pub fn set_event_loop_waker(&mut self, waker: EventLoopWaker) {
+        self.set_wake_callback(move || waker.wake());
     }
 
     pub fn open_tab(&mut self, cols: u16, rows: u16) -> Result<usize, String> {
         let (pty, pid) = Pty::new(cols, rows)?;
         let mut term = Terminal::new(cols as usize, rows as usize);
 
-        let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (tx, rx) = mpsc::channel::<PtyEvent>();
         let mut reader_pty = pty.try_clone().map_err(|e| e.to_string())?;
+        let wake_callback = self.wake_callback.clone();
 
         std::thread::spawn(move || {
-            let mut buf = [0u8; 1024];
-            loop {
-                match reader_pty.read(&mut buf) {
-                    Ok(n) if n > 0 => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                    _ => break,
-                }
-            }
+            pump_pty_reader(|buf| reader_pty.read(buf), &tx, &wake_callback);
         });
 
         term.pty = Some(pty.try_clone().map_err(|e| e.to_string())?);
-        term.rx = Some(std::sync::Arc::new(std::sync::Mutex::new(rx)));
+        term.rx = Some(Arc::new(std::sync::Mutex::new(rx)));
 
         let id = self.next_tab_id;
         self.next_tab_id += 1;
@@ -407,6 +456,8 @@ impl Widget for TabManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{self, Read};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn child_shutdown_requests_sighup_and_reaps_immediately() {
@@ -434,6 +485,50 @@ mod tests {
         assert!(result.signal_requested);
         assert!(result.reaped);
         assert!(!result.still_running);
+    }
+
+    #[test]
+    fn pty_reader_wakes_for_output_and_exit_without_polling() {
+        let mut reader = io::Cursor::new(b"prompt".to_vec());
+        let (tx, rx) = mpsc::channel();
+        let wake_count = Arc::new(AtomicUsize::new(0));
+        let wake_count_for_callback = wake_count.clone();
+        let wake: WakeCallback = Arc::new(move || {
+            wake_count_for_callback.fetch_add(1, Ordering::SeqCst);
+        });
+
+        pump_pty_reader(|buf| reader.read(buf), &tx, &wake);
+
+        assert_eq!(wake_count.load(Ordering::SeqCst), 2);
+        assert_eq!(rx.recv().unwrap(), PtyEvent::Output(b"prompt".to_vec()));
+        assert_eq!(rx.recv().unwrap(), PtyEvent::Exited);
+    }
+
+    #[test]
+    fn pty_reader_wakes_for_read_error() {
+        struct FailingReader;
+
+        impl Read for FailingReader {
+            fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::new(io::ErrorKind::BrokenPipe, "reader failed"))
+            }
+        }
+
+        let mut reader = FailingReader;
+        let (tx, rx) = mpsc::channel();
+        let wake_count = Arc::new(AtomicUsize::new(0));
+        let wake_count_for_callback = wake_count.clone();
+        let wake: WakeCallback = Arc::new(move || {
+            wake_count_for_callback.fetch_add(1, Ordering::SeqCst);
+        });
+
+        pump_pty_reader(|buf| reader.read(buf), &tx, &wake);
+
+        assert_eq!(wake_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            rx.recv().unwrap(),
+            PtyEvent::Error("reader failed".to_string())
+        );
     }
 
     #[test]

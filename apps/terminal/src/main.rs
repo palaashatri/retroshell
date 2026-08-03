@@ -174,6 +174,7 @@ fn main() {
     });
 
     let mut tab_manager = TabManager::new();
+    tab_manager.set_event_loop_waker(app.event_waker());
     if let Err(e) = tab_manager.open_tab(80, 24) {
         tracing::error!("Failed to open initial tab: {}", e);
     }

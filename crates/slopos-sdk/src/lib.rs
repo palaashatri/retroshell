@@ -10,13 +10,13 @@ use slopos_kit::button::Button;
 use slopos_kit::design_tokens::{
     CLASSIC_DARK_GRAY_RGBA, CLASSIC_FACE_ALT_RGBA, CLASSIC_FACE_RGBA, CLASSIC_INK_RGBA,
     CLASSIC_LAVENDER_DARK_RGBA, CLASSIC_LAVENDER_RGBA, CLASSIC_MID_LIGHT_RGBA, CLASSIC_MID_RGBA,
-    CLASSIC_PAPER_RGBA, MENU_BAR_HEIGHT, MENU_ITEM_HEIGHT, MENU_LABEL_INSET, MENU_SHADOW_OFFSET,
-    MENU_SHORTCUT_INSET, WINDOW_CONTROL_SIZE, WINDOW_TITLE_BAR_HEIGHT,
+    CLASSIC_PALETTE, CLASSIC_PAPER_RGBA, MENU_BAR_HEIGHT, MENU_ITEM_HEIGHT, MENU_LABEL_INSET,
+    MENU_SHADOW_OFFSET, MENU_SHORTCUT_INSET, WINDOW_CONTROL_SIZE, WINDOW_TITLE_BAR_HEIGHT,
 };
 use slopos_kit::dialog::Dialog;
 use slopos_kit::dock_view::DockView;
 use slopos_kit::event::{KeyCode, Modifiers, MouseButton};
-use slopos_kit::icon_view::{IconItem, IconView};
+use slopos_kit::icon_view::{IconItem, IconView, DESKTOP_ITEM_WIDTH};
 use slopos_kit::label::Label;
 use slopos_kit::layout::{Layout, LayoutView};
 use slopos_kit::list_view::ListView;
@@ -31,6 +31,7 @@ use slopos_kit::split_view::SplitView;
 use slopos_kit::status_bar::StatusBar;
 use slopos_kit::tab_view::TabView;
 use slopos_kit::text_field::TextField;
+use slopos_kit::theme::ThemeToken;
 use slopos_kit::toolbar::Toolbar;
 use slopos_kit::tree_view::{TreeNode, TreeView};
 use slopos_kit::window::{hit_test_window_chrome, Window, WindowChromeHit};
@@ -108,6 +109,7 @@ const COLOR_DARK_BUTTON_BG: [f32; 4] = [0.22, 0.22, 0.24, 1.0];
 const COLOR_DARK_BUTTON_HOVER: [f32; 4] = [0.30, 0.30, 0.34, 1.0];
 const COLOR_DARK_BORDER: [f32; 4] = [0.02, 0.02, 0.02, 1.0];
 const COLOR_DARK_TEXT: [f32; 4] = [0.92, 0.92, 0.93, 1.0];
+const COLOR_DARK_TITLE_INACTIVE: [f32; 4] = [0.72, 0.74, 0.80, 1.0];
 const COLOR_DARK_EDGE_LIGHT: [f32; 4] = [0.42, 0.42, 0.45, 1.0];
 const COLOR_DARK_EDGE_DARK: [f32; 4] = [0.02, 0.02, 0.02, 1.0];
 const COLOR_DARK_MENU: [f32; 4] = [0.18, 0.18, 0.19, 1.0];
@@ -152,6 +154,19 @@ fn theme_muted() -> [f32; 4] {
     }
 }
 
+fn classic_palette_rgba(token: ThemeToken) -> [f32; 4] {
+    let color = CLASSIC_PALETTE.color(token);
+    [color.r, color.g, color.b, color.a]
+}
+
+fn inactive_title_color(is_dark: bool) -> [f32; 4] {
+    if is_dark {
+        COLOR_DARK_TITLE_INACTIVE
+    } else {
+        classic_palette_rgba(ThemeToken::WindowTitleInactive)
+    }
+}
+
 fn set_render_dark_mode(is_dark: bool) {
     RENDER_DARK_MODE.store(is_dark, Ordering::Relaxed);
 }
@@ -185,6 +200,7 @@ fn theme_color(color_name: &str) -> [f32; 4] {
             "button_hover" => COLOR_DARK_BUTTON_HOVER,
             "border" => COLOR_DARK_BORDER,
             "text" => COLOR_DARK_TEXT,
+            "window_title_inactive" => COLOR_DARK_TITLE_INACTIVE,
             "edge_light" => COLOR_DARK_EDGE_LIGHT,
             "edge_dark" => COLOR_DARK_EDGE_DARK,
             _ => [0.5, 0.5, 0.5, 1.0], // fallback gray
@@ -196,6 +212,7 @@ fn theme_color(color_name: &str) -> [f32; 4] {
             "button_hover" => COLOR_BUTTON_HOVER,
             "border" => COLOR_WINDOW_BORDER,
             "text" => COLOR_TEXT_PRIMARY,
+            "window_title_inactive" => inactive_title_color(false),
             "edge_light" => COLOR_EDGE_LIGHT,
             "edge_dark" => COLOR_EDGE_DARK,
             _ => [0.5, 0.5, 0.5, 1.0], // fallback gray
@@ -2062,25 +2079,12 @@ fn draw_window_grip(canvas: &mut Canvas<'_>, x: f32, y: f32, width: f32, height:
 fn draw_classic_titlebar(canvas: &mut Canvas<'_>, rect: Rect, title: &str, is_active: bool) {
     let title_w = canvas.measure_text(title);
     if !is_active {
-        let bg = if render_dark_mode() {
-            theme_color("window_bg")
-        } else {
-            S7_BG
-        };
-        canvas.rect(rect, bg);
-        canvas.stroke(
-            rect,
-            if render_dark_mode() {
-                COLOR_DARK_BORDER
-            } else {
-                S7_FG
-            },
-        );
-        let text_color = if render_dark_mode() {
-            [0.43, 0.44, 0.45, 1.0]
-        } else {
-            S7_GRAY300
-        };
+        // Keep inactive chrome on the same semantic surface as the rest of
+        // the window while using a dedicated title token for readable state
+        // contrast.  The old mid-gray text on a white face was too faint.
+        canvas.rect(rect, theme_color("window_bg"));
+        canvas.stroke(rect, theme_color("border"));
+        let text_color = theme_color("window_title_inactive");
         let title_x = (rect.x + (rect.width - title_w) * 0.5).round();
         canvas.text(title, title_x, rect.y + 6.0, text_color);
         return;
@@ -2911,12 +2915,10 @@ fn draw_menu_bar(canvas: &mut Canvas<'_>, rect: Rect, toolbar: &Toolbar) {
     let right_w = canvas.measure_text(&right_label);
     canvas.text(
         &right_label,
-        rect.x + rect.width - right_w - 72.0,
+        rect.x + rect.width - right_w - 8.0,
         rect.y + 8.0,
         theme_color("text"),
     );
-    draw_status_glyph(canvas, rect.x + rect.width - 42.0, rect.y + 7.0);
-    draw_status_glyph(canvas, rect.x + rect.width - 22.0, rect.y + 7.0);
 }
 
 fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar) {
@@ -2987,12 +2989,10 @@ fn draw_menu_bar_widget(canvas: &mut Canvas<'_>, rect: Rect, menu_bar: &MenuBar)
     let right_w = canvas.measure_text(&right_label);
     canvas.text(
         &right_label,
-        rect.x + rect.width - right_w - 72.0,
+        rect.x + rect.width - right_w - 8.0,
         rect.y + 5.0,
         theme_ink(),
     );
-    draw_status_glyph(canvas, rect.x + rect.width - 42.0, rect.y + 4.0);
-    draw_status_glyph(canvas, rect.x + rect.width - 22.0, rect.y + 4.0);
 
     if let Some(menu_index) = menu_bar.open_menu {
         if !menu_bar.suppress_dropdown_paint {
@@ -3303,17 +3303,6 @@ fn format_clock_from_seconds(seconds_since_epoch: u64) -> String {
     format!("{}:{:02} {}", hour_12, minutes, am_pm)
 }
 
-fn draw_status_glyph(canvas: &mut Canvas<'_>, x: f32, y: f32) {
-    draw_beveled_rect(
-        canvas,
-        Rect::new(x, y, 13.0, 13.0),
-        rgb(220, 220, 216),
-        true,
-    );
-    canvas.rect(Rect::new(x + 4.0, y + 3.0, 5.0, 7.0), rgb(78, 92, 132));
-    canvas.rect(Rect::new(x + 5.0, y + 4.0, 3.0, 5.0), rgb(176, 194, 222));
-}
-
 /// Edge helpers for System 7 multi-layer borders (System7Components recipes).
 fn stroke_edges(canvas: &mut Canvas<'_>, rect: Rect, top_left: [f32; 4], bottom_right: [f32; 4]) {
     // Top + leading
@@ -3527,7 +3516,15 @@ fn draw_icon_view(canvas: &mut Canvas<'_>, icon_view: &IconView) {
         canvas.rect(rect, theme_paper());
     }
     for item in &icon_view.items {
-        let display_label = canvas.ellipsize_text(&item.label, (item.rect.width + 8.0).max(36.0));
+        // Desktop labels use the same bounded cell as their hit target, so
+        // useful names such as "Applications" are not truncated merely
+        // because the icon graphic itself is compact.
+        let label_max_width = if is_desktop {
+            DESKTOP_ITEM_WIDTH
+        } else {
+            (item.rect.width + 8.0).max(36.0)
+        };
+        let display_label = canvas.ellipsize_text(&item.label, label_max_width);
         if item.selected {
             let sel_rect = Rect::new(
                 item.rect.x - 4.0,
@@ -3540,7 +3537,8 @@ fn draw_icon_view(canvas: &mut Canvas<'_>, icon_view: &IconView) {
         draw_desktop_icon(canvas, item);
         let label_y = item.rect.y + 36.0;
         let text_w = canvas.measure_text(&display_label);
-        let label_x = (item.rect.x + (item.rect.width - text_w) * 0.5).round();
+        let label_center_x = item.rect.x + item.rect.width * 0.5;
+        let label_x = (label_center_x - text_w * 0.5).round();
         if item.selected {
             let plate = Rect::new(label_x - 3.0, label_y - 2.0, text_w + 6.0, 14.0);
             canvas.rect(plate, render_accent());
@@ -4435,8 +4433,9 @@ fn distance_squared(a: Point, b: Point) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_clock_from_seconds, is_application_menu_action, parse_theme_preference,
-        publish_bytes_atomically, theme_accents, ApplicationMenuAction, Canvas,
+        format_clock_from_seconds, inactive_title_color, is_application_menu_action,
+        parse_theme_preference, publish_bytes_atomically, theme_accents, ApplicationMenuAction,
+        Canvas, CLASSIC_DARK_GRAY_RGBA, COLOR_DARK_TITLE_INACTIVE, DESKTOP_ITEM_WIDTH,
     };
     use slopos_render::font::{shape_text, TextLayoutOptions};
     use std::fs;
@@ -4553,6 +4552,25 @@ mod tests {
             "Canvas measurement {} differs from shaped width {}",
             canvas.measure_text(text),
             expected
+        );
+    }
+
+    #[test]
+    fn inactive_title_palette_is_readable_in_light_and_dark_modes() {
+        assert_eq!(
+            inactive_title_color(false),
+            CLASSIC_DARK_GRAY_RGBA,
+            "Classic inactive titles use the semantic dark-gray role"
+        );
+        assert_eq!(inactive_title_color(true), COLOR_DARK_TITLE_INACTIVE);
+    }
+
+    #[test]
+    fn desktop_nameplate_fits_applications_at_one_x() {
+        let canvas = Canvas::new(320.0, 100.0);
+        assert_eq!(
+            canvas.ellipsize_text("Applications", DESKTOP_ITEM_WIDTH),
+            "Applications"
         );
     }
 

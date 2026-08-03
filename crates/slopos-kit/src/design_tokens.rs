@@ -100,7 +100,9 @@ impl ClassicPalette {
             window_border: ink,
             window_shadow: dark_gray,
             window_title: face_alt,
-            window_title_inactive: mid_gray,
+            // Inactive title text still needs to remain legible against the
+            // platinum title face; the lighter mid-gray token was too faint.
+            window_title_inactive: dark_gray,
             menu_background: paper,
             menu_highlight: ink,
             menu_text: ink,
@@ -124,6 +126,7 @@ impl ClassicPalette {
             ThemeToken::WindowBackground => self.window_background,
             ThemeToken::WindowBorder => self.window_border,
             ThemeToken::WindowTitle => self.window_title,
+            ThemeToken::WindowTitleInactive => self.window_title_inactive,
             ThemeToken::MenuBackground => self.menu_background,
             ThemeToken::MenuHighlight => self.menu_highlight,
             ThemeToken::MenuText => self.menu_text,
@@ -282,6 +285,11 @@ mod tests {
             palette.color(ThemeToken::DesktopBackground),
             palette.desktop_background
         );
+        assert_eq!(
+            palette.color(ThemeToken::WindowTitleInactive),
+            palette.window_title_inactive
+        );
+        assert_eq!(palette.window_title_inactive, palette.window_shadow);
     }
 
     #[test]

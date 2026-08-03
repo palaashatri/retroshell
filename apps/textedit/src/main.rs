@@ -460,19 +460,35 @@ impl TextEditView {
     }
 
     fn copy_document(&mut self) -> bool {
-        Clipboard::copy(self.editor.text());
+        // Preserve the useful whole-document fallback when there is no active
+        // selection, while making Cmd-C operate on the selected UTF-8 range
+        // when one exists.
+        let text = self
+            .editor
+            .selected_text()
+            .unwrap_or_else(|| self.editor.text());
+        Clipboard::copy(text);
         self.last_error = None;
         self.refresh_status();
         true
     }
 
     fn cut_document(&mut self) -> bool {
+        if let Some(selected) = self.editor.selected_text().map(str::to_owned) {
+            self.push_undo_snapshot();
+            Clipboard::copy(&selected);
+            self.editor.replace_selection("");
+            self.mark_dirty_from_editor();
+            return true;
+        }
+
         if self.editor.text().is_empty() {
             return self.copy_document();
         }
         self.push_undo_snapshot();
         Clipboard::copy(self.editor.text());
-        self.replace_editor_text(String::new());
+        self.editor.set_text("");
+        self.mark_dirty_from_editor();
         true
     }
 
@@ -484,14 +500,18 @@ impl TextEditView {
             return false;
         }
         self.push_undo_snapshot();
-        let mut text = self.editor.text().to_string();
-        text.push_str(&pasted);
-        self.replace_editor_text(text);
+        // TextField replaces a selection or inserts at the current caret;
+        // this avoids the old append-at-end behavior.
+        self.editor.replace_selection(&pasted);
+        self.mark_dirty_from_editor();
         true
     }
 
     fn select_all_document(&mut self) -> bool {
-        self.copy_document()
+        self.editor.select_all();
+        self.last_error = None;
+        self.refresh_status();
+        true
     }
 
     fn new_document(&mut self) -> bool {
@@ -631,8 +651,9 @@ impl TextEditView {
 
         match found {
             Some(pos) => {
-                // Move cursor to just after the match.
-                self.editor.set_cursor_position(pos + query.len());
+                // Select the match and leave the caret at its end so the next
+                // edit replaces it rather than silently appending elsewhere.
+                self.editor.set_selection(pos, pos + query.len());
                 self.notify(format!("Found \"{}\" at byte {}", query, pos));
                 true
             }
@@ -995,9 +1016,11 @@ mod tests {
     use slopos_kit::Point;
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    static CLIPBOARD_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_textedit_path(name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -1328,6 +1351,7 @@ mod tests {
 
     #[test]
     fn textedit_copy_cut_and_paste_use_clipboard() {
+        let _clipboard = CLIPBOARD_TEST_LOCK.lock().unwrap();
         Clipboard::clear();
         let mut view = TextEditView::open(None);
         view.editor.set_text("clip");
@@ -1370,6 +1394,74 @@ mod tests {
         });
         assert!(matches!(paste, EventResult::Handled));
         assert_eq!(view.editor.text(), "clip");
+    }
+
+    #[test]
+    fn textedit_selection_clipboard_replaces_only_selected_unicode_range() {
+        let _clipboard = CLIPBOARD_TEST_LOCK.lock().unwrap();
+        Clipboard::clear();
+        let mut view = TextEditView::open(None);
+        view.editor.set_text("aé🙂z");
+        view.saved_text = view.editor.text().to_string();
+        view.dirty = false;
+        // Select `é🙂` by UTF-8 byte range (1..7), leaving the surrounding
+        // characters untouched.
+        view.editor.set_selection(1, 7);
+
+        let copy = view.handle_event(&Event::KeyDown {
+            key: KeyCode::C,
+            modifiers: Modifiers {
+                meta: true,
+                ..Modifiers::NONE
+            },
+        });
+        assert!(matches!(copy, EventResult::Handled));
+        assert_eq!(Clipboard::paste(), "é🙂");
+        assert_eq!(view.editor.text(), "aé🙂z");
+
+        let cut = view.handle_event(&Event::KeyDown {
+            key: KeyCode::X,
+            modifiers: Modifiers {
+                meta: true,
+                ..Modifiers::NONE
+            },
+        });
+        assert!(matches!(cut, EventResult::Handled));
+        assert_eq!(Clipboard::paste(), "é🙂");
+        assert_eq!(view.editor.text(), "az");
+        assert_eq!(view.editor.cursor_position(), 1);
+        assert!(view.dirty);
+
+        Clipboard::copy("XY");
+        let paste = view.handle_event(&Event::KeyDown {
+            key: KeyCode::V,
+            modifiers: Modifiers {
+                meta: true,
+                ..Modifiers::NONE
+            },
+        });
+        assert!(matches!(paste, EventResult::Handled));
+        assert_eq!(view.editor.text(), "aXYz");
+        assert_eq!(view.editor.cursor_position(), 3);
+    }
+
+    #[test]
+    fn textedit_cmd_a_selects_without_overwriting_clipboard() {
+        let _clipboard = CLIPBOARD_TEST_LOCK.lock().unwrap();
+        Clipboard::copy("keep me");
+        let mut view = TextEditView::open(None);
+        view.editor.set_text("select me");
+
+        let selected = view.handle_event(&Event::KeyDown {
+            key: KeyCode::A,
+            modifiers: Modifiers {
+                meta: true,
+                ..Modifiers::NONE
+            },
+        });
+        assert!(matches!(selected, EventResult::Handled));
+        assert_eq!(view.editor.selected_text(), Some("select me"));
+        assert_eq!(Clipboard::paste(), "keep me");
     }
 
     #[test]
