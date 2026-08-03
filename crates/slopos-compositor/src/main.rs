@@ -52,8 +52,8 @@ mod linux {
         WorkspaceState, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
     };
     use smithay::desktop::{
-        find_popup_root_surface, utils::under_from_surface_tree, PopupGrab, PopupKeyboardGrab,
-        PopupKind, PopupManager, PopupPointerGrab, WindowSurfaceType,
+        find_popup_root_surface, get_popup_toplevel_coords, utils::under_from_surface_tree,
+        PopupGrab, PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, WindowSurfaceType,
     };
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
     use smithay::reexports::wayland_server::protocol::{
@@ -638,14 +638,14 @@ mod linux {
         }
 
         fn popup_origin(
-            window: &MappedWindow,
+            root_origin: Point<i32, Logical>,
             popup: &PopupKind,
             popup_offset: Point<i32, Logical>,
         ) -> Point<i32, Logical> {
             let geometry = popup.geometry();
             Point::from((
-                window.position.x + popup_offset.x - geometry.loc.x,
-                window.position.y + popup_offset.y - geometry.loc.y,
+                root_origin.x + popup_offset.x - geometry.loc.x,
+                root_origin.y + popup_offset.y - geometry.loc.y,
             ))
         }
 
@@ -658,10 +658,18 @@ mod linux {
             layer: &MappedLayer,
             pt: Point<f64, Logical>,
         ) -> Option<(WlSurface, Point<f64, Logical>)> {
+            for (popup, popup_offset) in
+                PopupManager::popups_for_surface(layer.surface.wl_surface())
+            {
+                let origin = Self::popup_origin(layer.geo.loc, &popup, popup_offset);
+                if let Some((surface, surface_origin)) =
+                    under_from_surface_tree(popup.wl_surface(), pt, origin, WindowSurfaceType::ALL)
+                {
+                    return Some((surface, surface_origin.to_f64()));
+                }
+            }
+
             let local = Point::from((pt.x - layer.geo.loc.x as f64, pt.y - layer.geo.loc.y as f64));
-            // `LayerSurface` here is the protocol wrapper from
-            // `smithay::wayland::shell::wlr_layer`; its tree hit-test helper
-            // lives in `desktop::utils`, unlike the desktop-layer wrapper.
             let (surface, origin) = under_from_surface_tree(
                 layer.surface.wl_surface(),
                 local,
@@ -692,7 +700,7 @@ mod linux {
                 for (popup, popup_offset) in
                     PopupManager::popups_for_surface(window.toplevel.wl_surface())
                 {
-                    let origin = Self::popup_origin(window, &popup, popup_offset);
+                    let origin = Self::popup_origin(window.position, &popup, popup_offset);
                     if let Some((surface, surface_origin)) = under_from_surface_tree(
                         popup.wl_surface(),
                         pt,
@@ -739,6 +747,41 @@ mod linux {
             self.windows
                 .iter()
                 .position(|window| window.toplevel.wl_surface() == &root)
+        }
+
+        fn popup_root_origin(&self, popup: &PopupKind) -> Option<Point<i32, Logical>> {
+            let root = find_popup_root_surface(popup).ok()?;
+            if let Some(window) = self
+                .windows
+                .iter()
+                .find(|window| window.toplevel.wl_surface() == &root)
+            {
+                return Some(window.position);
+            }
+            self.layer_surfaces
+                .iter()
+                .find(|layer| layer.surface.wl_surface() == &root)
+                .map(|layer| layer.geo.loc)
+        }
+
+        fn constrained_popup_geometry(
+            &self,
+            popup: &PopupKind,
+            positioner: PositionerState,
+        ) -> Rectangle<i32, Logical> {
+            let Some(root_origin) = self.popup_root_origin(popup) else {
+                return positioner.get_geometry();
+            };
+            let parent_offset = get_popup_toplevel_coords(popup);
+            let output = self.output_area();
+            let target = Rectangle::new(
+                Point::from((
+                    output.x - root_origin.x - parent_offset.x,
+                    output.y - root_origin.y - parent_offset.y,
+                )),
+                Size::from((output.width.max(1), output.height.max(1))),
+            );
+            positioner.get_unconstrained_geometry(target)
         }
 
         fn activated_window_for_surface(&self, surface: &WlSurface) -> Option<String> {
@@ -1639,6 +1682,19 @@ mod linux {
 
             for &i in &under {
                 let layer = &self.layer_surfaces[i];
+                let popup_elements = PopupManager::popups_for_surface(layer.surface.wl_surface())
+                    .flat_map(|(popup, popup_offset)| {
+                        let popup_loc = Self::popup_origin(layer.geo.loc, &popup, popup_offset);
+                        render_elements_from_surface_tree(
+                            renderer,
+                            popup.wl_surface(),
+                            Point::<i32, Physical>::from((popup_loc.x, popup_loc.y)),
+                            1.0_f64,
+                            1.0_f32,
+                            Kind::Unspecified,
+                        )
+                    });
+                surface_elements.extend(popup_elements);
                 let loc = Point::<i32, Physical>::from((layer.geo.loc.x, layer.geo.loc.y));
                 surface_elements.extend(render_elements_from_surface_tree(
                     renderer,
@@ -1660,7 +1716,7 @@ mod linux {
                 let loc = Point::<i32, Physical>::from((w.position.x, w.position.y));
                 let popup_elements = PopupManager::popups_for_surface(w.toplevel.wl_surface())
                     .flat_map(|(popup, popup_offset)| {
-                        let popup_loc = Self::popup_origin(w, &popup, popup_offset);
+                        let popup_loc = Self::popup_origin(w.position, &popup, popup_offset);
                         render_elements_from_surface_tree(
                             renderer,
                             popup.wl_surface(),
@@ -1697,6 +1753,19 @@ mod linux {
             }
             for &i in &over {
                 let layer = &self.layer_surfaces[i];
+                let popup_elements = PopupManager::popups_for_surface(layer.surface.wl_surface())
+                    .flat_map(|(popup, popup_offset)| {
+                        let popup_loc = Self::popup_origin(layer.geo.loc, &popup, popup_offset);
+                        render_elements_from_surface_tree(
+                            renderer,
+                            popup.wl_surface(),
+                            Point::<i32, Physical>::from((popup_loc.x, popup_loc.y)),
+                            1.0_f64,
+                            1.0_f32,
+                            Kind::Unspecified,
+                        )
+                    });
+                surface_elements.extend(popup_elements);
                 let loc = Point::<i32, Physical>::from((layer.geo.loc.x, layer.geo.loc.y));
                 surface_elements.extend(render_elements_from_surface_tree(
                     renderer,
@@ -1906,6 +1975,15 @@ mod linux {
                         Some(Duration::ZERO),
                         |_, _| None,
                     );
+                    for (popup, _) in PopupManager::popups_for_surface(layer.surface.wl_surface()) {
+                        send_frames_surface_tree(
+                            popup.wl_surface(),
+                            &output,
+                            now,
+                            Some(Duration::ZERO),
+                            |_, _| None,
+                        );
+                    }
                 }
             }
 
@@ -2474,15 +2552,24 @@ mod linux {
 
         fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
             let popup = PopupKind::from(surface.clone());
-            if let Err(err) = self.popup_manager.track_popup(popup) {
+            if let Err(err) = self.popup_manager.track_popup(popup.clone()) {
                 tracing::debug!(?err, "failed to track xdg popup");
                 return;
             }
+            let root_ready = find_popup_root_surface(&popup).is_ok();
+            let geometry = self.constrained_popup_geometry(&popup, positioner);
             surface.with_pending_state(|state| {
                 state.positioner = positioner;
+                state.geometry = geometry;
             });
-            if let Err(err) = surface.send_configure() {
-                tracing::debug!(?err, "failed to configure xdg popup");
+            if root_ready {
+                if let Err(err) = surface.send_configure() {
+                    tracing::debug!(?err, "failed to configure xdg popup");
+                }
+            } else {
+                tracing::debug!(
+                    "deferring parentless popup configure until layer-shell association"
+                );
             }
             self.request_redraw();
         }
@@ -2497,8 +2584,11 @@ mod linux {
             positioner: PositionerState,
             token: u32,
         ) {
+            let popup = PopupKind::from(surface.clone());
+            let geometry = self.constrained_popup_geometry(&popup, positioner);
             surface.with_pending_state(|state| {
                 state.positioner = positioner;
+                state.geometry = geometry;
             });
             let _serial = surface.send_repositioned(token);
             self.request_redraw();
@@ -2540,6 +2630,20 @@ mod linux {
                 geo,
                 exclusive_zone,
             });
+            self.request_redraw();
+        }
+
+        fn new_popup(&mut self, _parent: LayerSurface, surface: PopupSurface) {
+            let popup = PopupKind::from(surface.clone());
+            let positioner = surface.with_pending_state(|state| state.positioner);
+            let geometry = self.constrained_popup_geometry(&popup, positioner);
+            surface.with_pending_state(|state| {
+                state.positioner = positioner;
+                state.geometry = geometry;
+            });
+            if let Err(err) = surface.send_configure() {
+                tracing::debug!(?err, "failed to configure layer-shell popup");
+            }
             self.request_redraw();
         }
 

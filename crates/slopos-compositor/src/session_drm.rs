@@ -56,8 +56,8 @@ use smithay::reexports::calloop::{
 // Use smithay's rustix reexport so OFlags matches Session::open.
 use smithay::desktop::utils::{send_frames_surface_tree, under_from_surface_tree};
 use smithay::desktop::{
-    find_popup_root_surface, PopupGrab, PopupKeyboardGrab, PopupKind, PopupManager,
-    PopupPointerGrab, WindowSurfaceType,
+    find_popup_root_surface, get_popup_toplevel_coords, PopupGrab, PopupKeyboardGrab, PopupKind,
+    PopupManager, PopupPointerGrab, WindowSurfaceType,
 };
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
@@ -370,6 +370,18 @@ fn present_armed_frame(
 /// `render_elements_from_surface_tree` returns elements front-to-back for a
 /// single surface tree, and `DrmCompositor::render_frame` also wants
 /// front-to-back overall — so surfaces are walked top-of-stack first.
+fn popup_origin(
+    root_origin: Point<i32, Logical>,
+    popup: &PopupKind,
+    popup_offset: Point<i32, Logical>,
+) -> Point<i32, Logical> {
+    let geometry = popup.geometry();
+    Point::from((
+        root_origin.x + popup_offset.x - geometry.loc.x,
+        root_origin.y + popup_offset.y - geometry.loc.y,
+    ))
+}
+
 fn collect_render_elements(
     renderer: &mut GlesRenderer,
     state: &DrmSessionState,
@@ -452,6 +464,19 @@ fn collect_render_elements(
     // Layer order: Overlay/Top above windows; Bottom/Background below (macOS/GNOME/KDE).
     for layer in state.layer_surfaces.iter().rev() {
         if matches!(layer.layer, Layer::Overlay | Layer::Top) {
+            for (popup, popup_offset) in
+                PopupManager::popups_for_surface(layer.surface.wl_surface())
+            {
+                let popup_loc = popup_origin(layer.geo.loc, &popup, popup_offset);
+                elements.extend(render_elements_from_surface_tree(
+                    renderer,
+                    popup.wl_surface(),
+                    physical_point(popup_loc.x as f64, popup_loc.y as f64),
+                    output_scale,
+                    1.0,
+                    Kind::Unspecified,
+                ));
+            }
             elements.extend(render_elements_from_surface_tree(
                 renderer,
                 layer.surface.wl_surface(),
@@ -472,15 +497,11 @@ fn collect_render_elements(
     {
         let popup_elements = PopupManager::popups_for_surface(w.toplevel.wl_surface()).flat_map(
             |(popup, popup_offset)| {
-                let geometry = popup.geometry();
-                let popup_loc = (
-                    w.position.x + popup_offset.x - geometry.loc.x,
-                    w.position.y + popup_offset.y - geometry.loc.y,
-                );
+                let popup_loc = popup_origin(w.position, &popup, popup_offset);
                 render_elements_from_surface_tree(
                     renderer,
                     popup.wl_surface(),
-                    physical_point(popup_loc.0 as f64, popup_loc.1 as f64),
+                    physical_point(popup_loc.x as f64, popup_loc.y as f64),
                     output_scale,
                     1.0,
                     Kind::Unspecified,
@@ -500,6 +521,19 @@ fn collect_render_elements(
 
     for layer in state.layer_surfaces.iter().rev() {
         if matches!(layer.layer, Layer::Bottom | Layer::Background) {
+            for (popup, popup_offset) in
+                PopupManager::popups_for_surface(layer.surface.wl_surface())
+            {
+                let popup_loc = popup_origin(layer.geo.loc, &popup, popup_offset);
+                elements.extend(render_elements_from_surface_tree(
+                    renderer,
+                    popup.wl_surface(),
+                    physical_point(popup_loc.x as f64, popup_loc.y as f64),
+                    output_scale,
+                    1.0,
+                    Kind::Unspecified,
+                ));
+            }
             elements.extend(render_elements_from_surface_tree(
                 renderer,
                 layer.surface.wl_surface(),
@@ -616,6 +650,15 @@ fn release_frame_callbacks(state: &DrmSessionState, clock: &Clock<Monotonic>) {
         .collect();
     for surface in layers {
         send_frames_surface_tree(&surface, &output, now, Some(Duration::ZERO), |_, _| None);
+        for (popup, _) in PopupManager::popups_for_surface(&surface) {
+            send_frames_surface_tree(
+                popup.wl_surface(),
+                &output,
+                now,
+                Some(Duration::ZERO),
+                |_, _| None,
+            );
+        }
     }
 }
 
@@ -1575,9 +1618,8 @@ impl DrmSessionState {
 
     /// Window ids that should present / list on the active workspace (bottom→top order).
     ///
-    /// Client GL scanout of SHM trees is not yet wired on the DRM path (dumb-buffer
-    /// pageflip only); this filter is the live listing contract for focus and any
-    /// future composite path.
+    /// The GL composition path consumes this ordering; the dumb-buffer pageflip
+    /// remains only the explicit fallback when DrmCompositor initialization fails.
     fn window_ids_for_present(&self) -> Vec<&str> {
         let order: Vec<&str> = self
             .windows
@@ -2232,15 +2274,19 @@ impl DrmSessionState {
         layer: &MappedLayer,
         pos: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        for (popup, popup_offset) in PopupManager::popups_for_surface(layer.surface.wl_surface()) {
+            let origin = popup_origin(layer.geo.loc, &popup, popup_offset);
+            if let Some((surface, surface_origin)) =
+                under_from_surface_tree(popup.wl_surface(), pos, origin, WindowSurfaceType::ALL)
+            {
+                return Some((surface, surface_origin.to_f64()));
+            }
+        }
+
         let local = Point::from((
             pos.x - layer.geo.loc.x as f64,
             pos.y - layer.geo.loc.y as f64,
         ));
-        // `LayerSurface` here is the protocol wrapper from
-        // `smithay::wayland::shell::wlr_layer`; its tree hit-test helper lives
-        // in `desktop::utils`, unlike the desktop-layer wrapper.  Keep the
-        // query relative to the layer surface and translate the returned
-        // surface-tree origin back into compositor coordinates.
         let (surface, origin) = under_from_surface_tree(
             layer.surface.wl_surface(),
             local,
@@ -2311,6 +2357,41 @@ impl DrmSessionState {
         self.windows
             .iter()
             .position(|window| window.toplevel.wl_surface() == &root)
+    }
+
+    fn popup_root_origin(&self, popup: &PopupKind) -> Option<Point<i32, Logical>> {
+        let root = find_popup_root_surface(popup).ok()?;
+        if let Some(window) = self
+            .windows
+            .iter()
+            .find(|window| window.toplevel.wl_surface() == &root)
+        {
+            return Some(window.position);
+        }
+        self.layer_surfaces
+            .iter()
+            .find(|layer| layer.surface.wl_surface() == &root)
+            .map(|layer| layer.geo.loc)
+    }
+
+    fn constrained_popup_geometry(
+        &self,
+        popup: &PopupKind,
+        positioner: PositionerState,
+    ) -> Rectangle<i32, Logical> {
+        let Some(root_origin) = self.popup_root_origin(popup) else {
+            return positioner.get_geometry();
+        };
+        let parent_offset = get_popup_toplevel_coords(popup);
+        let output = self.output_area();
+        let target = Rectangle::new(
+            Point::from((
+                output.x - root_origin.x - parent_offset.x,
+                output.y - root_origin.y - parent_offset.y,
+            )),
+            Size::from((output.width.max(1), output.height.max(1))),
+        );
+        positioner.get_unconstrained_geometry(target)
     }
 
     fn activated_window_for_surface(&self, surface: &WlSurface) -> Option<String> {
@@ -2857,17 +2938,26 @@ impl XdgShellHandler for DrmSessionState {
 
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
         let popup = PopupKind::from(surface.clone());
-        if let Err(err) = self.popup_manager.track_popup(popup) {
-            tracing::debug!(?err, "failed to track xdg popup");
+        if let Err(err) = self.popup_manager.track_popup(popup.clone()) {
+            tracing::debug!(?err, "failed to track DRM xdg popup");
             return;
         }
+        let root_ready = find_popup_root_surface(&popup).is_ok();
+        let geometry = self.constrained_popup_geometry(&popup, positioner);
         surface.with_pending_state(|state| {
             state.positioner = positioner;
+            state.geometry = geometry;
         });
-        if let Err(err) = surface.send_configure() {
-            tracing::debug!(?err, "failed to configure xdg popup");
+        if root_ready {
+            if let Err(err) = surface.send_configure() {
+                tracing::debug!(?err, "failed to configure DRM xdg popup");
+            }
+        } else {
+            tracing::debug!(
+                "deferring parentless DRM popup configure until layer-shell association"
+            );
         }
-        self.request_full_redraw();
+        self.request_redraw();
     }
 
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
@@ -2880,59 +2970,14 @@ impl XdgShellHandler for DrmSessionState {
         positioner: PositionerState,
         token: u32,
     ) {
+        let popup = PopupKind::from(surface.clone());
+        let geometry = self.constrained_popup_geometry(&popup, positioner);
         surface.with_pending_state(|state| {
             state.positioner = positioner;
+            state.geometry = geometry;
         });
         let _serial = surface.send_repositioned(token);
-        self.request_full_redraw();
-    }
-
-    fn title_changed(&mut self, surface: ToplevelSurface) {
-        let title = with_states(surface.wl_surface(), |states| {
-            states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .and_then(|d| d.lock().unwrap().title.clone())
-                .unwrap_or_default()
-        });
-        if let Some(w) = self
-            .windows
-            .iter()
-            .find(|w| w.toplevel.wl_surface() == surface.wl_surface())
-        {
-            w.foreign.send_title(&title);
-            w.foreign.send_done();
-        }
-    }
-
-    fn app_id_changed(&mut self, surface: ToplevelSurface) {
-        let app_id = with_states(surface.wl_surface(), |states| {
-            states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .and_then(|d| d.lock().unwrap().app_id.clone())
-                .unwrap_or_default()
-        });
-        let active_window_id = self.activated_window_id.clone();
-        if let Some(w) = self
-            .windows
-            .iter_mut()
-            .find(|w| w.toplevel.wl_surface() == surface.wl_surface())
-        {
-            let is_active = active_window_id.as_ref() == Some(&w.window_id);
-            w.app_id = app_id.clone();
-            w.foreign.send_app_id(&app_id);
-            w.foreign.send_done();
-            if is_active {
-                if let Err(err) = crate::publish_active_toplevel(Some(&app_id)) {
-                    tracing::debug!(
-                        error = %err,
-                        app_id = %app_id,
-                        "could not refresh active application"
-                    );
-                }
-            }
-        }
+        self.request_redraw();
     }
 }
 delegate_xdg_shell!(DrmSessionState);
@@ -2970,6 +3015,20 @@ impl WlrLayerShellHandler for DrmSessionState {
             exclusive_zone,
         });
         self.request_full_redraw();
+    }
+
+    fn new_popup(&mut self, _parent: LayerSurface, surface: PopupSurface) {
+        let popup = PopupKind::from(surface.clone());
+        let positioner = surface.with_pending_state(|state| state.positioner);
+        let geometry = self.constrained_popup_geometry(&popup, positioner);
+        surface.with_pending_state(|state| {
+            state.positioner = positioner;
+            state.geometry = geometry;
+        });
+        if let Err(err) = surface.send_configure() {
+            tracing::debug!(?err, "failed to configure DRM layer-shell popup");
+        }
+        self.request_redraw();
     }
 
     fn layer_destroyed(&mut self, surface: LayerSurface) {
