@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use std::io;
 
 // Use Smithay's re-export so the DRM version always matches the backend.
-use smithay::reexports::drm;
 use drm::control::{property, Device as ControlDevice, ResourceHandle};
+use smithay::reexports::drm;
 
 /// Kernel EOTF values for `hdr_metadata_infoframe.eotf`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,7 +99,8 @@ impl HdrOutputMetadata {
                 max_display_mastering_luminance: max_mastering_nits,
                 min_display_mastering_luminance: (minimum * 10_000.0)
                     .round()
-                    .clamp(0.0, f32::from(u16::MAX)) as u16,
+                    .clamp(0.0, f32::from(u16::MAX))
+                    as u16,
                 max_cll,
                 max_fall,
             },
@@ -273,13 +274,7 @@ where
     if state.enabled == enable {
         return Ok(true);
     }
-    set_property_by_name(
-        device,
-        crtc,
-        crtc_props,
-        "VRR_ENABLED",
-        u64::from(enable),
-    )
+    set_property_by_name(device, crtc, crtc_props, "VRR_ENABLED", u64::from(enable))
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +432,10 @@ where
         )
     })?;
     let max_bpc_value = bpc_target(max_bpc_property.range(), 10).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidData, "max bpc property has an invalid range")
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "max bpc property has an invalid range",
+        )
     })?;
 
     // Allocate before mutating connector state so allocation failure needs no
@@ -531,7 +529,10 @@ mod tests {
         let red = ChromaticityPoint::from_xy(0.708, 0.292);
         assert_eq!(red.x, 35_400);
         assert_eq!(red.y, 14_600);
-        assert_eq!(ChromaticityPoint::from_xy(f32::NAN, 2.0), ChromaticityPoint { x: 0, y: 50_000 });
+        assert_eq!(
+            ChromaticityPoint::from_xy(f32::NAN, 2.0),
+            ChromaticityPoint { x: 0, y: 50_000 }
+        );
     }
 
     #[test]
@@ -539,12 +540,18 @@ mod tests {
         let metadata = HdrOutputMetadata::hdr10(1000, 0.005, 1000, 400);
         assert_eq!(metadata.metadata_type, 0);
         assert_eq!(metadata.hdmi_metadata_type1.eotf, Eotf::St2084 as u8);
-        assert_eq!(metadata.hdmi_metadata_type1.min_display_mastering_luminance, 50);
+        assert_eq!(
+            metadata.hdmi_metadata_type1.min_display_mastering_luminance,
+            50
+        );
         assert_eq!(metadata.hdmi_metadata_type1.max_cll, 1000);
         assert_eq!(metadata.hdmi_metadata_type1.max_fall, 400);
 
         let invalid = HdrOutputMetadata::hdr10(1000, f32::NAN, 0, 0);
-        assert_eq!(invalid.hdmi_metadata_type1.min_display_mastering_luminance, 0);
+        assert_eq!(
+            invalid.hdmi_metadata_type1.min_display_mastering_luminance,
+            0
+        );
     }
 
     #[test]
@@ -564,9 +571,21 @@ mod tests {
             colorspaces: vec![COLORSPACE_BT2020_RGB.to_owned()],
         };
         assert!(complete.hdr10_capable());
-        assert!(!HdrConnectorCaps { max_bpc: Some(8), ..complete.clone() }.hdr10_capable());
-        assert!(!HdrConnectorCaps { has_hdr_metadata: false, ..complete.clone() }.hdr10_capable());
-        assert!(!HdrConnectorCaps { has_bt2020_colorspace: false, ..complete }.hdr10_capable());
+        assert!(!HdrConnectorCaps {
+            max_bpc: Some(8),
+            ..complete.clone()
+        }
+        .hdr10_capable());
+        assert!(!HdrConnectorCaps {
+            has_hdr_metadata: false,
+            ..complete.clone()
+        }
+        .hdr10_capable());
+        assert!(!HdrConnectorCaps {
+            has_bt2020_colorspace: false,
+            ..complete
+        }
+        .hdr10_capable());
     }
 
     #[test]
@@ -584,11 +603,19 @@ mod tests {
         assert!(!vrr_request_allowed(unsupported, true));
         assert!(!vrr_request_allowed(unsupported, false));
 
-        let controllable = VrrState { capable: false, controllable: true, enabled: false };
+        let controllable = VrrState {
+            capable: false,
+            controllable: true,
+            enabled: false,
+        };
         assert!(!vrr_request_allowed(controllable, true));
         assert!(vrr_request_allowed(controllable, false));
 
-        let capable = VrrState { capable: true, controllable: true, enabled: false };
+        let capable = VrrState {
+            capable: true,
+            controllable: true,
+            enabled: false,
+        };
         assert!(vrr_request_allowed(capable, true));
     }
 

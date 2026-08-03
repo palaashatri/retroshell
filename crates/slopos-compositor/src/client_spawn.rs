@@ -12,9 +12,9 @@ pub fn is_valid_client_binary_name(bin: &str) -> bool {
     !bin.is_empty()
         && bin != "."
         && bin != ".."
-        && bin.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
-        })
+        && bin
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 #[cfg(unix)]
@@ -135,7 +135,10 @@ pub fn spawn_client(wayland_socket_name: &str, bin: &str) {
     }
 
     let Some(path) = resolve_client_bin_checked(bin) else {
-        tracing::warn!(bin, "first-party client executable was not found or is not executable");
+        tracing::warn!(
+            bin,
+            "first-party client executable was not found or is not executable"
+        );
         return;
     };
 
@@ -237,8 +240,19 @@ mod tests {
 
     #[test]
     fn binary_names_cannot_escape_the_first_party_search_roots() {
-        for invalid in ["", ".", "..", "../shell", "bin/shell", "bin\\shell", "shell name"] {
-            assert!(!is_valid_client_binary_name(invalid), "accepted {invalid:?}");
+        for invalid in [
+            "",
+            ".",
+            "..",
+            "../shell",
+            "bin/shell",
+            "bin\\shell",
+            "shell name",
+        ] {
+            assert!(
+                !is_valid_client_binary_name(invalid),
+                "accepted {invalid:?}"
+            );
         }
         for valid in ["slopos-shell", "slopos_lock", "app.v2"] {
             assert!(is_valid_client_binary_name(valid), "rejected {valid:?}");

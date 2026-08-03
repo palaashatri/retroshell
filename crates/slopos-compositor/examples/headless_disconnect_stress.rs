@@ -122,8 +122,7 @@ fn run_cycle(cycle: u32) -> Result<(), Box<dyn Error>> {
     let connection = Connection::connect_to_env()?;
     let (globals, mut queue) = registry_queue_init::<State>(&connection)?;
     let handle = queue.handle();
-    let compositor =
-        globals.bind::<wl_compositor::WlCompositor, _, _>(&handle, 1..=6, ())?;
+    let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&handle, 1..=6, ())?;
     let wm_base = globals.bind::<xdg_wm_base::XdgWmBase, _, _>(&handle, 1..=6, ())?;
 
     let parent_surface = compositor.create_surface(&handle, ());

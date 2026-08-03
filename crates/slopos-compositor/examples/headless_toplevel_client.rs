@@ -136,8 +136,7 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
                     height,
                     states,
                 });
-                state.toplevel_configure_count =
-                    state.toplevel_configure_count.saturating_add(1);
+                state.toplevel_configure_count = state.toplevel_configure_count.saturating_add(1);
             }
             xdg_toplevel::Event::Close => state.close_requested = true,
             _ => {}
@@ -227,20 +226,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (globals, mut event_queue) = registry_queue_init::<State>(&connection)?;
     let queue_handle = event_queue.handle();
 
-    let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(
-        &queue_handle,
-        1..=6,
-        (),
-    )?;
-    let wm_base =
-        globals.bind::<xdg_wm_base::XdgWmBase, _, _>(&queue_handle, 1..=6, ())?;
+    let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&queue_handle, 1..=6, ())?;
+    let wm_base = globals.bind::<xdg_wm_base::XdgWmBase, _, _>(&queue_handle, 1..=6, ())?;
 
     let parent_wl_surface = compositor.create_surface(&queue_handle, ());
-    let parent_xdg_surface = wm_base.get_xdg_surface(
-        &parent_wl_surface,
-        &queue_handle,
-        SurfaceRole::Toplevel,
-    );
+    let parent_xdg_surface =
+        wm_base.get_xdg_surface(&parent_wl_surface, &queue_handle, SurfaceRole::Toplevel);
     let toplevel = parent_xdg_surface.get_toplevel(&queue_handle, ());
     toplevel.set_title("SLOPOS compositor protocol smoke".to_owned());
     toplevel.set_app_id("io.github.palaashatri.slopos.compositor-smoke".to_owned());
@@ -343,17 +334,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let positioner = wm_base.create_positioner(&queue_handle, ());
     configure_positioner(&positioner, 0);
     let popup_wl_surface = compositor.create_surface(&queue_handle, ());
-    let popup_xdg_surface = wm_base.get_xdg_surface(
-        &popup_wl_surface,
-        &queue_handle,
-        SurfaceRole::Popup,
-    );
-    let popup = popup_xdg_surface.get_popup(
-        Some(&parent_xdg_surface),
-        &positioner,
-        &queue_handle,
-        (),
-    );
+    let popup_xdg_surface =
+        wm_base.get_xdg_surface(&popup_wl_surface, &queue_handle, SurfaceRole::Popup);
+    let popup =
+        popup_xdg_surface.get_popup(Some(&parent_xdg_surface), &positioner, &queue_handle, ());
     popup_wl_surface.commit();
 
     dispatch_until(

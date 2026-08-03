@@ -198,9 +198,18 @@ mod tests {
 
     #[test]
     fn refresh_rate_duration_is_exactly_policy_driven() {
-        assert_eq!(RefreshRate::Hz60.frame_duration(), Duration::from_nanos(16_666_666));
-        assert_eq!(RefreshRate::Hz120.frame_duration(), Duration::from_nanos(8_333_333));
-        assert_eq!(RefreshRate::Hz144.frame_duration(), Duration::from_nanos(6_944_444));
+        assert_eq!(
+            RefreshRate::Hz60.frame_duration(),
+            Duration::from_nanos(16_666_666)
+        );
+        assert_eq!(
+            RefreshRate::Hz120.frame_duration(),
+            Duration::from_nanos(8_333_333)
+        );
+        assert_eq!(
+            RefreshRate::Hz144.frame_duration(),
+            Duration::from_nanos(6_944_444)
+        );
         assert_eq!(RefreshRate::Adaptive.frame_duration(), Duration::ZERO);
         assert!(!RefreshRate::Adaptive.is_fixed());
         assert!(RefreshRate::Hz60.is_fixed());
@@ -213,8 +222,14 @@ mod tests {
         assert_eq!(RefreshRate::Adaptive.as_str(), "adaptive");
         assert_eq!(RefreshRate::from_str("60hz"), Some(RefreshRate::Hz60));
         assert_eq!(RefreshRate::from_str("120Hz"), Some(RefreshRate::Hz120));
-        assert_eq!(RefreshRate::from_str("adaptive"), Some(RefreshRate::Adaptive));
-        assert_eq!(RefreshRate::parse_flexible("VRR"), Some(RefreshRate::Adaptive));
+        assert_eq!(
+            RefreshRate::from_str("adaptive"),
+            Some(RefreshRate::Adaptive)
+        );
+        assert_eq!(
+            RefreshRate::parse_flexible("VRR"),
+            Some(RefreshRate::Adaptive)
+        );
         assert_eq!(RefreshRate::from_str("invalid"), None);
     }
 

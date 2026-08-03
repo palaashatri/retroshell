@@ -89,9 +89,7 @@ fn validate_capture_size(width: i32, height: i32) -> anyhow::Result<(u32, u32, u
         .checked_mul(u64::try_from(height)?)
         .ok_or_else(|| anyhow::anyhow!("capture pixel count overflow"))?;
     if pixels > MAX_CAPTURE_PIXELS {
-        anyhow::bail!(
-            "capture dimensions {width}x{height} exceed {MAX_CAPTURE_PIXELS} pixels"
-        );
+        anyhow::bail!("capture dimensions {width}x{height} exceed {MAX_CAPTURE_PIXELS} pixels");
     }
     let bytes = pixels
         .checked_mul(4)
@@ -135,11 +133,7 @@ fn capture(
     // Mesa accepts BGRA readback for Argb8888 here. Little-endian Argb8888 is
     // [B, G, R, A] in memory; PNG expects [R, G, B, A].
     let mapping = renderer
-        .copy_framebuffer(
-            &framebuffer,
-            Rectangle::from_size(buffer),
-            Fourcc::Argb8888,
-        )
+        .copy_framebuffer(&framebuffer, Rectangle::from_size(buffer), Fourcc::Argb8888)
         .map_err(|error| anyhow::anyhow!("copy screenshot framebuffer: {error}"))?;
     let flipped = mapping.flipped();
     let pixels = renderer
@@ -195,7 +189,10 @@ fn save_png_atomic(destination: &Path, image: image::RgbaImage) -> anyhow::Resul
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     if !parent.is_dir() {
-        anyhow::bail!("screenshot parent directory does not exist: {}", parent.display());
+        anyhow::bail!(
+            "screenshot parent directory does not exist: {}",
+            parent.display()
+        );
     }
     let filename = destination
         .file_name()
@@ -218,8 +215,7 @@ fn save_png_atomic(destination: &Path, image: image::RgbaImage) -> anyhow::Resul
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
         }
         let mut writer = BufWriter::new(file);
-        image::DynamicImage::ImageRgba8(image)
-            .write_to(&mut writer, image::ImageFormat::Png)?;
+        image::DynamicImage::ImageRgba8(image).write_to(&mut writer, image::ImageFormat::Png)?;
         writer.flush()?;
         writer.get_ref().sync_all()?;
         drop(writer);
@@ -246,7 +242,10 @@ mod tests {
 
     #[test]
     fn capture_dimensions_are_bounded_before_allocation() {
-        assert_eq!(validate_capture_size(1920, 1080).unwrap().2, 1920 * 1080 * 4);
+        assert_eq!(
+            validate_capture_size(1920, 1080).unwrap().2,
+            1920 * 1080 * 4
+        );
         assert!(validate_capture_size(0, 1080).is_err());
         assert!(validate_capture_size(-1, 1080).is_err());
         assert!(validate_capture_size(MAX_CAPTURE_DIMENSION + 1, 1).is_err());
@@ -256,17 +255,13 @@ mod tests {
     #[test]
     fn row_flip_is_exact_and_in_place() {
         let mut pixels = vec![
-            1, 0, 0, 255, 2, 0, 0, 255,
-            3, 0, 0, 255, 4, 0, 0, 255,
-            5, 0, 0, 255, 6, 0, 0, 255,
+            1, 0, 0, 255, 2, 0, 0, 255, 3, 0, 0, 255, 4, 0, 0, 255, 5, 0, 0, 255, 6, 0, 0, 255,
         ];
         flip_rows_in_place(&mut pixels, 2, 3).unwrap();
         assert_eq!(
             pixels,
             vec![
-                5, 0, 0, 255, 6, 0, 0, 255,
-                3, 0, 0, 255, 4, 0, 0, 255,
-                1, 0, 0, 255, 2, 0, 0, 255,
+                5, 0, 0, 255, 6, 0, 0, 255, 3, 0, 0, 255, 4, 0, 0, 255, 1, 0, 0, 255, 2, 0, 0, 255,
             ]
         );
     }

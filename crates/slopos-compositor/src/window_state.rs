@@ -229,8 +229,7 @@ impl ZoomPolicyConfig {
             config.titlebar_double_click_action = ZoomAction::parse(value);
         }
         if let Some(value) = map.get("show_layout_menu_on_hover") {
-            config.show_layout_menu_on_hover =
-                parse_bool(value, config.show_layout_menu_on_hover);
+            config.show_layout_menu_on_hover = parse_bool(value, config.show_layout_menu_on_hover);
         }
         if let Some(value) = map.get("edge_tiling") {
             config.edge_tiling = parse_bool(value, config.edge_tiling);
@@ -274,10 +273,7 @@ pub fn calculate_presentation_geometry(
     clamp_geometry_to_normalized_area(target, area)
 }
 
-fn smart_zoom_geometry(
-    area: WindowGeometry,
-    preferred_size: Option<(i32, i32)>,
-) -> WindowGeometry {
+fn smart_zoom_geometry(area: WindowGeometry, preferred_size: Option<(i32, i32)>) -> WindowGeometry {
     let Some((preferred_width, preferred_height)) = preferred_size else {
         return area;
     };
@@ -300,12 +296,8 @@ fn tiled_geometry(area: WindowGeometry, placement: TilePlacement) -> WindowGeome
     match placement {
         TilePlacement::Left => WindowGeometry::new(left_x, area.y, left_width, area.height),
         TilePlacement::Right => WindowGeometry::new(right_x, area.y, right_width, area.height),
-        TilePlacement::TopLeft => {
-            WindowGeometry::new(left_x, top_y, left_width, top_height)
-        }
-        TilePlacement::TopRight => {
-            WindowGeometry::new(right_x, top_y, right_width, top_height)
-        }
+        TilePlacement::TopLeft => WindowGeometry::new(left_x, top_y, left_width, top_height),
+        TilePlacement::TopRight => WindowGeometry::new(right_x, top_y, right_width, top_height),
         TilePlacement::BottomLeft => {
             WindowGeometry::new(left_x, bottom_y, left_width, bottom_height)
         }
@@ -492,10 +484,7 @@ mod tests {
             7,
         );
         assert_eq!(minimized.geometry, current);
-        assert_eq!(
-            minimized.restore_state.unwrap().normal_geometry,
-            current
-        );
+        assert_eq!(minimized.restore_state.unwrap().normal_geometry, current);
     }
 
     #[test]
@@ -585,13 +574,11 @@ mod tests {
             let geometry = calculate_presentation_geometry(area, state, Some((-1, 900)), normal);
             assert!(geometry.x >= area.x && geometry.y >= area.y, "{state:?}");
             assert!(
-                geometry.x.saturating_add(geometry.width)
-                    <= area.x.saturating_add(area.width),
+                geometry.x.saturating_add(geometry.width) <= area.x.saturating_add(area.width),
                 "{state:?}"
             );
             assert!(
-                geometry.y.saturating_add(geometry.height)
-                    <= area.y.saturating_add(area.height),
+                geometry.y.saturating_add(geometry.height) <= area.y.saturating_add(area.height),
                 "{state:?}"
             );
         }

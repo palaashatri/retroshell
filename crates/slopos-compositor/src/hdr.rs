@@ -170,23 +170,15 @@ impl HdrCapabilities {
         } else if !self.hdr_supported {
             (ColorSpace::SRgb, HdrFallbackReason::HdrUnsupported)
         } else if requested_color_space.is_hdr_encoding()
-            && self
-                .supported_color_spaces
-                .contains(&requested_color_space)
+            && self.supported_color_spaces.contains(&requested_color_space)
         {
             (requested_color_space, HdrFallbackReason::None)
-        } else if self
-            .supported_color_spaces
-            .contains(&ColorSpace::Rec2020)
-        {
+        } else if self.supported_color_spaces.contains(&ColorSpace::Rec2020) {
             (
                 ColorSpace::Rec2020,
                 HdrFallbackReason::RequestedColorSpaceUnsupported,
             )
-        } else if self
-            .supported_color_spaces
-            .contains(&ColorSpace::ScRgb)
-        {
+        } else if self.supported_color_spaces.contains(&ColorSpace::ScRgb) {
             (
                 ColorSpace::ScRgb,
                 HdrFallbackReason::RequestedColorSpaceUnsupported,
@@ -355,10 +347,8 @@ mod tests {
 
     #[test]
     fn hardware_capabilities_are_deduplicated_without_invention() {
-        let capabilities = HdrCapabilities::from_hardware(
-            true,
-            [ColorSpace::Rec2020, ColorSpace::Rec2020],
-        );
+        let capabilities =
+            HdrCapabilities::from_hardware(true, [ColorSpace::Rec2020, ColorSpace::Rec2020]);
         assert_eq!(
             capabilities.supported_color_spaces,
             vec![ColorSpace::SRgb, ColorSpace::Rec2020]
@@ -370,15 +360,16 @@ mod tests {
 
     #[test]
     fn disabling_hdr_forces_safe_srgb() {
-        let mut capabilities = HdrCapabilities::from_hardware(
-            true,
-            [ColorSpace::Rec2020, ColorSpace::ScRgb],
-        );
+        let mut capabilities =
+            HdrCapabilities::from_hardware(true, [ColorSpace::Rec2020, ColorSpace::ScRgb]);
         capabilities.set_color_space(ColorSpace::Rec2020);
 
         let outcome = capabilities.negotiate_request(false, ColorSpace::Rec2020);
         assert_eq!(outcome.applied_color_space, ColorSpace::SRgb);
-        assert_eq!(outcome.fallback_reason, HdrFallbackReason::SdrPolicyForcesSrgb);
+        assert_eq!(
+            outcome.fallback_reason,
+            HdrFallbackReason::SdrPolicyForcesSrgb
+        );
         assert!(!outcome.hdr_active);
         assert!(!outcome.exact_match);
     }
@@ -395,8 +386,7 @@ mod tests {
 
     #[test]
     fn unavailable_hdr_encoding_uses_a_verified_fallback() {
-        let mut capabilities =
-            HdrCapabilities::from_hardware(true, [ColorSpace::Rec2020]);
+        let mut capabilities = HdrCapabilities::from_hardware(true, [ColorSpace::Rec2020]);
         let outcome = capabilities.negotiate_request(true, ColorSpace::ScRgb);
         assert_eq!(outcome.applied_color_space, ColorSpace::Rec2020);
         assert_eq!(
@@ -409,8 +399,7 @@ mod tests {
 
     #[test]
     fn capability_loss_returns_current_output_to_srgb() {
-        let mut capabilities =
-            HdrCapabilities::from_hardware(true, [ColorSpace::Rec2020]);
+        let mut capabilities = HdrCapabilities::from_hardware(true, [ColorSpace::Rec2020]);
         assert!(capabilities.set_color_space(ColorSpace::Rec2020));
         capabilities.update_from_hardware(false, [ColorSpace::Rec2020]);
         assert_eq!(capabilities.current_color_space, ColorSpace::SRgb);
@@ -419,14 +408,21 @@ mod tests {
 
     #[test]
     fn tone_mappers_are_finite_bounded_and_monotonic_for_sdr_input() {
-        for mode in [ToneMapperMode::Reinhard, ToneMapperMode::Aces, ToneMapperMode::None] {
+        for mode in [
+            ToneMapperMode::Reinhard,
+            ToneMapperMode::Aces,
+            ToneMapperMode::None,
+        ] {
             let mapper = ToneMapper::new(mode, 1000.0);
             let mut previous = 0.0;
             for step in 0..=1000 {
                 let value = mapper.tone_map(step as f32 / 1000.0);
                 assert!(value.is_finite());
                 assert!((0.0..=1.0).contains(&value));
-                assert!(value + f32::EPSILON >= previous, "{mode:?} was not monotonic");
+                assert!(
+                    value + f32::EPSILON >= previous,
+                    "{mode:?} was not monotonic"
+                );
                 previous = value;
             }
         }

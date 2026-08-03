@@ -290,7 +290,9 @@ fn fixed_and_adaptive_frame_pacing_do_not_share_deadlines_or_samples() {
     assert!(scheduler.record_frame_at(start));
     assert!(scheduler.record_frame_at(start + Duration::from_millis(16)));
     assert_eq!(scheduler.sample_count(), 1);
-    assert!(scheduler.time_until_next_frame_at(start + Duration::from_millis(20)).is_zero());
+    assert!(scheduler
+        .time_until_next_frame_at(start + Duration::from_millis(20))
+        .is_zero());
 
     scheduler.set_refresh_rate(RefreshRate::Adaptive);
     assert_eq!(scheduler.sample_count(), 0);
@@ -348,7 +350,9 @@ fn repeated_space_removal_never_strands_exclusive_or_all_space_windows() {
     spaces
         .assign_window("exclusive-three", SpaceTarget::Named("Three".into()))
         .unwrap();
-    spaces.assign_window("everywhere", SpaceTarget::All).unwrap();
+    spaces
+        .assign_window("everywhere", SpaceTarget::All)
+        .unwrap();
     spaces.activate_space(three).unwrap();
 
     for removed in [three, two, four] {
