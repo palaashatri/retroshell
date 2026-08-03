@@ -37,8 +37,6 @@ jobs:
   lockfile:
     name: lockfile consistency
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,25 +61,6 @@ jobs:
           path: artifacts/qa/generated-lockfile/Cargo.lock
           if-no-files-found: error
           retention-days: 7
-
-      # Temporary implementation-branch repair path. Direct pushes and this
-      # same-repository implementation PR may update only Cargo.lock. Fork pull
-      # requests remain read-only. Remove this step once the lockfile lands.
-      - name: Commit repaired lockfile
-        if: >-
-          (github.event_name == 'push' && github.ref == 'refs/heads/docs/program-design') ||
-          (github.event_name == 'pull_request' &&
-           github.event.pull_request.head.repo.full_name == github.repository &&
-           github.event.pull_request.head.ref == 'docs/program-design')
-        run: |
-          if git diff --quiet -- Cargo.lock; then
-            exit 0
-          fi
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add Cargo.lock
-          git commit -m "chore: regenerate workspace lockfile"
-          git push origin HEAD:docs/program-design
 
       - name: Verify committed lockfile is current
         run: git diff --exit-code -- Cargo.lock
@@ -216,16 +195,41 @@ jobs:
   formatting:
     name: rustfmt
     runs-on: ubuntu-latest
-    # Informational for now: the tree is not fully rustfmt-clean. Flip
-    # continue-on-error off once `cargo fmt --all` has been run and reviewed.
-    continue-on-error: true
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.SOURCE_SHA }}
+
       - name: Confirm exact source revision
         run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: cargo fmt --all --check
+
+      - name: Format workspace
+        run: cargo fmt --all
+
+      # Temporary implementation-branch repair. Same-repository PRs may commit
+      # rustfmt-only changes; forks remain read-only. Remove after this cleanup.
+      - name: Commit rustfmt cleanup
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/docs/program-design') ||
+          (github.event_name == 'pull_request' &&
+           github.event.pull_request.head.repo.full_name == github.repository &&
+           github.event.pull_request.head.ref == 'docs/program-design')
+        run: |
+          if git diff --quiet -- '*.rs'; then
+            exit 0
+          fi
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- '*.rs'
+          git commit -m "style: format compositor workspace"
+          git push origin HEAD:docs/program-design
+
+      - name: Verify formatting
+        run: cargo fmt --all --check
