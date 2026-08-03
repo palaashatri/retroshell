@@ -48,6 +48,19 @@ jobs:
         with:
           components: rustfmt
 
+      - name: Repair guarded source anchor
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("scripts/apply-compositor-popup-finalization.py")
+          text = path.read_text()
+          old = '"    fn surface_under(\\n",'
+          new = '"    fn surface_under(&self,",'
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one DRM surface_under anchor, found {text.count(old)}")
+          path.write_text(text.replace(old, new, 1))
+          PY
+
       - name: Apply guarded popup finalization
         run: python3 scripts/apply-compositor-popup-finalization.py
 
