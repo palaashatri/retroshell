@@ -1,0 +1,51 @@
+name: Compositor popup finalization
+
+on:
+  push:
+    branches:
+      - docs/program-design
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: compositor-popup-finalization
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    if: ${{ github.repository == 'palaashatri/rust-slopos' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: docs/program-design
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Apply guarded popup finalization
+        run: python3 scripts/apply-compositor-popup-finalization.py
+
+      - name: Format and validate patch
+        run: |
+          cargo fmt --all
+          git diff --check
+          test -n "$(git status --porcelain -- crates/slopos-compositor/src/main.rs crates/slopos-compositor/src/session_drm.rs)"
+          git diff --exit-code -- Cargo.lock Cargo.toml
+
+      - name: Commit finalized popup implementation
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add crates/slopos-compositor/src/main.rs \
+                  crates/slopos-compositor/src/session_drm.rs
+          git rm scripts/apply-compositor-popup-finalization.py \
+                 .github/workflows/compositor-popup-finalize.yml
+          git commit -m "fix(compositor): constrain and integrate all popup roots"
+          git fetch origin docs/program-design
+          git rebase origin/docs/program-design
+          git push origin HEAD:docs/program-design
