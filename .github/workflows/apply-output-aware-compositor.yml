@@ -69,15 +69,17 @@ jobs:
       - name: Make initial toplevel placement output-aware
         run: |
           python3 - <<'PY'
+          import re
           from pathlib import Path
           path = Path("crates/slopos-compositor/src/main.rs")
           text = path.read_text(encoding="utf-8")
-          old = '''            let geometry = clamp_window_to_work_area(
-                      WindowGeometry::new(x, y, DEFAULT_WINDOW_W, DEFAULT_WINDOW_H),
-                      self.work_area(),
-                  );
-          '''
-          new = '''            let requested_geometry =
+          pattern = re.compile(
+              r"(?m)^            let geometry = clamp_window_to_work_area\(\n"
+              r"\s+WindowGeometry::new\(x, y, DEFAULT_WINDOW_W, DEFAULT_WINDOW_H\),\n"
+              r"\s+self\.work_area\(\),\n"
+              r"\s+\);\n"
+          )
+          replacement = '''            let requested_geometry =
                       WindowGeometry::new(x, y, DEFAULT_WINDOW_W, DEFAULT_WINDOW_H);
                   let output_area = output_index_for_geometry(
                       &self.laid_out_outputs,
@@ -91,9 +93,10 @@ jobs:
                       self.work_area_for_output(output_area),
                   );
           '''
-          if text.count(old) != 1:
-              raise SystemExit(f"expected one new_toplevel placement block, found {text.count(old)}")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          updated, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f"expected one new_toplevel placement block, found {count}")
+          path.write_text(updated, encoding="utf-8")
           PY
 
       - name: Reject legacy whole-canvas presentation definitions
