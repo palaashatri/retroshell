@@ -3,6 +3,7 @@
 pub mod client_spawn;
 pub mod frame_timing;
 pub mod hdr;
+pub mod output_assignment;
 pub mod perf_budget;
 pub mod spaces;
 pub mod window_state;
@@ -52,6 +53,10 @@ pub fn register_wayland_display_source<'event_loop, State: 'static>(
         .map_err(|error| anyhow::anyhow!("register Wayland display source: {error}"))
 }
 
+pub use output_assignment::{
+    geometries_intersect, normalize_laid_out_outputs, output_geometry, output_index_for_geometry,
+    output_index_for_point, output_layout_bounds,
+};
 pub use spaces::{
     FullscreenClassification, MultiMonitorPolicy, Space, SpaceId, SpaceTarget, SpacesError,
     SpacesModel,
@@ -903,18 +908,12 @@ pub fn layout_outputs_grid(outputs: &[OutputConfig]) -> Vec<LaidOutOutput> {
 
 /// Total canvas size covering all laid-out outputs (union bounding box).
 pub fn total_output_size(laid_out: &[LaidOutOutput]) -> OutputConfig {
-    if laid_out.is_empty() {
+    let Some(bounds) = output_layout_bounds(laid_out) else {
         return OutputConfig::default();
-    }
-    let mut max_right = 0;
-    let mut max_bottom = 0;
-    for o in laid_out {
-        max_right = max_right.max(o.x + o.config.width);
-        max_bottom = max_bottom.max(o.y + o.config.height);
-    }
+    };
     OutputConfig {
-        width: max_right.max(1),
-        height: max_bottom.max(1),
+        width: bounds.width.max(1),
+        height: bounds.height.max(1),
     }
 }
 
@@ -1015,7 +1014,7 @@ pub fn resolve_laid_out_outputs_from_env_values(
         let entries = parse_outputs_layout_spec(spec);
         if !entries.is_empty() {
             let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
-            let laid_out = laid_out_from_layout_entries(&entries);
+            let laid_out = normalize_laid_out_outputs(&laid_out_from_layout_entries(&entries));
             return ResolvedOutputsLayout {
                 laid_out,
                 names,
@@ -1036,7 +1035,7 @@ pub fn resolve_laid_out_outputs_from_env_values(
     };
 
     let configs = outputs_from_env_values(outputs_spec, width, height);
-    let laid_out = layout_outputs(&configs, layout_mode);
+    let laid_out = normalize_laid_out_outputs(&layout_outputs(&configs, layout_mode));
     let names: Vec<String> = (0..laid_out.len())
         .map(|i| format!("X11-{}", i + 1))
         .collect();

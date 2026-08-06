@@ -40,8 +40,9 @@ mod linux {
         accumulate_damage_for_window_move, accumulate_damage_rect, apply_scale_to_output_config,
         assign_new_window_to_active, cascade_position, clamp_window_to_work_area,
         clear_interactive_grab_state, detect_output_scale_from_env,
-        focus_window_after_workspace_switch, geometry_for_interactive_grab, move_to_top,
-        next_cascade_offset, output_scale_summary, pointer_grab_request_is_valid_for_window,
+        focus_window_after_workspace_switch, geometries_intersect, geometry_for_interactive_grab,
+        move_to_top, next_cascade_offset, output_geometry, output_index_for_geometry,
+        output_index_for_point, output_scale_summary, pointer_grab_request_is_valid_for_window,
         prefer_full_redraw, register_wayland_display_source, resolve_laid_out_outputs_from_env,
         selection_bytes_for_mime_with_text_fallback, session_mode_note, surface_tree_root,
         text_input_capability_from_env, text_input_capability_summary, total_output_size,
@@ -540,6 +541,10 @@ mod linux {
         /// Kept alive so globals stay registered for the compositor lifetime.
         #[allow(dead_code)]
         outputs: Vec<Output>,
+        /// Normalized logical output rectangles used for window assignment.
+        laid_out_outputs: Vec<LaidOutOutput>,
+        /// Connector or synthetic names parallel to `laid_out_outputs`.
+        output_names: Vec<String>,
         running: bool,
 
         // Mapped windows (in painting order, bottom → top)
@@ -773,7 +778,7 @@ mod linux {
                 return positioner.get_geometry();
             };
             let parent_offset = get_popup_toplevel_coords(popup);
-            let output = self.output_area();
+            let output = self.output_area_for_point(root_origin);
             let target = Rectangle::new(
                 Point::from((
                     output.x - root_origin.x - parent_offset.x,
@@ -1309,14 +1314,30 @@ mod linux {
             self.begin_interactive_grab(&toplevel, kind, &seat, serial);
         }
 
-        fn output_area(&self) -> WindowGeometry {
+        fn canvas_area(&self) -> WindowGeometry {
             WindowGeometry::new(0, 0, self.output_size.w, self.output_size.h)
         }
 
-        fn work_area(&self) -> WindowGeometry {
-            let reservations = self.layer_surfaces.iter().map(|layer| {
+        fn output_area_for_point(&self, point: Point<i32, Logical>) -> WindowGeometry {
+            output_index_for_point(&self.laid_out_outputs, point.x, point.y)
+                .and_then(|index| self.laid_out_outputs.get(index))
+                .map(output_geometry)
+                .unwrap_or_else(|| self.canvas_area())
+        }
+
+        fn work_area_for_output(&self, output: WindowGeometry) -> WindowGeometry {
+            let reservations = self.layer_surfaces.iter().filter_map(|layer| {
+                let layer_geometry = WindowGeometry::new(
+                    layer.geo.loc.x,
+                    layer.geo.loc.y,
+                    layer.geo.size.w,
+                    layer.geo.size.h,
+                );
+                if !geometries_intersect(output, layer_geometry) {
+                    return None;
+                }
                 let (_, anchor, margins, _) = layer_surface_request(&layer.surface);
-                ExclusiveZoneReservation {
+                Some(ExclusiveZoneReservation {
                     exclusive_zone: layer.exclusive_zone,
                     anchor_top: anchor.contains(Anchor::TOP),
                     anchor_bottom: anchor.contains(Anchor::BOTTOM),
@@ -1326,15 +1347,20 @@ mod linux {
                     margin_bottom: margins.bottom,
                     margin_left: margins.left,
                     margin_right: margins.right,
-                }
+                })
             });
-            compute_exclusive_work_area(self.output_area(), reservations)
+            compute_exclusive_work_area(output, reservations)
         }
 
         /// Keep normal windows inside the current compositor-owned work area
         /// after a layer-shell surface changes its exclusive reservation.
         fn clamp_normal_windows_to_work_area(&mut self) {
-            let work_area = self.work_area();
+            let fallback_work_area = self.work_area_for_output(self.canvas_area());
+            let output_work_areas: Vec<WindowGeometry> = self
+                .laid_out_outputs
+                .iter()
+                .map(|output| self.work_area_for_output(output_geometry(output)))
+                .collect();
             let mut changed = false;
             for window in &mut self.windows {
                 if window.minimized
@@ -1344,6 +1370,9 @@ mod linux {
                     continue;
                 }
                 let current = window.geometry();
+                let work_area = output_index_for_geometry(&self.laid_out_outputs, current)
+                    .and_then(|index| output_work_areas.get(index).copied())
+                    .unwrap_or(fallback_work_area);
                 let next = clamp_window_to_work_area(current, work_area);
                 if current == next {
                     continue;
@@ -1508,15 +1537,27 @@ mod linux {
             let old = self.windows[idx].geometry();
             let current_state = self.windows[idx].presentation_state;
             let current_restore_state = self.windows[idx].restore_state.clone();
+            let output_index = output_index_for_geometry(&self.laid_out_outputs, old).unwrap_or(0);
+            let output_area = self
+                .laid_out_outputs
+                .get(output_index)
+                .map(output_geometry)
+                .unwrap_or_else(|| self.canvas_area());
+            let work_area = self.work_area_for_output(output_area);
+            let output_id = self
+                .output_names
+                .get(output_index)
+                .cloned()
+                .unwrap_or_else(|| format!("output-{output_index}"));
             let transition = transition_presentation_state(
                 current_state,
                 old,
                 current_restore_state.as_ref(),
                 target_state,
-                self.work_area(),
-                self.output_area(),
+                work_area,
+                output_area,
                 None,
-                "nested-0",
+                output_id,
                 self.workspace_state.active.as_usize(),
             );
             self.windows[idx].presentation_state = transition.state;
@@ -2327,9 +2368,14 @@ mod linux {
             let offset = self.next_window_offset;
             self.next_window_offset = next_cascade_offset(offset);
             let (x, y) = cascade_position(offset);
+            let requested_geometry = WindowGeometry::new(x, y, DEFAULT_WINDOW_W, DEFAULT_WINDOW_H);
+            let output_area = output_index_for_geometry(&self.laid_out_outputs, requested_geometry)
+                .and_then(|index| self.laid_out_outputs.get(index))
+                .map(output_geometry)
+                .unwrap_or_else(|| self.canvas_area());
             let geometry = clamp_window_to_work_area(
-                WindowGeometry::new(x, y, DEFAULT_WINDOW_W, DEFAULT_WINDOW_H),
-                self.work_area(),
+                requested_geometry,
+                self.work_area_for_output(output_area),
             );
             surface.with_pending_state(|state| {
                 // The compositor owns the logical work area, including scale
@@ -3446,10 +3492,12 @@ mod linux {
         // SLOPOS_OUTPUTS + layout mode, else WIDTH/HEIGHT defaults.
         let resolved = resolve_laid_out_outputs_from_env();
         eprintln!("[slopos-compositor] {}", resolved.summary());
+        let laid_out_outputs = resolved.laid_out.clone();
+        let output_names = resolved.names.clone();
         let (outputs, output_size) = create_outputs(
             &display_handle,
-            &resolved.laid_out,
-            &resolved.names,
+            &laid_out_outputs,
+            &output_names,
             refresh_mhz,
             output_scale,
         );
@@ -3628,6 +3676,8 @@ mod linux {
             im_popups: Vec::new(),
             seat,
             outputs,
+            laid_out_outputs,
+            output_names,
             running: true,
             windows: Vec::new(),
             workspace_state: WorkspaceState::new(),
