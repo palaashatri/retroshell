@@ -26,10 +26,12 @@ other machine-readable formats. They must not become competing project truth.
 
 ## 1. Project identity
 
-SLOPOS-I is a sovereign, local-first Linux desktop environment written in Rust
-and, where justified, assembly. It combines the visual and interaction lineage
-of classic Macintosh System 7 / Platinum with the architecture and expected
-capabilities of a modern KDE/GNOME-class desktop.
+SLOPOS-I is a sovereign, local-first, Linux-first desktop environment written in
+Rust and, where justified, assembly. Its shared userland and desktop policy must
+remain POSIX-portable so the same desktop can run on Linux and FreeBSD without a
+fork. It combines the visual and interaction lineage of classic Macintosh System
+7 / Platinum with the architecture and expected capabilities of a modern
+KDE/GNOME-class desktop.
 
 The goal is not a theme running on somebody else's desktop. SLOPOS-I owns its
 session-facing user experience:
@@ -50,6 +52,70 @@ honest ownership statement is:
 > First-party SLOPOS-I code and original assets are owned by Palaash Atri and
 > licensed under MIT. Third-party libraries, system components, fonts, codecs,
 > and model weights retain their own licenses and notices.
+
+
+### Product generations and release milestones
+
+SLOPOS is one desktop product lineage with kernel support added in generations.
+A generation is not permission to rewrite the desktop, abandon compatibility,
+or reset already completed functionality.
+
+#### SLOPOS-I — desktop-environment generation
+
+The first release milestone is a complete, sovereign **Linux desktop
+environment**. Linux is the Tier-1 reference platform and the compositor's
+first 100/100 implementation target.
+
+SLOPOS-I must also establish a real POSIX/Unix platform boundary and bring the
+same desktop to FreeBSD. The order is:
+
+1. **SLOPOS-I M1 — Linux desktop:** complete compositor, shell, toolkit,
+   applications, session, packaging, accessibility and daily-driver QA on
+   Linux. No third-party production compositor.
+2. **SLOPOS-I M2 — portable desktop:** shared crates are POSIX-clean, required
+   release scripts are POSIX `sh`, Linux-specific services are isolated behind
+   platform interfaces, and a native FreeBSD backend builds and runs the same
+   desktop experience.
+
+Linux and FreeBSD are operating-system substrates for SLOPOS-I. SLOPOS-I does
+not include a custom kernel.
+
+#### SLOPOS-II — custom-kernel generation
+
+The **only generational objective** of SLOPOS-II is to add a first-party custom
+Rust kernel as a third supported kernel target. SLOPOS-II is not a UI redesign,
+application rewrite, compatibility break, or excuse to regress Linux or FreeBSD.
+
+The SLOPOS-II support matrix is mandatory:
+
+| Kernel target | Required status |
+|---|---|
+| Linux | Remains fully supported and release-blocking |
+| FreeBSD | Remains fully supported and release-blocking |
+| SLOPOS kernel | New first-party Rust/assembly kernel and release-blocking target |
+
+The desktop, shell, compositor policy, toolkit, SDK, applications, document
+formats, accessibility semantics and user configuration must remain shared.
+Kernel-specific code belongs behind platform and ABI adapters. Do not create
+three application trees or three competing desktop implementations.
+
+A kernel alone cannot honestly be called POSIX-compliant. POSIX conformance is
+a system property involving kernel behavior, libc/API surfaces, the shell and
+utilities. Therefore the SLOPOS-II program includes only the minimum companion
+work required to expose and verify a POSIX-conformant system interface for the
+custom kernel: processes and threads, virtual memory, filesystems and VFS,
+permissions, signals, clocks/timers, pipes, Unix sockets, networking, device and
+terminal interfaces, executable loading, system calls, libc bindings, and the
+required command/runtime surface.
+
+Use **POSIX-conformant target** until the relevant conformance suites pass. Use
+**POSIX certified** only after formal certification has actually been obtained.
+No documentation may infer certification from design intent or unit tests.
+
+SLOPOS-II may begin only after SLOPOS-I has a stable Linux desktop, a frozen
+portable platform contract, and a non-regression suite capable of running the
+same desktop/application tests on Linux and FreeBSD. The custom kernel must then
+join that same matrix; it must not replace either existing kernel target.
 
 ### Naming
 
@@ -127,6 +193,92 @@ inner application.
   a second fake model of ordinary application windows.
 - Applications may request semantic operations. They do not directly mutate
   compositor geometry or move host windows.
+
+
+### POSIX and operating-system portability contract
+
+POSIX does not specify Wayland, DRM/KMS, desktop composition, window controls,
+SLOPOS Spaces, graphical applications or visual design. Do not describe those
+GUI features as POSIX features. The enforceable goal is a POSIX-portable shared
+userland with explicit operating-system backends.
+
+#### Required architecture
+
+```text
+Shared SLOPOS desktop and POSIX/Unix layer
+├── compositor policy and Wayland protocol state
+├── shell and applications
+├── toolkit, SDK, renderer-independent scene policy
+├── file/process/IPC abstractions
+├── configuration, bundles and document services
+├── Vision protocol/client and portable inference core
+└── platform traits
+    ├── Linux backend
+    ├── FreeBSD backend
+    └── SLOPOS-kernel backend (SLOPOS-II only)
+```
+
+Create or evolve explicit boundaries equivalent to:
+
+```text
+crates/slopos-platform
+crates/slopos-platform-linux
+crates/slopos-platform-freebsd
+```
+
+The future SLOPOS-II repository/program adds a SLOPOS-kernel implementation of
+the same public platform contract. Names may change during implementation, but
+the dependency direction may not: shared desktop crates depend on interfaces,
+not Linux, FreeBSD or SLOPOS-kernel implementations.
+
+Portable crates must not directly depend on `/proc`, `/sys`, udev, systemd,
+logind, epoll, inotify, signalfd, memfd-specific behavior, Linux credential
+structures, Linux DRM ioctls, NetworkManager, PipeWire, or Linux-only command
+output. Those facilities are allowed only inside the Linux backend. FreeBSD and
+future SLOPOS-kernel facilities receive their own implementations.
+
+General Unix APIs may use `std::os::unix` and carefully reviewed `libc` calls.
+Linux-only APIs must be under `cfg(target_os = "linux")` in Linux-owned modules.
+FreeBSD-only APIs must be isolated likewise. A broad `cfg(unix)` is not proof
+that behavior is portable.
+
+#### Shell and command portability
+
+Every script required to build, install, start, stop, recover, upgrade, package
+or test a supported release must use POSIX shell syntax unless it is explicitly
+platform-owned:
+
+```sh
+#!/bin/sh
+set -eu
+```
+
+Do not require Bash arrays, `[[ ... ]]`, `${BASH_SOURCE[0]}`, process
+substitution, `set -o pipefail`, GNU-only `stat`, GNU-only `sed`, `grep -P`,
+`readlink -f`, `timeout`, or `seq` in the portable release path. A Linux-only
+developer/QA script may use Bash, but it must be labelled as such and may not be
+the sole route to build or operate SLOPOS-I on FreeBSD.
+
+#### Portability gates
+
+CI must grow to include:
+
+- Linux glibc workspace build/test;
+- Linux musl portability build where dependencies permit;
+- FreeBSD workspace build/test on a native runner or VM;
+- POSIX-shell validation under at least `dash` and BusyBox `ash` for portable
+  scripts, plus FreeBSD `/bin/sh` when the runner exists;
+- a dependency-boundary check that rejects Linux-only imports from portable
+  crates;
+- shared behavioral tests for filesystem, process, IPC, settings and session
+  abstractions;
+- identical first-party application tests across Linux and FreeBSD;
+- in SLOPOS-II, the same non-regression suite against the SLOPOS kernel.
+
+Do not claim FreeBSD support from `cargo check` alone. Full support requires a
+native compositor/session, input, graphics, audio, power, networking, packaging
+and application runtime evidence. Do not claim SLOPOS-II kernel support until a
+real desktop session and the shared compatibility suite run on that kernel.
 
 ---
 
@@ -269,6 +421,28 @@ scaffolded, but it must not distract from an earlier broken invariant.
   inference code merely because it came from another agent.
 - Add `license = "MIT"` consistently to first-party Cargo packages.
 - Keep `Cargo.lock` committed.
+
+
+### P0.5 — Freeze the portable platform boundary
+
+This work starts during SLOPOS-I rather than being deferred to SLOPOS-II:
+
+- inventory every Linux-specific import, path, command, service and protocol;
+- classify it as shared Unix/POSIX behavior or platform implementation;
+- define typed platform interfaces for session/seat, device discovery, display,
+  input, audio, power, networking, notifications, credentials and filesystem
+  integration;
+- move Linux implementations behind the interface without weakening the Linux
+  compositor or replacing direct hardware support with stubs;
+- add FreeBSD compile gates, then native runtime implementations and evidence;
+- keep application and shell code free of direct Linux service invocation;
+- convert release-critical scripts to POSIX `sh` or provide an equivalent
+  FreeBSD-native path;
+- record all remaining platform leakage in `TRUTH.md`.
+
+Exit gate: the Linux desktop remains fully functional, portable crates contain
+no accidental Linux dependencies, and the FreeBSD backend can be implemented
+without changing public application or desktop policy APIs.
 
 ### P1 — Compositor and session correctness
 
