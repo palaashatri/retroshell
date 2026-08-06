@@ -53,7 +53,7 @@ jobs:
       - name: Apply guarded implementation
         run: python3 scripts/apply-runtime-output-topology.py apply
 
-      - name: Apply first validation fixes
+      - name: Apply validation fixes
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -74,27 +74,19 @@ jobs:
 
           drm = Path("crates/slopos-compositor/src/session_drm.rs")
           text = drm.read_text(encoding="utf-8")
-          old = '''            SessionControlRequest::FocusedApplicationMenu {
-                      bundle_id,
-                      action_id,
-                  } => {
-          '''
-          new = '''            SessionControlRequest::ReconfigureOutputs { layout } => {
+          marker = "            SessionControlRequest::FocusedApplicationMenu {"
+          insertion = '''            SessionControlRequest::ReconfigureOutputs { layout } => {
                       tracing::warn!(
                           %layout,
                           "runtime logical-output control is not the DRM connector-hotplug authority"
                       );
                   }
-                  SessionControlRequest::FocusedApplicationMenu {
-                      bundle_id,
-                      action_id,
-                  } => {
           '''
-          if text.count(old) != 1:
+          if text.count(marker) != 1:
               raise SystemExit(
-                  f"expected one DRM session-control insertion point, found {text.count(old)}"
+                  f"expected one DRM session-control insertion point, found {text.count(marker)}"
               )
-          drm.write_text(text.replace(old, new, 1), encoding="utf-8")
+          drm.write_text(text.replace(marker, insertion + marker, 1), encoding="utf-8")
           PY
 
       - name: Format and regenerate lockfile
