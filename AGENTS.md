@@ -1,128 +1,119 @@
 # AGENTS.md — SLOPOS-I Development Source of Truth
 
 **Authority:** This is the sole normative development document for SLOPOS-I.
-It defines the product, architecture, engineering rules, implementation order,
-and acceptance criteria. `TRUTH.md` records what is actually implemented and
-verified. `README.md` is only the human-facing introduction and quick start.
+Every implementation agent, reviewer, maintainer and automation must follow it.
 
-## Documentation rule
+The repository may contain only three Markdown files:
 
-The repository must contain exactly three Markdown files:
+- `README.md` — public introduction and quick start;
+- `AGENTS.md` — product requirements, architecture, execution plan and acceptance gates;
+- `TRUTH.md` — factual audit, evidence ledger, scores, known defects and current next gate.
 
-1. `README.md` — short project overview, setup, and links.
-2. `AGENTS.md` — this development specification and execution contract.
-3. `TRUTH.md` — current audit, evidence ledger, defects, and verification log.
-
-Do not create another plan, roadmap, handoff, session summary, audit report,
-capability matrix, task brief, or QA Markdown file. Put durable design and work
-instructions here. Put factual results and evidence in `TRUTH.md`. Store raw
-screenshots, logs, JSON, recordings, traces, and benchmark output under
-`artifacts/qa/<date>-<slug>/`.
-
-Legal notices and generated attribution may use `.txt`, TOML, JSON, SPDX, or
-other machine-readable formats. They must not become competing project truth.
+Do not add competing roadmaps, plans, audit reports, hand-off notes or session
+summaries as Markdown. Raw QA evidence belongs under `artifacts/qa/` in JSON,
+logs, screenshots, traces, recordings or other machine-readable formats.
 
 ---
 
-## 1. Project identity
+## 1. Mission
 
-SLOPOS-I is a sovereign, local-first, Linux-first desktop environment written in
-Rust and, where justified, assembly. Its shared userland and desktop policy must
-remain POSIX-portable so the same desktop can run on Linux and FreeBSD without a
-fork. It combines the visual and interaction lineage of classic Macintosh System
-7 / Platinum with the architecture and expected capabilities of a modern
-KDE/GNOME-class desktop.
+SLOPOS-I is being built as a **100/100 production Linux desktop environment**
+that can genuinely compete with KDE Plasma and GNOME as a daily-driver desktop.
+This is not a themed shell, a mock desktop, a collection of demos or a wrapper
+around another compositor.
 
-The goal is not a theme running on somebody else's desktop. SLOPOS-I owns its
-session-facing user experience:
+The final product must be credible for ordinary users, developers, creators,
+accessibility users, gamers, workstation users and organisations that expect a
+complete modern desktop environment.
 
-- compositor and window-management policy;
-- desktop shell, global menu, Dock, search, notifications, lock screen;
-- toolkit, SDK, renderer, text stack, font platform, accessibility;
-- Settings, Finder, Terminal, TextEdit, Preview, App Store;
-- application bundles, launch services, portals, clipboard and drag-and-drop;
-- SLOPOS Spaces;
-- SLOPOS Vision;
-- packaging and session supervision.
+SLOPOS-I combines:
 
-The Linux or FreeBSD substrate, kernel drivers, Mesa, system services, and
-permissively licensed Rust dependencies remain third-party components. The
-honest ownership statement is:
+- the clarity, directness and compact visual discipline of classic Macintosh
+  System 7 and Platinum;
+- a sovereign Rust compositor, shell, toolkit, SDK and first-party application
+  stack;
+- modern Wayland, multi-monitor, scaling, security, accessibility, packaging,
+  recovery and application-compatibility expectations;
+- local-first services, including SLOPOS Vision;
+- user-controlled behaviour rather than hidden product-manager decisions.
 
-> First-party SLOPOS-I code and original assets are owned by Palaash Atri and
-> licensed under MIT. Third-party libraries, system components, fonts, codecs,
-> and model weights retain their own licenses and notices.
+The public ambition is explicit:
 
+> **SLOPOS-I will become a production-grade Linux desktop environment whose
+> reliability, compatibility, accessibility, polish and daily-driver breadth
+> make it a credible alternative to KDE Plasma and GNOME.**
 
-### Product generations and release milestones
+That statement is a product target, not a current-state claim. `TRUTH.md` must
+always state the current evidence-backed maturity without promotional inflation.
 
-SLOPOS is one desktop product lineage with kernel support added in generations.
-A generation is not permission to rewrite the desktop, abandon compatibility,
-or reset already completed functionality.
+---
 
-#### SLOPOS-I — desktop-environment generation
+## 2. Definition of 100/100
 
-The first release milestone is a complete, sovereign **Linux desktop
-environment**. Linux is the Tier-1 reference platform and the compositor's
-first 100/100 implementation target.
+A component reaches 100/100 only when all of the following are true:
 
-SLOPOS-I must also establish a real POSIX/Unix platform boundary and bring the
-same desktop to FreeBSD. The order is:
+1. the production implementation exists;
+2. automated tests cover normal and failure paths;
+3. runtime evidence demonstrates the actual behaviour;
+4. applicable physical hardware has been tested;
+5. compatibility has been tested against representative third-party software;
+6. accessibility and keyboard-only operation are complete;
+7. performance and resource use meet the frozen budget;
+8. installation, upgrade, recovery and uninstall paths are proven;
+9. known defects do not contradict the completion claim;
+10. evidence is tied to an exact commit SHA and reproducible command.
 
-1. **SLOPOS-I M1 — Linux desktop:** complete compositor, shell, toolkit,
-   applications, session, packaging, accessibility and daily-driver QA on
-   Linux. No third-party production compositor.
-2. **SLOPOS-I M2 — portable desktop:** shared crates are POSIX-clean, required
-   release scripts are POSIX `sh`, Linux-specific services are isolated behind
-   platform interfaces, and a native FreeBSD backend builds and runs the same
-   desktop experience.
+Source presence, state structures, unit tests, generated screenshots, mocked
+clients or a successful build are never enough by themselves.
 
-Linux and FreeBSD are operating-system substrates for SLOPOS-I. SLOPOS-I does
-not include a custom kernel.
+### 2.1 Product score interpretation
 
-#### SLOPOS-II — custom-kernel generation
+| Score | Meaning |
+|---:|---|
+| 0–19 | Requirement, experiment or placeholder |
+| 20–39 | Early implementation with major disconnected paths |
+| 40–59 | Credible prototype |
+| 60–74 | Functional alpha |
+| 75–84 | Strong beta |
+| 85–91 | Release candidate |
+| 92–99 | Production-ready with bounded known gaps |
+| 100 | Frozen acceptance contract completely satisfied |
 
-The **only generational objective** of SLOPOS-II is to add a first-party custom
-Rust kernel as a third supported kernel target. SLOPOS-II is not a UI redesign,
-application rewrite, compatibility break, or excuse to regress Linux or FreeBSD.
+The overall score is not a percentage of lines written. It is a product-maturity
+judgment under the evidence rules above.
 
-The SLOPOS-II support matrix is mandatory:
+### 2.2 Competitive standard
 
-| Kernel target | Required status |
-|---|---|
-| Linux | Remains fully supported and release-blocking |
-| FreeBSD | Remains fully supported and release-blocking |
-| SLOPOS kernel | New first-party Rust/assembly kernel and release-blocking target |
+Competing with KDE and GNOME does not mean copying every design choice or
+matching their project age. It means SLOPOS-I must independently provide a
+complete and dependable answer for the same daily-driver responsibilities:
 
-The desktop, shell, compositor policy, toolkit, SDK, applications, document
-formats, accessibility semantics and user configuration must remain shared.
-Kernel-specific code belongs behind platform and ABI adapters. Do not create
-three application trees or three competing desktop implementations.
+- session startup, login, lock, logout, suspend, restart and shutdown;
+- stable compositing and window management;
+- first-class Wayland and practical X11 compatibility;
+- multiple monitors, scaling, rotation, refresh rates and hotplug;
+- keyboard, pointer, touchpad, touch, tablet and accessibility input;
+- clipboard, drag-and-drop, text input and IME;
+- application launching, file associations, portals and notifications;
+- network, audio, Bluetooth, power, display, input and account settings;
+- file management, terminal, text editing, image/document preview and software
+  management;
+- accessibility, localisation, theming and font management;
+- crash resilience, updates, rollback, diagnostics and recovery;
+- performance suitable for laptops, desktops, workstations and virtual machines.
 
-A kernel alone cannot honestly be called POSIX-compliant. POSIX conformance is
-a system property involving kernel behavior, libc/API surfaces, the shell and
-utilities. Therefore the SLOPOS-II program includes only the minimum companion
-work required to expose and verify a POSIX-conformant system interface for the
-custom kernel: processes and threads, virtual memory, filesystems and VFS,
-permissions, signals, clocks/timers, pipes, Unix sockets, networking, device and
-terminal interfaces, executable loading, system calls, libc bindings, and the
-required command/runtime surface.
+SLOPOS-I may differentiate through its classic visual lineage, compactness,
+local-first design, SLOPOS Spaces, SLOPOS Share and SLOPOS Vision. Differentiation
+never excuses missing baseline desktop functionality.
 
-Use **POSIX-conformant target** until the relevant conformance suites pass. Use
-**POSIX certified** only after formal certification has actually been obtained.
-No documentation may infer certification from design intent or unit tests.
+---
 
-SLOPOS-II may begin only after SLOPOS-I has a stable Linux desktop, a frozen
-portable platform contract, and a non-regression suite capable of running the
-same desktop/application tests on Linux and FreeBSD. The custom kernel must then
-join that same matrix; it must not replace either existing kernel target.
-
-### Naming
+## 3. Product identity and naming
 
 | Kind | Canonical form |
 |---|---|
 | Product | **SLOPOS-I** |
-| Former name | RetroShell, historical only |
+| Historical name | RetroShell, historical references only |
 | Crates and binaries | `slopos-*` |
 | Environment prefix | `SLOPOS_*` |
 | User config | `$XDG_CONFIG_HOME/slopos-i` |
@@ -130,15 +121,43 @@ join that same matrix; it must not replace either existing kernel target.
 | User cache | `$XDG_CACHE_HOME/slopos-i` |
 | Session entry | `slopos-i.desktop` |
 | System menu | **SLOPOS** |
+| Nearby transfer feature | **SLOPOS Share** |
+| Virtual-desktop product | **SLOPOS Spaces** |
+| Local AI/vision platform | **SLOPOS Vision** |
 
-Do not reintroduce `retro-*` names into new APIs, files, environment variables,
-or product copy.
+Do not use Apple product or service names as SLOPOS feature names. In particular,
+never label SLOPOS Share as “AirDrop.” Existing visible references must be
+removed. Product names such as Finder and App Store also require a deliberate
+public naming and trademark review before release.
 
 ---
 
-## 2. Non-negotiable architecture
+## 4. Documentation and truth discipline
 
-### Production topology
+`AGENTS.md` describes the required final product and how to build it.
+`TRUTH.md` describes what is actually true now.
+
+Every meaningful implementation wave must update `TRUTH.md` in the same branch.
+Do not merely append optimistic progress. Replace stale statements, update the
+exact audited commit, identify evidence level and retain unresolved defects.
+
+Allowed evidence labels:
+
+- **PLANNED**
+- **SOURCE PRESENT**
+- **BUILD VERIFIED**
+- **TEST VERIFIED**
+- **RUNTIME OBSERVED**
+- **HARDWARE VERIFIED**
+
+Never use “complete,” “production,” “supported,” “verified,” “working” or
+“100/100” without evidence that satisfies the frozen acceptance contract.
+
+---
+
+## 5. Non-negotiable architecture
+
+### 5.1 Production topology
 
 ```text
 Display manager / TTY session
@@ -153,11 +172,11 @@ Display manager / TTY session
     │   └── private Wayland display socket
     ├── slopos-shell
     ├── first-party SLOPOS applications
-    ├── third-party Wayland/XWayland applications
+    ├── third-party Wayland and XWayland applications
     └── session-scoped services such as slopos-visiond
 ```
 
-### Nested development topology
+### 5.2 Nested development topology
 
 ```text
 Host desktop compositor
@@ -167,58 +186,60 @@ Host desktop compositor
     ├── Settings
     ├── TextEdit
     ├── Terminal
-    ├── App Store
     ├── Preview
+    ├── software manager
     └── test clients
 ```
 
 Only `slopos-compositor` may connect to the host display in nested mode. Every
-SLOPOS shell surface and application must connect to the compositor-owned
-private socket. The host compositor must see one outer SLOPOS window, not every
-inner application.
+inner shell and application surface must connect to the compositor-owned private
+socket. The host compositor must see one SLOPOS output window, not each inner
+application.
 
-### Sovereignty rules
+### 5.3 Sovereignty rules
 
-- No production fallback to labwc, Sway, KWin, Mutter, or another window manager.
-- A host compositor is allowed only as the nested development display backend.
-- Never silently fall back to a different backend. `drm`, `nested`, and
-  `headless` modes must be explicit and fail clearly.
-- Never scan arbitrary `wayland-*` sockets or delete them with a glob.
-- Use a unique per-session runtime directory, readiness file, nonce, and exact
-  private socket handle.
+- No production fallback to labwc, Sway, KWin, Mutter or another compositor.
+- Host compositors are allowed only as nested development backends.
+- `drm`, `nested` and `headless` modes must be explicit and fail clearly.
+- Never scan or delete arbitrary `wayland-*` sockets.
+- Use a unique per-session runtime directory, readiness token and exact socket.
+- `slopos-session` is the sole session-process supervisor.
 - The compositor is the sole authority for mapped-window geometry, focus,
-  stacking, workspace/Space membership, output assignment, minimize, Fill,
-  Zoom, tiling, fullscreen, and restore state.
+  stacking, output, Space membership, minimize, Zoom, Fill, tiling, fullscreen
+  and restore state.
 - The shell paints desktop chrome and shell-only overlays. It must not maintain
   a second fake model of ordinary application windows.
-- Applications may request semantic operations. They do not directly mutate
-  compositor geometry or move host windows.
+- Applications request semantic operations through typed APIs. They do not
+  mutate compositor geometry or host windows directly.
+- No fake application windows or static screenshots may stand in for real
+  clients in production.
 
+### 5.4 Rust and licensing
 
-### POSIX and operating-system portability contract
+- First-party implementation is Rust, with assembly only where justified by
+  platform, boot, context-switch or performance requirements.
+- First-party source and original assets are MIT-licensed.
+- Third-party dependencies, fonts, model weights, codecs and system components
+  retain their licences and notices.
+- Keep `Cargo.lock` committed.
+- Add `license = "MIT"` consistently to first-party Cargo packages.
+- Do not copy incompatible code into MIT-licensed components.
 
-POSIX does not specify Wayland, DRM/KMS, desktop composition, window controls,
-SLOPOS Spaces, graphical applications or visual design. Do not describe those
-GUI features as POSIX features. The enforceable goal is a POSIX-portable shared
-userland with explicit operating-system backends.
+---
 
-#### Required architecture
+## 6. POSIX and operating-system portability
 
-```text
-Shared SLOPOS desktop and POSIX/Unix layer
-├── compositor policy and Wayland protocol state
-├── shell and applications
-├── toolkit, SDK, renderer-independent scene policy
-├── file/process/IPC abstractions
-├── configuration, bundles and document services
-├── Vision protocol/client and portable inference core
-└── platform traits
-    ├── Linux backend
-    ├── FreeBSD backend
-    └── SLOPOS-kernel backend (SLOPOS-II only)
-```
+SLOPOS-I is Linux-first. The first production milestone is the Linux desktop.
+The shared userland and policy layers must nevertheless avoid accidental Linux
+lock-in so the same desktop can later run on FreeBSD without a fork.
 
-Create or evolve explicit boundaries equivalent to:
+POSIX does not define Wayland, DRM/KMS, window management or desktop UX. The
+meaningful goal is a POSIX-portable shared userland with explicit
+operating-system backends.
+
+### 6.1 Required boundary
+
+Create or evolve interfaces equivalent to:
 
 ```text
 crates/slopos-platform
@@ -226,740 +247,767 @@ crates/slopos-platform-linux
 crates/slopos-platform-freebsd
 ```
 
-The future SLOPOS-II repository/program adds a SLOPOS-kernel implementation of
-the same public platform contract. Names may change during implementation, but
-the dependency direction may not: shared desktop crates depend on interfaces,
-not Linux, FreeBSD or SLOPOS-kernel implementations.
+Shared crates depend on interfaces, not Linux or FreeBSD implementations.
+Platform responsibilities include:
+
+- session and seat acquisition;
+- graphics and input device discovery;
+- display and colour control;
+- audio;
+- networking and Bluetooth;
+- power and battery state;
+- authentication and account integration;
+- notifications and system status;
+- filesystem and removable-media integration.
 
 Portable crates must not directly depend on `/proc`, `/sys`, udev, systemd,
-logind, epoll, inotify, signalfd, memfd-specific behavior, Linux credential
-structures, Linux DRM ioctls, NetworkManager, PipeWire, or Linux-only command
-output. Those facilities are allowed only inside the Linux backend. FreeBSD and
-future SLOPOS-kernel facilities receive their own implementations.
+logind, epoll, inotify, signalfd, memfd-specific behaviour, Linux credential
+structures, Linux DRM ioctls, NetworkManager, PipeWire or Linux-only command
+output. These belong inside the Linux backend.
 
-General Unix APIs may use `std::os::unix` and carefully reviewed `libc` calls.
-Linux-only APIs must be under `cfg(target_os = "linux")` in Linux-owned modules.
-FreeBSD-only APIs must be isolated likewise. A broad `cfg(unix)` is not proof
-that behavior is portable.
+General Unix functionality may use `std::os::unix` and reviewed libc APIs.
+Linux-only code must be isolated under Linux-owned modules and
+`cfg(target_os = "linux")`. A broad `cfg(unix)` is not proof of portability.
 
-#### Shell and command portability
+### 6.2 Portable scripts
 
 Every script required to build, install, start, stop, recover, upgrade, package
-or test a supported release must use POSIX shell syntax unless it is explicitly
-platform-owned:
+or test a supported release must use POSIX shell unless explicitly platform
+owned:
 
 ```sh
 #!/bin/sh
 set -eu
 ```
 
-Do not require Bash arrays, `[[ ... ]]`, `${BASH_SOURCE[0]}`, process
-substitution, `set -o pipefail`, GNU-only `stat`, GNU-only `sed`, `grep -P`,
-`readlink -f`, `timeout`, or `seq` in the portable release path. A Linux-only
-developer/QA script may use Bash, but it must be labelled as such and may not be
-the sole route to build or operate SLOPOS-I on FreeBSD.
+Portable release paths must not require Bash arrays, `[[ ... ]]`,
+`${BASH_SOURCE[0]}`, process substitution, `pipefail`, GNU-only `stat`, GNU-only
+`sed`, `grep -P`, `readlink -f`, `timeout` or `seq`.
 
-#### Portability gates
+Linux-only QA scripts may use Bash when labelled clearly and when an equivalent
+portable or FreeBSD release path exists.
 
-CI must grow to include:
+### 6.3 Portability gates
 
-- Linux glibc workspace build/test;
+- Linux glibc workspace build and test;
 - Linux musl portability build where dependencies permit;
-- FreeBSD workspace build/test on a native runner or VM;
-- POSIX-shell validation under at least `dash` and BusyBox `ash` for portable
-  scripts, plus FreeBSD `/bin/sh` when the runner exists;
-- a dependency-boundary check that rejects Linux-only imports from portable
-  crates;
-- shared behavioral tests for filesystem, process, IPC, settings and session
+- native FreeBSD workspace build and test;
+- portable scripts under `dash`, BusyBox `ash` and FreeBSD `/bin/sh`;
+- automated dependency-boundary checks;
+- shared behavioural tests for filesystem, process, IPC, settings and session
   abstractions;
-- identical first-party application tests across Linux and FreeBSD;
-- in SLOPOS-II, the same non-regression suite against the SLOPOS kernel.
+- identical first-party application tests across supported systems.
 
 Do not claim FreeBSD support from `cargo check` alone. Full support requires a
-native compositor/session, input, graphics, audio, power, networking, packaging
-and application runtime evidence. Do not claim SLOPOS-II kernel support until a
-real desktop session and the shared compatibility suite run on that kernel.
+native compositor/session, input, graphics, audio, power, network, packaging and
+application runtime evidence.
 
 ---
 
-## 3. Current repository map
+## 7. Visual and interaction design
 
-The single Cargo workspace currently contains:
+### 7.1 Design intent
 
-### Core crates
+SLOPOS-I should feel recognisably descended from classic Macintosh without
+becoming a pixel-for-pixel museum recreation.
 
-| Path | Responsibility |
-|---|---|
-| `crates/slopos-session` | Session supervisor, readiness, process lifecycle |
-| `crates/slopos-compositor` | Smithay compositor, DRM/nested/headless backends, WM |
-| `crates/slopos-shell` | Desktop, menu bar, Dock, search, launch services, portals |
-| `crates/slopos-render` | GPU/software rendering primitives and text plumbing |
-| `crates/slopos-kit` | Widgets, layout, focus, controls, accessibility semantics |
-| `crates/slopos-sdk` | First-party application framework and CSD integration |
-| `crates/slopos-bus` | SLOPOS IPC abstractions; retain only where real and useful |
-| `crates/slopos-fonts` | Font discovery, profiles, installation, role resolution |
-| `crates/slopos-vision` | Platform-neutral local OCR and subject segmentation core |
-| `crates/slopos-vision-protocol` | Typed Vision IPC protocol |
-| `crates/slopos-vision-client` | Reusable Vision daemon client |
-| `crates/slopos-visiond` | Session-scoped local Vision service |
+Required qualities:
 
-### Applications
-
-| Path | Product role |
-|---|---|
-| `apps/finder` | File manager and application/document entry point |
-| `apps/settings` | System configuration frontend |
-| `apps/textedit` | Native text editor |
-| `apps/terminal` | Terminal emulator |
-| `apps/appstore` | SLOPOS `.app` catalog and installer |
-| `apps/preview` | Image/document viewer and Vision UI |
-
-Keep the monorepo until stable SDK boundaries make an external app repository
-useful. Do not split core crates merely for aesthetic reasons.
-
----
-
-## 4. Product and visual doctrine
-
-SLOPOS-I should feel descended from classic Macintosh, not like macOS, GNOME,
-elementary OS, or a generic retro skin.
-
-### Preserve from classic Macintosh
-
-- clear black-and-white or restrained Platinum hierarchy;
-- compact menus and controls;
-- strong window borders and direct-manipulation affordances;
-- global application menu;
-- spatial Finder behavior;
-- visible state and predictable commands;
+- compact, legible and information-dense;
+- clear hierarchy and visible affordances;
+- direct manipulation;
 - restrained animation;
-- user-installable fonts and system typography choice;
-- smart Zoom as an application-aware alternative to blind maximize;
-- one coherent design language across system apps.
+- high contrast without visual noise;
+- consistent control metrics;
+- keyboard discoverability;
+- user-selectable classic and modern typography;
+- modern accessibility and scaling;
+- no visual drift into generic GNOME, elementary OS or modern macOS imitation.
 
-### Add modern expectations
+### 7.2 Window controls
 
-- Unicode shaping, fallback fonts, IME, bidi, variable fonts;
-- fractional scaling and high-DPI rendering;
-- multi-monitor layouts;
-- VRR, HDR, wide-gamut and color management where hardware permits;
-- dynamic virtual desktops as SLOPOS Spaces;
-- accessibility, keyboard navigation, screen-reader semantics;
-- Wayland, XWayland, portals, clipboard, drag-and-drop, notifications;
-- crash recovery, autosave, atomic writes, secure app installation;
-- local-first Vision/AI;
-- user control over appearance and behavior rather than one rigid policy.
+The user controls the semantic action of the zoom/green control and title-bar
+double click.
 
-### Visual constraints
+Supported actions:
 
-- Do not use Apple trademarks, logos, proprietary assets, or bundled Apple fonts.
-- Do not copy modern macOS traffic-light visuals as the default design.
-- Classic, Graphite, High Contrast, Modern, and custom appearance profiles may
-  coexist, but all must remain recognizably SLOPOS-I.
-- Every visual change requires screenshots at 1.0, 1.25, 1.5, and 2.0 scale
-  where the backend supports those scales.
-- An idle desktop must not continuously repaint.
+- Smart Zoom;
+- Fill usable work area;
+- fullscreen;
+- layout menu;
+- minimize;
+- no action.
 
----
-
-## 5. Engineering truth contract
-
-### Evidence levels
-
-Use these exact labels in `TRUTH.md`:
-
-1. **PLANNED** — desired behavior only.
-2. **SOURCE PRESENT** — code exists; build not run after the relevant edit.
-3. **BUILD VERIFIED** — relevant target compiled successfully in the named environment.
-4. **TEST VERIFIED** — named automated tests ran and passed after the edit.
-5. **RUNTIME OBSERVED** — a human or automated runtime action produced raw logs/artifacts.
-6. **HARDWARE VERIFIED** — exercised on applicable DRM/GPU/display/input hardware.
-
-Never upgrade a claim because a type, test helper, button, or documentation file
-exists. Unit tests cannot prove a visible cursor, real pointer grab, HDR output,
-VRR, display-manager login, application compatibility, or visual quality.
-
-### Required task workflow
-
-1. Read `AGENTS.md` and `TRUTH.md`.
-2. Inspect the current source and `git status`; do not trust old summaries.
-3. State a small plan and exact files to touch.
-4. Preserve existing working code, especially uncommitted Vision changes.
-5. Implement one coherent slice.
-6. Run the strongest available format/build/test/runtime checks.
-7. Save raw evidence under `artifacts/qa/<date>-<slug>/`.
-8. Update `TRUTH.md` with commands, environment, results, failures, and remaining risk.
-9. Update `AGENTS.md` only when architecture or accepted product requirements change.
-10. Do not create another Markdown file.
-
-### Prohibited behavior
-
-- Fabricated PASS fields or generated “verified” matrices.
-- Claiming runtime behavior from source inspection.
-- Directly modifying geometry in a test and calling it pointer-driven dragging.
-- Optimistic completion percentages without a reproducible rubric.
-- Silent fallback to third-party compositors or cloud services.
-- Replacing a hard architectural problem with a visual simulation.
-- Deleting prior work before extracting any unique facts and preserving it in Git history.
-- Adding broad features while foundational protocol or session correctness is broken.
-
----
-
-## 6. Implementation priority
-
-Work in this order unless the user explicitly changes it. A later phase may be
-scaffolded, but it must not distract from an earlier broken invariant.
-
-### P0 — Establish a reproducible build baseline
-
-- Run `cargo fmt --all -- --check`.
-- Run `cargo check --workspace --all-targets`.
-- Run `cargo test --workspace`.
-- Run Clippy when the baseline builds.
-- Record exact toolchain, target, distro, GPU/backend, and command output in `TRUTH.md`.
-- Audit and preserve OpenCode changes in `slopos-vision`; do not rewrite working
-  inference code merely because it came from another agent.
-- Add `license = "MIT"` consistently to first-party Cargo packages.
-- Keep `Cargo.lock` committed.
-
-
-### P0.5 — Freeze the portable platform boundary
-
-This work starts during SLOPOS-I rather than being deferred to SLOPOS-II:
-
-- inventory every Linux-specific import, path, command, service and protocol;
-- classify it as shared Unix/POSIX behavior or platform implementation;
-- define typed platform interfaces for session/seat, device discovery, display,
-  input, audio, power, networking, notifications, credentials and filesystem
-  integration;
-- move Linux implementations behind the interface without weakening the Linux
-  compositor or replacing direct hardware support with stubs;
-- add FreeBSD compile gates, then native runtime implementations and evidence;
-- keep application and shell code free of direct Linux service invocation;
-- convert release-critical scripts to POSIX `sh` or provide an equivalent
-  FreeBSD-native path;
-- record all remaining platform leakage in `TRUTH.md`.
-
-Exit gate: the Linux desktop remains fully functional, portable crates contain
-no accidental Linux dependencies, and the FreeBSD backend can be implemented
-without changing public application or desktop policy APIs.
-
-### P1 — Compositor and session correctness
-
-#### Session supervisor
-
-Implement a per-session private runtime directory such as:
-
-```text
-$XDG_RUNTIME_DIR/slopos-i/session-<nonce>/
-├── readiness
-├── client-wayland-display
-├── token
-└── logs/
-```
-
-Requirements:
-
-- compositor child identity tied to the readiness handshake;
-- no global readiness-file race;
-- SIGINT/SIGTERM/SIGHUP-aware shutdown;
-- process-group termination and reaping;
-- session exits when the compositor dies;
-- stale resource cleanup restricted to resources created by that session;
-- clear logs for backend selection and child exits.
-
-#### Wayland interaction correctness
-
-- Validate `xdg_toplevel.move` and `resize` using the supplied seat and a valid
-  implicit pointer-grab serial belonging to the requesting client.
-- Implement real move/resize pointer grabs, old/new damage, configure events,
-  and release behavior in shared backend-neutral code.
-- Synchronize XDG `Activated`, `Resizing`, `Maximized`, and `Fullscreen` states.
-- Hit-test surface trees and input regions, not only compositor rectangles.
-- Complete XDG popup creation, positioning, constraint adjustment, grabs,
-  repositioning, dismissal, and popup-tree rendering/input.
-- Implement layer-shell anchors, requested size, margins, exclusive zones,
-  keyboard interactivity, layer order, and authoritative work areas.
-- Complete minimize/restore integration with the Dock.
-- Bring XWayland focus, stacking, move, resize, transient windows, and clipboard
-  behavior to an explicitly tested compatibility level.
-
-#### Cursor
-
-- Respect client cursor surfaces and hotspots.
-- Always provide a visible fallback cursor.
-- Support named themes and scale-aware cursor assets later.
-- Verify nested software cursor, DRM composition, and hardware cursor plane
-  independently; do not conflate them.
-
-#### Rendering loop
-
-- No unconditional redraw in `about_to_wait`, tick, or shell update loops.
-- Render only for damage, input, animation, frame callbacks, output changes, or
-  explicitly scheduled work.
-- Target near-zero idle compositor/shell CPU; record real numbers rather than
-  setting a fixed promise independent of backend and hardware.
-
-### P2 — Production text and font platform
-
-The current one-font, character-by-character, per-covered-pixel rectangle path
-must be replaced before TextEdit, Finder, Terminal, accessibility, or modern
-font profiles can be considered mature.
-
-#### Shared text pipeline
-
-Use a single shaped-text service built around the existing `cosmic-text` stack
-or another permissively licensed Rust solution. It must provide:
-
-- Unicode shaping and grapheme clusters;
-- kerning and ligatures;
-- bidi and script-aware fallback;
-- line breaking, wrapping, measurement, selection and caret geometry;
-- IME/text-input protocol integration;
-- font fallback by run/glyph;
-- fractional-scale rasterization;
-- glyph atlas and batched quads;
-- cache invalidation when fonts or scale change;
-- deterministic screen/export metrics where required.
-
-#### Font service and manager
-
-`slopos-fonts` must become the authority for:
-
-- recursive discovery in system and user font trees;
-- TTF, OTF, TTC and variable-font metadata;
-- family, style, weight, stretch, axes and script coverage;
-- user installation, validation, duplicate detection, enable/disable and removal;
-- safe atomic copies to `$XDG_DATA_HOME/fonts` or SLOPOS-owned font paths;
-- change notification and live renderer refresh;
-- role resolution for menu, title, body, small text, monospace and document fonts;
-- per-user profiles and fallback chains;
-- a guaranteed embedded recovery font.
-
-User-facing profiles:
-
-- **Classic** — period-appropriate metrics using legally distributable or user-provided fonts;
-- **Modern** — clean contemporary sans/mono pair using audited permissive fonts;
-- **Accessible** — high-legibility defaults and larger metrics;
-- **Custom** — independently selectable font roles and sizes.
-
-Users may select legally installed Apple fonts, but SLOPOS-I must not distribute
-San Francisco, Chicago, Geneva, Monaco, or other proprietary fonts without the
-necessary rights.
-
-Settings must include a native Font Manager with preview, validation, install,
-remove, enable/disable, duplicates, variable axes, and profile controls.
-
-### P3 — Window presentation and configurable zoom control
-
-Create one shared compositor state machine used by every backend:
+The compositor owns these states:
 
 ```rust
 pub enum WindowPresentationState {
     Normal,
     Minimized,
-    Zoomed,
+    SmartZoomed,
     Filled,
     Fullscreen,
     Tiled(TilePlacement),
 }
 ```
 
-Restore data must retain normal geometry, output, Space, stacking intent, and
-previous state. State transitions must survive output and work-area changes.
+Every transition preserves normal geometry, output, Space and stacking intent.
+Fullscreen is distinct from Fill. Minimize must not destroy restore geometry.
+Output removal must safely clamp or migrate restored windows.
 
-#### User-selectable primary zoom-control action
+### 7.3 SLOPOS Spaces
 
-Settings lets the user choose:
+SLOPOS Spaces is a user-controlled desktop organisation product, not merely a
+fixed workspace counter.
 
-- Smart Zoom;
-- Fill available work area;
-- Full Screen;
-- Show Layout Menu;
-- Minimize;
-- No action.
+Required:
 
-Configure separately:
+- dynamic creation and removal;
+- stable IDs;
+- naming and reordering;
+- persistent active Space and metadata;
+- per-Space wallpaper and appearance metadata;
+- move windows between Spaces and outputs;
+- application assignment to one Space, all Spaces or policy-selected Spaces;
+- optional dedicated fullscreen Spaces;
+- unified-across-displays and independent-per-display policies;
+- real overview thumbnails;
+- drag windows between Spaces and displays;
+- keyboard, touchpad and accessibility operation;
+- reduced-motion mode;
+- robust recovery after output changes or invalid persisted state.
 
-- alternate/Option-click behavior;
-- title-bar double-click behavior;
-- whether fullscreen creates a dedicated Space;
-- whether the global menu and Dock hide in fullscreen;
-- animation duration or reduced-motion behavior.
+The compositor is the sole Space authority. The shell is a controller and view,
+not an independent fixed workspace model.
 
-#### Smart Zoom
+### 7.4 Fonts and text profiles
 
-First-party apps may advertise a preferred content-aware size. Examples:
+Users may choose bundled permissively licensed fonts and install their own
+TTF, OTF, TTC and variable fonts.
 
-- Finder fits useful rows/columns without pointless empty space;
-- TextEdit fits page width and useful document height;
-- Terminal snaps to whole character cells;
-- Preview fits the image within the work area;
-- Settings fits the current pane.
+Required profiles:
 
-The compositor clamps the result to minimum/maximum constraints and work area.
-For third-party apps without a preferred size, Smart Zoom falls back to Fill.
-The SDK sends semantic requests; it must not call host-native maximize logic as
-the final implementation.
+- Classic;
+- Modern;
+- Accessible;
+- Custom.
 
-#### Layout menu
+Required roles:
 
-A hold, hover, or configured action may expose SLOPOS-native placements:
+- system UI;
+- menu;
+- window title;
+- body;
+- small text;
+- monospace;
+- document default.
 
-- left/right half;
-- top/bottom half;
-- quadrants;
-- centered useful size;
-- move to another display;
-- move to another Space.
+Never ship Apple’s San Francisco fonts without permission. User-installed fonts
+may be discovered and selected when legally present.
 
-Placement is compositor-owned and work-area aware.
+---
 
-### P4 — SLOPOS Spaces
+## 8. 100/100 production scorecard
 
-Evolve fixed workspaces into dynamic, persistent, user-controlled Spaces.
+SLOPOS-I is complete only when every domain below reaches its acceptance gate.
+The weighting is used for the public maturity score.
 
-Each Space needs:
+| Domain | Weight |
+|---|---:|
+| Compositor, input and display stack | 18 |
+| Renderer, text, images and fonts | 12 |
+| Shell, window management and Spaces | 10 |
+| System services and Settings | 9 |
+| First-party applications | 10 |
+| Third-party application compatibility | 10 |
+| Accessibility and localisation | 8 |
+| Security, permissions and trust | 7 |
+| Performance, reliability and recovery | 8 |
+| Packaging, updates and release engineering | 5 |
+| POSIX portability and FreeBSD readiness | 3 |
+| **Total** | **100** |
 
-- stable ID, user name and order;
-- output assignment according to the active multi-monitor policy;
-- optional wallpaper/appearance override;
-- normal/fullscreen classification;
-- ordered window membership;
-- persistence and safe migration;
-- creation, deletion and reordering rules;
-- restore behavior when a display disappears.
+A weighted overall 100 is prohibited while any release-blocking item remains
+unverified.
 
-User-selectable policies:
+---
 
-- one shared Space spans all displays;
-- each display owns independent Spaces;
-- activating an app switches to an existing Space or brings a window here;
-- fullscreen uses the current Space or a dedicated fullscreen Space;
-- applications/documents may be assigned to all, current, or named Spaces.
+## 9. Milestone programme
 
-Implement a SLOPOS Spaces Overview owned by the shell/compositor:
+### Milestone 0 — Truth, reproducibility and build health
 
-- thumbnails for all Spaces;
-- create, rename, reorder and remove;
-- drag windows between Spaces;
-- keyboard and pointer navigation;
-- configurable animation and reduced-motion mode;
-- multi-monitor representation matching the selected policy.
+Required:
 
-Gestures are optional until normal input is reliable, but the state model must
-not depend on a specific touchpad library.
+- clean checkout builds with a documented stable Rust toolchain;
+- `cargo fmt --check` passes;
+- `cargo check --workspace --all-targets --locked` passes;
+- `cargo test --workspace --locked` passes;
+- Clippy runs with an explicit warning policy;
+- release workspace build passes;
+- dependency licence and vulnerability policy is enforced;
+- every QA artefact records exact commit, environment and command;
+- no generated evidence reports untested fields as passed;
+- `TRUTH.md` matches the exact branch head.
 
-### P5 — Shell and Finder completion
+Exit gate: another machine can reproduce the build and identify precisely which
+runtime and hardware claims are proved.
 
-#### Shell
+### Milestone 1 — Linux compositor 100/100
 
-Complete:
+This is the first subsystem required to reach a genuine 100/100.
 
-- authoritative global menu routing;
-- Dock launch/running/minimized indicators and restore;
-- notifications and notification history;
-- search/launcher with applications, files, settings and commands;
-- lock screen and session actions;
-- wallpaper and appearance propagation;
-- Spaces Overview;
-- accessible semantic nodes for all shell controls.
+#### Session and lifecycle
 
-#### Finder
+- private runtime directory and socket;
+- compositor starts before clients;
+- verified readiness token and PID;
+- display-manager and TTY launch;
+- SIGTERM, SIGINT, SIGHUP and abnormal-exit cleanup;
+- no orphaned clients or stale sockets;
+- suspend/resume and lid-close recovery;
+- compositor crash diagnostics and safe session teardown.
 
-Complete:
+#### Wayland lifecycle
 
-- robust local filesystem browsing;
-- list, icon and column views where specified;
-- file operations with conflict handling, undo and progress;
-- Trash, removable devices, mounts and network locations;
-- MIME/open-with and application associations;
-- thumbnails, metadata and search;
-- application bundles and document icons;
-- safe structured launch requests;
-- Vision actions for supported images;
-- explicit desktop mode rather than label/dimension heuristics.
+- XDG toplevels, popups and positioners;
+- subsurfaces, synchronized and desynchronized commits;
+- initial-configure correctness;
+- min/max constraints;
+- parent/transient/modal relationships;
+- activation and stacking;
+- client move/resize with serial validation;
+- minimize, restore, Smart Zoom, Fill, tiling and fullscreen;
+- popup grabs, dismissal and reposition;
+- safe destruction and disconnect during every operation.
 
-### P6 — Settings and system integration
+#### Input
 
-Settings must expose live, truthful control of:
+- keyboards and keymap changes;
+- pointer, high-resolution wheel and cursor shape;
+- touchpads and gestures;
+- touch;
+- tablets where supported;
+- relative pointer and pointer constraints;
+- multiple devices and hotplug;
+- focus safety during destruction and Space/output changes;
+- no input to hidden, minimized or inactive surfaces.
 
-- appearance, themes, font profiles and accessibility;
-- zoom-control/title-bar behavior;
-- Spaces and multi-monitor policy;
-- displays, scale, orientation, refresh, HDR and VRR availability;
-- input devices and keyboard shortcuts;
-- audio, networking, Bluetooth, power, storage, users and date/time;
-- default applications and file associations;
-- privacy, portals and Vision model status;
-- software updates and session information.
+#### Data transfer and text input
 
-Use typed service adapters and capability detection. Do not present a control as
-functional when it only writes a private config file that the live subsystem
-never reads. Linux-specific service adapters must be isolated from portable
-policy/data crates. FreeBSD remains a real portability constraint.
+- clipboard and primary selection;
+- MIME negotiation and cancellation;
+- cross-client drag-and-drop and drag icons;
+- file URI and text transfer;
+- large asynchronous transfers without blocking the compositor;
+- XWayland bridging;
+- Wayland text-input and input-method protocols;
+- IME operation in first- and third-party applications.
 
-### P7 — Third-party application compatibility
+#### Rendering and scheduling
 
-Implement and test:
+- damage-driven redraw;
+- correct frame callbacks and presentation feedback;
+- occlusion and minimized-window throttling;
+- cursor and subsurface damage;
+- alpha composition and transforms;
+- direct scanout where safe;
+- fixed and variable refresh pacing;
+- GPU surface loss and reset recovery;
+- no tearing in normal desktop mode;
+- stable 60, 120 and high-refresh operation.
 
-- XDG shell toplevels and popups;
-- layer shell;
-- xdg-decoration negotiation;
-- data device, primary selection and drag-and-drop;
-- text-input-v3 and input-method integration;
-- fractional scale, viewporter and presentation-time;
-- relative pointer, pointer constraints and tablet protocols as needed;
-- idle inhibit, session lock and shortcuts inhibit;
-- foreign-toplevel/application activation where appropriate;
-- portals: file chooser, open URI, screenshots, screen cast, notifications,
-  settings, inhibit and background behavior;
-- XWayland for representative X11 applications.
+#### Displays
 
-Maintain an executable compatibility suite of representative clients. Record
-actual launch, map, input, popup, clipboard, fullscreen, file-dialog and exit
-behavior in `TRUTH.md` or raw QA artifacts, never a guessed matrix.
+- discovery and hotplug;
+- unplug with windows present;
+- arrangement, primary output, mirror, rotation and reflection;
+- mixed resolutions, refresh rates and scales;
+- integer and fractional scaling;
+- popup and cursor scaling;
+- per-output work areas;
+- window migration after topology change;
+- laptop panel close/open;
+- safe fallback when an output disappears.
 
-### P8 — Modern display and graphics stack
+#### Compatibility
 
-#### Outputs and scaling
+The release matrix must include representative:
 
-- hotplug, enable/disable, mode selection, orientation and position;
-- fractional scale with correct logical/physical coordinate conversion;
-- per-output work areas and shell placement;
-- atomic KMS commits, page-flip/error recovery and multi-GPU awareness;
-- reliable nested, headless and DRM test paths.
+- GTK 3 and GTK 4;
+- Qt 5 and Qt 6;
+- SDL, GLFW and Winit;
+- Electron;
+- Firefox and Chromium;
+- MPV;
+- LibreOffice;
+- Steam and fullscreen games;
+- file choosers, popup-heavy apps and multi-window apps.
 
-#### VRR
+Each must launch, render real content, receive input, move/resize, open menus,
+copy/paste, drag/drop where applicable, fullscreen, survive Space/output changes
+and exit cleanly.
 
-- detect connector/driver support;
-- user policy: off, automatic, fullscreen only, always where safe;
-- scheduling and direct-scanout behavior compatible with VRR;
-- clear fallback and diagnostics;
-- verify on physical hardware.
+#### XWayland
 
-#### HDR and color
+- rootless startup;
+- scene integration;
+- geometry, focus and stacking;
+- override-redirect menus;
+- clipboard and DnD;
+- fullscreen and multiple monitors;
+- DPI and scaling policy;
+- clean XWayland restart;
+- representative application matrix.
 
-- output HDR capability and metadata handling;
-- color-management protocol support;
-- ICC profiles and per-output transforms;
-- SDR baseline, wide-gamut and HDR content paths;
-- transfer functions, tone mapping and SDR compatibility;
-- user-visible capability/status controls;
-- hardware proof before claiming support.
+#### Hardware display features
 
-HDR is not complete merely because an enum or DRM property exists.
+- safe SDR default;
+- HDR detection and verified mode switch;
+- metadata and colour-space programming;
+- SDR-on-HDR mapping;
+- VRR capability and fullscreen policy;
+- return to fixed refresh for desktop UI;
+- physical Intel, AMD and NVIDIA evidence where available;
+- unsupported combinations reported honestly.
 
-### P9 — SLOPOS Vision
+#### Stability
 
-SLOPOS Vision is the operating-system form of the same portable capability that
-may later be consumed by the separate Loom project. Loom itself is not part of
-this repository.
+- malformed clients cannot crash the compositor;
+- bounded protocol allocations;
+- 24-hour idle soak;
+- 24-hour mixed-application soak;
+- repeated create/destroy and popup cycles;
+- output-topology stress;
+- stable memory and file descriptor plateau;
+- protocol and control-message fuzzing;
+- clean shutdown after every test.
+
+Exit gate: `TRUTH.md` may state `SLOPOS compositor: 100/100` only after all
+items above have exact evidence.
+
+### Milestone 2 — Production renderer, text, images and fonts
+
+Replace prototype rendering with a retained, batched GPU architecture.
+
+Required:
+
+- glyph atlas with subpixel/greyscale policy;
+- shaped runs using `cosmic-text` or an equivalent authoritative engine;
+- bidi, script fallback, line breaking and cluster mapping;
+- grapheme-aware caret and selection geometry;
+- IME preedit and candidate positioning;
+- image textures, colour-correct scaling and large-image tiling;
+- retained textures, buffers and pipelines;
+- clip stacks, rounded masks and shadows where required;
+- cache lifetime and GPU-loss recovery;
+- scale-aware invalidation;
+- measured draw-call, upload, memory and frame-time budgets;
+- no panel-per-pixel or rectangle-per-glyph production path.
+
+Font platform:
+
+- recursive discovery and metadata database;
+- family/style/face matching;
+- TTC face enumeration;
+- variable axes;
+- validation and duplicate handling;
+- install, activate, deactivate and remove;
+- script coverage and fallback chains;
+- guaranteed embedded recovery font;
+- live role/profile updates;
+- Font Manager in Settings.
+
+Exit gate: every first-party surface uses the authoritative text/image/font path
+and meets visual/performance budgets at 1.0, 1.25, 1.5, 2.0 and mixed scales.
+
+### Milestone 3 — Shell and SLOPOS Spaces
+
+Required shell products:
+
+- desktop background and icons;
+- global menu with application ownership;
+- Dock with launch/running/minimized indicators;
+- application launcher and search;
+- notifications with actions, grouping and history;
+- lock screen;
+- force quit and session controls;
+- overview and SLOPOS Spaces;
+- keyboard navigation and accessibility;
+- multi-monitor policy;
+- restrained animations and reduced-motion mode.
+
+No shell control may be a dead label. Every visible command must either work or
+be hidden until it does.
+
+Exit gate: users can complete a full session using pointer, keyboard-only and
+assistive-technology paths without encountering fake or disconnected controls.
+
+### Milestone 4 — System services and Settings
+
+Settings must control authoritative typed services, not merely write preferences
+or shell out without feedback.
+
+Required service domains:
+
+- displays, scaling, HDR, VRR and colour;
+- keyboard, pointer, touchpad, touch and shortcuts;
+- audio input/output;
+- networking and VPN integration;
+- Bluetooth;
+- power, battery and performance modes;
+- accounts and authentication;
+- date, time, locale and language;
+- accessibility;
+- appearance, themes and fonts;
+- SLOPOS Spaces;
+- zoom/title-bar behaviour;
+- notifications and focus modes;
+- default apps and file associations;
+- permissions, portals and privacy;
+- software sources and updates.
+
+Every control must read current state, apply changes, report failure, preserve
+unknown configuration and roll back safely when necessary.
+
+### Milestone 5 — First-party applications
+
+#### File manager
+
+- icon, list, column and gallery views;
+- thumbnails and metadata;
+- search and indexing;
+- mounts, removable media and network locations;
+- copy/move/trash/restore with progress, pause, conflict handling and undo;
+- drag-and-drop within and across applications;
+- file associations and Open With;
+- tags, favourites and recents where included;
+- SLOPOS Share integration;
+- SLOPOS Vision context actions;
+- keyboard and accessibility completeness.
+
+#### Text editor
+
+- shaped multiline editing;
+- grapheme, bidi and IME correctness;
+- scalable undo transactions;
+- find/replace;
+- encoding and line-ending handling;
+- autosave, recovery and safe-write semantics;
+- plain text and explicitly supported document formats;
+- printing/export only when genuinely implemented.
+
+#### Terminal
+
+- correct grapheme and cell-width model;
+- combining marks, CJK and emoji;
+- broad escape-sequence compatibility;
+- tabs, profiles, search, selection and clipboard;
+- bracketed paste and mouse modes;
+- child lifecycle, resize and crash recovery;
+- performance under large output.
+
+#### Preview
+
+- real GPU image and document display;
+- large-image tiling and colour management;
+- zoom, pan, rotate and metadata;
+- supported document/PDF viewing where implemented;
+- annotations only when fully persisted;
+- SLOPOS Vision OCR and subject extraction;
+- safe save/export and clipboard workflows.
+
+#### Software manager
+
+- signed catalogues and package metadata;
+- publisher identity and trust;
+- install, update, remove and rollback;
+- transaction confirmation and progress;
+- offline/retry behaviour;
+- safe bundle extraction;
+- dependency and permission disclosure;
+- no misleading “store” branding without a real distribution service.
+
+Exit gate: each application is dependable for its advertised purpose and has no
+prominent non-functional commands.
+
+### Milestone 6 — Third-party ecosystem
+
+Required:
+
+- xdg-desktop-portal implementation and compatibility;
+- file chooser, open URI, notifications, screencast, screenshot and settings
+  portals;
+- PipeWire integration where appropriate;
+- desktop entries, MIME database and launch services;
+- Flatpak and common distribution packaging compatibility;
+- browser, office, media, communication, development and gaming application
+  matrix;
+- robust XWayland fallback for applications that require it;
+- crash isolation and diagnostics.
+
+Exit gate: a normal Linux user can install and use a representative application
+set without modifying SLOPOS source or launching a second compositor.
+
+### Milestone 7 — Accessibility and localisation
+
+Required:
+
+- live AT-SPI tree bound to real widgets;
+- complete roles, states, relations, actions and bounds;
+- live text, caret, selection and value interfaces;
+- Orca-driven workflows;
+- keyboard-only operation everywhere;
+- high contrast, large text and reduced motion;
+- screen magnification hooks where applicable;
+- focus visibility and logical traversal;
+- localisation framework and extraction;
+- bidirectional UI layout where required;
+- locale-aware dates, numbers, sorting and collation;
+- translation QA and fallback.
+
+Accessibility is release-blocking, not optional polish.
+
+### Milestone 8 — Security and trust
+
+Required:
+
+- private session IPC and strict runtime permissions;
+- authenticated control protocols;
+- application permission model;
+- portal-enforced sensitive operations;
+- sandbox strategy for untrusted applications and plugins;
+- signed application bundles and trust storage;
+- safe handling of received files;
+- executable quarantine or explicit trust approval;
+- bounded parsers and archive extraction;
+- threat model and security regression suite;
+- no secrets inherited by unrelated child processes;
+- vulnerability response and update process.
+
+SLOPOS Share must use authenticated encrypted transfer, explicit acceptance,
+integrity verification, partial-file handling and safe destination commits.
+
+### Milestone 9 — Performance, reliability and recovery
+
+Budgets must be measured and frozen for:
+
+- idle CPU and GPU use;
+- compositor frame time;
+- input latency;
+- memory at login and under representative workloads;
+- launch latency;
+- text and image rendering;
+- file operations;
+- battery impact;
+- suspend/resume;
+- crash recovery.
+
+Required:
+
+- no continuous redraw while idle;
+- bounded caches;
+- leak detection;
+- stress and soak tests;
+- corrupted-config recovery;
+- atomic user-data writes;
+- safe-mode or recovery session;
+- crash reports that preserve privacy;
+- service restart without session destruction where safe.
+
+### Milestone 10 — Packaging and production release
+
+Required Linux release paths:
+
+- supported distribution packages;
+- display-manager session entry;
+- clean install;
+- upgrade from previous release;
+- interrupted-upgrade recovery;
+- rollback where supported;
+- uninstall without deleting user data unexpectedly;
+- configuration migration;
+- reproducible release builds where practical;
+- signed release artefacts;
+- release notes generated from evidence, not aspiration;
+- hardware and application support matrix;
+- known-issue disclosure;
+- end-user diagnostics.
+
+Exit gate: a non-developer can install, update, use, recover and remove SLOPOS-I
+without repository knowledge.
+
+### Milestone 11 — FreeBSD portability
+
+Begin only after the Linux desktop architecture is stable enough that platform
+interfaces can be implemented without duplicating product logic.
+
+Required:
+
+- native session and seat backend;
+- graphics and input device integration;
+- audio, power, networking and Bluetooth adapters;
+- native packaging and login session;
+- same shell, applications, toolkit and settings semantics;
+- shared non-regression suite;
+- documented platform differences only where unavoidable.
+
+Linux remains fully supported. FreeBSD support must not weaken the Linux product.
+
+---
+
+## 10. SLOPOS Vision
+
+SLOPOS Vision is local-only by default.
 
 Architecture:
 
 ```text
-slopos-vision              pure Rust OCR/segmentation/image processing
-slopos-vision-protocol     typed request/job/result structures
-slopos-vision-client       shared async client
-slopos-visiond             local session daemon, lazy model loading
-Finder / Preview / apps    user-facing integrations
+slopos-vision
+slopos-vision-protocol
+slopos-vision-client
+slopos-visiond
+Preview and file-manager adapters
 ```
 
-Baseline rules:
+Required product features:
 
-- local-only; no telemetry, cloud fallback, or silent model download;
-- CPU implementation is authoritative;
-- Linux and FreeBSD-friendly pure-Rust runtime where practical;
-- model files verified by manifest hash before loading;
-- model licenses and redistribution rights recorded;
-- models distributed as explicit packages or imported model packs;
-- no arbitrary unvalidated output paths from IPC clients;
-- bounded image dimensions, encoded input bytes, worker queue, memory and cache;
-- cooperative cancellation described honestly;
-- no image or recognized text in normal logs.
+- Extract Text;
+- Lift Subject;
+- Image Insights where a redistributable model and measured accuracy exist;
+- asynchronous jobs, progress and cancellation;
+- bounded memory, dimensions, queues and artefacts;
+- lazy model load/unload;
+- model manifest, hashes and licences;
+- clean model-pack install/update/remove;
+- no silent network upload;
+- labelled evaluation datasets and accuracy reports;
+- CPU and supported acceleration benchmarks;
+- safe clipboard/save workflows;
+- consent and privacy controls.
 
-Required products:
-
-1. **Extract Text** — OCR with lines, words, bounds and confidence where available.
-2. **Lift Subject** — segmentation, mask cleanup, alpha compositing, clipboard/save.
-3. **Preview** — native viewer with zoom/pan, OCR overlays and subject lifting.
-4. Finder context actions and MIME integration.
-
-Before adding UI, audit the current `slopos-vision` implementation, validate
-model output shapes and errors, resolve packaged model paths, and preserve real
-working inference. Do not leave protocol/client/daemon/Preview placeholders.
-
-### P10 — Applications, packaging, security and release
-
-#### TextEdit
-
-- production text pipeline;
-- open/save/revert, undo/redo, find/replace;
-- atomic save and recovery;
-- common text formats without false compatibility claims;
-- print/PDF when the platform service exists.
-
-#### Terminal
-
-- reliable PTY lifecycle, resize, UTF-8, selection, clipboard and scrollback;
-- configurable fonts/colors and accessible output;
-- shell process cleanup and safe URI/file handling.
-
-#### App Store
-
-The SLOPOS store manages signed/verified SLOPOS `.app` bundles, not the base
-distro package manager.
-
-Bundle layout:
-
-```text
-Name.app/
-├── Resources/
-│   ├── Info.toml
-│   └── icons/assets
-├── bin/
-└── lib/            optional
-```
-
-Implement catalog transport, signatures, trust roots, staging, path/symlink
-validation, atomic install/update, rollback, removal, permissions, quarantine,
-and launch-service rescan. Never delete the installed version before a complete
-replacement has been validated and atomically committed.
-
-#### Packaging
-
-- layered installation on Arch and Ubuntu Server/Desktop;
-- login-selectable Wayland session;
-- optional bootable image from the same package/session definitions;
-- FreeBSD build/port status reported separately and honestly;
-- source archive export without `.git`, local agent settings, `.DS_Store`,
-  `__MACOSX`, ignored secrets or accidentally bundled model weights;
-- dependency and model attribution bundles generated from exact locked inputs.
-
-#### Security and reliability
-
-- no shell command construction from untrusted paths;
-- canonicalize and validate filesystem operations;
-- atomic config/document/package writes;
-- bounded queues and resources;
-- crash-safe cleanup and recovery;
-- compositor/session services enforce client ownership and serial rules;
-- no telemetry or network dependency for core desktop operation;
-- audit unsafe Rust and justify every unsafe block.
+Do not claim accuracy, acceleration or redistributability without evidence.
+SLOPOS Vision is separate from Loom; repository or application coupling is not
+allowed merely because both may use related portable algorithms.
 
 ---
 
-## 7. Build and QA contract
+## 11. Fleet and agent execution model
 
-### Static/build checks
+Cloud agents may deploy specialist subagents, but all work stays on the current
+implementation branch unless the user explicitly changes that rule.
 
-Run from repository root where available:
+### 11.1 Orchestrator responsibilities
 
-```bash
-cargo fmt --all -- --check
-cargo check --workspace --all-targets
-cargo test --workspace
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-bash -n scripts/start-slopos-i
-python3 -m py_compile scripts/*.py
-cargo deny check licenses advisories bans sources
-```
+The primary agent must:
 
-Do not claim success if a command was skipped or run before the final edit.
+- inspect current Git status, branch, recent log and `TRUTH.md` before editing;
+- preserve user work;
+- create a machine-readable task graph under a non-Markdown coordination path;
+- divide work by subsystem boundaries;
+- prevent two agents from editing the same central file concurrently;
+- integrate in dependency order;
+- run checks after every integration wave;
+- update `TRUTH.md` with exact evidence;
+- never declare completion from subagent summaries alone.
 
-### Nested acceptance gate
+### 11.2 Recommended specialist lanes
 
-A valid nested test must show:
+- compositor protocols and window state;
+- DRM/KMS, outputs, HDR/VRR and colour;
+- input, clipboard, DnD and IME;
+- XWayland and application compatibility;
+- renderer, text, images and fonts;
+- shell, Dock, notifications and Spaces;
+- Settings and system services;
+- applications;
+- accessibility and localisation;
+- security, packaging and release QA;
+- SLOPOS Vision;
+- POSIX/FreeBSD platform boundary.
 
-- host compositor exposes exactly one SLOPOS outer window;
-- shell and all test apps use the SLOPOS private socket;
-- visible cursor over shell and app surfaces;
-- pointer-driven move and resize with valid serial/grab logs;
-- popup menu creation and dismissal;
-- focus/raise and correct Activated state;
-- minimize to Dock and restore;
-- Fill, Smart Zoom, fullscreen and restore when implemented;
-- Space switching and overview when implemented;
-- clipboard and drag-and-drop;
-- idle CPU/memory sample of at least 60 seconds;
-- clean shutdown of the whole session.
+### 11.3 Integration rules
 
-### Hardware acceptance gate
-
-Run separately on suitable Linux hardware:
-
-- DRM/KMS login session;
-- input and cursor, including cursor plane where supported;
-- output hotplug and multi-monitor;
-- fractional scale;
-- VRR policy on a VRR-capable monitor;
-- HDR metadata/output on an HDR-capable monitor;
-- suspend/resume, lock/unlock and session termination;
-- representative Wayland and XWayland applications.
-
-### Evidence format
-
-Each raw QA directory should contain machine-readable or raw artifacts such as:
-
-```text
-artifacts/qa/2026-08-01-private-socket/
-├── environment.txt
-├── commands.log
-├── process-tree.txt
-├── sockets.txt
-├── compositor.log
-├── geometry-before.json
-├── geometry-after.json
-├── cpu-memory.csv
-├── screenshot.png
-└── recording.webm
-```
-
-`TRUTH.md` records a concise result and points to the artifact path. Do not
-encode fixed PASS values in a script without executing the measured operation.
+- Prefer small compilable commits.
+- Do not create a forest of long-lived branches.
+- Do not mass-rewrite unrelated code.
+- Do not disable tests to make CI green.
+- Do not replace production behaviour with mocks.
+- Do not add feature flags that silently remove required functionality.
+- Do not merge generated code without review.
+- Do not create new Markdown hand-off files.
+- Resolve architectural conflicts in favour of this document.
 
 ---
 
-## 8. Definition of complete
+## 12. Testing and evidence requirements
 
-SLOPOS-I may be called a daily-driver desktop only after all of these have
-runtime evidence:
+Every feature needs the appropriate combination of:
 
-- display-manager login into a compositor-owned session;
-- stable shell, cursor, input, popups, focus, window management and shutdown;
-- usable Finder, Settings, Terminal, TextEdit, Preview and App Store flows;
-- production text and user-manageable fonts;
-- dynamic SLOPOS Spaces and configurable window presentation behavior;
-- clipboard, drag-and-drop, MIME/open-with, notifications and portals;
-- representative Wayland and XWayland applications;
-- multi-monitor and fractional scale;
-- accessible keyboard and semantic navigation;
-- secure, atomic application installation/update/removal;
-- local Vision OCR and subject lifting through the daemon and UI;
-- package installation on supported base systems;
-- acceptable idle/resource behavior;
-- no severe data-loss, session-security, or compositor-protocol defect;
-- HDR/VRR claims separately hardware-verified where advertised.
+- pure unit tests;
+- integration tests;
+- protocol clients;
+- virtual-output tests;
+- nested runtime tests;
+- DRM/KMS VM tests;
+- physical hardware tests;
+- application compatibility tests;
+- accessibility tests;
+- performance benchmarks;
+- failure injection;
+- fuzzing;
+- long-running soak tests;
+- screenshot or video evidence for visual behaviour.
 
-Until then, describe it as an experimental or developing desktop environment
-and report component status from `TRUTH.md`.
+Evidence artefacts must include:
+
+- schema version;
+- exact commit SHA;
+- branch;
+- timestamp;
+- operating system and kernel;
+- hardware or VM description;
+- command;
+- expected result;
+- actual result;
+- status;
+- logs and referenced media;
+- explicit fields that remain untested.
+
+Never convert “not observed” into “passed.”
 
 ---
 
-## 9. Maintenance of this document
+## 13. Current implementation priority
 
-Change `AGENTS.md` only for accepted architecture, product requirements,
-engineering policy, phase order, or definition of done. Do not append daily
-logs. When a requirement is completed, leave the requirement here and update
-its factual status in `TRUTH.md`.
+Until the first complete subsystem reaches 100/100, implementation priority is:
 
-All agents must finish by checking that the repository still has exactly:
+1. Linux compositor correctness and release evidence;
+2. compositor input, DnD/IME, outputs, XWayland and third-party compatibility;
+3. retained renderer, glyph atlas and real image textures;
+4. SLOPOS Spaces and font/zoom Settings integration;
+5. system-service authority and portals;
+6. first-party application completion;
+7. accessibility and localisation;
+8. security, packaging, performance and long soaks;
+9. FreeBSD platform implementation.
 
-```text
-AGENTS.md
-README.md
-TRUTH.md
-```
+Do not divert core engineering capacity into decorative features while an
+earlier release-blocking invariant remains broken.
 
-as Markdown files.
+---
+
+## 14. Final release definition
+
+SLOPOS-I may publicly claim to be a production desktop environment competitive
+with KDE Plasma and GNOME only when:
+
+- the weighted scorecard reaches at least 92 with no release-blocking zeros;
+- compositor, session, security, accessibility, installation and recovery gates
+  are fully satisfied;
+- the representative third-party application matrix passes;
+- ordinary users can install and operate it without development tools;
+- `TRUTH.md` contains current exact evidence and no contradictory defects.
+
+The aspirational end state is 100/100. The repository must always prefer an
+honest 63/100 with precise next work over a fictional 100/100 produced by labels,
+source scaffolding or generated documentation.
