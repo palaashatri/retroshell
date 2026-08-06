@@ -53,6 +53,50 @@ jobs:
       - name: Apply guarded implementation
         run: python3 scripts/apply-runtime-output-topology.py apply
 
+      - name: Apply first validation fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          output_policy = Path("crates/slopos-compositor/src/output_assignment.rs")
+          text = output_policy.read_text(encoding="utf-8")
+          old = '''use crate::{
+              normalize_laid_out_outputs, parse_outputs_layout_spec, LaidOutOutput, WindowGeometry,
+          };
+          '''
+          new = '''use crate::{parse_outputs_layout_spec, LaidOutOutput, WindowGeometry};
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(
+                  f"expected one duplicate normalize import, found {text.count(old)}"
+              )
+          output_policy.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          drm = Path("crates/slopos-compositor/src/session_drm.rs")
+          text = drm.read_text(encoding="utf-8")
+          old = '''            SessionControlRequest::FocusedApplicationMenu {
+                      bundle_id,
+                      action_id,
+                  } => {
+          '''
+          new = '''            SessionControlRequest::ReconfigureOutputs { layout } => {
+                      tracing::warn!(
+                          %layout,
+                          "runtime logical-output control is not the DRM connector-hotplug authority"
+                      );
+                  }
+                  SessionControlRequest::FocusedApplicationMenu {
+                      bundle_id,
+                      action_id,
+                  } => {
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(
+                  f"expected one DRM session-control insertion point, found {text.count(old)}"
+              )
+          drm.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
       - name: Format and regenerate lockfile
         run: |
           chmod +x scripts/verify-compositor-output-topology-runtime.sh
@@ -77,6 +121,7 @@ jobs:
             crates/slopos-compositor/src/lib.rs \
             crates/slopos-compositor/src/main.rs \
             crates/slopos-compositor/src/output_assignment.rs \
+            crates/slopos-compositor/src/session_drm.rs \
             scripts/verify-compositor-completion.sh \
             scripts/verify-compositor-output-topology-runtime.sh
           git commit -m "feat(compositor): reconcile output topology at runtime"
