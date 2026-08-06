@@ -19,10 +19,14 @@ jobs:
   apply:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
+      - name: Checkout exact branch head without marketplace actions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git init .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --prune --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
 
       - name: Confirm exact trigger is still branch head
         run: |
@@ -45,16 +49,15 @@ jobs:
             libinput-dev libudev-dev libseat-dev libsystemd-dev \
             libpipewire-0.3-dev libspa-0.2-dev
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: runtime-output-topology
+      - name: Install pinned Rust toolchain components
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+          rustc --version
+          cargo --version
 
       - name: Apply guarded implementation
-        run: python3 scripts/apply-runtime-output-topology.py apply
+        run: python3 scripts/apply_runtime_output_topology.py apply
 
       - name: Apply validation fixes
         run: |
@@ -131,7 +134,7 @@ jobs:
 
       - name: Record verified truth and remove one-shot script
         run: |
-          python3 scripts/apply-runtime-output-topology.py truth \
+          python3 scripts/apply_runtime_output_topology.py truth \
             "${{ steps.implementation.outputs.sha }}" \
             "${{ github.run_id }}"
           python3 - <<'PY'
