@@ -19,13 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: docs/program-design
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Confirm current branch head
+      - name: Confirm exact trigger is still branch head
         run: |
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
           git fetch origin docs/program-design
-          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/docs/program-design)"
+          test "$(git rev-parse origin/docs/program-design)" = "${{ github.sha }}"
 
       - name: Install Linux dependencies
         run: |
