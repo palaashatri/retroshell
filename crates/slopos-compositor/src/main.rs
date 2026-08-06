@@ -40,10 +40,11 @@ mod linux {
         accumulate_damage_for_window_move, accumulate_damage_rect, apply_scale_to_output_config,
         assign_new_window_to_active, cascade_position, clamp_window_to_work_area,
         clear_interactive_grab_state, detect_output_scale_from_env,
-        focus_window_after_workspace_switch, geometries_intersect, geometry_for_interactive_grab,
-        move_to_top, next_cascade_offset, output_geometry, output_index_for_geometry,
-        output_index_for_point, output_scale_summary, pointer_grab_request_is_valid_for_window,
-        prefer_full_redraw, register_wayland_display_source, resolve_laid_out_outputs_from_env,
+        focus_window_after_workspace_switch, geometry_for_interactive_grab,
+        intersecting_output_indices, move_to_top, next_cascade_offset, output_geometry,
+        output_index_for_geometry, output_index_for_point, output_scale_summary,
+        pointer_grab_request_is_valid_for_window, prefer_full_redraw,
+        register_wayland_display_source, resolve_laid_out_outputs_from_env,
         selection_bytes_for_mime_with_text_fallback, session_mode_note, surface_tree_root,
         text_input_capability_from_env, text_input_capability_summary, total_output_size,
         transition_presentation_state, window_paint_source, CompositorBackendKind, DamageRect,
@@ -215,6 +216,8 @@ mod linux {
         surface: LayerSurface,
         layer: Layer,
         namespace: String,
+        /// Exact logical output selected by the layer-shell request.
+        output_index: usize,
         /// Authoritative compositor-space placement of the layer surface.
         geo: Rectangle<i32, Logical>,
         /// Exclusive work-area reservation requested by the layer client.
@@ -1050,6 +1053,14 @@ mod linux {
             if let Some(d) = accumulate_damage_for_window_move(window_id, old, new) {
                 self.pending_damage = Some(accumulate_damage_rect(self.pending_damage, d));
             }
+            let surface = self
+                .windows
+                .iter()
+                .find(|window| window.window_id == window_id)
+                .map(|window| window.toplevel.wl_surface().clone());
+            if let Some(surface) = surface {
+                self.sync_surface_output_membership(&surface, new);
+            }
             self.frame_dirty = true;
         }
 
@@ -1318,48 +1329,85 @@ mod linux {
             WindowGeometry::new(0, 0, self.output_size.w, self.output_size.h)
         }
 
-        fn output_area_for_point(&self, point: Point<i32, Logical>) -> WindowGeometry {
-            output_index_for_point(&self.laid_out_outputs, point.x, point.y)
-                .and_then(|index| self.laid_out_outputs.get(index))
+        fn output_area_for_index(&self, output_index: usize) -> WindowGeometry {
+            self.laid_out_outputs
+                .get(output_index)
                 .map(output_geometry)
                 .unwrap_or_else(|| self.canvas_area())
         }
 
-        fn work_area_for_output(&self, output: WindowGeometry) -> WindowGeometry {
-            let reservations = self.layer_surfaces.iter().filter_map(|layer| {
-                let layer_geometry = WindowGeometry::new(
-                    layer.geo.loc.x,
-                    layer.geo.loc.y,
-                    layer.geo.size.w,
-                    layer.geo.size.h,
-                );
-                if !geometries_intersect(output, layer_geometry) {
-                    return None;
+        fn output_area_for_point(&self, point: Point<i32, Logical>) -> WindowGeometry {
+            output_index_for_point(&self.laid_out_outputs, point.x, point.y)
+                .map(|index| self.output_area_for_index(index))
+                .unwrap_or_else(|| self.canvas_area())
+        }
+
+        fn output_index_for_resource(&self, requested: Option<&wl_output::WlOutput>) -> usize {
+            requested
+                .and_then(Output::from_resource)
+                .and_then(|requested| self.outputs.iter().position(|output| output == &requested))
+                .unwrap_or(0)
+        }
+
+        fn sync_surface_output_membership(&self, surface: &WlSurface, geometry: WindowGeometry) {
+            let intersecting = intersecting_output_indices(&self.laid_out_outputs, geometry);
+            for (index, output) in self.outputs.iter().enumerate() {
+                if intersecting.contains(&index) {
+                    output.enter(surface);
+                } else {
+                    output.leave(surface);
                 }
-                let (_, anchor, margins, _) = layer_surface_request(&layer.surface);
-                Some(ExclusiveZoneReservation {
-                    exclusive_zone: layer.exclusive_zone,
-                    anchor_top: anchor.contains(Anchor::TOP),
-                    anchor_bottom: anchor.contains(Anchor::BOTTOM),
-                    anchor_left: anchor.contains(Anchor::LEFT),
-                    anchor_right: anchor.contains(Anchor::RIGHT),
-                    margin_top: margins.top,
-                    margin_bottom: margins.bottom,
-                    margin_left: margins.left,
-                    margin_right: margins.right,
-                })
-            });
+            }
+        }
+
+        fn sync_surface_to_output(&self, surface: &WlSurface, output_index: usize) {
+            for (index, output) in self.outputs.iter().enumerate() {
+                if index == output_index {
+                    output.enter(surface);
+                } else {
+                    output.leave(surface);
+                }
+            }
+        }
+
+        fn sync_all_window_output_membership(&self) {
+            for window in &self.windows {
+                self.sync_surface_output_membership(
+                    window.toplevel.wl_surface(),
+                    window.geometry(),
+                );
+            }
+        }
+
+        fn work_area_for_output_index(&self, output_index: usize) -> WindowGeometry {
+            let output = self.output_area_for_index(output_index);
+            let reservations = self
+                .layer_surfaces
+                .iter()
+                .filter(|layer| layer.output_index == output_index)
+                .map(|layer| {
+                    let (_, anchor, margins, _) = layer_surface_request(&layer.surface);
+                    ExclusiveZoneReservation {
+                        exclusive_zone: layer.exclusive_zone,
+                        anchor_top: anchor.contains(Anchor::TOP),
+                        anchor_bottom: anchor.contains(Anchor::BOTTOM),
+                        anchor_left: anchor.contains(Anchor::LEFT),
+                        anchor_right: anchor.contains(Anchor::RIGHT),
+                        margin_top: margins.top,
+                        margin_bottom: margins.bottom,
+                        margin_left: margins.left,
+                        margin_right: margins.right,
+                    }
+                });
             compute_exclusive_work_area(output, reservations)
         }
 
         /// Keep normal windows inside the current compositor-owned work area
         /// after a layer-shell surface changes its exclusive reservation.
         fn clamp_normal_windows_to_work_area(&mut self) {
-            let fallback_work_area = self.work_area_for_output(self.canvas_area());
-            let output_work_areas: Vec<WindowGeometry> = self
-                .laid_out_outputs
-                .iter()
-                .map(|output| self.work_area_for_output(output_geometry(output)))
+            let fallback_work_area = self.work_area_for_output_index(0);
+            let output_work_areas: Vec<WindowGeometry> = (0..self.laid_out_outputs.len())
+                .map(|index| self.work_area_for_output_index(index))
                 .collect();
             let mut changed = false;
             for window in &mut self.windows {
@@ -1387,7 +1435,8 @@ mod linux {
                 changed = true;
             }
             if changed {
-                self.request_redraw();
+                self.sync_all_window_output_membership();
+                self.request_full_redraw();
             }
         }
 
@@ -1543,7 +1592,7 @@ mod linux {
                 .get(output_index)
                 .map(output_geometry)
                 .unwrap_or_else(|| self.canvas_area());
-            let work_area = self.work_area_for_output(output_area);
+            let work_area = self.work_area_for_output_index(output_index);
             let output_id = self
                 .output_names
                 .get(output_index)
@@ -1992,39 +2041,41 @@ mod linux {
             // therefore every SLOPOS-I app) render exactly one frame and then
             // wait forever without this.
             let now = self.clock.now();
-            if let Some(output) = self.outputs.first().cloned() {
-                // Throttle ZERO: always release, even for surfaces with no
-                // primary scan-out output (nothing assigns one on this path).
-                for w in self
-                    .windows
-                    .iter()
-                    .filter(|w| !w.minimized && self.workspace_state.is_visible(&w.window_id))
-                {
+            for window in self.windows.iter().filter(|window| {
+                !window.minimized && self.workspace_state.is_visible(&window.window_id)
+            }) {
+                let output_index =
+                    output_index_for_geometry(&self.laid_out_outputs, window.geometry())
+                        .unwrap_or(0);
+                if let Some(output) = self.outputs.get(output_index) {
                     send_frames_surface_tree(
-                        w.toplevel.wl_surface(),
-                        &output,
+                        window.toplevel.wl_surface(),
+                        output,
                         now,
                         Some(Duration::ZERO),
                         |_, _| None,
                     );
                 }
-                for layer in &self.layer_surfaces {
+            }
+            for layer in &self.layer_surfaces {
+                let Some(output) = self.outputs.get(layer.output_index) else {
+                    continue;
+                };
+                send_frames_surface_tree(
+                    layer.surface.wl_surface(),
+                    output,
+                    now,
+                    Some(Duration::ZERO),
+                    |_, _| None,
+                );
+                for (popup, _) in PopupManager::popups_for_surface(layer.surface.wl_surface()) {
                     send_frames_surface_tree(
-                        layer.surface.wl_surface(),
-                        &output,
+                        popup.wl_surface(),
+                        output,
                         now,
                         Some(Duration::ZERO),
                         |_, _| None,
                     );
-                    for (popup, _) in PopupManager::popups_for_surface(layer.surface.wl_surface()) {
-                        send_frames_surface_tree(
-                            popup.wl_surface(),
-                            &output,
-                            now,
-                            Some(Duration::ZERO),
-                            |_, _| None,
-                        );
-                    }
                 }
             }
 
@@ -2093,22 +2144,36 @@ mod linux {
             }
 
             // Apply the client-requested layer-shell anchors, margins, and
-            // size to compositor-space placement. A layer surface is allowed
-            // to extend outside its parent's notion of a window rectangle.
-            let output = Size::<i32, Logical>::from((self.output_size.w, self.output_size.h));
+            // size relative to the exact output selected when the layer was created.
+            let laid_out_outputs = self.laid_out_outputs.clone();
+            let fallback_canvas = self.canvas_area();
+            let mut layer_membership = None;
             for layer in self.layer_surfaces.iter_mut() {
                 if layer.surface.wl_surface() != surface {
                     continue;
                 }
+                let output_area = laid_out_outputs
+                    .get(layer.output_index)
+                    .map(output_geometry)
+                    .unwrap_or(fallback_canvas);
+                let output_size =
+                    Size::<i32, Logical>::from((output_area.width, output_area.height));
                 let (requested, anchor, margins, exclusive_zone) =
                     layer_surface_request(&layer.surface);
-                let geo = layer_geometry_for(
+                let local_geo = layer_geometry_for(
                     &layer.namespace,
                     layer.layer,
-                    output,
+                    output_size,
                     requested,
                     anchor,
                     margins,
+                );
+                let geo = Rectangle::new(
+                    Point::from((
+                        output_area.x.saturating_add(local_geo.loc.x),
+                        output_area.y.saturating_add(local_geo.loc.y),
+                    )),
+                    local_geo.size,
                 );
                 let current = layer.surface.current_state();
                 if current.size != Some(geo.size) {
@@ -2119,7 +2184,11 @@ mod linux {
                 }
                 layer.geo = geo;
                 layer.exclusive_zone = exclusive_zone;
+                layer_membership = Some((layer.surface.wl_surface().clone(), layer.output_index));
                 break;
+            }
+            if let Some((surface, output_index)) = layer_membership {
+                self.sync_surface_to_output(&surface, output_index);
             }
             self.clamp_normal_windows_to_work_area();
             self.request_redraw();
@@ -2369,13 +2438,11 @@ mod linux {
             self.next_window_offset = next_cascade_offset(offset);
             let (x, y) = cascade_position(offset);
             let requested_geometry = WindowGeometry::new(x, y, DEFAULT_WINDOW_W, DEFAULT_WINDOW_H);
-            let output_area = output_index_for_geometry(&self.laid_out_outputs, requested_geometry)
-                .and_then(|index| self.laid_out_outputs.get(index))
-                .map(output_geometry)
-                .unwrap_or_else(|| self.canvas_area());
+            let output_index =
+                output_index_for_geometry(&self.laid_out_outputs, requested_geometry).unwrap_or(0);
             let geometry = clamp_window_to_work_area(
                 requested_geometry,
-                self.work_area_for_output(output_area),
+                self.work_area_for_output_index(output_index),
             );
             surface.with_pending_state(|state| {
                 // The compositor owns the logical work area, including scale
@@ -2386,6 +2453,7 @@ mod linux {
             });
             surface.send_configure();
             let position = Point::from((geometry.x, geometry.y));
+            let mapped_surface = surface.wl_surface().clone();
 
             let (title, app_id) = with_states(surface.wl_surface(), |states| {
                 let data = states
@@ -2437,8 +2505,9 @@ mod linux {
             });
             self.request_full_redraw();
 
-            // Focus the new window
+            // Focus the new window and publish accurate wl_surface output membership.
             let idx = self.windows.len() - 1;
+            self.sync_surface_output_membership(&mapped_surface, geometry);
             self.focus_window(idx);
         }
 
@@ -2655,28 +2724,46 @@ mod linux {
         fn new_layer_surface(
             &mut self,
             surface: LayerSurface,
-            _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+            requested_output: Option<wl_output::WlOutput>,
             layer: Layer,
             namespace: String,
         ) {
+            let output_index = self.output_index_for_resource(requested_output.as_ref());
+            let output_area = self.output_area_for_index(output_index);
+            let output_size = Size::<i32, Logical>::from((output_area.width, output_area.height));
             eprintln!(
-                "[slopos-compositor] layer-shell surface namespace={namespace} layer={layer:?}"
+                "[slopos-compositor] layer-shell surface namespace={namespace} layer={layer:?} output={} index={output_index}",
+                self.output_names
+                    .get(output_index)
+                    .map(String::as_str)
+                    .unwrap_or("unknown")
             );
-            let output = Size::<i32, Logical>::from((self.output_size.w, self.output_size.h));
             let (requested, anchor, margins, exclusive_zone) = layer_surface_request(&surface);
-            let geo = layer_geometry_for(&namespace, layer, output, requested, anchor, margins);
+            let local_geo =
+                layer_geometry_for(&namespace, layer, output_size, requested, anchor, margins);
+            let geo = Rectangle::new(
+                Point::from((
+                    output_area.x.saturating_add(local_geo.loc.x),
+                    output_area.y.saturating_add(local_geo.loc.y),
+                )),
+                local_geo.size,
+            );
             surface.with_pending_state(|state| {
                 state.size = Some(geo.size);
             });
             surface.send_configure();
+            let wl_surface = surface.wl_surface().clone();
             self.layer_surfaces.push(MappedLayer {
                 surface,
                 layer,
                 namespace,
+                output_index,
                 geo,
                 exclusive_zone,
             });
-            self.request_redraw();
+            self.sync_surface_to_output(&wl_surface, output_index);
+            self.clamp_normal_windows_to_work_area();
+            self.request_full_redraw();
         }
 
         fn new_popup(&mut self, _parent: LayerSurface, surface: PopupSurface) {
@@ -2694,8 +2781,13 @@ mod linux {
         }
 
         fn layer_destroyed(&mut self, surface: LayerSurface) {
+            for output in &self.outputs {
+                output.leave(surface.wl_surface());
+            }
             self.layer_surfaces
                 .retain(|l| l.surface.wl_surface() != surface.wl_surface());
+            self.clamp_normal_windows_to_work_area();
+            self.request_full_redraw();
         }
     }
 

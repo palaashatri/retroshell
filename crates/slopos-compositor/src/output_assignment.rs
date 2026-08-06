@@ -141,6 +141,25 @@ pub fn output_index_for_geometry(
     }
 }
 
+/// Return every output genuinely intersected by a surface geometry.
+///
+/// Unlike [`output_index_for_geometry`], this intentionally has no nearest-output
+/// fallback: `wl_surface.enter`/`leave` must describe real scan-out intersection,
+/// not merely the output that would own presentation policy for an off-screen
+/// window.
+pub fn intersecting_output_indices(
+    outputs: &[LaidOutOutput],
+    geometry: WindowGeometry,
+) -> Vec<usize> {
+    outputs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, output)| {
+            geometries_intersect(geometry, output_geometry(output)).then_some(index)
+        })
+        .collect()
+}
+
 /// True when two logical rectangles overlap by at least one pixel.
 pub fn geometries_intersect(a: WindowGeometry, b: WindowGeometry) -> bool {
     intersection_area(a, b) > 0
@@ -250,6 +269,19 @@ mod tests {
         assert_eq!(
             output_index_for_geometry(&outputs, WindowGeometry::new(3000, 100, 400, 300)),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn surface_membership_reports_every_real_intersection_without_nearest_fallback() {
+        let outputs = [output(0, 0, 1000, 800), output(1000, 0, 1000, 800)];
+        assert_eq!(
+            intersecting_output_indices(&outputs, WindowGeometry::new(900, 100, 300, 400)),
+            vec![0, 1]
+        );
+        assert!(
+            intersecting_output_indices(&outputs, WindowGeometry::new(2400, 100, 200, 200))
+                .is_empty()
         );
     }
 

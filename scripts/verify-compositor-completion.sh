@@ -111,6 +111,12 @@ grep -q 'presentation_round_trip_preserves_the_original_normal_frame' \
 grep -q 'independent_display_spaces_migrate_without_changing_identity_or_order' \
   crates/slopos-compositor/tests/compositor_completion_contract.rs
 
+failed_step="per-output layer-shell ownership contract"
+grep -q 'output_index: usize' crates/slopos-compositor/src/main.rs
+grep -q 'Output::from_resource' crates/slopos-compositor/src/main.rs
+grep -q 'sync_surface_to_output' crates/slopos-compositor/src/main.rs
+grep -q 'intersecting_output_indices' crates/slopos-compositor/src/output_assignment.rs
+
 status="passed"
 failed_step=""
 write_artifact
