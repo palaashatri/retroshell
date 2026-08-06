@@ -5,12 +5,12 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`db6cc01cb1a6f74b395fbcf24dd8cfddd7aaca2a`  
-**Audit date:** 2026-08-06  
+`c6ce17e161ea9749cf7dd01dfa1c0f2a43f2f9ea`
+**Audit date:** 2026-08-06
 **Audit basis:** current-source review, commit-delta review, exact-commit GitHub
-Actions evidence and retained VM/UTM runtime evidence.  
+Actions evidence and retained VM/UTM runtime evidence.
 **Public target:** a 100/100 production Linux desktop environment that genuinely
-competes with KDE Plasma and GNOME as a daily driver.  
+competes with KDE Plasma and GNOME as a daily driver.
 **Current verdict:** **63/100 — functional custom desktop alpha.**
 
 Documentation commits after the audited implementation do not change the
@@ -77,6 +77,34 @@ compositor-owned shell layers, first-party windows, visible cursor, focus/global
 menu changes, Fill, minimize and restore. That evidence remains valid for the
 recorded commits but is not silently promoted to current-head hardware proof.
 
+### Current implementation wave — output-aware presentation
+
+Implementation commit `c6ce17e161ea9749cf7dd01dfa1c0f2a43f2f9ea` is **BUILD VERIFIED**, **TEST
+VERIFIED** and covered by the existing **RUNTIME OBSERVED** headless compositor
+gate. The new multi-output geometry itself remains unverified on physical
+multi-monitor hardware.
+
+This wave:
+
+- normalises negative/offset nested output layouts while preserving relative
+  monitor placement;
+- computes true output-union bounds without assuming an origin of `(0, 0)`;
+- assigns windows deterministically by greatest output overlap and nearest-output
+  fallback;
+- constrains XDG popups to the output that owns their root surface;
+- applies Smart Zoom, Fill and fullscreen to one selected output instead of the
+  complete multi-monitor canvas;
+- stores the real connector/synthetic output name in restore state;
+- clamps normal windows against the selected output's exclusive work area;
+- adds pure tests for negative layouts, gaps, off-screen windows, overlap ties and
+  integer-boundary safety;
+- regenerates the workspace lockfile and passes compositor check, test, source
+  contract and headless runtime gates before commit.
+
+The overall product score remains **63/100**. The compositor score advances from
+66 to **67/100**; physical hotplug, mixed-scale/refresh, per-output layer-shell
+targeting, direct scanout and hardware evidence remain release blockers.
+
 ---
 
 ## 3. Production scoring model
@@ -105,7 +133,7 @@ than aspirational.
 | UI and UX | **59** | Distinctive and coherent, but renderer, typography, image display, animation and integration remain alpha-grade |
 | Product functionality | **61** | Real shell, compositor, applications and Vision paths; many daily-driver workflows are incomplete |
 | Linux daily-driver readiness | **51** | Suitable for controlled development and QA, not yet for a non-technical user’s only desktop |
-| Compositor strict completion | **66** | Strong protocol/state foundation; hardware, input, displays, XWayland and compatibility gates remain |
+| Compositor strict completion | **67** | Strong protocol/state foundation; hardware, input, displays, XWayland and compatibility gates remain |
 | Security and release readiness | **52** | Good session/filesystem hardening, incomplete sandbox, signing, packaging, upgrades and recovery |
 | Accessibility readiness | **38** | Meaningful AT-SPI work, incomplete live tree and Orca operation |
 | POSIX/FreeBSD portability | **22** | Direction is defined; implementation and native evidence remain early |
@@ -184,12 +212,12 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | Input correctness | 7 | 10 | Physical multi-device, touch, gestures, constraints, relative pointer and hotplug |
 | Clipboard, DnD and IME | 4 | 8 | Cross-client DnD, drag icons, cancellation, large transfers and text-input/input-method |
 | Rendering and frame scheduling | 9 | 12 | Direct scanout, occlusion, GPU recovery and physical pacing evidence |
-| Displays and scaling | 5 | 12 | Hotplug, mixed scale/refresh, rotation, migration and topology recovery |
+| Displays and scaling | 6 | 12 | Hotplug, mixed scale/refresh, rotation, migration and topology recovery |
 | External Wayland compatibility | 6 | 12 | GTK, Qt, Electron, browsers, office, media, games and popup-heavy apps |
 | XWayland | 4 | 8 | Rootless scene, override-redirect, clipboard/DnD, DPI, restart and application matrix |
 | HDR, VRR and colour | 3 | 6 | Physical capable hardware, metadata/presentation proof and full colour path |
 | Security, stability and release QA | 7 | 8 | Soaks, resource plateaus, fuzzing and hostile-client breadth |
-| **Total** | **66** | **100** | First subsystem targeted for a genuine 100 |
+| **Total** | **67** | **100** | First subsystem targeted for a genuine 100 |
 
 ### Strong current compositor work
 
