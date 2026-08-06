@@ -5,7 +5,7 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`c6ce17e161ea9749cf7dd01dfa1c0f2a43f2f9ea`
+`c9b74951ee2a167967d807f64677a5064c8fc118`
 **Audit date:** 2026-08-06
 **Audit basis:** current-source review, commit-delta review, exact-commit GitHub
 Actions evidence and retained VM/UTM runtime evidence.
@@ -105,6 +105,33 @@ The overall product score remains **63/100**. The compositor score advances from
 66 to **67/100**; physical hotplug, mixed-scale/refresh, per-output layer-shell
 targeting, direct scanout and hardware evidence remain release blockers.
 
+### Current implementation wave — per-output layer-shell ownership
+
+Implementation commit `c9b74951ee2a167967d807f64677a5064c8fc118` is **BUILD VERIFIED**, **TEST
+VERIFIED** and covered by the existing **RUNTIME OBSERVED** headless compositor
+gate. Physical multi-monitor placement and hotplug remain unverified.
+
+This wave:
+
+- resolves a layer-shell client's requested `wl_output` back to the exact Smithay
+  output and stores that owner on the mapped layer;
+- computes menu-bar, Dock, notification and other layer geometry relative to the
+  owning output rather than the full compositor canvas;
+- scopes exclusive zones and normal-window work-area clamping to the owning
+  output only;
+- emits compositor-managed `wl_surface.enter` and `wl_surface.leave` membership
+  as windows move or resize across outputs;
+- constrains layer surfaces to one output membership and clears it on destroy;
+- sends frame callbacks using each window or layer's selected output instead of
+  routing every surface through the first output;
+- adds pure multi-output membership tests and a permanent source/build contract;
+- regenerates the workspace lockfile and passes workspace build/test/Clippy plus
+  exact compositor source, release and headless runtime gates before commit.
+
+The overall product score remains **63/100**. The compositor score advances from
+67 to **68/100**. Runtime topology mutation, connector removal, mixed-scale
+rendering, physical output evidence and DRM/KMS hotplug remain open.
+
 ---
 
 ## 3. Production scoring model
@@ -133,7 +160,7 @@ than aspirational.
 | UI and UX | **59** | Distinctive and coherent, but renderer, typography, image display, animation and integration remain alpha-grade |
 | Product functionality | **61** | Real shell, compositor, applications and Vision paths; many daily-driver workflows are incomplete |
 | Linux daily-driver readiness | **51** | Suitable for controlled development and QA, not yet for a non-technical user’s only desktop |
-| Compositor strict completion | **67** | Strong protocol/state foundation; hardware, input, displays, XWayland and compatibility gates remain |
+| Compositor strict completion | **68** | Strong protocol/state foundation; hardware, input, displays, XWayland and compatibility gates remain |
 | Security and release readiness | **52** | Good session/filesystem hardening, incomplete sandbox, signing, packaging, upgrades and recovery |
 | Accessibility readiness | **38** | Meaningful AT-SPI work, incomplete live tree and Orca operation |
 | POSIX/FreeBSD portability | **22** | Direction is defined; implementation and native evidence remain early |
@@ -212,12 +239,12 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | Input correctness | 7 | 10 | Physical multi-device, touch, gestures, constraints, relative pointer and hotplug |
 | Clipboard, DnD and IME | 4 | 8 | Cross-client DnD, drag icons, cancellation, large transfers and text-input/input-method |
 | Rendering and frame scheduling | 9 | 12 | Direct scanout, occlusion, GPU recovery and physical pacing evidence |
-| Displays and scaling | 6 | 12 | Hotplug, mixed scale/refresh, rotation, migration and topology recovery |
+| Displays and scaling | 7 | 12 | Hotplug, mixed scale/refresh, rotation, migration and topology recovery |
 | External Wayland compatibility | 6 | 12 | GTK, Qt, Electron, browsers, office, media, games and popup-heavy apps |
 | XWayland | 4 | 8 | Rootless scene, override-redirect, clipboard/DnD, DPI, restart and application matrix |
 | HDR, VRR and colour | 3 | 6 | Physical capable hardware, metadata/presentation proof and full colour path |
 | Security, stability and release QA | 7 | 8 | Soaks, resource plateaus, fuzzing and hostile-client breadth |
-| **Total** | **67** | **100** | First subsystem targeted for a genuine 100 |
+| **Total** | **68** | **100** | First subsystem targeted for a genuine 100 |
 
 ### Strong current compositor work
 
