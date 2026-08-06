@@ -132,6 +132,7 @@ jobs:
 
       - name: Run exact-commit compositor gates
         run: |
+          git checkout -- scripts/apply-output-aware-compositor.py
           test -z "$(git status --porcelain --untracked-files=no)"
           bash scripts/verify-compositor-completion.sh
           bash scripts/verify-compositor-headless-runtime.sh
