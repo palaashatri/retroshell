@@ -145,4 +145,12 @@ jobs:
           git commit -m "docs: record runtime output topology milestone"
 
       - name: Push verified commits
-        run: git push origin HEAD:docs/program-design
+        run: |
+          git fetch origin docs/program-design
+          remote_head="$(git rev-parse origin/docs/program-design)"
+          if [ "$remote_head" != "${{ github.sha }}" ]; then
+            printf 'branch advanced during exact-commit verification: expected %s, found %s\n' \
+              "${{ github.sha }}" "$remote_head" >&2
+            exit 1
+          fi
+          git push origin HEAD:docs/program-design
