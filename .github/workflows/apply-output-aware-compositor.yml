@@ -140,6 +140,12 @@ jobs:
       - name: Record verified truth and remove one-shot machinery
         run: |
           python3 scripts/apply-output-aware-compositor.py truth "${{ steps.implementation.outputs.sha }}"
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("TRUTH.md")
+          lines = path.read_text(encoding="utf-8").splitlines()
+          path.write_text("\n".join(line.rstrip() for line in lines) + "\n", encoding="utf-8")
+          PY
           ! grep -R -n -E 'SLOPOS-II|SLOPOS-kernel|SLOPOS kernel|custom kernel' README.md AGENTS.md TRUTH.md
           git rm scripts/apply-output-aware-compositor.py
           git rm .github/workflows/apply-output-aware-compositor.yml
