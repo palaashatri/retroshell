@@ -97,6 +97,7 @@ jobs:
           chmod +x scripts/verify-compositor-output-topology-runtime.sh
           cargo fmt --all
           cargo generate-lockfile
+          git checkout -- .github/workflows/ci.yml
           git diff --check
 
       - name: Build and test workspace
@@ -111,7 +112,6 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add Cargo.lock \
-            .github/workflows/ci.yml \
             crates/slopos-bus/src/session_control.rs \
             crates/slopos-compositor/src/lib.rs \
             crates/slopos-compositor/src/main.rs \
@@ -129,7 +129,7 @@ jobs:
           bash scripts/verify-compositor-headless-runtime.sh
           bash scripts/verify-compositor-output-topology-runtime.sh
 
-      - name: Record verified truth and remove one-shot machinery
+      - name: Record verified truth and remove one-shot script
         run: |
           python3 scripts/apply-runtime-output-topology.py truth \
             "${{ steps.implementation.outputs.sha }}" \
@@ -141,8 +141,7 @@ jobs:
           path.write_text("\n".join(line.rstrip() for line in lines) + "\n", encoding="utf-8")
           PY
           ! grep -R -n -E 'SLOPOS-II|SLOPOS-kernel|SLOPOS kernel|custom kernel' README.md AGENTS.md TRUTH.md
-          git rm scripts/apply-runtime-output-topology.py
-          git rm .github/workflows/apply-runtime-output-topology.yml
+          git rm scripts/apply_runtime_output_topology.py
           git add TRUTH.md
           git diff --check --cached
           git commit -m "docs: record runtime output topology milestone"
