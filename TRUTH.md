@@ -5,7 +5,7 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`c9b74951ee2a167967d807f64677a5064c8fc118`
+`8874741833794bf398516d5add5af4daf836fb15`
 **Audit date:** 2026-08-06
 **Audit basis:** current-source review, commit-delta review, exact-commit GitHub
 Actions evidence and retained VM/UTM runtime evidence.
@@ -132,6 +132,37 @@ The overall product score remains **63/100**. The compositor score advances from
 67 to **68/100**. Runtime topology mutation, connector removal, mixed-scale
 rendering, physical output evidence and DRM/KMS hotplug remain open.
 
+### Current implementation wave — runtime logical-output topology
+
+Implementation commit `8874741833794bf398516d5add5af4daf836fb15` is **BUILD VERIFIED**, **TEST
+VERIFIED** and **RUNTIME OBSERVED** by dedicated GitHub Actions run
+`31153723640`. This evidence is headless logical-output hotplug, not physical
+DRM/KMS connector proof.
+
+This wave:
+
+- adds a typed session-control request for atomic output-layout replacement;
+- strictly validates complete layouts, unique connector names, dimensions,
+  origins, output count and the currently supported uniform scale;
+- adds, reorders, resizes and disables `wl_output` globals at runtime;
+- preserves existing globals for retained connector identities;
+- disables removed globals while keeping them safe for already-bound clients;
+- migrates layer surfaces by connector identity and recomputes per-output
+  exclusive work areas;
+- proportionally remaps normal and restore geometry to surviving/fallback outputs;
+- reapplies fullscreen, Fill, Smart Zoom and tiling geometry after topology change;
+- refreshes `wl_surface.enter`/`leave`, frame routing, pointer bounds and session
+  readiness dimensions;
+- rejects nested topology changes that would desynchronise the fixed host X11
+  canvas instead of corrupting rendering;
+- permanently runs a headless add/reorder/remove registry and readiness gate in
+  compositor CI.
+
+The overall product score remains **63/100**. The compositor score advances from
+68 to **70/100**. Physical DRM/KMS connector hotplug, mixed-scale rendering,
+nested host resize, current-head multi-monitor hardware evidence and long soak
+cycles remain open.
+
 ---
 
 ## 3. Production scoring model
@@ -160,7 +191,7 @@ than aspirational.
 | UI and UX | **59** | Distinctive and coherent, but renderer, typography, image display, animation and integration remain alpha-grade |
 | Product functionality | **61** | Real shell, compositor, applications and Vision paths; many daily-driver workflows are incomplete |
 | Linux daily-driver readiness | **51** | Suitable for controlled development and QA, not yet for a non-technical user’s only desktop |
-| Compositor strict completion | **68** | Strong protocol/state foundation; hardware, input, displays, XWayland and compatibility gates remain |
+| Compositor strict completion | **70** | Strong protocol/state foundation; hardware, input, displays, XWayland and compatibility gates remain |
 | Security and release readiness | **52** | Good session/filesystem hardening, incomplete sandbox, signing, packaging, upgrades and recovery |
 | Accessibility readiness | **38** | Meaningful AT-SPI work, incomplete live tree and Orca operation |
 | POSIX/FreeBSD portability | **22** | Direction is defined; implementation and native evidence remain early |
@@ -239,12 +270,12 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | Input correctness | 7 | 10 | Physical multi-device, touch, gestures, constraints, relative pointer and hotplug |
 | Clipboard, DnD and IME | 4 | 8 | Cross-client DnD, drag icons, cancellation, large transfers and text-input/input-method |
 | Rendering and frame scheduling | 9 | 12 | Direct scanout, occlusion, GPU recovery and physical pacing evidence |
-| Displays and scaling | 7 | 12 | Hotplug, mixed scale/refresh, rotation, migration and topology recovery |
+| Displays and scaling | 9 | 12 | Hotplug, mixed scale/refresh, rotation, migration and topology recovery |
 | External Wayland compatibility | 6 | 12 | GTK, Qt, Electron, browsers, office, media, games and popup-heavy apps |
 | XWayland | 4 | 8 | Rootless scene, override-redirect, clipboard/DnD, DPI, restart and application matrix |
 | HDR, VRR and colour | 3 | 6 | Physical capable hardware, metadata/presentation proof and full colour path |
 | Security, stability and release QA | 7 | 8 | Soaks, resource plateaus, fuzzing and hostile-client breadth |
-| **Total** | **68** | **100** | First subsystem targeted for a genuine 100 |
+| **Total** | **70** | **100** | First subsystem targeted for a genuine 100 |
 
 ### Strong current compositor work
 
