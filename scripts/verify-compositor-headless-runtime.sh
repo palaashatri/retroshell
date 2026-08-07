@@ -36,6 +36,7 @@ compositor_log="$artifact_dir/${commit_sha}-compositor.log"
 globals_log="$artifact_dir/${commit_sha}-wayland-info.log"
 stress_log="$artifact_dir/${commit_sha}-disconnect-stress.log"
 protocol_log="$artifact_dir/${commit_sha}-xdg-protocol.log"
+pointer_constraints_log="$artifact_dir/${commit_sha}-pointer-constraints.log"
 runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/slopos-headless-runtime.XXXXXX")"
 chmod 700 "$runtime_dir"
 
@@ -58,7 +59,7 @@ write_artifact() {
   local failure="${2:-}"
   cat >"$artifact.tmp" <<JSON
 {
-  "schema": 4,
+  "schema": 5,
   "component": "slopos-compositor",
   "commit": "$commit_sha",
   "branch": "$branch",
@@ -76,6 +77,9 @@ write_artifact() {
   "xdg_toplevel_restore_verified": $(has_protocol_marker SLOPOS_XDG_TOPLEVEL_RESTORED && printf true || printf false),
   "xdg_popup_configure_verified": $(has_protocol_marker SLOPOS_XDG_POPUP_CONFIGURED && printf true || printf false),
   "xdg_popup_reposition_verified": $(has_protocol_marker SLOPOS_XDG_POPUP_REPOSITIONED && printf true || printf false),
+  "pointer_constraints_registry_verified": $([[ -s "$globals_log" ]] && grep -q "interface: 'zwp_pointer_constraints_v1'" "$globals_log" && printf true || printf false),
+  "pointer_lock_request_verified": $([[ -s "$pointer_constraints_log" ]] && grep -q "^SLOPOS_POINTER_LOCK_REQUEST_ACCEPTED " "$pointer_constraints_log" && printf true || printf false),
+  "pointer_confine_request_verified": $([[ -s "$pointer_constraints_log" ]] && grep -q "^SLOPOS_POINTER_CONFINE_REQUEST_ACCEPTED " "$pointer_constraints_log" && printf true || printf false),
   "hardware_verified": false,
   "drm_verified": false,
   "rendering_verified": false,
@@ -89,7 +93,8 @@ write_artifact() {
   "compositor_log": "$(basename "$compositor_log")",
   "wayland_info_log": "$(basename "$globals_log")",
   "disconnect_stress_log": "$(basename "$stress_log")",
-  "xdg_protocol_log": "$(basename "$protocol_log")"
+  "xdg_protocol_log": "$(basename "$protocol_log")",
+  "pointer_constraints_log": "$(basename "$pointer_constraints_log")"
 }
 JSON
   mv "$artifact.tmp" "$artifact"
@@ -192,13 +197,29 @@ fi
 
 printf 'Connecting registry client to %s\n' "$socket_name"
 WAYLAND_DISPLAY="$socket_name" timeout 10s wayland-info >"$globals_log" 2>&1
-for required_global in wl_compositor wl_shm wl_seat xdg_wm_base zwp_relative_pointer_manager_v1; do
+for required_global in wl_compositor wl_shm wl_seat xdg_wm_base zwp_relative_pointer_manager_v1 zwp_pointer_constraints_v1; do
   if ! grep -q "interface: '${required_global}'" "$globals_log"; then
     write_artifact failed "missing_global_${required_global}"
     cat "$globals_log" >&2
     exit 1
   fi
 done
+
+printf 'Exercising pointer-constraint request/destroy lifecycle\n'
+WAYLAND_DISPLAY="$socket_name" timeout 20s \
+  target/debug/examples/headless_pointer_constraints_client >"$pointer_constraints_log" 2>&1
+for marker in SLOPOS_POINTER_LOCK_REQUEST_ACCEPTED SLOPOS_POINTER_CONFINE_REQUEST_ACCEPTED SLOPOS_POINTER_CONSTRAINTS_OK; do
+  if ! grep -q "^${marker}" "$pointer_constraints_log"; then
+    write_artifact failed "missing_${marker}"
+    cat "$pointer_constraints_log" >&2
+    exit 1
+  fi
+done
+if ! kill -0 "$compositor_pid" 2>/dev/null; then
+  write_artifact failed "compositor_died_after_pointer_constraints"
+  cat "$compositor_log" >&2
+  exit 1
+fi
 
 printf 'Stressing abrupt toplevel and popup disconnect cleanup\n'
 WAYLAND_DISPLAY="$socket_name" SLOPOS_DISCONNECT_STRESS_CYCLES=64 timeout 45s \

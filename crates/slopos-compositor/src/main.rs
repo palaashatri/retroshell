@@ -50,9 +50,9 @@ mod linux {
         text_input_capability_summary, total_output_size, transition_presentation_state,
         validated_runtime_output_layout, window_paint_source, CompositorBackendKind, DamageRect,
         DisplayPolicy, InteractiveGrab, InteractiveGrabKind, LaidOutOutput, OutputScale,
-        PlaceholderPresentStats, ResizeEdges, TextInputCapability, WindowGeometry,
-        WindowPaintSource, WindowPresentationState, WindowRestoreState, WorkspaceId,
-        WorkspaceState, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+        PlaceholderPresentStats, PointerConstraintMotion, ResizeEdges, TextInputCapability,
+        WindowGeometry, WindowPaintSource, WindowPresentationState, WindowRestoreState,
+        WorkspaceId, WorkspaceState, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
     };
     use smithay::desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, utils::under_from_surface_tree,
@@ -91,7 +91,8 @@ mod linux {
             x11::{WindowBuilder, X11Backend, X11Event, X11Input, X11Surface},
         },
         delegate_compositor, delegate_foreign_toplevel_list, delegate_layer_shell, delegate_output,
-        delegate_relative_pointer, delegate_seat, delegate_shm, delegate_xdg_shell,
+        delegate_pointer_constraints, delegate_relative_pointer, delegate_seat, delegate_shm,
+        delegate_xdg_shell,
         desktop::utils::send_frames_surface_tree,
         input::{
             keyboard::{FilterResult, XkbConfig},
@@ -100,7 +101,7 @@ mod linux {
                 GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
                 GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent,
                 GestureSwipeEndEvent, GestureSwipeUpdateEvent, GrabStartData, MotionEvent,
-                PointerGrab, PointerInnerHandle, RelativeMotionEvent,
+                PointerGrab, PointerHandle, PointerInnerHandle, RelativeMotionEvent,
             },
             Seat, SeatHandler, SeatState,
         },
@@ -127,6 +128,10 @@ mod linux {
                 ForeignToplevelHandle, ForeignToplevelListHandler, ForeignToplevelListState,
             },
             output::{OutputHandler, OutputManagerState},
+            pointer_constraints::{
+                with_pointer_constraint, PointerConstraint, PointerConstraintsHandler,
+                PointerConstraintsState,
+            },
             relative_pointer::RelativePointerManagerState,
             selection::{
                 data_device::{
@@ -528,6 +533,7 @@ mod linux {
         shm_state: ShmState,
         seat_state: SeatState<SloposCompositor>,
         _relative_pointer_state: RelativePointerManagerState,
+        _pointer_constraints_state: PointerConstraintsState,
         xdg_shell_state: XdgShellState,
         data_device_state: DataDeviceState,
         primary_selection_state: PrimarySelectionState,
@@ -577,8 +583,11 @@ mod linux {
         last_minimized_window_id: Option<String>,
         // Counter for cascading new window placement
         next_window_offset: i32,
-        // Current pointer position (logical)
+        // Current compositor-visible pointer position (logical).
         pointer_pos: Point<f64, Logical>,
+        /// Last raw absolute sample from the nested X11 backend. Kept separate
+        /// so relative-pointer deltas continue while an app locks the visible cursor.
+        last_backend_pointer_pos: Option<Point<f64, Logical>>,
         /// Client requested cursor surface/name; Named always has a software fallback.
         cursor_status: CursorImageStatus,
         /// Current compositor-owned xdg_toplevel move/resize operation.
@@ -2514,6 +2523,25 @@ mod linux {
 
     delegate_seat!(SloposCompositor);
     delegate_relative_pointer!(SloposCompositor);
+    delegate_pointer_constraints!(SloposCompositor);
+
+    impl PointerConstraintsHandler for SloposCompositor {
+        fn new_constraint(&mut self, _surface: &WlSurface, pointer: &PointerHandle<Self>) {
+            maybe_activate_pointer_constraint(self, pointer);
+        }
+
+        fn cursor_position_hint(
+            &mut self,
+            _surface: &WlSurface,
+            _pointer: &PointerHandle<Self>,
+            _location: Point<f64, Logical>,
+        ) {
+            // The unstable-v1 protocol defines this as an optional compositor
+            // warp hint. The nested X11 backend has no raw host-pointer warp
+            // primitive here, so retaining normal host cursor ownership is the
+            // least surprising and standards-compliant behaviour.
+        }
+    }
 
     // -----------------------------------------------------------------------
     // SelectionHandler / DataDeviceHandler (P1.1)
@@ -3419,36 +3447,134 @@ mod linux {
         }
     }
 
+    fn maybe_activate_pointer_constraint(
+        state: &SloposCompositor,
+        pointer: &PointerHandle<SloposCompositor>,
+    ) {
+        let location = state.pointer_pos;
+        let Some((surface, surface_location)) = state.surface_under(location) else {
+            return;
+        };
+        if pointer.current_focus().as_ref() != Some(&surface) {
+            return;
+        }
+        with_pointer_constraint(&surface, pointer, |constraint| {
+            let Some(constraint) = constraint else {
+                return;
+            };
+            if constraint.is_active() {
+                return;
+            }
+            let local = (location - surface_location).to_i32_round();
+            if constraint
+                .region()
+                .is_none_or(|region| region.contains(local))
+            {
+                constraint.activate();
+            }
+        });
+    }
+
+    fn constrain_pointer_destination(
+        state: &SloposCompositor,
+        pointer: &PointerHandle<SloposCompositor>,
+        current: Point<f64, Logical>,
+        desired: Point<f64, Logical>,
+    ) -> Point<f64, Logical> {
+        let Some((surface, surface_location)) = state.surface_under(current) else {
+            return desired;
+        };
+
+        let mut mode = PointerConstraintMotion::Free;
+        let mut region = None;
+        with_pointer_constraint(&surface, pointer, |constraint| {
+            let Some(constraint) = constraint else {
+                return;
+            };
+            if !constraint.is_active() {
+                return;
+            }
+            let current_local = (current - surface_location).to_i32_round();
+            if !constraint
+                .region()
+                .is_none_or(|candidate| candidate.contains(current_local))
+            {
+                return;
+            }
+            mode = match &*constraint {
+                PointerConstraint::Locked(_) => PointerConstraintMotion::Locked,
+                PointerConstraint::Confined(_) => PointerConstraintMotion::Confined,
+            };
+            region = constraint.region().cloned();
+        });
+
+        if mode == PointerConstraintMotion::Free {
+            return desired;
+        }
+        if mode == PointerConstraintMotion::Locked {
+            return current;
+        }
+
+        let delta = desired - current;
+        let x_target = current + Point::from((delta.x, 0.0));
+        let y_target = current + Point::from((0.0, delta.y));
+        let same_surface = |target: Point<f64, Logical>| {
+            state
+                .surface_under(target)
+                .is_some_and(|(candidate, _)| candidate == surface)
+        };
+        let inside_region = |target: Point<f64, Logical>| {
+            region.as_ref().is_none_or(|candidate| {
+                candidate.contains((target - surface_location).to_i32_round())
+            })
+        };
+        let resolved = slopos_compositor::pointer_policy::resolve_pointer_delta(
+            mode,
+            (delta.x, delta.y),
+            same_surface(x_target) && inside_region(x_target),
+            same_surface(y_target) && inside_region(y_target),
+        );
+        let candidate = current + Point::from(resolved);
+        if same_surface(candidate) && inside_region(candidate) {
+            candidate
+        } else {
+            current
+        }
+    }
+
     fn handle_pointer_motion<E>(state: &mut SloposCompositor, ev: &E)
     where
         E: PointerMotionAbsoluteEvent<X11Input>,
     {
         let logical = Size::<i32, Logical>::from((state.output_size.w, state.output_size.h));
-        let previous = state.pointer_pos;
-        let pos = ev.position_transformed(logical);
-        state.pointer_pos = pos;
-        state.request_redraw();
-
-        // Hit-test layer chrome, popup trees, then ordinary toplevels.
-        let focus = state.surface_under(pos);
-
+        let raw_pos = ev.position_transformed(logical);
+        let previous_raw = state
+            .last_backend_pointer_pos
+            .replace(raw_pos)
+            .unwrap_or(raw_pos);
+        let delta = Point::from((raw_pos.x - previous_raw.x, raw_pos.y - previous_raw.y));
+        let current = state.pointer_pos;
         let serial = state.next_serial();
         let time = ev.time_msec();
-        let delta = Point::from((pos.x - previous.x, pos.y - previous.y));
 
         if let Some(ptr) = state.seat.get_pointer() {
-            // Smithay's X11 backend reports absolute pointer coordinates only.
-            // Derive a relative delta from consecutive samples; raw/unaccelerated
-            // motion is unavailable here, so the same delta is reported for both.
+            // Relative motion follows the raw host samples even while the visible
+            // pointer is locked by zwp_pointer_constraints_v1.
+            let relative_focus = state.surface_under(current);
             ptr.relative_motion(
                 state,
-                focus.clone(),
+                relative_focus,
                 &RelativeMotionEvent {
                     delta,
                     delta_unaccel: delta,
                     utime: u64::from(time) * 1_000,
                 },
             );
+
+            let pos = constrain_pointer_destination(state, &ptr, current, raw_pos);
+            state.pointer_pos = pos;
+            state.request_redraw();
+            let focus = state.surface_under(pos);
             ptr.motion(
                 state,
                 focus,
@@ -3459,6 +3585,10 @@ mod linux {
                 },
             );
             ptr.frame(state);
+            maybe_activate_pointer_constraint(state, &ptr);
+        } else {
+            state.pointer_pos = raw_pos;
+            state.request_redraw();
         }
     }
 
@@ -3837,6 +3967,8 @@ mod linux {
         let mut seat_state = SeatState::new();
         let relative_pointer_state =
             RelativePointerManagerState::new::<SloposCompositor>(&display_handle);
+        let pointer_constraints_state =
+            PointerConstraintsState::new::<SloposCompositor>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<SloposCompositor>(&display_handle);
         let data_device_state = DataDeviceState::new::<SloposCompositor>(&display_handle);
         let primary_selection_state =
@@ -4076,6 +4208,7 @@ mod linux {
             shm_state,
             seat_state,
             _relative_pointer_state: relative_pointer_state,
+            _pointer_constraints_state: pointer_constraints_state,
             xdg_shell_state,
             data_device_state,
             primary_selection_state,
@@ -4105,6 +4238,7 @@ mod linux {
             last_minimized_window_id: None,
             next_window_offset: 0,
             pointer_pos: Point::from((0.0_f64, 0.0_f64)),
+            last_backend_pointer_pos: None,
             cursor_status: CursorImageStatus::default_named(),
             interactive_grab: None,
             left_button_down: false,

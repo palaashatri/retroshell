@@ -44,4 +44,4 @@ libc = "0.2"
 
 [dev-dependencies]
 wayland-client = { workspace = true }
-wayland-protocols = { workspace = true, features = ["client"] }
+wayland-protocols = { workspace = true, features = ["client", "unstable"] }

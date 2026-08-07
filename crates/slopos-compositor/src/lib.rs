@@ -5,6 +5,8 @@ pub mod frame_timing;
 pub mod hdr;
 pub mod output_assignment;
 pub mod perf_budget;
+pub mod pointer_policy;
+pub use pointer_policy::PointerConstraintMotion;
 pub mod spaces;
 pub mod window_state;
 pub mod work_area;

@@ -46,7 +46,8 @@ use smithay::input::pointer::{
     AxisFrame, ButtonEvent, CursorImageStatus, CursorImageSurfaceData, Focus,
     GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
     GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
-    GrabStartData, MotionEvent, PointerGrab, PointerInnerHandle, RelativeMotionEvent,
+    GrabStartData, MotionEvent, PointerGrab, PointerHandle, PointerInnerHandle,
+    RelativeMotionEvent,
 };
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
@@ -77,6 +78,9 @@ use smithay::wayland::foreign_toplevel_list::{
     ForeignToplevelHandle, ForeignToplevelListHandler, ForeignToplevelListState,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
+use smithay::wayland::pointer_constraints::{
+    with_pointer_constraint, PointerConstraint, PointerConstraintsHandler, PointerConstraintsState,
+};
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::data_device::{
     set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
@@ -101,8 +105,9 @@ use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_foreign_toplevel_list,
-    delegate_layer_shell, delegate_output, delegate_primary_selection, delegate_relative_pointer,
-    delegate_seat, delegate_session_lock, delegate_shm, delegate_xdg_shell,
+    delegate_layer_shell, delegate_output, delegate_pointer_constraints,
+    delegate_primary_selection, delegate_relative_pointer, delegate_seat, delegate_session_lock,
+    delegate_shm, delegate_xdg_shell,
 };
 
 use crate::frame_timing::{FrameScheduler, RefreshRate};
@@ -115,9 +120,9 @@ use crate::{
     plan_drm_modeset, pointer_grab_request_is_valid_for_window, preferred_primary_drm_node,
     register_wayland_display_source, session_mode_summary, surface_tree_root,
     transition_presentation_state, visible_paint_order, CompositorBackendKind, DisplayPolicy,
-    DrmPresentationStage, InteractiveGrab, InteractiveGrabKind, OutputScale, ResizeEdges,
-    WindowGeometry, WindowPresentationState, WorkspaceId, WorkspaceState, DEFAULT_OUTPUT_H,
-    DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+    DrmPresentationStage, InteractiveGrab, InteractiveGrabKind, OutputScale,
+    PointerConstraintMotion, ResizeEdges, WindowGeometry, WindowPresentationState, WorkspaceId,
+    WorkspaceState, DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
 };
 use slopos_bus::{SessionControlListener, SessionControlRequest, WindowPresentationAction};
 // Workspace cycle helpers (`cycle_workspace_*` / `activate_workspace_index`) request a
@@ -711,6 +716,7 @@ pub fn run_drm_session() -> Result<()> {
     let shm_state = ShmState::new::<DrmSessionState>(&dh, vec![]);
     let mut seat_state = SeatState::new();
     let relative_pointer_state = RelativePointerManagerState::new::<DrmSessionState>(&dh);
+    let pointer_constraints_state = PointerConstraintsState::new::<DrmSessionState>(&dh);
     let xdg_shell_state = XdgShellState::new::<DrmSessionState>(&dh);
     let data_device_state = DataDeviceState::new::<DrmSessionState>(&dh);
     let primary_selection_state = PrimarySelectionState::new::<DrmSessionState>(&dh);
@@ -1184,6 +1190,7 @@ pub fn run_drm_session() -> Result<()> {
         shm_state,
         seat_state,
         _relative_pointer_state: relative_pointer_state,
+        _pointer_constraints_state: pointer_constraints_state,
         seat,
         xdg_shell_state,
         data_device_state,
@@ -1511,6 +1518,7 @@ struct DrmSessionState {
     shm_state: ShmState,
     seat_state: SeatState<Self>,
     _relative_pointer_state: RelativePointerManagerState,
+    _pointer_constraints_state: PointerConstraintsState,
     seat: Seat<Self>,
     xdg_shell_state: XdgShellState,
     data_device_state: DataDeviceState,
@@ -1554,6 +1562,109 @@ struct DrmSessionState {
     frame_dirty: bool,
     /// Set on workspace switch so the next present/composite pass redraws fully.
     need_full_redraw: bool,
+}
+
+fn maybe_activate_drm_pointer_constraint(
+    state: &DrmSessionState,
+    pointer: &PointerHandle<DrmSessionState>,
+) {
+    if state.locked {
+        return;
+    }
+    let location = state.pointer_location;
+    let Some((surface, surface_location)) = state.surface_under(location) else {
+        return;
+    };
+    if pointer.current_focus().as_ref() != Some(&surface) {
+        return;
+    }
+    with_pointer_constraint(&surface, pointer, |constraint| {
+        let Some(constraint) = constraint else {
+            return;
+        };
+        if constraint.is_active() {
+            return;
+        }
+        let local = (location - surface_location).to_i32_round();
+        if constraint
+            .region()
+            .is_none_or(|region| region.contains(local))
+        {
+            constraint.activate();
+        }
+    });
+}
+
+fn constrain_drm_pointer_destination(
+    state: &DrmSessionState,
+    pointer: &PointerHandle<DrmSessionState>,
+    current: Point<f64, Logical>,
+    desired: Point<f64, Logical>,
+) -> Point<f64, Logical> {
+    // Session lock owns the whole input surface and takes precedence over
+    // application pointer constraints.
+    if state.locked {
+        return desired;
+    }
+    let Some((surface, surface_location)) = state.surface_under(current) else {
+        return desired;
+    };
+
+    let mut mode = PointerConstraintMotion::Free;
+    let mut region = None;
+    with_pointer_constraint(&surface, pointer, |constraint| {
+        let Some(constraint) = constraint else {
+            return;
+        };
+        if !constraint.is_active() {
+            return;
+        }
+        let current_local = (current - surface_location).to_i32_round();
+        if !constraint
+            .region()
+            .is_none_or(|candidate| candidate.contains(current_local))
+        {
+            return;
+        }
+        mode = match &*constraint {
+            PointerConstraint::Locked(_) => PointerConstraintMotion::Locked,
+            PointerConstraint::Confined(_) => PointerConstraintMotion::Confined,
+        };
+        region = constraint.region().cloned();
+    });
+
+    if mode == PointerConstraintMotion::Free {
+        return desired;
+    }
+    if mode == PointerConstraintMotion::Locked {
+        return current;
+    }
+
+    let delta = desired - current;
+    let x_target = current + Point::from((delta.x, 0.0));
+    let y_target = current + Point::from((0.0, delta.y));
+    let same_surface = |target: Point<f64, Logical>| {
+        state
+            .surface_under(target)
+            .is_some_and(|(candidate, _)| candidate == surface)
+    };
+    let inside_region = |target: Point<f64, Logical>| {
+        region
+            .as_ref()
+            .is_none_or(|candidate| candidate.contains((target - surface_location).to_i32_round()))
+    };
+    let resolved = crate::pointer_policy::resolve_pointer_delta(
+        mode,
+        (delta.x, delta.y),
+        same_surface(x_target) && inside_region(x_target),
+        same_surface(y_target) && inside_region(y_target),
+    );
+    let candidate = current + Point::from(resolved);
+    if same_surface(candidate) && inside_region(candidate) {
+        candidate
+    } else {
+        current
+    }
 }
 
 impl DrmSessionState {
@@ -2201,41 +2312,58 @@ impl DrmSessionState {
             InputEvent::PointerMotionAbsolute { event } => {
                 let x = event.x_transformed(self.output_size.0);
                 let y = event.y_transformed(self.output_size.1);
-                self.pointer_location = Point::from((x, y));
-                self.forward_pointer_motion(event.time_msec());
+                let desired = Point::from((x, y));
+                if let Some(pointer) = self.seat.get_pointer() {
+                    self.pointer_location = constrain_drm_pointer_destination(
+                        self,
+                        &pointer,
+                        self.pointer_location,
+                        desired,
+                    );
+                    self.forward_pointer_motion(event.time_msec());
+                    maybe_activate_drm_pointer_constraint(self, &pointer);
+                } else {
+                    self.pointer_location = desired;
+                }
                 // The DRM cursor is compositor-rendered, so pointer motion is
                 // damage even when no client surface changed.
                 self.request_redraw();
             }
             InputEvent::PointerMotion { event } => {
-                // Relative motion (real mice): preserve both accelerated and raw
-                // libinput deltas for zwp_relative_pointer_v1, then update the
-                // compositor-space cursor position for ordinary wl_pointer.
+                // Preserve both accelerated and raw libinput deltas for
+                // zwp_relative_pointer_v1 even when pointer-constraints keeps
+                // the compositor-visible cursor stationary.
                 let (dx, dy) = (event.delta_x(), event.delta_y());
                 let delta = Point::from((dx, dy));
                 let delta_unaccel = Point::from((event.delta_x_unaccel(), event.delta_y_unaccel()));
-                let x = (self.pointer_location.x + dx).clamp(0.0, self.output_size.0 as f64 - 1.0);
-                let y = (self.pointer_location.y + dy).clamp(0.0, self.output_size.1 as f64 - 1.0);
-                self.pointer_location = Point::from((x, y));
+                let current = self.pointer_location;
+                let x = (current.x + dx).clamp(0.0, self.output_size.0 as f64 - 1.0);
+                let y = (current.y + dy).clamp(0.0, self.output_size.1 as f64 - 1.0);
+                let desired = Point::from((x, y));
 
-                let focus = if self.locked {
-                    self.active_lock_surface()
-                        .map(|surface| (surface, Point::from((0.0, 0.0))))
-                } else {
-                    self.surface_under(self.pointer_location)
-                };
                 if let Some(pointer) = self.seat.get_pointer() {
+                    let relative_focus = if self.locked {
+                        self.active_lock_surface()
+                            .map(|surface| (surface, Point::from((0.0, 0.0))))
+                    } else {
+                        self.surface_under(current)
+                    };
                     pointer.relative_motion(
                         self,
-                        focus,
+                        relative_focus,
                         &RelativeMotionEvent {
                             delta,
                             delta_unaccel,
                             utime: event.time(),
                         },
                     );
+                    self.pointer_location =
+                        constrain_drm_pointer_destination(self, &pointer, current, desired);
+                    self.forward_pointer_motion(event.time_msec());
+                    maybe_activate_drm_pointer_constraint(self, &pointer);
+                } else {
+                    self.pointer_location = desired;
                 }
-                self.forward_pointer_motion(event.time_msec());
                 self.request_redraw();
             }
             InputEvent::PointerButton { event } => {
@@ -2678,6 +2806,25 @@ impl SeatHandler for DrmSessionState {
 }
 delegate_seat!(DrmSessionState);
 delegate_relative_pointer!(DrmSessionState);
+delegate_pointer_constraints!(DrmSessionState);
+
+impl PointerConstraintsHandler for DrmSessionState {
+    fn new_constraint(&mut self, _surface: &WlSurface, pointer: &PointerHandle<Self>) {
+        if !self.locked {
+            maybe_activate_drm_pointer_constraint(self, pointer);
+        }
+    }
+
+    fn cursor_position_hint(
+        &mut self,
+        _surface: &WlSurface,
+        _pointer: &PointerHandle<Self>,
+        _location: Point<f64, Logical>,
+    ) {
+        // This protocol field is a hint: clients must not depend on a warp.
+        // SLOPOS deliberately keeps physical libinput ownership authoritative.
+    }
+}
 
 fn write_selection_fd(_mime_type: String, fd: OwnedFd, data: Option<Vec<u8>>) {
     use std::io::Write;
