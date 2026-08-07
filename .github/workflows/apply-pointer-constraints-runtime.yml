@@ -57,7 +57,15 @@ jobs:
           cargo --version
 
       - name: Apply guarded implementation
-        run: python3 scripts/apply-pointer-constraints-runtime.py
+        run: |
+          set +e
+          python3 scripts/apply-pointer-constraints-runtime.py > /tmp/pointer-constraints-stage.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/pointer-constraints-stage.log
+          test "$status" -eq 1
+          grep -q 'PointerMotionAbsolute' /tmp/pointer-constraints-stage.log
+          python3 scripts/finish-pointer-constraints-runtime.py
 
       - name: Format and check patch
         run: |
@@ -77,6 +85,7 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add \
+            crates/slopos-compositor/Cargo.toml \
             crates/slopos-compositor/src/lib.rs \
             crates/slopos-compositor/src/main.rs \
             crates/slopos-compositor/src/session_drm.rs \
@@ -142,7 +151,10 @@ jobs:
           PY
 
           ! grep -R -n -E 'SLOPOS-II|SLOPOS-kernel|SLOPOS kernel|custom kernel' README.md AGENTS.md TRUTH.md
-          git rm scripts/apply-pointer-constraints-runtime.py .github/workflows/apply-pointer-constraints-runtime.yml
+          git rm \
+            scripts/apply-pointer-constraints-runtime.py \
+            scripts/finish-pointer-constraints-runtime.py \
+            .github/workflows/apply-pointer-constraints-runtime.yml
           git add TRUTH.md
           git diff --cached --check
           git commit -m "docs: record pointer constraints milestone"
