@@ -59,26 +59,10 @@ jobs:
       - name: Apply guarded implementation
         run: python3 scripts/apply-relative-pointer-runtime.py
 
-      - name: Normalize relative pointer focus types
+      - name: Preserve relative pointer surface origins
         run: |
           python3 - <<'PY'
           from pathlib import Path
-
-          main = Path("crates/slopos-compositor/src/main.rs")
-          text = main.read_text(encoding="utf-8")
-          old = '''            ptr.relative_motion(
-                          state,
-                          focus.clone(),
-                          &RelativeMotionEvent {
-          '''
-          new = '''            ptr.relative_motion(
-                          state,
-                          focus.clone().map(|(surface, _)| surface),
-                          &RelativeMotionEvent {
-          '''
-          if text.count(old) != 1:
-              raise SystemExit(f"nested relative focus anchor mismatch: {text.count(old)}")
-          main.write_text(text.replace(old, new, 1), encoding="utf-8")
 
           drm = Path("crates/slopos-compositor/src/session_drm.rs")
           text = drm.read_text(encoding="utf-8")
@@ -90,9 +74,9 @@ jobs:
           '''
           new = '''                let focus = if self.locked {
                               self.active_lock_surface()
+                                  .map(|surface| (surface, Point::from((0.0, 0.0))))
                           } else {
                               self.surface_under(self.pointer_location)
-                                  .map(|(surface, _)| surface)
                           };
           '''
           if text.count(old) != 1:
