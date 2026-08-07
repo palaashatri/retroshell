@@ -91,7 +91,7 @@ mod linux {
             x11::{WindowBuilder, X11Backend, X11Event, X11Input, X11Surface},
         },
         delegate_compositor, delegate_foreign_toplevel_list, delegate_layer_shell, delegate_output,
-        delegate_seat, delegate_shm, delegate_xdg_shell,
+        delegate_relative_pointer, delegate_seat, delegate_shm, delegate_xdg_shell,
         desktop::utils::send_frames_surface_tree,
         input::{
             keyboard::{FilterResult, XkbConfig},
@@ -127,6 +127,7 @@ mod linux {
                 ForeignToplevelHandle, ForeignToplevelListHandler, ForeignToplevelListState,
             },
             output::{OutputHandler, OutputManagerState},
+            relative_pointer::RelativePointerManagerState,
             selection::{
                 data_device::{
                     set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler,
@@ -526,6 +527,7 @@ mod linux {
         compositor_state: CompositorState,
         shm_state: ShmState,
         seat_state: SeatState<SloposCompositor>,
+        _relative_pointer_state: RelativePointerManagerState,
         xdg_shell_state: XdgShellState,
         data_device_state: DataDeviceState,
         primary_selection_state: PrimarySelectionState,
@@ -2511,6 +2513,7 @@ mod linux {
     }
 
     delegate_seat!(SloposCompositor);
+    delegate_relative_pointer!(SloposCompositor);
 
     // -----------------------------------------------------------------------
     // SelectionHandler / DataDeviceHandler (P1.1)
@@ -3421,6 +3424,7 @@ mod linux {
         E: PointerMotionAbsoluteEvent<X11Input>,
     {
         let logical = Size::<i32, Logical>::from((state.output_size.w, state.output_size.h));
+        let previous = state.pointer_pos;
         let pos = ev.position_transformed(logical);
         state.pointer_pos = pos;
         state.request_redraw();
@@ -3430,8 +3434,21 @@ mod linux {
 
         let serial = state.next_serial();
         let time = ev.time_msec();
+        let delta = Point::from((pos.x - previous.x, pos.y - previous.y));
 
         if let Some(ptr) = state.seat.get_pointer() {
+            // Smithay's X11 backend reports absolute pointer coordinates only.
+            // Derive a relative delta from consecutive samples; raw/unaccelerated
+            // motion is unavailable here, so the same delta is reported for both.
+            ptr.relative_motion(
+                state,
+                focus.clone(),
+                &RelativeMotionEvent {
+                    delta,
+                    delta_unaccel: delta,
+                    utime: u64::from(time) * 1_000,
+                },
+            );
             ptr.motion(
                 state,
                 focus,
@@ -3818,6 +3835,8 @@ mod linux {
         let compositor_state = CompositorState::new::<SloposCompositor>(&display_handle);
         let shm_state = ShmState::new::<SloposCompositor>(&display_handle, vec![]);
         let mut seat_state = SeatState::new();
+        let relative_pointer_state =
+            RelativePointerManagerState::new::<SloposCompositor>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<SloposCompositor>(&display_handle);
         let data_device_state = DataDeviceState::new::<SloposCompositor>(&display_handle);
         let primary_selection_state =
@@ -4056,6 +4075,7 @@ mod linux {
             compositor_state,
             shm_state,
             seat_state,
+            _relative_pointer_state: relative_pointer_state,
             xdg_shell_state,
             data_device_state,
             primary_selection_state,

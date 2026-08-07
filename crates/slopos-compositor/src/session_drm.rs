@@ -77,6 +77,7 @@ use smithay::wayland::foreign_toplevel_list::{
     ForeignToplevelHandle, ForeignToplevelListHandler, ForeignToplevelListState,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
+use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::data_device::{
     set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
     ServerDndGrabHandler,
@@ -100,8 +101,8 @@ use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_foreign_toplevel_list,
-    delegate_layer_shell, delegate_output, delegate_primary_selection, delegate_seat,
-    delegate_session_lock, delegate_shm, delegate_xdg_shell,
+    delegate_layer_shell, delegate_output, delegate_primary_selection, delegate_relative_pointer,
+    delegate_seat, delegate_session_lock, delegate_shm, delegate_xdg_shell,
 };
 
 use crate::frame_timing::{FrameScheduler, RefreshRate};
@@ -709,6 +710,7 @@ pub fn run_drm_session() -> Result<()> {
     let compositor_state = CompositorState::new::<DrmSessionState>(&dh);
     let shm_state = ShmState::new::<DrmSessionState>(&dh, vec![]);
     let mut seat_state = SeatState::new();
+    let relative_pointer_state = RelativePointerManagerState::new::<DrmSessionState>(&dh);
     let xdg_shell_state = XdgShellState::new::<DrmSessionState>(&dh);
     let data_device_state = DataDeviceState::new::<DrmSessionState>(&dh);
     let primary_selection_state = PrimarySelectionState::new::<DrmSessionState>(&dh);
@@ -1181,6 +1183,7 @@ pub fn run_drm_session() -> Result<()> {
         compositor_state,
         shm_state,
         seat_state,
+        _relative_pointer_state: relative_pointer_state,
         seat,
         xdg_shell_state,
         data_device_state,
@@ -1507,6 +1510,7 @@ struct DrmSessionState {
     compositor_state: CompositorState,
     shm_state: ShmState,
     seat_state: SeatState<Self>,
+    _relative_pointer_state: RelativePointerManagerState,
     seat: Seat<Self>,
     xdg_shell_state: XdgShellState,
     data_device_state: DataDeviceState,
@@ -2204,11 +2208,33 @@ impl DrmSessionState {
                 self.request_redraw();
             }
             InputEvent::PointerMotion { event } => {
-                // Relative motion (real mice): accumulate and clamp to output.
+                // Relative motion (real mice): preserve both accelerated and raw
+                // libinput deltas for zwp_relative_pointer_v1, then update the
+                // compositor-space cursor position for ordinary wl_pointer.
                 let (dx, dy) = (event.delta_x(), event.delta_y());
+                let delta = Point::from((dx, dy));
+                let delta_unaccel = Point::from((event.delta_x_unaccel(), event.delta_y_unaccel()));
                 let x = (self.pointer_location.x + dx).clamp(0.0, self.output_size.0 as f64 - 1.0);
                 let y = (self.pointer_location.y + dy).clamp(0.0, self.output_size.1 as f64 - 1.0);
                 self.pointer_location = Point::from((x, y));
+
+                let focus = if self.locked {
+                    self.active_lock_surface()
+                        .map(|surface| (surface, Point::from((0.0, 0.0))))
+                } else {
+                    self.surface_under(self.pointer_location)
+                };
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.relative_motion(
+                        self,
+                        focus,
+                        &RelativeMotionEvent {
+                            delta,
+                            delta_unaccel,
+                            utime: event.time(),
+                        },
+                    );
+                }
                 self.forward_pointer_motion(event.time_msec());
                 self.request_redraw();
             }
@@ -2651,6 +2677,7 @@ impl SeatHandler for DrmSessionState {
     }
 }
 delegate_seat!(DrmSessionState);
+delegate_relative_pointer!(DrmSessionState);
 
 fn write_selection_fd(_mime_type: String, fd: OwnedFd, data: Option<Vec<u8>>) {
     use std::io::Write;

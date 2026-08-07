@@ -192,7 +192,7 @@ fi
 
 printf 'Connecting registry client to %s\n' "$socket_name"
 WAYLAND_DISPLAY="$socket_name" timeout 10s wayland-info >"$globals_log" 2>&1
-for required_global in wl_compositor wl_shm wl_seat xdg_wm_base; do
+for required_global in wl_compositor wl_shm wl_seat xdg_wm_base zwp_relative_pointer_manager_v1; do
   if ! grep -q "interface: '${required_global}'" "$globals_log"; then
     write_artifact failed "missing_global_${required_global}"
     cat "$globals_log" >&2
