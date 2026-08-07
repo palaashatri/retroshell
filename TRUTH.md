@@ -5,8 +5,8 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`8874741833794bf398516d5add5af4daf836fb15`
-**Audit date:** 2026-08-06
+`28f06fc0ee1c70552de3d475496bbbfdd7b2827e`
+**Audit date:** 2026-08-07
 **Audit basis:** current-source review, commit-delta review, exact-commit GitHub
 Actions evidence and retained VM/UTM runtime evidence.
 **Public target:** a 100/100 production Linux desktop environment that genuinely
@@ -163,6 +163,32 @@ The overall product score remains **63/100**. The compositor score advances from
 nested host resize, current-head multi-monitor hardware evidence and long soak
 cycles remain open.
 
+### Current implementation wave — relative pointer protocol
+
+Implementation commit `28f06fc0ee1c70552de3d475496bbbfdd7b2827e` is **BUILD VERIFIED** and **TEST VERIFIED**.
+Protocol availability is **RUNTIME OBSERVED** by dedicated GitHub Actions run
+`31156279030` through the permanent SLOPOS-owned headless registry gate. This does not
+claim physical mouse, touchpad or raw-input hardware verification.
+
+This wave:
+
+- advertises `zwp_relative_pointer_manager_v1` from both the nested and DRM
+  compositor states through Smithay's relative-pointer implementation;
+- forwards relative motion on the DRM/libinput path with both accelerated and
+  unaccelerated device deltas;
+- keeps ordinary `wl_pointer` absolute focus/motion delivery in parallel;
+- derives relative deltas from consecutive absolute samples on the nested X11
+  backend, explicitly using the same value for unaccelerated motion because that
+  backend does not expose raw deltas;
+- keeps the protocol manager alive for the compositor lifetime; and
+- extends the permanent headless runtime gate so CI fails if the relative-pointer
+  global disappears.
+
+The overall product score remains **63/100**. The compositor score advances from
+70 to **71/100**, with Input correctness advancing from 7 to **8/10**. Pointer
+constraints, physical multi-device/input evidence, touch, gesture delivery and
+device hotplug remain open.
+
 ---
 
 ## 3. Production scoring model
@@ -191,7 +217,7 @@ than aspirational.
 | UI and UX | **59** | Distinctive and coherent, but renderer, typography, image display, animation and integration remain alpha-grade |
 | Product functionality | **61** | Real shell, compositor, applications and Vision paths; many daily-driver workflows are incomplete |
 | Linux daily-driver readiness | **51** | Suitable for controlled development and QA, not yet for a non-technical user’s only desktop |
-| Compositor strict completion | **70** | Strong protocol/state foundation; hardware, input, displays, XWayland and compatibility gates remain |
+| Compositor strict completion | **71** | Strong protocol/state foundation; hardware, input, displays, XWayland and compatibility gates remain |
 | Security and release readiness | **52** | Good session/filesystem hardening, incomplete sandbox, signing, packaging, upgrades and recovery |
 | Accessibility readiness | **38** | Meaningful AT-SPI work, incomplete live tree and Orca operation |
 | POSIX/FreeBSD portability | **22** | Direction is defined; implementation and native evidence remain early |
@@ -267,7 +293,7 @@ Passing CI proves engineering health. It does not erase these product gaps.
 |---|---:|---:|---|
 | Session sovereignty and lifecycle | 9 | 10 | Display-manager, suspend/resume, lid and longer failure coverage |
 | Core Wayland lifecycle | 12 | 14 | Broader popup, subsurface, transient and modal compatibility |
-| Input correctness | 7 | 10 | Physical multi-device, touch, gestures, constraints, relative pointer and hotplug |
+| Input correctness | 8 | 10 | Physical multi-device, touch, gestures, pointer constraints and hotplug |
 | Clipboard, DnD and IME | 4 | 8 | Cross-client DnD, drag icons, cancellation, large transfers and text-input/input-method |
 | Rendering and frame scheduling | 9 | 12 | Direct scanout, occlusion, GPU recovery and physical pacing evidence |
 | Displays and scaling | 9 | 12 | Hotplug, mixed scale/refresh, rotation, migration and topology recovery |
@@ -275,7 +301,7 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | XWayland | 4 | 8 | Rootless scene, override-redirect, clipboard/DnD, DPI, restart and application matrix |
 | HDR, VRR and colour | 3 | 6 | Physical capable hardware, metadata/presentation proof and full colour path |
 | Security, stability and release QA | 7 | 8 | Soaks, resource plateaus, fuzzing and hostile-client breadth |
-| **Total** | **70** | **100** | First subsystem targeted for a genuine 100 |
+| **Total** | **71** | **100** | First subsystem targeted for a genuine 100 |
 
 ### Strong current compositor work
 
