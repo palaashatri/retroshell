@@ -38,16 +38,17 @@ mod linux {
     use slopos_compositor::work_area::{compute_exclusive_work_area, ExclusiveZoneReservation};
     use slopos_compositor::{
         accumulate_damage_for_window_move, accumulate_damage_rect, apply_scale_to_output_config,
-        assign_new_window_to_active, cascade_position, clamp_window_to_work_area,
-        clear_interactive_grab_state, detect_output_scale_from_env,
+        assign_new_window_to_active, calculate_presentation_geometry, cascade_position,
+        clamp_window_to_work_area, clear_interactive_grab_state, detect_output_scale_from_env,
         focus_window_after_workspace_switch, geometry_for_interactive_grab,
         intersecting_output_indices, move_to_top, next_cascade_offset, output_geometry,
         output_index_for_geometry, output_index_for_point, output_scale_summary,
         pointer_grab_request_is_valid_for_window, prefer_full_redraw,
-        register_wayland_display_source, resolve_laid_out_outputs_from_env,
-        selection_bytes_for_mime_with_text_fallback, session_mode_note, surface_tree_root,
-        text_input_capability_from_env, text_input_capability_summary, total_output_size,
-        transition_presentation_state, window_paint_source, CompositorBackendKind, DamageRect,
+        register_wayland_display_source, remap_geometry_between_outputs,
+        resolve_laid_out_outputs_from_env, selection_bytes_for_mime_with_text_fallback,
+        session_mode_note, surface_tree_root, text_input_capability_from_env,
+        text_input_capability_summary, total_output_size, transition_presentation_state,
+        validated_runtime_output_layout, window_paint_source, CompositorBackendKind, DamageRect,
         DisplayPolicy, InteractiveGrab, InteractiveGrabKind, LaidOutOutput, OutputScale,
         PlaceholderPresentStats, ResizeEdges, TextInputCapability, WindowGeometry,
         WindowPaintSource, WindowPresentationState, WindowRestoreState, WorkspaceId,
@@ -110,7 +111,7 @@ mod linux {
                 PostAction,
             },
             wayland_server::{
-                backend::{ClientData, ClientId, DisconnectReason},
+                backend::{ClientData, ClientId, DisconnectReason, GlobalId},
                 protocol::{wl_output, wl_surface::WlSurface},
                 Display, DisplayHandle, Resource,
             },
@@ -153,6 +154,7 @@ mod linux {
 
     // Retro gray: rgb(152, 152, 148) — the classic Mac OS desktop fill
     const RETRO_GRAY: (u8, u8, u8) = (152, 152, 148);
+    const MAX_DISABLED_OUTPUT_GLOBALS: usize = 64;
 
     // Window placeholder colors (cycling palette for distinguishing windows)
     const WIN_COLORS: &[(f32, f32, f32)] = &[
@@ -542,12 +544,17 @@ mod linux {
         seat: Seat<SloposCompositor>,
         /// Registered wl_output objects (one or more; multi-output via SLOPOS_OUTPUTS).
         /// Kept alive so globals stay registered for the compositor lifetime.
-        #[allow(dead_code)]
         outputs: Vec<Output>,
+        /// Global ids parallel to `outputs`, retained so runtime hotplug can disable them.
+        output_globals: Vec<GlobalId>,
+        /// Disabled globals remain alive for existing clients for this session.
+        disabled_output_globals: Vec<GlobalId>,
         /// Normalized logical output rectangles used for window assignment.
         laid_out_outputs: Vec<LaidOutOutput>,
         /// Connector or synthetic names parallel to `laid_out_outputs`.
         output_names: Vec<String>,
+        output_scale: OutputScale,
+        refresh_mhz: i32,
         running: bool,
 
         // Mapped windows (in painting order, bottom → top)
@@ -1440,6 +1447,270 @@ mod linux {
             }
         }
 
+        fn runtime_scale_percent(&self) -> u32 {
+            (self.output_scale.as_f64() * 100.0)
+                .round()
+                .clamp(1.0, 10_000.0) as u32
+        }
+
+        fn reconfigure_outputs(&mut self, layout: &str) -> Result<(), String> {
+            let (new_names, new_layout) =
+                validated_runtime_output_layout(layout, self.runtime_scale_percent())?;
+            let new_total = total_output_size(&new_layout);
+            let new_physical = apply_scale_to_output_config(new_total, self.output_scale);
+            if self.x11_surface.is_some()
+                && (new_physical.width != self.output_size.w
+                    || new_physical.height != self.output_size.h)
+            {
+                return Err(format!(
+                    "nested runtime topology must preserve the host canvas (current {}x{}, requested {}x{}); resize the nested host window first",
+                    self.output_size.w,
+                    self.output_size.h,
+                    new_physical.width,
+                    new_physical.height
+                ));
+            }
+
+            let removed_count = self
+                .output_names
+                .iter()
+                .filter(|name| !new_names.contains(name))
+                .count();
+            if self
+                .disabled_output_globals
+                .len()
+                .saturating_add(removed_count)
+                > MAX_DISABLED_OUTPUT_GLOBALS
+            {
+                return Err("too many retired output globals in this session; restart the compositor before another connector-removal cycle".to_owned());
+            }
+
+            self.cancel_interactive_grab();
+            let old_layout = self.laid_out_outputs.clone();
+            let old_names = self.output_names.clone();
+            let old_canvas = self.canvas_area();
+            let layer_output_names = self
+                .layer_surfaces
+                .iter()
+                .map(|layer| {
+                    old_names
+                        .get(layer.output_index)
+                        .cloned()
+                        .unwrap_or_else(|| old_names.first().cloned().unwrap_or_default())
+                })
+                .collect::<Vec<_>>();
+
+            // Clear old membership before any global is disabled. Retained
+            // outputs are re-entered after the atomic topology replacement.
+            for output in &self.outputs {
+                for window in &self.windows {
+                    output.leave(window.toplevel.wl_surface());
+                }
+                for layer in &self.layer_surfaces {
+                    output.leave(layer.surface.wl_surface());
+                }
+            }
+
+            let mut old_outputs = std::mem::take(&mut self.outputs);
+            let mut old_globals = std::mem::take(&mut self.output_globals);
+            let mut old_output_names = std::mem::take(&mut self.output_names);
+            let mut old_laid_out = std::mem::take(&mut self.laid_out_outputs);
+            let mut outputs = Vec::with_capacity(new_layout.len());
+            let mut globals = Vec::with_capacity(new_layout.len());
+
+            for (index, (name, laid_out)) in new_names.iter().zip(&new_layout).enumerate() {
+                if let Some(old_index) = old_output_names.iter().position(|old| old == name) {
+                    let output = old_outputs.remove(old_index);
+                    let global = old_globals.remove(old_index);
+                    old_output_names.remove(old_index);
+                    old_laid_out.remove(old_index);
+                    configure_output(&output, laid_out, self.refresh_mhz, self.output_scale);
+                    outputs.push(output);
+                    globals.push(global);
+                } else {
+                    let (output, global) = create_output(
+                        &self.display_handle,
+                        laid_out,
+                        name.clone(),
+                        index,
+                        self.refresh_mhz,
+                        self.output_scale,
+                    );
+                    outputs.push(output);
+                    globals.push(global);
+                }
+            }
+
+            for (output, global) in old_outputs.into_iter().zip(old_globals) {
+                for window in &self.windows {
+                    output.leave(window.toplevel.wl_surface());
+                }
+                for layer in &self.layer_surfaces {
+                    output.leave(layer.surface.wl_surface());
+                }
+                self.display_handle
+                    .disable_global::<SloposCompositor>(global.clone());
+                self.disabled_output_globals.push(global);
+            }
+
+            self.outputs = outputs;
+            self.output_globals = globals;
+            self.output_names = new_names;
+            self.laid_out_outputs = new_layout;
+            self.output_size =
+                Size::<i32, Physical>::from((new_physical.width, new_physical.height));
+
+            // Preserve each layer's connector identity when possible. A removed
+            // connector deterministically falls back to the first active output.
+            for (layer, old_name) in self
+                .layer_surfaces
+                .iter_mut()
+                .zip(layer_output_names.into_iter())
+            {
+                let output_index = self
+                    .output_names
+                    .iter()
+                    .position(|name| name == &old_name)
+                    .unwrap_or(0);
+                let output_area = self
+                    .laid_out_outputs
+                    .get(output_index)
+                    .map(output_geometry)
+                    .unwrap_or_else(|| WindowGeometry::new(0, 0, 1, 1));
+                let output_size =
+                    Size::<i32, Logical>::from((output_area.width, output_area.height));
+                let (requested, anchor, margins, exclusive_zone) =
+                    layer_surface_request(&layer.surface);
+                let local = layer_geometry_for(
+                    &layer.namespace,
+                    layer.layer,
+                    output_size,
+                    requested,
+                    anchor,
+                    margins,
+                );
+                layer.output_index = output_index;
+                layer.geo = Rectangle::new(
+                    Point::from((
+                        output_area.x.saturating_add(local.loc.x),
+                        output_area.y.saturating_add(local.loc.y),
+                    )),
+                    local.size,
+                );
+                layer.exclusive_zone = exclusive_zone;
+                layer
+                    .surface
+                    .with_pending_state(|state| state.size = Some(local.size));
+                layer.surface.send_configure();
+            }
+
+            let work_areas = (0..self.laid_out_outputs.len())
+                .map(|index| self.work_area_for_output_index(index))
+                .collect::<Vec<_>>();
+            for window in &mut self.windows {
+                let old_geometry = window.geometry();
+                let old_index = window
+                    .restore_state
+                    .as_ref()
+                    .and_then(|restore| {
+                        old_names.iter().position(|name| name == &restore.output_id)
+                    })
+                    .or_else(|| output_index_for_geometry(&old_layout, old_geometry))
+                    .unwrap_or(0);
+                let old_name = old_names.get(old_index).cloned().unwrap_or_default();
+                let new_index = self
+                    .output_names
+                    .iter()
+                    .position(|name| name == &old_name)
+                    .unwrap_or(0);
+                let old_output = old_layout
+                    .get(old_index)
+                    .map(output_geometry)
+                    .unwrap_or(old_canvas);
+                let new_output = self
+                    .laid_out_outputs
+                    .get(new_index)
+                    .map(output_geometry)
+                    .unwrap_or_else(|| WindowGeometry::new(0, 0, 1, 1));
+                let work_area = work_areas.get(new_index).copied().unwrap_or(new_output);
+                let remapped_current =
+                    remap_geometry_between_outputs(old_geometry, old_output, new_output);
+                let remapped_normal = window
+                    .restore_state
+                    .as_ref()
+                    .map(|restore| {
+                        remap_geometry_between_outputs(
+                            restore.normal_geometry,
+                            old_output,
+                            new_output,
+                        )
+                    })
+                    .unwrap_or(remapped_current);
+                if let Some(restore) = window.restore_state.as_mut() {
+                    restore.normal_geometry = clamp_window_to_work_area(remapped_normal, work_area);
+                    restore.output_id = self
+                        .output_names
+                        .get(new_index)
+                        .cloned()
+                        .unwrap_or_else(|| format!("output-{new_index}"));
+                }
+                let next = match window.presentation_state {
+                    WindowPresentationState::Normal => {
+                        clamp_window_to_work_area(remapped_current, work_area)
+                    }
+                    WindowPresentationState::Minimized => {
+                        clamp_window_to_work_area(remapped_current, work_area)
+                    }
+                    WindowPresentationState::Fullscreen => new_output,
+                    state => calculate_presentation_geometry(
+                        work_area,
+                        state,
+                        (state == WindowPresentationState::SmartZoomed)
+                            .then_some((old_geometry.width, old_geometry.height)),
+                        remapped_normal,
+                    ),
+                };
+                window.position = Point::from((next.x, next.y));
+                window.size = Size::from((next.width, next.height));
+                window.toplevel.with_pending_state(|state| {
+                    state.size = Some(Size::from((next.width, next.height)));
+                });
+                window.toplevel.send_configure();
+            }
+
+            self.pointer_pos.x = self
+                .pointer_pos
+                .x
+                .clamp(0.0, f64::from(self.output_size.w.saturating_sub(1).max(0)));
+            self.pointer_pos.y = self
+                .pointer_pos
+                .y
+                .clamp(0.0, f64::from(self.output_size.h.saturating_sub(1).max(0)));
+            self.sync_all_window_output_membership();
+            let layer_membership = self
+                .layer_surfaces
+                .iter()
+                .map(|layer| (layer.surface.wl_surface().clone(), layer.output_index))
+                .collect::<Vec<_>>();
+            for (surface, output_index) in layer_membership {
+                self.sync_surface_to_output(&surface, output_index);
+            }
+            slopos_compositor::publish_session_readiness(
+                &self.wayland_socket_name,
+                self.output_size.w,
+                self.output_size.h,
+            )
+            .map_err(|error| format!("update session readiness after topology change: {error}"))?;
+            self.request_full_redraw();
+            tracing::info!(
+                outputs = self.outputs.len(),
+                width = self.output_size.w,
+                height = self.output_size.h,
+                "runtime output topology applied"
+            );
+            Ok(())
+        }
+
         fn apply_session_control_request(&mut self, request: SessionControlRequest) {
             match request {
                 SessionControlRequest::FocusedWindow { action } => {
@@ -1447,6 +1718,11 @@ mod linux {
                 }
                 SessionControlRequest::ActivateApplication { bundle_id } => {
                     self.activate_application(&bundle_id);
+                }
+                SessionControlRequest::ReconfigureOutputs { layout } => {
+                    if let Err(error) = self.reconfigure_outputs(&layout) {
+                        tracing::warn!(%error, "runtime output topology rejected");
+                    }
                 }
                 SessionControlRequest::FocusedApplicationMenu {
                     bundle_id,
@@ -3239,61 +3515,86 @@ mod linux {
     ///
     /// Nested path only places logical outputs — no DRM modeset for external
     /// connectors in this pass.
+    fn configure_output(
+        output: &Output,
+        laid_out: &LaidOutOutput,
+        refresh_mhz: i32,
+        scale: OutputScale,
+    ) {
+        let scale_i32 = scale.as_f64().round().max(1.0) as i32;
+        let mode = Mode {
+            size: (laid_out.config.width, laid_out.config.height).into(),
+            refresh: refresh_mhz,
+        };
+        output.change_current_state(
+            Some(mode),
+            Some(Transform::Normal),
+            Some(Scale::Integer(scale_i32)),
+            Some((laid_out.x, laid_out.y).into()),
+        );
+        output.set_preferred(mode);
+    }
+
+    fn create_output(
+        display_handle: &DisplayHandle,
+        laid_out: &LaidOutOutput,
+        name: String,
+        index: usize,
+        refresh_mhz: i32,
+        scale: OutputScale,
+    ) -> (Output, GlobalId) {
+        let output = Output::new(
+            name.clone(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "SLOPOS-I".into(),
+                model: format!("Logical Output {}", index + 1),
+            },
+        );
+        configure_output(&output, laid_out, refresh_mhz, scale);
+        let global = output.create_global::<SloposCompositor>(display_handle);
+        tracing::info!(
+            "wl_output {} ({}) {}x{} at ({},{}) refresh={} mHz {}",
+            index + 1,
+            name,
+            laid_out.config.width,
+            laid_out.config.height,
+            laid_out.x,
+            laid_out.y,
+            refresh_mhz,
+            output_scale_summary(scale)
+        );
+        (output, global)
+    }
+
+    /// Create one or more wl_output globals at the given logical origins.
     fn create_outputs(
         display_handle: &DisplayHandle,
         laid_out: &[LaidOutOutput],
         names: &[String],
         refresh_mhz: i32,
         scale: OutputScale,
-    ) -> (Vec<Output>, Size<i32, Physical>) {
-        let scale_i32 = scale.as_f64().round().max(1.0) as i32;
+    ) -> (Vec<Output>, Vec<GlobalId>, Size<i32, Physical>) {
         let total = total_output_size(laid_out);
-        // Physical canvas size for the nested X11 window (logical × scale).
         let total_phys = apply_scale_to_output_config(total, scale);
         let mut outputs = Vec::with_capacity(laid_out.len());
-
-        for (i, o) in laid_out.iter().enumerate() {
+        let mut globals = Vec::with_capacity(laid_out.len());
+        for (index, laid_out) in laid_out.iter().enumerate() {
             let name = names
-                .get(i)
+                .get(index)
                 .cloned()
-                .unwrap_or_else(|| format!("X11-{}", i + 1));
-            let output = Output::new(
-                name.clone(),
-                PhysicalProperties {
-                    size: (0, 0).into(),
-                    subpixel: Subpixel::Unknown,
-                    make: "SLOPOS-I".into(),
-                    model: format!("X11 Output {}", i + 1),
-                },
-            );
-            let mode = Mode {
-                size: (o.config.width, o.config.height).into(),
-                refresh: refresh_mhz,
-            };
-            output.change_current_state(
-                Some(mode),
-                Some(Transform::Normal),
-                Some(Scale::Integer(scale_i32)),
-                Some((o.x, o.y).into()),
-            );
-            output.set_preferred(mode);
-            output.create_global::<SloposCompositor>(display_handle);
-            tracing::info!(
-                "wl_output {} ({}) {}x{} at ({},{}) refresh={} mHz {}",
-                i + 1,
-                name,
-                o.config.width,
-                o.config.height,
-                o.x,
-                o.y,
-                refresh_mhz,
-                output_scale_summary(scale)
-            );
+                .unwrap_or_else(|| format!("X11-{}", index + 1));
+            let (output, global) =
+                create_output(display_handle, laid_out, name, index, refresh_mhz, scale);
             outputs.push(output);
+            globals.push(global);
         }
-
-        let output_size = Size::<i32, Physical>::from((total_phys.width, total_phys.height));
-        (outputs, output_size)
+        (
+            outputs,
+            globals,
+            Size::<i32, Physical>::from((total_phys.width, total_phys.height)),
+        )
     }
 
     /// Best-effort XWayland startup. Returns false when the binary is missing or spawn fails.
@@ -3586,7 +3887,7 @@ mod linux {
         eprintln!("[slopos-compositor] {}", resolved.summary());
         let laid_out_outputs = resolved.laid_out.clone();
         let output_names = resolved.names.clone();
-        let (outputs, output_size) = create_outputs(
+        let (outputs, output_globals, output_size) = create_outputs(
             &display_handle,
             &laid_out_outputs,
             &output_names,
@@ -3768,8 +4069,12 @@ mod linux {
             im_popups: Vec::new(),
             seat,
             outputs,
+            output_globals,
+            disabled_output_globals: Vec::new(),
             laid_out_outputs,
             output_names,
+            output_scale,
+            refresh_mhz,
             running: true,
             windows: Vec::new(),
             workspace_state: WorkspaceState::new(),

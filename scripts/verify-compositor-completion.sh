@@ -117,6 +117,13 @@ grep -q 'Output::from_resource' crates/slopos-compositor/src/main.rs
 grep -q 'sync_surface_to_output' crates/slopos-compositor/src/main.rs
 grep -q 'intersecting_output_indices' crates/slopos-compositor/src/output_assignment.rs
 
+failed_step="runtime output topology contract"
+grep -q 'ReconfigureOutputs' crates/slopos-bus/src/session_control.rs
+grep -q 'validated_runtime_output_layout' crates/slopos-compositor/src/output_assignment.rs
+grep -q 'disable_global::<SloposCompositor>' crates/slopos-compositor/src/main.rs
+grep -q 'runtime output topology applied' crates/slopos-compositor/src/main.rs
+test -x scripts/verify-compositor-output-topology-runtime.sh
+
 status="passed"
 failed_step=""
 write_artifact

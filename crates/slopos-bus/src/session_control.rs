@@ -36,6 +36,11 @@ pub enum SessionControlRequest {
     ActivateApplication {
         bundle_id: String,
     },
+    /// Atomically replace the compositor's logical output topology.
+    /// The value uses `name:WIDTHxHEIGHT@x,y:sSCALE` entries separated by `;`.
+    ReconfigureOutputs {
+        layout: String,
+    },
     FocusedApplicationMenu {
         bundle_id: String,
         action_id: String,
@@ -312,6 +317,18 @@ mod tests {
     fn request_round_trips_through_json() {
         let request = SessionControlRequest::FocusedWindow {
             action: WindowPresentationAction::ToggleFullscreen,
+        };
+        let encoded = serde_json::to_vec(&request).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<SessionControlRequest>(&encoded).unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn output_reconfiguration_request_round_trips_through_json() {
+        let request = SessionControlRequest::ReconfigureOutputs {
+            layout: "LEFT:800x600@0,0:s100;RIGHT:1024x768@800,0:s100".into(),
         };
         let encoded = serde_json::to_vec(&request).unwrap();
         assert_eq!(

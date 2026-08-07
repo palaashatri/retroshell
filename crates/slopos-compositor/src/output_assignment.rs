@@ -4,7 +4,110 @@
 //! popups and restore geometry on one real output rather than treating the
 //! entire multi-monitor canvas as a single monitor.
 
-use crate::{LaidOutOutput, WindowGeometry};
+use crate::{parse_outputs_layout_spec, LaidOutOutput, WindowGeometry};
+use std::collections::HashSet;
+
+/// Maximum number of logical outputs accepted from the live session-control path.
+pub const MAX_RUNTIME_OUTPUTS: usize = 16;
+/// Maximum logical dimension accepted for one output.
+pub const MAX_RUNTIME_OUTPUT_DIMENSION: i32 = 16_384;
+/// Maximum absolute logical origin accepted before normalization.
+pub const MAX_RUNTIME_OUTPUT_ORIGIN: i32 = 131_072;
+
+/// Parse and validate a complete runtime output-layout request.
+///
+/// Parsing is strict: a malformed token rejects the whole transaction instead
+/// of silently disabling an output. The current nested renderer uses one global
+/// scale, so requests with a different scale are rejected until mixed-scale
+/// buffers are implemented.
+pub fn validated_runtime_output_layout(
+    spec: &str,
+    expected_scale_percent: u32,
+) -> Result<(Vec<String>, Vec<LaidOutOutput>), String> {
+    let token_count = spec
+        .split(';')
+        .filter(|token| !token.trim().is_empty())
+        .count();
+    let entries = parse_outputs_layout_spec(spec);
+    if token_count == 0 || entries.is_empty() {
+        return Err("output layout must contain at least one valid output".to_owned());
+    }
+    if entries.len() != token_count {
+        return Err("output layout contains a malformed token".to_owned());
+    }
+    if entries.len() > MAX_RUNTIME_OUTPUTS {
+        return Err(format!(
+            "output layout exceeds the {MAX_RUNTIME_OUTPUTS}-output session limit"
+        ));
+    }
+
+    let mut names = HashSet::with_capacity(entries.len());
+    for entry in &entries {
+        if !names.insert(entry.name.clone()) {
+            return Err(format!("duplicate output name: {}", entry.name));
+        }
+        if entry.config.width > MAX_RUNTIME_OUTPUT_DIMENSION
+            || entry.config.height > MAX_RUNTIME_OUTPUT_DIMENSION
+        {
+            return Err(format!(
+                "output {} exceeds the {}-pixel logical dimension limit",
+                entry.name, MAX_RUNTIME_OUTPUT_DIMENSION
+            ));
+        }
+        if entry.x.unsigned_abs() > MAX_RUNTIME_OUTPUT_ORIGIN as u32
+            || entry.y.unsigned_abs() > MAX_RUNTIME_OUTPUT_ORIGIN as u32
+        {
+            return Err(format!(
+                "output {} origin exceeds the supported logical range",
+                entry.name
+            ));
+        }
+        if entry.scale_percent != expected_scale_percent {
+            return Err(format!(
+                "output {} requests scale {} but this session currently uses uniform scale {}",
+                entry.name, entry.scale_percent, expected_scale_percent
+            ));
+        }
+    }
+
+    let output_names = entries.iter().map(|entry| entry.name.clone()).collect();
+    let outputs = entries
+        .iter()
+        .map(|entry| entry.to_laid_out())
+        .collect::<Vec<_>>();
+    Ok((output_names, normalize_laid_out_outputs(&outputs)))
+}
+
+/// Move a normal window from one output coordinate system to another while
+/// preserving its proportional placement and keeping it fully visible.
+pub fn remap_geometry_between_outputs(
+    geometry: WindowGeometry,
+    old_output: WindowGeometry,
+    new_output: WindowGeometry,
+) -> WindowGeometry {
+    let old_width = i64::from(old_output.width.max(1));
+    let old_height = i64::from(old_output.height.max(1));
+    let new_width = i64::from(new_output.width.max(1));
+    let new_height = i64::from(new_output.height.max(1));
+    let relative_x = i64::from(geometry.x).saturating_sub(i64::from(old_output.x));
+    let relative_y = i64::from(geometry.y).saturating_sub(i64::from(old_output.y));
+    let mapped_x =
+        i64::from(new_output.x).saturating_add(relative_x.saturating_mul(new_width) / old_width);
+    let mapped_y =
+        i64::from(new_output.y).saturating_add(relative_y.saturating_mul(new_height) / old_height);
+    let width = geometry.width.clamp(1, new_output.width.max(1));
+    let height = geometry.height.clamp(1, new_output.height.max(1));
+    let max_x = i64::from(new_output.x)
+        .saturating_add(i64::from(new_output.width.max(1).saturating_sub(width)));
+    let max_y = i64::from(new_output.y)
+        .saturating_add(i64::from(new_output.height.max(1).saturating_sub(height)));
+    WindowGeometry::new(
+        clamp_i64_to_i32(mapped_x.clamp(i64::from(new_output.x), max_x)),
+        clamp_i64_to_i32(mapped_y.clamp(i64::from(new_output.y), max_y)),
+        width,
+        height,
+    )
+}
 
 /// Convert a logical output description into compositor geometry.
 pub fn output_geometry(output: &LaidOutOutput) -> WindowGeometry {
@@ -223,6 +326,53 @@ mod tests {
             x,
             y,
         }
+    }
+
+    #[test]
+    fn runtime_layout_validation_is_transactional_and_scale_honest() {
+        let (names, outputs) = validated_runtime_output_layout(
+            "LEFT:800x600@-800,0:s100;RIGHT:1024x768@0,0:s100",
+            100,
+        )
+        .unwrap();
+        assert_eq!(names, vec!["LEFT", "RIGHT"]);
+        assert_eq!(outputs[0], output(0, 0, 800, 600));
+        assert_eq!(outputs[1], output(800, 0, 1024, 768));
+
+        assert!(
+            validated_runtime_output_layout("LEFT:800x600@0,0:s100;broken-token", 100)
+                .unwrap_err()
+                .contains("malformed")
+        );
+        assert!(
+            validated_runtime_output_layout("LEFT:800x600@0,0:s125", 100)
+                .unwrap_err()
+                .contains("uniform scale")
+        );
+        assert!(validated_runtime_output_layout(
+            "LEFT:800x600@0,0:s100;LEFT:1024x768@800,0:s100",
+            100
+        )
+        .unwrap_err()
+        .contains("duplicate"));
+    }
+
+    #[test]
+    fn topology_remap_preserves_relative_placement_and_visibility() {
+        let old = WindowGeometry::new(0, 0, 1000, 800);
+        let new = WindowGeometry::new(1000, 100, 2000, 1200);
+        assert_eq!(
+            remap_geometry_between_outputs(WindowGeometry::new(250, 200, 500, 400), old, new,),
+            WindowGeometry::new(1500, 400, 500, 400)
+        );
+        assert_eq!(
+            remap_geometry_between_outputs(
+                WindowGeometry::new(900, 700, 900, 700),
+                old,
+                WindowGeometry::new(0, 0, 640, 480),
+            ),
+            WindowGeometry::new(0, 0, 640, 480)
+        );
     }
 
     #[test]

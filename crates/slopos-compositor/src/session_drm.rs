@@ -1667,6 +1667,12 @@ impl DrmSessionState {
             SessionControlRequest::ActivateApplication { bundle_id } => {
                 self.activate_application(&bundle_id);
             }
+            SessionControlRequest::ReconfigureOutputs { layout } => {
+                tracing::warn!(
+                    %layout,
+                    "runtime logical-output control is not the DRM connector-hotplug authority"
+                );
+            }
             SessionControlRequest::FocusedApplicationMenu {
                 bundle_id,
                 action_id,
