@@ -5,16 +5,42 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`4ed9a6b59386501127b83be92abed7118368e972`
+`e31ecd7b5ae5d2cf2b34f7d5a553c317391ed4d7`
 **Audit date:** 2026-08-08
-**Audit basis:** current-source review, commit-delta review, exact-commit GitHub
-Actions evidence and retained VM/UTM runtime evidence.
+**Audit basis:** current-source review, commit-delta review, exact-commit Linux
+VM/UTM build/test/runtime evidence and retained native Wayland protocol logs.
 **Public target:** a 100/100 production Linux desktop environment that genuinely
 competes with KDE Plasma and GNOME as a daily driver.
 **Current verdict:** **63/100 — functional custom desktop alpha.**
 
 Documentation commits after the audited implementation do not change the
 product score unless they are accompanied by implementation and evidence.
+
+### Current implementation wave — native text-input-v3 and input-method-v2
+
+Implementation commits `b037a307cdc186621a48809ddcd2977530afd2c8` and
+`e31ecd7b5ae5d2cf2b34f7d5a553c317391ed4d7` are **BUILD VERIFIED** and **TEST
+VERIFIED**. The DRM backend now creates the same environment-gated text-input
+and input-method manager states as the nested backend, retains input-method
+popup state, and applies the same compositor focus policy.
+
+The exact-current-head Ubuntu UTM headless runtime gate passed at
+`e31ecd7b5ae5d2cf2b34f7d5a553c317391ed4d7`. Evidence is retained under
+`artifacts/qa/2026-08-08-compositor-runtime-e31ecd7/` with schema 12 JSON and
+separate app/IME logs. Two independent native Wayland clients proved:
+
+- both text-input-v3 and input-method-v2 globals are present;
+- the focused app receives text-input enter and done events;
+- the IME receives activation, surrounding text and content type;
+- the IME sends a serial-checked commit, preedit and surrounding-text delete;
+- the app receives and validates the committed and preedit strings; and
+- disabling the text input causes one IME deactivation.
+
+This is first-party headless protocol/runtime evidence only. It does not prove
+GTK/Qt/Electron IME compatibility, candidate-popup rendering, physical input,
+DRM/KMS, hardware, XWayland or complete text-editor grapheme/bidi integration.
+The overall score remains **63/100** and strict compositor completion remains
+**76/100**.
 
 ---
 
@@ -458,7 +484,7 @@ than aspirational.
 | UI and UX | **59** | Distinctive and coherent, but renderer, typography, image display, animation and integration remain alpha-grade |
 | Product functionality | **61** | Real shell, compositor, applications and Vision paths; many daily-driver workflows are incomplete |
 | Linux daily-driver readiness | **51** | Suitable for controlled development and QA, not yet for a non-technical user’s only desktop |
-| Compositor strict completion | **76** | Native clipboard, primary-selection and first-party text/URI DnD are runtime-observed; hardware, input, displays, XWayland and compatibility gates remain |
+| Compositor strict completion | **76** | Native clipboard, primary-selection, text/URI DnD and first-party text-input/IME are runtime-observed; hardware, input, displays, XWayland and compatibility gates remain |
 | Security and release readiness | **52** | Good session/filesystem hardening, incomplete sandbox, signing, packaging, upgrades and recovery |
 | Accessibility readiness | **38** | Meaningful AT-SPI work, incomplete live tree and Orca operation |
 | POSIX/FreeBSD portability | **22** | Direction is defined; implementation and native evidence remain early |
@@ -478,7 +504,7 @@ The most important blockers are:
 
 1. incomplete physical compositor/input/multi-monitor coverage;
 2. prototype text and image rendering;
-3. incomplete third-party DnD compatibility and IME;
+3. incomplete third-party DnD compatibility and application-level IME integration;
 4. partial XWayland and third-party application compatibility;
 5. SLOPOS Spaces model not yet connected to a complete user experience;
 6. Settings not yet authoritative for all system services;
@@ -505,7 +531,7 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | Layout and resizing | 62 | Core layout works; many applications retain fixed sizes and hand-authored geometry |
 | Keyboard navigation | 72 | Shared focus management and keyboard activation are substantive |
 | Pointer dispatch and capture | 72 | Shared dispatcher and capture are real; compositor interaction evidence remains incomplete |
-| Editing interaction | 64 | UTF-8-safe selections and caret insertion exist; graphemes, bidi and IME remain open |
+| Editing interaction | 64 | UTF-8-safe selections and caret insertion exist; graphemes, bidi and app-level IME remain open |
 | Accessibility UX | 46 | AT-SPI structure exists; live-tree and assistive workflows remain incomplete |
 | Animation and motion | 27 | No production transition system for Spaces, windows, Dock and notifications |
 | Scaling polish | 53 | Logical scaling exists; mixed-scale visual matrix is incomplete |
@@ -535,14 +561,14 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | Session sovereignty and lifecycle | 9 | 10 | Display-manager, suspend/resume, lid and longer failure coverage |
 | Core Wayland lifecycle | 12 | 14 | Broader popup, subsurface, transient and modal compatibility |
 | Input correctness | 9 | 10 | Physical multi-device, touch, gestures and hotplug |
-| Clipboard, DnD and IME | 8 | 8 | GTK/Qt/Electron/XWayland compatibility, DnD failure paths and text-input/input-method |
+| Clipboard, DnD and IME | 8 | 8 | GTK/Qt/Electron/XWayland compatibility, DnD failure paths and application-level IME integration |
 | Rendering and frame scheduling | 9 | 12 | Direct scanout, occlusion, GPU recovery and physical pacing evidence |
 | Displays and scaling | 9 | 12 | Hotplug, mixed scale/refresh, rotation, migration and topology recovery |
 | External Wayland compatibility | 6 | 12 | GTK, Qt, Electron, browsers, office, media, games and popup-heavy apps |
 | XWayland | 4 | 8 | Rootless scene, override-redirect, clipboard/DnD, DPI, restart and application matrix |
 | HDR, VRR and colour | 3 | 6 | Physical capable hardware, metadata/presentation proof and full colour path |
 | Security, stability and release QA | 7 | 8 | Soaks, resource plateaus, fuzzing and hostile-client breadth |
-| **Total** | **73** | **100** | First subsystem targeted for a genuine 100 |
+| **Total** | **76** | **100** | Native first-party text-input/IME is runtime-observed; external compatibility, hardware and reliability remain |
 
 ### Strong current compositor work
 
@@ -561,7 +587,7 @@ Passing CI proves engineering health. It does not erase these product gaps.
 
 - physical DRM/input/multi-monitor matrix on current code;
 - touch, touchpad gestures and multiple-device hotplug;
-- third-party DnD failure paths and IME;
+- third-party DnD failure paths and application-level IME integration;
 - broad Wayland client matrix;
 - first-class XWayland;
 - HDR/VRR on capable displays;

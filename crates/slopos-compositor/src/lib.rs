@@ -1988,7 +1988,7 @@ fn settings_conf_path() -> Option<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Text-input / IME policy (pure) — Phase D8 scaffold
+// Text-input / IME capability policy (pure)
 // ---------------------------------------------------------------------------
 
 /// Compositor preference for text-input-v3 / input-method availability.
@@ -1996,9 +1996,9 @@ fn settings_conf_path() -> Option<PathBuf> {
 pub enum TextInputCapability {
     /// No IME; clients use raw key events only.
     None,
-    /// text-input-v3 global advertised; no input-method seat yet.
+    /// text-input-v3 global advertised without input-method-v2.
     TextInputV3,
-    /// Full input-method-v2 + text-input-v3 (not yet implemented end-to-end).
+    /// Smithay-backed input-method-v2 + text-input-v3 lifecycle.
     InputMethodAndTextInput,
 }
 

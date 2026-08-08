@@ -358,7 +358,7 @@ fn run_ime(connection: &Connection) -> Result<(), Box<dyn Error>> {
     if state.content_type != Some((0, 0)) {
         return Err(format!("unexpected content type: {:?}", state.content_type).into());
     }
-    if state.commit_sent != true {
+    if !state.commit_sent {
         return Err("input method did not send a serial-checked commit".into());
     }
     if state.deactivate_count != 1 {
