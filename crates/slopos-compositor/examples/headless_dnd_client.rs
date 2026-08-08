@@ -99,6 +99,15 @@ impl State {
     }
 }
 
+type CommonBindings = (
+    State,
+    wayland_client::EventQueue<State>,
+    QueueHandle<State>,
+    wl_seat::WlSeat,
+    wl_data_device_manager::WlDataDeviceManager,
+    xdg_wm_base::XdgWmBase,
+);
+
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
     fn event(
         _state: &mut Self,
@@ -424,20 +433,7 @@ fn wait_for_toplevel(
     Ok(())
 }
 
-fn bind_common(
-    connection: &Connection,
-    role: Role,
-) -> Result<
-    (
-        State,
-        wayland_client::EventQueue<State>,
-        QueueHandle<State>,
-        wl_seat::WlSeat,
-        wl_data_device_manager::WlDataDeviceManager,
-        xdg_wm_base::XdgWmBase,
-    ),
-    Box<dyn Error>,
-> {
+fn bind_common(connection: &Connection, role: Role) -> Result<CommonBindings, Box<dyn Error>> {
     let (globals, event_queue) = registry_queue_init::<State>(connection)?;
     let queue_handle = event_queue.handle();
     let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&queue_handle, 1..=6, ())?;
