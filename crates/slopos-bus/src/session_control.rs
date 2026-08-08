@@ -247,6 +247,7 @@ pub fn send_session_control(_request: &SessionControlRequest) -> io::Result<()> 
 pub struct SessionControlListener {
     socket: std::os::unix::net::UnixDatagram,
     path: PathBuf,
+    expected_uid: u32,
 }
 
 #[cfg(unix)]
@@ -256,11 +257,119 @@ impl std::os::fd::AsFd for SessionControlListener {
     }
 }
 
+/// The session control socket is a same-UID endpoint.  Linux supplies the
+/// sender credential on every datagram when `SO_PASSCRED` is enabled; reject
+/// missing credentials as well as a different UID.  The helper is kept
+/// platform-neutral so the policy itself remains testable on hosts whose Unix
+/// datagram APIs do not expose portable per-datagram credentials.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn peer_uid_is_allowed(peer_uid: Option<u32>, expected_uid: u32) -> bool {
+    peer_uid == Some(expected_uid)
+}
+
+#[cfg(target_os = "linux")]
+fn enable_peer_credentials(socket: &std::os::unix::net::UnixDatagram) -> io::Result<()> {
+    use std::mem::size_of;
+    use std::os::fd::AsRawFd;
+
+    let enabled: libc::c_int = 1;
+    let result = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PASSCRED,
+            (&enabled as *const libc::c_int).cast(),
+            size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if result == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn recv_control_datagram(
+    socket: &std::os::unix::net::UnixDatagram,
+    buffer: &mut [u8],
+    expected_uid: u32,
+) -> io::Result<Option<usize>> {
+    use std::mem::{size_of, zeroed};
+    use std::os::fd::AsRawFd;
+
+    let mut iovec = libc::iovec {
+        iov_base: buffer.as_mut_ptr().cast(),
+        iov_len: buffer.len(),
+    };
+    let control_len =
+        unsafe { libc::CMSG_SPACE(size_of::<libc::ucred>() as libc::c_uint) } as usize;
+    let mut control = vec![0_u8; control_len];
+    let mut message: libc::msghdr = unsafe { zeroed() };
+    message.msg_iov = &mut iovec;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = control.len();
+
+    let received = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut message, libc::MSG_DONTWAIT) };
+    if received < 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    if message.msg_flags & libc::MSG_CTRUNC != 0 {
+        tracing::warn!("discarding session control datagram with truncated credentials");
+        return Ok(None);
+    }
+
+    let mut peer_uid = None;
+    let mut header = unsafe { libc::CMSG_FIRSTHDR(&message) };
+    while !header.is_null() {
+        let header_ref = unsafe { &*header };
+        if header_ref.cmsg_level == libc::SOL_SOCKET
+            && header_ref.cmsg_type == libc::SCM_CREDENTIALS
+            && header_ref.cmsg_len as usize
+                >= unsafe { libc::CMSG_LEN(size_of::<libc::ucred>() as libc::c_uint) } as usize
+        {
+            let data = unsafe { libc::CMSG_DATA(header) };
+            let credentials = unsafe { std::ptr::read_unaligned(data.cast::<libc::ucred>()) };
+            peer_uid = Some(credentials.uid as u32);
+            break;
+        }
+        header = unsafe { libc::CMSG_NXTHDR(&message, header) };
+    }
+
+    if !peer_uid_is_allowed(peer_uid, expected_uid) {
+        tracing::warn!(
+            peer_uid = ?peer_uid,
+            expected_uid,
+            "discarding session control datagram from unauthorized UID"
+        );
+        return Ok(None);
+    }
+
+    Ok(Some(received as usize))
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn recv_control_datagram(
+    socket: &std::os::unix::net::UnixDatagram,
+    buffer: &mut [u8],
+    _expected_uid: u32,
+) -> io::Result<Option<usize>> {
+    // macOS/BSD do not expose a portable per-datagram credential ancillary
+    // record for an unconnected Unix datagram.  The socket is still mode 0600;
+    // Linux production sessions use the strict SO_PASSCRED path above.  Keep
+    // the same receive API for host-side development/tests and cover the
+    // authorization predicate with deterministic unit tests.
+    socket.recv(buffer).map(Some)
+}
+
 #[cfg(unix)]
 impl SessionControlListener {
     /// Bind the exact socket owned by this session.  The runtime directory is
     /// already restricted to the session user by `slopos-session`.
     pub fn bind(runtime: &Path) -> io::Result<Self> {
+        use std::os::unix::fs::PermissionsExt;
         use std::os::unix::net::UnixDatagram;
 
         let path = runtime.join(SESSION_CONTROL_SOCKET);
@@ -268,21 +377,30 @@ impl SessionControlListener {
             std::fs::remove_file(&path)?;
         }
         let socket = UnixDatagram::bind(&path)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        #[cfg(target_os = "linux")]
+        enable_peer_credentials(&socket)?;
         socket.set_nonblocking(true)?;
-        Ok(Self { socket, path })
+        let expected_uid = unsafe { libc::geteuid() } as u32;
+        Ok(Self {
+            socket,
+            path,
+            expected_uid,
+        })
     }
 
     pub fn drain(&self) -> Vec<SessionControlRequest> {
         let mut requests = Vec::new();
         let mut buffer = [0_u8; 16 * 1024];
         loop {
-            match self.socket.recv(&mut buffer) {
-                Ok(size) => match serde_json::from_slice(&buffer[..size]) {
+            match recv_control_datagram(&self.socket, &mut buffer, self.expected_uid) {
+                Ok(Some(size)) => match serde_json::from_slice(&buffer[..size]) {
                     Ok(request) => requests.push(request),
                     Err(error) => {
                         tracing::warn!(%error, "discarding malformed session control request")
                     }
                 },
+                Ok(None) => continue,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => {
                     tracing::warn!(%error, "session control socket read failed");
@@ -481,6 +599,71 @@ mod tests {
             serde_json::from_slice::<SessionControlRequest>(&encoded).unwrap(),
             request
         );
+    }
+
+    #[test]
+    fn peer_uid_policy_requires_an_exact_credential_match() {
+        assert!(peer_uid_is_allowed(Some(1000), 1000));
+        assert!(!peer_uid_is_allowed(Some(1001), 1000));
+        assert!(!peer_uid_is_allowed(None, 1000));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_control_socket_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let runtime = std::env::temp_dir().join(format!(
+            "slo-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&runtime).unwrap();
+        let listener = SessionControlListener::bind(&runtime).unwrap();
+        let mode = std::fs::metadata(runtime.join(SESSION_CONTROL_SOCKET))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        drop(listener);
+        std::fs::remove_dir_all(runtime).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_listener_enables_kernel_peer_credentials() {
+        use std::mem::size_of;
+        use std::os::fd::AsRawFd;
+
+        let runtime = std::env::temp_dir().join(format!(
+            "slo-passcred-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&runtime).unwrap();
+        let listener = SessionControlListener::bind(&runtime).unwrap();
+        let mut enabled = 0_i32;
+        let mut length = size_of::<libc::c_int>() as libc::socklen_t;
+        let result = unsafe {
+            libc::getsockopt(
+                listener.socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PASSCRED,
+                (&mut enabled as *mut libc::c_int).cast(),
+                &mut length,
+            )
+        };
+        assert_eq!(result, 0);
+        assert_eq!(enabled, 1);
+        drop(listener);
+        std::fs::remove_dir_all(runtime).unwrap();
     }
 
     #[cfg(unix)]

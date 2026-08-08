@@ -12,6 +12,7 @@ path = "src/main.rs"
 slopos-sdk = { path = "../../crates/slopos-sdk" }
 slopos-kit = { path = "../../crates/slopos-kit" }
 slopos-shell = { path = "../../crates/slopos-shell" }
+slopos-bus = { path = "../../crates/slopos-bus" }
 serde = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true }

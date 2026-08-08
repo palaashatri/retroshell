@@ -12,6 +12,7 @@ thiserror = { workspace = true }
 log = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
+libc = { workspace = true }
 parking_lot = { workspace = true }
 uuid = { workspace = true }
 zbus = { workspace = true, optional = true }

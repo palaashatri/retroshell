@@ -5,10 +5,15 @@
     clippy::field_reassign_with_default
 )]
 
+use slopos_bus::{
+    read_spaces_snapshot, send_session_control, SessionControlRequest, SpaceClassification,
+    SpacesControlCommand, SpacesDisplayPolicy, SpacesSnapshot,
+};
 use slopos_kit::button::Button;
 use slopos_kit::event::{KeyCode, Modifiers};
 use slopos_kit::label::Label;
 use slopos_kit::slider::Slider;
+use slopos_kit::text_field::TextField;
 use slopos_kit::window::Window;
 use slopos_kit::{
     AccessibilityNode, Event, EventResult, FocusManager, LayoutConstraint, PointerDispatcher, Rect,
@@ -129,6 +134,10 @@ enum Choice {
     PrivacyStrict,
     NotificationsOff,
     NotificationsOn,
+    SpacesSharedSpan,
+    SpacesIndependentPerDisplay,
+    SpacesNormal,
+    SpacesFullscreen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,10 +153,11 @@ enum Category {
     Accessibility,
     Privacy,
     Notifications,
+    Spaces,
 }
 
 impl Category {
-    const ALL: [Category; 11] = [
+    const ALL: [Category; 12] = [
         Category::General,
         Category::Appearance,
         Category::DesktopDock,
@@ -159,6 +169,7 @@ impl Category {
         Category::Accessibility,
         Category::Privacy,
         Category::Notifications,
+        Category::Spaces,
     ];
 
     fn label(self) -> &'static str {
@@ -174,6 +185,7 @@ impl Category {
             Category::Accessibility => "Accessibility",
             Category::Privacy => "Privacy & Security",
             Category::Notifications => "Notifications",
+            Category::Spaces => "SLOPOS Spaces",
         }
     }
 
@@ -198,6 +210,9 @@ impl Category {
             Category::Accessibility => "Enable high-visibility affordances across native apps.",
             Category::Privacy => "Control privacy defaults used by app services.",
             Category::Notifications => "Control notification delivery for native apps.",
+            Category::Spaces => {
+                "Manage compositor-owned Spaces, membership policy and per-Space metadata."
+            }
         }
     }
 
@@ -273,6 +288,7 @@ impl Category {
                 (Choice::NotificationsOff, "Notifications Off"),
                 (Choice::NotificationsOn, "Notifications On"),
             ],
+            Category::Spaces => &[],
         }
     }
 }
@@ -420,6 +436,10 @@ impl SettingsState {
             Choice::PrivacyStrict => self.privacy_mode == "strict",
             Choice::NotificationsOff => !self.notifications,
             Choice::NotificationsOn => self.notifications,
+            Choice::SpacesSharedSpan
+            | Choice::SpacesIndependentPerDisplay
+            | Choice::SpacesNormal
+            | Choice::SpacesFullscreen => false,
         }
     }
 
@@ -470,6 +490,10 @@ impl SettingsState {
             Choice::PrivacyStrict => self.privacy_mode = "strict".to_string(),
             Choice::NotificationsOff => self.notifications = false,
             Choice::NotificationsOn => self.notifications = true,
+            Choice::SpacesSharedSpan
+            | Choice::SpacesIndependentPerDisplay
+            | Choice::SpacesNormal
+            | Choice::SpacesFullscreen => {}
         }
     }
 
@@ -547,6 +571,7 @@ impl SettingsState {
                 "NOTIFICATIONS - {}",
                 if self.notifications { "ON" } else { "OFF" }
             ),
+            Category::Spaces => "SPACES - compositor state is authoritative".to_string(),
         }
     }
 }
@@ -857,6 +882,73 @@ fn parse_percent(value: &str, fallback: u8) -> u8 {
         .unwrap_or(fallback)
 }
 
+fn optional_metadata(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn valid_spaces_snapshot(snapshot: &SpacesSnapshot) -> bool {
+    if snapshot.spaces.is_empty() || snapshot.active_space == 0 {
+        return false;
+    }
+    let mut rows = snapshot.spaces.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|space| space.order);
+    if !rows
+        .iter()
+        .enumerate()
+        .all(|(index, space)| space.order == index && space.id != 0)
+    {
+        return false;
+    }
+    if rows.iter().filter(|space| space.active).count() != 1 {
+        return false;
+    }
+    if rows
+        .iter()
+        .filter(|space| space.id == snapshot.active_space)
+        .count()
+        != 1
+        || !rows
+            .iter()
+            .any(|space| space.id == snapshot.active_space && space.active)
+    {
+        return false;
+    }
+    let mut ids = std::collections::HashSet::new();
+    let mut names = std::collections::HashSet::new();
+    for space in rows {
+        if space.name.is_empty()
+            || space.name.trim() != space.name
+            || space.name.chars().any(char::is_control)
+            || !ids.insert(space.id)
+            || !names.insert(space.name.to_lowercase())
+        {
+            return false;
+        }
+        for value in [space.wallpaper.as_deref(), space.appearance.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            if value.is_empty() || value.trim() != value || value.chars().any(char::is_control) {
+                return false;
+            }
+        }
+        if let Some(output_id) = space.output_id.as_deref() {
+            if output_id.is_empty()
+                || output_id.trim() != output_id
+                || output_id.chars().any(char::is_control)
+            {
+                return false;
+            }
+        }
+    }
+    snapshot.multi_monitor_policy != SpacesDisplayPolicy::SharedSpan
+        || snapshot
+            .spaces
+            .iter()
+            .all(|space| space.output_id.is_none())
+}
+
 struct SettingsView {
     state: WidgetState,
     category_buttons: Vec<Button>,
@@ -868,6 +960,15 @@ struct SettingsView {
     volume_slider: Slider,
     pointer_speed_label: Label,
     pointer_speed_slider: Slider,
+    spaces_snapshot: Option<SpacesSnapshot>,
+    spaces_rows: Vec<(u64, Button)>,
+    spaces_action_buttons: Vec<Button>,
+    spaces_policy_buttons: Vec<Button>,
+    spaces_classification_button: Button,
+    spaces_name_field: TextField,
+    spaces_wallpaper_field: TextField,
+    spaces_appearance_field: TextField,
+    spaces_feedback: Option<String>,
     selected_category: Category,
     settings: SettingsState,
     store: SettingsStore,
@@ -893,6 +994,25 @@ impl SettingsView {
             volume_slider: Slider::new(),
             pointer_speed_label: Label::new("POINTER SPEED"),
             pointer_speed_slider: Slider::new(),
+            spaces_snapshot: None,
+            spaces_rows: Vec::new(),
+            spaces_action_buttons: vec![
+                Button::new("Create"),
+                Button::new("Rename Active"),
+                Button::new("Move Up"),
+                Button::new("Move Down"),
+                Button::new("Remove Active"),
+                Button::new("Apply Metadata"),
+            ],
+            spaces_policy_buttons: vec![
+                Button::new("Shared Across Displays"),
+                Button::new("Independent Per Display"),
+            ],
+            spaces_classification_button: Button::new("Toggle Fullscreen Policy"),
+            spaces_name_field: TextField::new().with_placeholder("Space name"),
+            spaces_wallpaper_field: TextField::new().with_placeholder("Wallpaper path (optional)"),
+            spaces_appearance_field: TextField::new().with_placeholder("Appearance (optional)"),
+            spaces_feedback: None,
             selected_category: Category::Appearance,
             settings,
             store,
@@ -900,6 +1020,7 @@ impl SettingsView {
             focus: FocusManager::new(),
             pointer: PointerDispatcher::new(),
         };
+        view.refresh_spaces_snapshot();
         view.refresh_labels();
         view
     }
@@ -958,13 +1079,253 @@ impl SettingsView {
         self.status.text = format!(
             "{}{}",
             self.settings.status_line(self.selected_category),
-            error
+            if self.selected_category == Category::Spaces {
+                self.spaces_feedback
+                    .as_deref()
+                    .map(|feedback| format!(" - {feedback}"))
+                    .unwrap_or_default()
+            } else {
+                error
+            }
         );
+        if self.selected_category == Category::Spaces {
+            self.refresh_spaces_controls();
+            self.relayout_if_visible();
+        }
+    }
+
+    fn refresh_spaces_snapshot(&mut self) {
+        let Ok(snapshot) = read_spaces_snapshot() else {
+            if self.selected_category != Category::Spaces {
+                return;
+            }
+            let changed = self.spaces_snapshot.take().is_some()
+                || self.spaces_feedback.as_deref() != Some("NO LIVE COMPOSITOR SESSION");
+            self.spaces_feedback = Some("NO LIVE COMPOSITOR SESSION".to_string());
+            if changed {
+                self.refresh_spaces_controls();
+                self.refresh_labels();
+            }
+            return;
+        };
+        if !valid_spaces_snapshot(&snapshot) {
+            let changed = self.spaces_snapshot.take().is_some()
+                || self.spaces_feedback.as_deref() != Some("INVALID COMPOSITOR SNAPSHOT");
+            self.spaces_feedback = Some("INVALID COMPOSITOR SNAPSHOT".to_string());
+            if changed {
+                self.refresh_spaces_controls();
+                self.refresh_labels();
+            }
+            return;
+        }
+        let changed = self.spaces_snapshot.as_ref() != Some(&snapshot);
+        self.spaces_snapshot = Some(snapshot);
+        if changed {
+            self.spaces_feedback = None;
+            self.refresh_spaces_controls();
+            self.refresh_labels();
+        }
+    }
+
+    fn refresh_spaces_controls(&mut self) {
+        let Some(snapshot) = self.spaces_snapshot.as_ref() else {
+            self.spaces_rows.clear();
+            self.spaces_classification_button.set_enabled(false);
+            for button in &mut self.spaces_action_buttons {
+                button.set_enabled(false);
+            }
+            for button in &mut self.spaces_policy_buttons {
+                button.set_enabled(false);
+            }
+            return;
+        };
+
+        self.spaces_rows = snapshot
+            .spaces
+            .iter()
+            .map(|space| {
+                let active = if space.active { " *" } else { "" };
+                (
+                    space.id,
+                    Button::new(format!(
+                        "{}  {}{}  ({} windows)",
+                        space.order + 1,
+                        space.name,
+                        active,
+                        space.window_count
+                    )),
+                )
+            })
+            .collect();
+
+        let active = snapshot.spaces.iter().find(|space| space.active);
+        let has_active = active.is_some();
+        for button in &mut self.spaces_action_buttons {
+            button.set_enabled(has_active);
+        }
+        self.spaces_action_buttons[4].set_enabled(snapshot.spaces.len() > 1 && has_active);
+        self.spaces_classification_button.set_enabled(has_active);
+        self.spaces_classification_button
+            .set_label(match active.map(|s| s.classification) {
+                Some(SpaceClassification::Fullscreen) => "Use Normal Space Policy",
+                _ => "Use Fullscreen Space Policy",
+            });
+        for (button, policy) in self.spaces_policy_buttons.iter_mut().zip([
+            SpacesDisplayPolicy::SharedSpan,
+            SpacesDisplayPolicy::IndependentPerDisplay,
+        ]) {
+            button.set_enabled(true);
+            button.checked = snapshot.multi_monitor_policy == policy;
+            button.set_label(match policy {
+                SpacesDisplayPolicy::SharedSpan => {
+                    if button.checked {
+                        "Shared Across Displays *"
+                    } else {
+                        "Shared Across Displays"
+                    }
+                }
+                SpacesDisplayPolicy::IndependentPerDisplay => {
+                    if button.checked {
+                        "Independent Per Display *"
+                    } else {
+                        "Independent Per Display"
+                    }
+                }
+            });
+        }
+    }
+
+    fn send_spaces_command(&mut self, command: SpacesControlCommand) -> bool {
+        let request = SessionControlRequest::Spaces { command };
+        match send_session_control(&request) {
+            Ok(()) => {
+                self.spaces_feedback = Some("REQUEST SENT — waiting for compositor".to_string());
+                self.refresh_labels();
+                true
+            }
+            Err(error) => {
+                self.spaces_feedback = Some(format!("REQUEST FAILED: {error}"));
+                self.refresh_labels();
+                false
+            }
+        }
+    }
+
+    fn process_spaces_action(&mut self, index: usize) {
+        let Some(snapshot) = self.spaces_snapshot.clone() else {
+            self.spaces_feedback = Some("NO LIVE COMPOSITOR SESSION".to_string());
+            self.refresh_labels();
+            return;
+        };
+        let Some(active) = snapshot.spaces.iter().find(|space| space.active) else {
+            self.spaces_feedback = Some("SNAPSHOT HAS NO ACTIVE SPACE".to_string());
+            self.refresh_labels();
+            return;
+        };
+        if index == 5 {
+            let wallpaper = optional_metadata(self.spaces_wallpaper_field.text());
+            let appearance = optional_metadata(self.spaces_appearance_field.text());
+            if wallpaper.is_none() && appearance.is_none() {
+                self.spaces_feedback = Some("ENTER WALLPAPER OR APPEARANCE FIRST".to_string());
+                self.refresh_labels();
+                return;
+            }
+            let mut sent = true;
+            if wallpaper.is_some() {
+                sent &= self.send_spaces_command(SpacesControlCommand::SetWallpaper {
+                    id: active.id,
+                    wallpaper,
+                });
+            }
+            if let Some(appearance) = appearance {
+                sent &= self.send_spaces_command(SpacesControlCommand::SetAppearance {
+                    id: active.id,
+                    appearance: Some(appearance),
+                });
+            }
+            if sent {
+                self.spaces_feedback = Some("METADATA REQUESTED".to_string());
+                self.refresh_labels();
+            }
+            return;
+        }
+        let command = match index {
+            0 => {
+                let name = self.spaces_name_field.text().trim();
+                if name.is_empty() {
+                    self.spaces_feedback = Some("ENTER A SPACE NAME FIRST".to_string());
+                    self.refresh_labels();
+                    return;
+                }
+                SpacesControlCommand::Create {
+                    name: name.to_string(),
+                }
+            }
+            1 => {
+                let name = self.spaces_name_field.text().trim();
+                if name.is_empty() {
+                    self.spaces_feedback = Some("ENTER A SPACE NAME FIRST".to_string());
+                    self.refresh_labels();
+                    return;
+                }
+                SpacesControlCommand::Rename {
+                    id: active.id,
+                    name: name.to_string(),
+                }
+            }
+            2 if active.order > 0 => SpacesControlCommand::Reorder {
+                id: active.id,
+                order: active.order - 1,
+            },
+            3 if active.order + 1 < snapshot.spaces.len() => SpacesControlCommand::Reorder {
+                id: active.id,
+                order: active.order + 1,
+            },
+            4 if snapshot.spaces.len() > 1 => SpacesControlCommand::Remove { id: active.id },
+            _ => return,
+        };
+        let _ = self.send_spaces_command(command);
+    }
+
+    fn process_spaces_classification(&mut self) {
+        let Some(snapshot) = self.spaces_snapshot.as_ref() else {
+            return;
+        };
+        let Some(active) = snapshot.spaces.iter().find(|space| space.active) else {
+            return;
+        };
+        let classification = match active.classification {
+            SpaceClassification::Normal => SpaceClassification::Fullscreen,
+            SpaceClassification::Fullscreen => SpaceClassification::Normal,
+        };
+        let _ = self.send_spaces_command(SpacesControlCommand::SetClassification {
+            id: active.id,
+            classification,
+        });
+    }
+
+    fn process_spaces_policy(&mut self, index: usize) {
+        let policy = match index {
+            0 => SpacesDisplayPolicy::SharedSpan,
+            1 => SpacesDisplayPolicy::IndependentPerDisplay,
+            _ => return,
+        };
+        let _ = self.send_spaces_command(SpacesControlCommand::SetMultiMonitorPolicy { policy });
+    }
+
+    fn select_space_from_settings(&mut self, index: usize) {
+        let Some((id, _)) = self.spaces_rows.get(index) else {
+            return;
+        };
+        let _ = self.send_spaces_command(SpacesControlCommand::Select { id: *id });
     }
 
     fn select_category(&mut self, category: Category) {
         self.selected_category = category;
         self.last_error = None;
+        if category == Category::Spaces {
+            self.refresh_spaces_snapshot();
+        }
         self.refresh_labels();
         self.relayout_if_visible();
     }
@@ -1072,6 +1433,37 @@ impl SettingsView {
             self.select_category(Category::ALL[index]);
             return;
         }
+        if self.selected_category == Category::Spaces {
+            if let Some(index) = self
+                .spaces_rows
+                .iter_mut()
+                .position(|(_, button)| button.take_clicked())
+            {
+                self.select_space_from_settings(index);
+                return;
+            }
+            if let Some(index) = self
+                .spaces_action_buttons
+                .iter_mut()
+                .position(|button| button.take_clicked())
+            {
+                self.process_spaces_action(index);
+                return;
+            }
+            if let Some(index) = self
+                .spaces_policy_buttons
+                .iter_mut()
+                .position(|button| button.take_clicked())
+            {
+                self.process_spaces_policy(index);
+                return;
+            }
+            if self.spaces_classification_button.take_clicked() {
+                self.process_spaces_classification();
+                return;
+            }
+            return;
+        }
         if let Some(index) = self
             .option_buttons
             .iter_mut()
@@ -1096,6 +1488,57 @@ impl SettingsView {
         };
         if changed {
             self.save_slider_value();
+        }
+    }
+
+    fn layout_spaces_controls(&mut self, content_x: f32, content_w: f32, mut y: f32, bottom: f32) {
+        let field_w = (content_w - 12.0).clamp(220.0, 520.0);
+        for field in [
+            &mut self.spaces_name_field,
+            &mut self.spaces_wallpaper_field,
+            &mut self.spaces_appearance_field,
+        ] {
+            field.set_expands_horizontally(true);
+            field.set_rect(Rect::new(content_x, y, field_w, 28.0));
+            let _ = field.layout(LayoutConstraint::tight(Size::new(field_w, 28.0)));
+            y += 34.0;
+        }
+
+        let button_w = ((content_w - 12.0) / 2.0).clamp(132.0, 240.0);
+        for (index, button) in self.spaces_action_buttons.iter_mut().enumerate() {
+            let col = index % 2;
+            let row = index / 2;
+            let x = content_x + col as f32 * (button_w + 12.0);
+            let button_y = y + row as f32 * 34.0;
+            button.set_rect(Rect::new(x, button_y, button_w, 28.0));
+            let _ = button.layout(LayoutConstraint::tight(Size::new(button_w, 28.0)));
+        }
+        y += self.spaces_action_buttons.len().div_ceil(2) as f32 * 34.0 + 4.0;
+
+        for (index, button) in self.spaces_policy_buttons.iter_mut().enumerate() {
+            let x = content_x + index as f32 * (button_w + 12.0);
+            button.set_rect(Rect::new(x, y, button_w, 28.0));
+            let _ = button.layout(LayoutConstraint::tight(Size::new(button_w, 28.0)));
+        }
+        y += 34.0;
+
+        self.spaces_classification_button
+            .set_rect(Rect::new(content_x, y, button_w, 28.0));
+        let _ = self
+            .spaces_classification_button
+            .layout(LayoutConstraint::tight(Size::new(button_w, 28.0)));
+        y += 34.0;
+
+        for (_, button) in &mut self.spaces_rows {
+            button.set_rect(Rect::new(content_x, y, content_w.min(520.0), 28.0));
+            let _ = button.layout(LayoutConstraint::tight(Size::new(
+                content_w.min(520.0),
+                28.0,
+            )));
+            y += 32.0;
+            if y > bottom - 48.0 {
+                button.set_enabled(false);
+            }
         }
     }
 }
@@ -1139,6 +1582,20 @@ impl Widget for SettingsView {
             .description
             .layout(LayoutConstraint::tight(Size::new(content_w, 44.0)));
         content_y += 56.0;
+
+        if self.selected_category == Category::Spaces {
+            self.layout_spaces_controls(content_x, content_w, content_y, rect.y + rect.height);
+            self.status.set_rect(Rect::new(
+                content_x,
+                rect.y + rect.height - 36.0,
+                content_w,
+                24.0,
+            ));
+            let _ = self
+                .status
+                .layout(LayoutConstraint::tight(Size::new(content_w, 24.0)));
+            return size;
+        }
 
         let button_w = (content_w / 2.0 - 8.0).clamp(132.0, 220.0);
         for (index, button) in self.option_buttons.iter_mut().enumerate() {
@@ -1202,6 +1659,23 @@ impl Widget for SettingsView {
         }
         self.heading.draw(theme);
         self.description.draw(theme);
+        if self.selected_category == Category::Spaces {
+            self.spaces_name_field.draw(theme);
+            self.spaces_wallpaper_field.draw(theme);
+            self.spaces_appearance_field.draw(theme);
+            for button in &self.spaces_action_buttons {
+                button.draw(theme);
+            }
+            for button in &self.spaces_policy_buttons {
+                button.draw(theme);
+            }
+            self.spaces_classification_button.draw(theme);
+            for (_, button) in &self.spaces_rows {
+                button.draw(theme);
+            }
+            self.status.draw(theme);
+            return;
+        }
         for button in &self.option_buttons {
             button.draw(theme);
         }
@@ -1266,6 +1740,9 @@ impl Widget for SettingsView {
     }
 
     fn update(&mut self) {
+        if self.selected_category == Category::Spaces {
+            self.refresh_spaces_snapshot();
+        }
         for button in &mut self.category_buttons {
             button.update();
         }
@@ -1278,6 +1755,19 @@ impl Widget for SettingsView {
         self.volume_slider.update();
         self.pointer_speed_label.update();
         self.pointer_speed_slider.update();
+        self.spaces_name_field.update();
+        self.spaces_wallpaper_field.update();
+        self.spaces_appearance_field.update();
+        for (_, button) in &mut self.spaces_rows {
+            button.update();
+        }
+        for button in &mut self.spaces_action_buttons {
+            button.update();
+        }
+        for button in &mut self.spaces_policy_buttons {
+            button.update();
+        }
+        self.spaces_classification_button.update();
         self.status.update();
     }
 
@@ -1304,6 +1794,21 @@ impl Widget for SettingsView {
                 children.push(&self.pointer_speed_label);
                 children.push(&self.pointer_speed_slider);
             }
+            Category::Spaces => {
+                children.push(&self.spaces_name_field);
+                children.push(&self.spaces_wallpaper_field);
+                children.push(&self.spaces_appearance_field);
+                for button in &self.spaces_action_buttons {
+                    children.push(button);
+                }
+                for button in &self.spaces_policy_buttons {
+                    children.push(button);
+                }
+                children.push(&self.spaces_classification_button);
+                for (_, button) in &self.spaces_rows {
+                    children.push(button);
+                }
+            }
             _ => {}
         }
         children.push(&self.status);
@@ -1329,6 +1834,21 @@ impl Widget for SettingsView {
                 children.push(&mut self.pointer_speed_label);
                 children.push(&mut self.pointer_speed_slider);
             }
+            Category::Spaces => {
+                children.push(&mut self.spaces_name_field);
+                children.push(&mut self.spaces_wallpaper_field);
+                children.push(&mut self.spaces_appearance_field);
+                for button in &mut self.spaces_action_buttons {
+                    children.push(button);
+                }
+                for button in &mut self.spaces_policy_buttons {
+                    children.push(button);
+                }
+                children.push(&mut self.spaces_classification_button);
+                for (_, button) in &mut self.spaces_rows {
+                    children.push(button);
+                }
+            }
             _ => {}
         }
         children.push(&mut self.status);
@@ -1347,12 +1867,15 @@ impl Widget for SettingsView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slopos_bus::SessionControlListener;
     use slopos_kit::event::MouseButton;
     use slopos_kit::Point;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    static SESSION_RUNTIME_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_settings_path() -> PathBuf {
         let unique = SystemTime::now()
@@ -1366,7 +1889,7 @@ mod tests {
     }
 
     fn assert_handled(result: EventResult) {
-        assert!(matches!(result, EventResult::Handled));
+        assert!(matches!(result, EventResult::Handled), "result={result:?}");
     }
 
     fn mouse_down(point: Point) -> Event {
@@ -1389,8 +1912,16 @@ mod tests {
     /// happens on the release.
     fn click(view: &mut SettingsView, rect: Rect) {
         let point = Point::new(rect.x + 2.0, rect.y + 2.0);
-        assert_handled(view.handle_event(&mouse_down(point)));
-        assert_handled(view.handle_event(&mouse_up(point)));
+        let down = view.handle_event(&mouse_down(point));
+        assert!(
+            matches!(down, EventResult::Handled),
+            "down={down:?} rect={rect:?}"
+        );
+        let up = view.handle_event(&mouse_up(point));
+        assert!(
+            matches!(up, EventResult::Handled),
+            "up={up:?} rect={rect:?}"
+        );
     }
 
     fn key_down(key: KeyCode, modifiers: Modifiers) -> Event {
@@ -1754,5 +2285,198 @@ mod tests {
         let loaded = SettingsStore::new(path).load();
         assert_eq!(loaded.volume_percent, 100);
         assert!(view.status.text.contains("VOLUME 100%"));
+    }
+
+    #[cfg(unix)]
+    fn spaces_snapshot_for_settings() -> SpacesSnapshot {
+        SpacesSnapshot {
+            session_epoch: 7,
+            revision: 3,
+            active_space: 11,
+            multi_monitor_policy: SpacesDisplayPolicy::SharedSpan,
+            spaces: vec![
+                slopos_bus::SpaceSnapshot {
+                    id: 11,
+                    order: 0,
+                    name: "Personal".to_string(),
+                    active: true,
+                    window_count: 1,
+                    wallpaper: None,
+                    appearance: None,
+                    classification: SpaceClassification::Normal,
+                    output_id: None,
+                },
+                slopos_bus::SpaceSnapshot {
+                    id: 22,
+                    order: 1,
+                    name: "Projects".to_string(),
+                    active: false,
+                    window_count: 2,
+                    wallpaper: None,
+                    appearance: None,
+                    classification: SpaceClassification::Normal,
+                    output_id: None,
+                },
+            ],
+        }
+    }
+
+    #[cfg(unix)]
+    fn with_spaces_runtime(test: impl FnOnce(&Path, &SessionControlListener)) {
+        let _environment_guard = SESSION_RUNTIME_ENV_LOCK.lock().unwrap();
+        let runtime = PathBuf::from("/tmp").join(format!(
+            "slo-s-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&runtime).unwrap();
+        let listener = SessionControlListener::bind(&runtime).unwrap();
+        let previous_runtime = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR");
+        std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", &runtime);
+        slopos_bus::write_spaces_snapshot(&spaces_snapshot_for_settings()).unwrap();
+        test(&runtime, &listener);
+        if let Some(previous_runtime) = previous_runtime {
+            std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", previous_runtime);
+        } else {
+            std::env::remove_var("SLOPOS_SESSION_RUNTIME_DIR");
+        }
+        drop(listener);
+        fs::remove_dir_all(runtime).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_spaces_sends_authoritative_mutations() {
+        with_spaces_runtime(|_runtime, listener| {
+            let mut view = SettingsView::load(SettingsStore::new(temp_settings_path()));
+            view.select_category(Category::Spaces);
+            view.set_rect(Rect::new(0.0, 0.0, 720.0, 720.0));
+            view.layout(LayoutConstraint::tight(Size::new(720.0, 720.0)));
+
+            view.spaces_name_field.set_text("Writing");
+            let rect = view.spaces_action_buttons[0].rect();
+            click(&mut view, rect);
+            assert_eq!(
+                listener.drain(),
+                vec![SessionControlRequest::Spaces {
+                    command: SpacesControlCommand::Create {
+                        name: "Writing".to_string()
+                    }
+                }]
+            );
+
+            let rect = view.spaces_action_buttons[1].rect();
+            click(&mut view, rect);
+            assert_eq!(
+                listener.drain(),
+                vec![SessionControlRequest::Spaces {
+                    command: SpacesControlCommand::Rename {
+                        id: 11,
+                        name: "Writing".to_string()
+                    }
+                }]
+            );
+
+            let rect = view.spaces_action_buttons[3].rect();
+            click(&mut view, rect);
+            assert_eq!(
+                listener.drain(),
+                vec![SessionControlRequest::Spaces {
+                    command: SpacesControlCommand::Reorder { id: 11, order: 1 }
+                }]
+            );
+
+            let rect = view.spaces_action_buttons[4].rect();
+            click(&mut view, rect);
+            assert_eq!(
+                listener.drain(),
+                vec![SessionControlRequest::Spaces {
+                    command: SpacesControlCommand::Remove { id: 11 }
+                }]
+            );
+
+            view.spaces_wallpaper_field.set_text("wallpaper.png");
+            view.spaces_appearance_field.set_text("graphite");
+            let rect = view.spaces_action_buttons[5].rect();
+            click(&mut view, rect);
+            assert_eq!(
+                listener.drain(),
+                vec![
+                    SessionControlRequest::Spaces {
+                        command: SpacesControlCommand::SetWallpaper {
+                            id: 11,
+                            wallpaper: Some("wallpaper.png".to_string())
+                        }
+                    },
+                    SessionControlRequest::Spaces {
+                        command: SpacesControlCommand::SetAppearance {
+                            id: 11,
+                            appearance: Some("graphite".to_string())
+                        }
+                    }
+                ]
+            );
+
+            let rect = view.spaces_policy_buttons[1].rect();
+            click(&mut view, rect);
+            assert_eq!(
+                listener.drain(),
+                vec![SessionControlRequest::Spaces {
+                    command: SpacesControlCommand::SetMultiMonitorPolicy {
+                        policy: SpacesDisplayPolicy::IndependentPerDisplay
+                    }
+                }]
+            );
+
+            let rect = view.spaces_classification_button.rect();
+            click(&mut view, rect);
+            assert_eq!(
+                listener.drain(),
+                vec![SessionControlRequest::Spaces {
+                    command: SpacesControlCommand::SetClassification {
+                        id: 11,
+                        classification: SpaceClassification::Fullscreen
+                    }
+                }]
+            );
+
+            let rect = view.spaces_rows[1].1.rect();
+            click(&mut view, rect);
+            assert_eq!(
+                listener.drain(),
+                vec![SessionControlRequest::Spaces {
+                    command: SpacesControlCommand::Select { id: 22 }
+                }]
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_spaces_reconciles_new_compositor_snapshot() {
+        with_spaces_runtime(|runtime, _listener| {
+            let mut view = SettingsView::load(SettingsStore::new(temp_settings_path()));
+            view.select_category(Category::Spaces);
+            view.set_rect(Rect::new(0.0, 0.0, 720.0, 720.0));
+            view.layout(LayoutConstraint::tight(Size::new(720.0, 720.0)));
+            assert!(view.spaces_rows[0].1.label.contains("Personal"));
+
+            let mut next = spaces_snapshot_for_settings();
+            next.revision = 4;
+            next.active_space = 22;
+            next.spaces[0].active = false;
+            next.spaces[1].active = true;
+            next.spaces[1].name = "Renamed Projects".to_string();
+            slopos_bus::write_spaces_snapshot(&next).unwrap();
+            view.update();
+
+            assert!(view.spaces_rows[1].1.label.contains("Renamed Projects"));
+            assert!(view.spaces_rows[1].1.label.contains(" *"));
+            assert!(view.status.text.contains("SPACES"));
+            assert!(runtime.join(slopos_bus::SPACES_STATE_FILE).exists());
+        });
     }
 }

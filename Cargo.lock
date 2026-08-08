@@ -3330,6 +3330,7 @@ version = "0.1.0"
 dependencies = [
  "log",
  "serde",
+ "slopos-bus",
  "slopos-kit",
  "slopos-sdk",
  "slopos-shell",
@@ -3437,6 +3438,7 @@ name = "slopos-bus"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "libc",
  "log",
  "parking_lot",
  "serde",
