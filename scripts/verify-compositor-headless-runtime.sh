@@ -298,6 +298,7 @@ if ! WAYLAND_DISPLAY="$socket_name" timeout 10s \
   cat "$clipboard_source_log" >&2
   exit 1
 fi
+sleep 1
 if ! WAYLAND_DISPLAY="$socket_name" timeout 10s \
   target/debug/examples/headless_clipboard_client sink-after-source-death >>"$clipboard_sink_log" 2>&1; then
   write_artifact failed "clipboard_source_death_sink_failed"

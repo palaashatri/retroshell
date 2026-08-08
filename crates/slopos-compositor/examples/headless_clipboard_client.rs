@@ -275,7 +275,7 @@ fn run_source(connection: &Connection, keep_alive: bool) -> Result<(), Box<dyn E
     if !keep_alive {
         // Let the compositor consume SetSelection before this source dies. The
         // sink launched afterwards must observe that the selection was cleared.
-        thread::sleep(Duration::from_millis(250));
+        thread::sleep(Duration::from_millis(500));
         return Ok(());
     }
 
