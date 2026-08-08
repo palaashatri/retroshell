@@ -9,8 +9,9 @@
 //! types, and keeps its focused toplevel alive. The sink creates another
 //! toplevel, receives the selection offer, reads the exact payload, and verifies
 //! that an unsupported MIME request terminates with EOF. This is protocol/runtime
-//! evidence only; it is not GTK, Qt, XWayland, physical-input, DnD or hardware
-//! compatibility evidence.
+//! evidence only; it is not GTK, Qt, XWayland, physical-input, successful
+//! cross-client DnD or hardware compatibility evidence. The DnD mode is limited
+//! to checking that an invalid serial is rejected without entering a drag.
 
 use std::{
     env,
@@ -55,6 +56,7 @@ enum Mode {
     SinkAbort,
     PrimarySource,
     PrimarySink,
+    DndInvalidSerial,
 }
 
 #[derive(Default)]
@@ -71,6 +73,10 @@ struct State {
     primary_offered_mimes: Vec<String>,
     primary_selection_received: bool,
     primary_source_send_count: u32,
+    dnd_entered: bool,
+    dnd_left: bool,
+    dnd_motion_count: u32,
+    dnd_dropped: bool,
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
@@ -124,6 +130,12 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for State {
                 state.data_offer = None;
                 state.selection_cleared = true;
             }
+            wl_data_device::Event::Enter { .. } => state.dnd_entered = true,
+            wl_data_device::Event::Leave => state.dnd_left = true,
+            wl_data_device::Event::Motion { .. } => {
+                state.dnd_motion_count = state.dnd_motion_count.saturating_add(1)
+            }
+            wl_data_device::Event::Drop => state.dnd_dropped = true,
             _ => {}
         }
     }
@@ -742,6 +754,50 @@ fn run_primary_sink(connection: &Connection) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn run_dnd_invalid_serial(connection: &Connection) -> Result<(), Box<dyn Error>> {
+    let (globals, mut event_queue) = registry_queue_init::<State>(connection)?;
+    let queue_handle = event_queue.handle();
+    let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&queue_handle, 1..=6, ())?;
+    let wm_base = globals.bind::<xdg_wm_base::XdgWmBase, _, _>(&queue_handle, 1..=6, ())?;
+    let manager = globals.bind::<wl_data_device_manager::WlDataDeviceManager, _, _>(
+        &queue_handle,
+        1..=3,
+        (),
+    )?;
+    let seat = globals.bind::<wl_seat::WlSeat, _, _>(&queue_handle, 1..=9, ())?;
+    let data_device = manager.get_data_device(&seat, &queue_handle, ());
+    let source = manager.create_data_source(&queue_handle, ());
+    source.offer(MIME_TEXT_UTF8.to_owned());
+
+    let (surface, _xdg_surface, _toplevel) = create_toplevel(
+        &compositor,
+        &wm_base,
+        &queue_handle,
+        "SLOPOS invalid DnD serial smoke",
+    );
+    connection.flush()?;
+    let mut state = State::default();
+    wait_for_toplevel(&mut event_queue, &mut state)?;
+    surface.commit();
+
+    // Smithay requires this serial to identify a real pointer/touch implicit
+    // grab. Headless has no input source, so serial 0 must be ignored and must
+    // not synthesize a DnD enter/drop sequence.
+    data_device.start_drag(Some(&source), &surface, None, 0);
+    connection.flush()?;
+    event_queue.roundtrip(&mut state)?;
+    if state.dnd_entered || state.dnd_left || state.dnd_dropped || state.dnd_motion_count != 0 {
+        return Err(format!(
+            "invalid DnD serial generated events: entered={} motion={} dropped={} left={}",
+            state.dnd_entered, state.dnd_motion_count, state.dnd_dropped, state.dnd_left
+        )
+        .into());
+    }
+    println!("SLOPOS_DND_INVALID_SERIAL_REJECTED serial=0 events=none compositor_safe=true");
+    std::io::stdout().flush()?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mode = match env::args().nth(1).as_deref() {
         Some("source") => Mode::Source,
@@ -751,8 +807,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some("sink-abort") => Mode::SinkAbort,
         Some("primary-source") => Mode::PrimarySource,
         Some("primary-sink") => Mode::PrimarySink,
+        Some("dnd-invalid-serial") => Mode::DndInvalidSerial,
         _ => return Err(
-            "usage: headless_clipboard_client <source|source-once|sink|sink-after-source-death|sink-abort|primary-source|primary-sink>"
+            "usage: headless_clipboard_client <source|source-once|sink|sink-after-source-death|sink-abort|primary-source|primary-sink|dnd-invalid-serial>"
                 .into(),
         ),
     };
@@ -765,5 +822,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         Mode::SinkAbort => run_sink_abort(&connection),
         Mode::PrimarySource => run_primary_source(&connection),
         Mode::PrimarySink => run_primary_sink(&connection),
+        Mode::DndInvalidSerial => run_dnd_invalid_serial(&connection),
     }
 }

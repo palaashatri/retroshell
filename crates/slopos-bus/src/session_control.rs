@@ -25,6 +25,23 @@ pub enum WindowPresentationAction {
     Close,
 }
 
+/// Input events accepted only by the explicitly enabled headless protocol
+/// test harness. Coordinates are compositor-space logical pixels and button
+/// codes use Linux input-event-codes values (for example, 0x110 for BTN_LEFT).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum HeadlessInputEvent {
+    Motion {
+        x: i32,
+        y: i32,
+        time_msec: u32,
+    },
+    Button {
+        button: u32,
+        pressed: bool,
+        time_msec: u32,
+    },
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum SessionControlRequest {
     FocusedWindow {
@@ -40,6 +57,12 @@ pub enum SessionControlRequest {
     /// The value uses `name:WIDTHxHEIGHT@x,y:sSCALE` entries separated by `;`.
     ReconfigureOutputs {
         layout: String,
+    },
+    /// Drive the nested/headless compositor's Smithay pointer path for a
+    /// deterministic protocol test. Production nested and DRM sessions
+    /// explicitly ignore this request.
+    HeadlessTestInput {
+        event: HeadlessInputEvent,
     },
     FocusedApplicationMenu {
         bundle_id: String,
@@ -341,6 +364,22 @@ mod tests {
     fn activate_application_request_round_trips_through_json() {
         let request = SessionControlRequest::ActivateApplication {
             bundle_id: "com.slopos.settings".into(),
+        };
+        let encoded = serde_json::to_vec(&request).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<SessionControlRequest>(&encoded).unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn headless_test_input_request_round_trips_through_json() {
+        let request = SessionControlRequest::HeadlessTestInput {
+            event: HeadlessInputEvent::Motion {
+                x: 70,
+                y: 70,
+                time_msec: 100,
+            },
         };
         let encoded = serde_json::to_vec(&request).unwrap();
         assert_eq!(

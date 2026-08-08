@@ -32,7 +32,9 @@ mod linux {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use slopos_bus::{SessionControlListener, SessionControlRequest, WindowPresentationAction};
+    use slopos_bus::{
+        HeadlessInputEvent, SessionControlListener, SessionControlRequest, WindowPresentationAction,
+    };
     use slopos_compositor::frame_timing::{FrameScheduler, RefreshRate};
     use slopos_compositor::hdr::HdrCapabilities;
     use slopos_compositor::work_area::{compute_exclusive_work_area, ExclusiveZoneReservation};
@@ -591,6 +593,9 @@ mod linux {
         last_backend_pointer_pos: Option<Point<f64, Logical>>,
         /// Client requested cursor surface/name; Named always has a software fallback.
         cursor_status: CursorImageStatus,
+        /// Test-only pointer injection is enabled only for the explicit
+        /// headless backend with SLOPOS_TEST_INPUT=1.
+        headless_test_input_enabled: bool,
         /// Current compositor-owned xdg_toplevel move/resize operation.
         interactive_grab: Option<InteractiveGrab>,
         /// Tracks BTN_LEFT so stale xdg move/resize requests cannot start a grab.
@@ -754,7 +759,34 @@ mod linux {
                     }
                 }
             }
-            None
+            self.headless_test_surface_under(pt)
+        }
+
+        /// Headless protocol clients deliberately commit a tiny SHM buffer,
+        /// but the fallback also keeps the test deterministic if a client
+        /// commits only an xdg role. It is never used by nested production or
+        /// DRM input because the flag is set only with SLOPOS_TEST_INPUT=1 on
+        /// the explicit headless backend.
+        fn headless_test_surface_under(
+            &self,
+            pt: Point<f64, Logical>,
+        ) -> Option<(WlSurface, Point<f64, Logical>)> {
+            if !self.headless_test_input_enabled {
+                return None;
+            }
+            self.windows
+                .iter()
+                .rev()
+                .filter(|window| {
+                    !window.minimized && self.workspace_state.is_visible(&window.window_id)
+                })
+                .find(|window| window.geometry().contains_f64(pt.x, pt.y))
+                .map(|window| {
+                    (
+                        window.toplevel.wl_surface().clone(),
+                        Point::from((window.position.x as f64, window.position.y as f64)),
+                    )
+                })
         }
 
         /// Resolve a surface to its mapped toplevel owner. Subsurfaces are
@@ -1736,6 +1768,16 @@ mod linux {
                         tracing::warn!(%error, "runtime output topology rejected");
                     }
                 }
+                SessionControlRequest::HeadlessTestInput { event } => {
+                    if !self.headless_test_input_enabled {
+                        tracing::warn!(
+                            "rejecting headless test input outside an explicitly enabled headless backend"
+                        );
+                        return;
+                    }
+                    self.apply_headless_test_input(event);
+                    self.flush_headless_test_clients();
+                }
                 SessionControlRequest::FocusedApplicationMenu {
                     bundle_id,
                     action_id,
@@ -1747,6 +1789,129 @@ mod linux {
                     );
                 }
             }
+        }
+
+        fn apply_headless_test_input(&mut self, event: HeadlessInputEvent) {
+            match event {
+                HeadlessInputEvent::Motion { x, y, time_msec } => {
+                    self.inject_headless_pointer_motion(x, y, time_msec)
+                }
+                HeadlessInputEvent::Button {
+                    button,
+                    pressed,
+                    time_msec,
+                } => self.inject_headless_pointer_button(
+                    button,
+                    if pressed {
+                        ButtonState::Pressed
+                    } else {
+                        ButtonState::Released
+                    },
+                    time_msec,
+                ),
+            }
+        }
+
+        fn flush_headless_test_clients(&self) {
+            let mut backend = self.display_handle.backend_handle();
+            if let Err(error) = backend.flush(None) {
+                tracing::warn!(%error, "headless test input client flush failed");
+            }
+        }
+
+        fn inject_headless_pointer_motion(&mut self, x: i32, y: i32, time: u32) {
+            let desired: Point<f64, Logical> = Point::from((f64::from(x), f64::from(y)));
+            let logical: Point<f64, Logical> = Point::from((
+                desired
+                    .x
+                    .clamp(0.0, f64::from(self.output_size.w.saturating_sub(1).max(0))),
+                desired
+                    .y
+                    .clamp(0.0, f64::from(self.output_size.h.saturating_sub(1).max(0))),
+            ));
+            let current = self.pointer_pos;
+            let delta = Point::from((logical.x - current.x, logical.y - current.y));
+            let serial = self.next_serial();
+            if let Some(ptr) = self.seat.get_pointer() {
+                let relative_focus = self.surface_under(current);
+                ptr.relative_motion(
+                    self,
+                    relative_focus,
+                    &RelativeMotionEvent {
+                        delta,
+                        delta_unaccel: delta,
+                        utime: u64::from(time) * 1_000,
+                    },
+                );
+                let pos = constrain_pointer_destination(self, &ptr, current, logical);
+                self.pointer_pos = pos;
+                self.request_redraw();
+                let focus = self.surface_under(pos);
+                ptr.motion(
+                    self,
+                    focus,
+                    &MotionEvent {
+                        location: pos,
+                        serial,
+                        time,
+                    },
+                );
+                ptr.frame(self);
+                maybe_activate_pointer_constraint(self, &ptr);
+            } else {
+                self.pointer_pos = logical;
+                self.request_redraw();
+            }
+        }
+
+        fn inject_headless_pointer_button(
+            &mut self,
+            button: u32,
+            btn_state: ButtonState,
+            time: u32,
+        ) {
+            let serial = self.next_serial();
+            let primary_button = button == 0x110 || button == 1;
+            if primary_button {
+                self.left_button_down = btn_state == ButtonState::Pressed;
+            }
+            if btn_state == ButtonState::Pressed {
+                let pos = self.pointer_pos;
+                let hit = self.surface_under(pos);
+                let mapped_window_index = hit
+                    .as_ref()
+                    .and_then(|(surface, _)| self.mapped_window_index_for_surface(surface));
+                if primary_button {
+                    self.last_pointer_press = mapped_window_index.map(|index| PointerPress {
+                        serial,
+                        window_id: self.windows[index].window_id.clone(),
+                    });
+                }
+                match hit {
+                    Some((surface, _)) => match mapped_window_index {
+                        Some(idx) => self.focus_window(idx),
+                        None => self.focus_surface(Some(surface)),
+                    },
+                    None => self.focus_surface(None),
+                }
+                self.forward_pointer_motion(time);
+            }
+            if let Some(ptr) = self.seat.get_pointer() {
+                ptr.button(
+                    self,
+                    &ButtonEvent {
+                        serial,
+                        time,
+                        button,
+                        state: btn_state,
+                    },
+                );
+                ptr.frame(self);
+            }
+            if primary_button && btn_state == ButtonState::Released {
+                self.finish_interactive_grab();
+            }
+            self.request_redraw();
         }
 
         /// Activate a matching mapped client on behalf of shell chrome.
@@ -2700,12 +2865,17 @@ mod linux {
         ) {
             // Client-initiated DnD: smithay routes offer.receive to the client's
             // WlDataSource directly. We only track the optional drag icon here.
-            self.dnd_icon = icon;
+            self.dnd_icon = icon.clone();
+            eprintln!("SLOPOS_DND_CLIENT_STARTED");
+            if icon.is_some() {
+                eprintln!("SLOPOS_DND_ICON_ATTACHED");
+            }
             tracing::debug!("client DnD started");
         }
 
-        fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
+        fn dropped(&mut self, _target: Option<WlSurface>, validated: bool, _seat: Seat<Self>) {
             self.dnd_icon = None;
+            eprintln!("SLOPOS_DND_DROPPED validated={validated}");
             tracing::debug!("client DnD dropped");
         }
     }
@@ -4335,6 +4505,8 @@ mod linux {
             pointer_pos: Point::from((0.0_f64, 0.0_f64)),
             last_backend_pointer_pos: None,
             cursor_status: CursorImageStatus::default_named(),
+            headless_test_input_enabled: headless
+                && std::env::var("SLOPOS_TEST_INPUT").ok().as_deref() == Some("1"),
             interactive_grab: None,
             left_button_down: false,
             last_pointer_press: None,

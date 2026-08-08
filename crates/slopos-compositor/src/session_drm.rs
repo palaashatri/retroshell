@@ -1851,6 +1851,9 @@ impl DrmSessionState {
                     "runtime logical-output control is not the DRM connector-hotplug authority"
                 );
             }
+            SessionControlRequest::HeadlessTestInput { .. } => {
+                tracing::warn!("rejecting headless test input on the production DRM backend");
+            }
             SessionControlRequest::FocusedApplicationMenu {
                 bundle_id,
                 action_id,
@@ -2989,11 +2992,16 @@ impl ClientDndGrabHandler for DrmSessionState {
         icon: Option<WlSurface>,
         _seat: Seat<Self>,
     ) {
-        self.dnd_icon = icon;
+        self.dnd_icon = icon.clone();
+        eprintln!("SLOPOS_DND_CLIENT_STARTED");
+        if icon.is_some() {
+            eprintln!("SLOPOS_DND_ICON_ATTACHED");
+        }
     }
 
-    fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
+    fn dropped(&mut self, _target: Option<WlSurface>, validated: bool, _seat: Seat<Self>) {
         self.dnd_icon = None;
+        eprintln!("SLOPOS_DND_DROPPED validated={validated}");
     }
 }
 

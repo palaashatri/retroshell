@@ -130,6 +130,99 @@ fn headless_runtime_gate_exercises_clipboard_cancellation_and_target_death() {
 }
 
 #[test]
+fn headless_runtime_gate_exercises_only_safe_dnd_serial_rejection() {
+    let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
+    let client = include_str!("../examples/headless_clipboard_client.rs");
+    assert!(
+        script.contains("headless_clipboard_client dnd-invalid-serial"),
+        "headless runtime gate must run the invalid-serial DnD smoke client"
+    );
+    assert!(
+        script.contains("SLOPOS_DND_INVALID_SERIAL_REJECTED"),
+        "headless runtime gate must require the invalid-serial DnD marker"
+    );
+    assert!(
+        client.contains("data_device.start_drag(Some(&source), &surface, None, 0)"),
+        "headless DnD smoke client must exercise the protocol's invalid serial path"
+    );
+    assert!(
+        client.contains("SLOPOS_DND_INVALID_SERIAL_REJECTED serial=0 events=none"),
+        "headless DnD smoke client must report explicit serial rejection"
+    );
+    assert!(
+        client.contains("successful\n//! cross-client DnD"),
+        "headless DnD smoke client must document that successful DnD remains unproved"
+    );
+}
+
+#[test]
+fn headless_runtime_gate_requires_cross_client_dnd_lifecycle_evidence() {
+    let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
+    let compositor = include_str!("../src/main.rs");
+    for marker in [
+        "SLOPOS_DND_CLIENT_STARTED",
+        "SLOPOS_DND_ICON_ATTACHED",
+        "SLOPOS_DND_DROPPED",
+    ] {
+        assert!(
+            compositor.contains(marker),
+            "compositor must emit DnD lifecycle marker {marker}"
+        );
+    }
+    for marker in [
+        "dnd_cross_client_client_started",
+        "dnd_cross_client_drag_icon_verified",
+        "dnd_cross_client_drop_verified",
+    ] {
+        assert!(
+            script.contains(marker),
+            "headless runtime evidence must record DnD field {marker}"
+        );
+    }
+    assert!(
+        script.contains("\"schema\": 11"),
+        "adding DnD lifecycle evidence must bump the runtime evidence schema"
+    );
+}
+
+#[test]
+fn headless_dnd_motion_points_leave_the_raised_source_buffer() {
+    let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
+    assert!(
+        script
+            .contains("send_headless_input '{\"Motion\":{\"x\":400,\"y\":110,\"time_msec\":120}}'"),
+        "positive DnD must enter the target-only portion of its committed buffer"
+    );
+    assert!(
+        script
+            .contains("send_headless_input '{\"Motion\":{\"x\":410,\"y\":120,\"time_msec\":125}}'"),
+        "positive DnD must deliver a second target motion outside the raised source buffer"
+    );
+}
+
+#[test]
+fn headless_dnd_target_allows_the_protocol_leave_after_drop() {
+    let client = include_str!("../examples/headless_dnd_client.rs");
+    assert!(
+        client.contains("target_left_before_drop"),
+        "DnD target must distinguish a valid post-drop leave from an early leave"
+    );
+    assert!(
+        client.contains("state.target_left_before_drop || state.target_motion_count"),
+        "DnD target validation must reject only a leave before drop"
+    );
+}
+
+#[test]
+fn headless_dnd_source_stays_alive_for_all_requested_mimes() {
+    let client = include_str!("../examples/headless_dnd_client.rs");
+    assert!(
+        client.contains("state.source_drop_performed && state.source_send_count >= 2"),
+        "DnD source must keep its data source alive until text and URI sends complete"
+    );
+}
+
+#[test]
 fn presentation_round_trip_preserves_the_original_normal_frame() {
     let normal = WindowGeometry::new(137, 91, 731, 509);
     let work_area = WindowGeometry::new(0, 24, 1600, 876);

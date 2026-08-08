@@ -6,8 +6,11 @@
 # It proves that the exact build owns a private socket, publishes authenticated
 # readiness, serves registry clients, survives abrupt role disconnects, applies
 # live xdg-toplevel presentation transitions, completes xdg-popup configure and
-# reposition lifecycles, accepts a healthy client after stress, and terminates.
-# It does not claim DRM/KMS, rendering, input, popup grabs, HDR, VRR or XWayland.
+# reposition lifecycles, rejects client DnD without an implicit-grab serial,
+# accepts a healthy client after stress, and terminates. The positive DnD check
+# uses an explicit, env-gated synthetic input control path and is protocol
+# evidence only; it does not claim physical input, GTK/Qt/Electron or hardware.
+# It does not claim DRM/KMS, rendering, popup grabs, HDR, VRR or XWayland.
 
 set -euo pipefail
 
@@ -19,7 +22,7 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-for tool in cargo git sed grep stat timeout wayland-info; do
+for tool in cargo git sed grep stat timeout wayland-info python3; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     printf 'verify-compositor-headless-runtime: missing required tool: %s\n' "$tool" >&2
     exit 2
@@ -45,12 +48,17 @@ clipboard_sink_abort_log="$artifact_dir/${commit_sha}-clipboard-sink-abort.log"
 primary_selection_log="$artifact_dir/${commit_sha}-primary-selection.log"
 primary_selection_source_log="$artifact_dir/${commit_sha}-primary-selection-source.log"
 primary_selection_sink_log="$artifact_dir/${commit_sha}-primary-selection-sink.log"
+dnd_log="$artifact_dir/${commit_sha}-dnd.log"
+dnd_source_log="$artifact_dir/${commit_sha}-dnd-source.log"
+dnd_target_log="$artifact_dir/${commit_sha}-dnd-target.log"
 runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/slopos-headless-runtime.XXXXXX")"
 chmod 700 "$runtime_dir"
 
 compositor_pid=""
 clipboard_source_pid=""
 primary_selection_source_pid=""
+dnd_source_pid=""
+dnd_target_pid=""
 socket_name=""
 shutdown_status="not_started"
 socket_cleanup="not_observed"
@@ -98,6 +106,29 @@ has_primary_selection_marker() {
   [[ -s "$primary_selection_sink_log" ]] && grep -q "^${marker} " "$primary_selection_sink_log"
 }
 
+has_dnd_marker() {
+  [[ -s "$dnd_log" ]] && grep -q "^$1 " "$dnd_log"
+}
+
+send_headless_input() {
+  local event_json="$1"
+  python3 - "$runtime_dir/control.sock" "$event_json" <<'PY'
+import json
+import socket
+import sys
+
+socket_path, event_json = sys.argv[1:]
+payload = {
+    "HeadlessTestInput": {
+        "event": json.loads(event_json),
+    }
+}
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+sock.sendto(json.dumps(payload).encode("utf-8"), socket_path)
+sock.close()
+PY
+}
+
 combine_clipboard_logs() {
   : >"$clipboard_log"
   [[ -f "$clipboard_source_log" ]] && cat "$clipboard_source_log" >>"$clipboard_log"
@@ -117,7 +148,7 @@ write_artifact() {
   local failure="${2:-}"
   cat >"$artifact.tmp" <<JSON
 {
-  "schema": 10,
+  "schema": 11,
   "component": "slopos-compositor",
   "commit": "$commit_sha",
   "branch": "$branch",
@@ -149,6 +180,14 @@ write_artifact() {
   "primary_selection_offer_verified": $(has_primary_selection_marker SLOPOS_PRIMARY_SELECTION_OFFER_VERIFIED && printf true || printf false),
   "primary_selection_transfer_verified": $(has_primary_selection_marker SLOPOS_PRIMARY_SELECTION_TRANSFER_VERIFIED && printf true || printf false),
   "primary_selection_missing_mime_eof_verified": $(has_primary_selection_marker SLOPOS_PRIMARY_SELECTION_MISSING_MIME_EOF_VERIFIED && printf true || printf false),
+  "dnd_invalid_serial_rejected": $(has_dnd_marker SLOPOS_DND_INVALID_SERIAL_REJECTED && printf true || printf false),
+  "dnd_cross_client_offer_verified": $(has_dnd_marker SLOPOS_DND_OFFER_VERIFIED && printf true || printf false),
+  "dnd_cross_client_text_transfer_verified": $(has_dnd_marker SLOPOS_DND_TEXT_TRANSFER_VERIFIED && printf true || printf false),
+  "dnd_cross_client_uri_transfer_verified": $(has_dnd_marker SLOPOS_DND_URI_TRANSFER_VERIFIED && printf true || printf false),
+  "dnd_cross_client_client_started": $(has_compositor_marker SLOPOS_DND_CLIENT_STARTED && printf true || printf false),
+  "dnd_cross_client_drag_icon_verified": $(has_compositor_marker SLOPOS_DND_ICON_ATTACHED && printf true || printf false),
+  "dnd_cross_client_client_dropped": $(has_compositor_marker SLOPOS_DND_DROPPED && printf true || printf false),
+  "dnd_cross_client_drop_verified": $(has_dnd_marker SLOPOS_DND_SOURCE_DROP_PERFORMED && printf true || printf false),
   "hardware_verified": false,
   "drm_verified": false,
   "rendering_verified": false,
@@ -171,7 +210,10 @@ write_artifact() {
   "clipboard_sink_abort_log": "$(basename "$clipboard_sink_abort_log")",
   "primary_selection_log": "$(basename "$primary_selection_log")",
   "primary_selection_source_log": "$(basename "$primary_selection_source_log")",
-  "primary_selection_sink_log": "$(basename "$primary_selection_sink_log")"
+  "primary_selection_sink_log": "$(basename "$primary_selection_sink_log")",
+  "dnd_log": "$(basename "$dnd_log")",
+  "dnd_source_log": "$(basename "$dnd_source_log")",
+  "dnd_target_log": "$(basename "$dnd_target_log")"
 }
 JSON
   mv "$artifact.tmp" "$artifact"
@@ -187,6 +229,14 @@ cleanup() {
   if [[ -n "$primary_selection_source_pid" ]] && kill -0 "$primary_selection_source_pid" 2>/dev/null; then
     kill -TERM "$primary_selection_source_pid" 2>/dev/null || true
     wait "$primary_selection_source_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$dnd_source_pid" ]] && kill -0 "$dnd_source_pid" 2>/dev/null; then
+    kill -TERM "$dnd_source_pid" 2>/dev/null || true
+    wait "$dnd_source_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$dnd_target_pid" ]] && kill -0 "$dnd_target_pid" 2>/dev/null; then
+    kill -TERM "$dnd_target_pid" 2>/dev/null || true
+    wait "$dnd_target_pid" 2>/dev/null || true
   fi
   combine_clipboard_logs
   combine_primary_selection_logs
@@ -223,6 +273,7 @@ cargo build -p slopos-compositor --bin slopos-compositor --examples --locked
 export XDG_RUNTIME_DIR="$runtime_dir"
 export SLOPOS_SESSION_RUNTIME_DIR="$runtime_dir"
 export SLOPOS_SESSION_TOKEN="headless-smoke-${commit_sha}-$$"
+export SLOPOS_TEST_INPUT=1
 unset DISPLAY WAYLAND_DISPLAY SLOPOS_CLIENT_WAYLAND_DISPLAY
 
 printf 'Starting SLOPOS-owned headless compositor\n'
@@ -304,6 +355,137 @@ for marker in SLOPOS_POINTER_LOCK_REQUEST_ACCEPTED SLOPOS_POINTER_CONFINE_REQUES
 done
 if ! kill -0 "$compositor_pid" 2>/dev/null; then
   write_artifact failed "compositor_died_after_pointer_constraints"
+  cat "$compositor_log" >&2
+  exit 1
+fi
+
+printf 'Exercising client DnD invalid-serial rejection (no input grab available headlessly)\n'
+WAYLAND_DISPLAY="$socket_name" timeout 20s \
+  target/debug/examples/headless_clipboard_client dnd-invalid-serial >"$dnd_log" 2>&1
+if ! has_dnd_marker SLOPOS_DND_INVALID_SERIAL_REJECTED; then
+  write_artifact failed "missing_SLOPOS_DND_INVALID_SERIAL_REJECTED"
+  cat "$dnd_log" >&2
+  exit 1
+fi
+if ! kill -0 "$compositor_pid" 2>/dev/null; then
+  write_artifact failed "compositor_died_after_dnd_invalid_serial"
+  cat "$dnd_log" >&2
+  cat "$compositor_log" >&2
+  exit 1
+fi
+
+printf 'Exercising native cross-client text/URI DnD with synthetic headless input\n'
+WAYLAND_DISPLAY="$socket_name" timeout 45s \
+  target/debug/examples/headless_dnd_client source >"$dnd_source_log" 2>&1 &
+dnd_source_pid=$!
+source_ready=false
+for _ in $(seq 1 100); do
+  if grep -q '^SLOPOS_DND_SOURCE_READY$' "$dnd_source_log" 2>/dev/null; then
+    source_ready=true
+    break
+  fi
+  if ! kill -0 "$dnd_source_pid" 2>/dev/null; then
+    wait "$dnd_source_pid" || true
+    write_artifact failed "dnd_source_exited_before_ready"
+    cat "$dnd_source_log" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+if [[ "$source_ready" != true ]]; then
+  write_artifact failed "dnd_source_readiness_timeout"
+  cat "$dnd_source_log" >&2
+  exit 1
+fi
+
+WAYLAND_DISPLAY="$socket_name" timeout 45s \
+  target/debug/examples/headless_dnd_client target >"$dnd_target_log" 2>&1 &
+dnd_target_pid=$!
+target_ready=false
+for _ in $(seq 1 100); do
+  if grep -q '^SLOPOS_DND_TARGET_READY$' "$dnd_target_log" 2>/dev/null; then
+    target_ready=true
+    break
+  fi
+  if ! kill -0 "$dnd_target_pid" 2>/dev/null; then
+    wait "$dnd_target_pid" || true
+    write_artifact failed "dnd_target_exited_before_ready"
+    cat "$dnd_target_log" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+if [[ "$target_ready" != true ]]; then
+  write_artifact failed "dnd_target_readiness_timeout"
+  cat "$dnd_target_log" >&2
+  exit 1
+fi
+
+# The source is first in the compositor cascade at (64,64); the target is the
+# later window at (96,96). The clients commit 320x240 buffers, so x=400..410
+# is inside the target buffer but outside the raised source buffer (which ends
+# at x=384 after the press focuses it). Move to the source, press to create a
+# real implicit-grab serial, move over the target twice so the DnD grab emits
+# both enter and motion, and release. These coordinates are protocol-test
+# input, not a claim about physical pointer delivery.
+send_headless_input '{"Motion":{"x":70,"y":70,"time_msec":100}}'
+send_headless_input '{"Button":{"button":272,"pressed":true,"time_msec":110}}'
+sleep 0.2
+send_headless_input '{"Motion":{"x":400,"y":110,"time_msec":120}}'
+sleep 0.2
+send_headless_input '{"Motion":{"x":410,"y":120,"time_msec":125}}'
+sleep 0.2
+send_headless_input '{"Button":{"button":272,"pressed":false,"time_msec":130}}'
+
+if ! wait "$dnd_target_pid"; then
+  write_artifact failed "dnd_target_runtime_failed"
+  cat "$dnd_source_log" >&2
+  cat "$dnd_target_log" >&2
+  cat "$compositor_log" >&2
+  exit 1
+fi
+dnd_target_pid=""
+if ! wait "$dnd_source_pid"; then
+  write_artifact failed "dnd_source_runtime_failed"
+  cat "$dnd_source_log" >&2
+  cat "$dnd_target_log" >&2
+  cat "$compositor_log" >&2
+  exit 1
+fi
+dnd_source_pid=""
+cat "$dnd_source_log" "$dnd_target_log" >"$dnd_log"
+for marker in \
+  SLOPOS_DND_SOURCE_STARTED \
+  SLOPOS_DND_ENTER_VERIFIED \
+  SLOPOS_DND_OFFER_VERIFIED \
+  SLOPOS_DND_TEXT_TRANSFER_VERIFIED \
+  SLOPOS_DND_URI_TRANSFER_VERIFIED \
+  SLOPOS_DND_SOURCE_DROP_PERFORMED; do
+  if ! has_dnd_marker "$marker"; then
+    write_artifact failed "missing_${marker}"
+    cat "$dnd_source_log" >&2
+    cat "$dnd_target_log" >&2
+    cat "$compositor_log" >&2
+    exit 1
+  fi
+done
+if ! has_compositor_marker SLOPOS_DND_CLIENT_STARTED; then
+  write_artifact failed "missing_SLOPOS_DND_CLIENT_STARTED"
+  cat "$compositor_log" >&2
+  exit 1
+fi
+if ! has_compositor_marker SLOPOS_DND_ICON_ATTACHED; then
+  write_artifact failed "missing_SLOPOS_DND_ICON_ATTACHED"
+  cat "$compositor_log" >&2
+  exit 1
+fi
+if ! has_compositor_marker SLOPOS_DND_DROPPED; then
+  write_artifact failed "missing_SLOPOS_DND_DROPPED"
+  cat "$compositor_log" >&2
+  exit 1
+fi
+if ! kill -0 "$compositor_pid" 2>/dev/null; then
+  write_artifact failed "compositor_died_after_cross_client_dnd"
   cat "$compositor_log" >&2
   exit 1
 fi
