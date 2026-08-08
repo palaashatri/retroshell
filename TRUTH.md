@@ -5,7 +5,7 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`e31ecd7b5ae5d2cf2b34f7d5a553c317391ed4d7`
+`77f0598e5382162cbe0deb1a4b21a7ec03071fae`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review, commit-delta review, exact-commit Linux
 VM/UTM build/test/runtime evidence and retained native Wayland protocol logs.
@@ -18,16 +18,22 @@ product score unless they are accompanied by implementation and evidence.
 
 ### Current implementation wave — native text-input-v3 and input-method-v2
 
-Implementation commits `b037a307cdc186621a48809ddcd2977530afd2c8` and
-`e31ecd7b5ae5d2cf2b34f7d5a553c317391ed4d7` are **BUILD VERIFIED** and **TEST
+Implementation commits `b037a307cdc186621a48809ddcd2977530afd2c8`,
+`e31ecd7b5ae5d2cf2b34f7d5a553c317391ed4d7`, and the gate-fix commit
+`77f0598e5382162cbe0deb1a4b21a7ec03071fae` are **BUILD VERIFIED** and **TEST
 VERIFIED**. The DRM backend now creates the same environment-gated text-input
 and input-method manager states as the nested backend, retains input-method
 popup state, and applies the same compositor focus policy.
 
-The exact-current-head Ubuntu UTM headless runtime gate passed at
-`e31ecd7b5ae5d2cf2b34f7d5a553c317391ed4d7`. Evidence is retained under
-`artifacts/qa/2026-08-08-compositor-runtime-e31ecd7/` with schema 12 JSON and
-separate app/IME logs. Two independent native Wayland clients proved:
+The exact-current-head Ubuntu UTM gates passed at
+`77f0598e5382162cbe0deb1a4b21a7ec03071fae`. The locked workspace regression
+(`fmt`, `check`, `test`, `clippy -D warnings`, and release build) and logical
+output topology gate all exited zero. Evidence is retained under
+`artifacts/qa/2026-08-08-build-tests-77f0598/`,
+`artifacts/qa/2026-08-08-compositor-runtime-77f0598/`, and
+`artifacts/qa/2026-08-08-compositor-topology-77f0598/`. The runtime JSON uses
+schema 12 and separate app/IME logs. Two independent native Wayland clients
+proved:
 
 - both text-input-v3 and input-method-v2 globals are present;
 - the focused app receives text-input enter and done events;
@@ -36,7 +42,9 @@ separate app/IME logs. Two independent native Wayland clients proved:
 - the app receives and validates the committed and preedit strings; and
 - disabling the text input causes one IME deactivation.
 
-This is first-party headless protocol/runtime evidence only. It does not prove
+The lint correction in `77f0598` changes no protocol behaviour; it closes the
+guest's `clippy -D warnings` release gate. This is first-party headless
+protocol/runtime evidence only. It does not prove
 GTK/Qt/Electron IME compatibility, candidate-popup rendering, physical input,
 DRM/KMS, hardware, XWayland or complete text-editor grapheme/bidi integration.
 The overall score remains **63/100** and strict compositor completion remains
