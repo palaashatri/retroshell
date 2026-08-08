@@ -77,6 +77,9 @@ use smithay::wayland::compositor::{
 use smithay::wayland::foreign_toplevel_list::{
     ForeignToplevelHandle, ForeignToplevelListHandler, ForeignToplevelListState,
 };
+use smithay::wayland::input_method::{
+    InputMethodHandler, InputMethodManagerState, PopupSurface as InputMethodPopupSurface,
+};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::wayland::pointer_constraints::{
     with_pointer_constraint, PointerConstraint, PointerConstraintsHandler, PointerConstraintsState,
@@ -103,11 +106,13 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::socket::ListeningSocketSource;
+use smithay::wayland::text_input::TextInputManagerState;
 use smithay::{
     delegate_compositor, delegate_data_device, delegate_foreign_toplevel_list,
-    delegate_layer_shell, delegate_output, delegate_pointer_constraints,
-    delegate_primary_selection, delegate_relative_pointer, delegate_seat, delegate_session_lock,
-    delegate_shm, delegate_xdg_shell,
+    delegate_input_method_manager, delegate_layer_shell, delegate_output,
+    delegate_pointer_constraints, delegate_primary_selection, delegate_relative_pointer,
+    delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
+    delegate_xdg_shell,
 };
 
 use crate::frame_timing::{FrameScheduler, RefreshRate};
@@ -783,6 +788,41 @@ pub fn run_drm_session() -> Result<()> {
     let xdg_shell_state = XdgShellState::new::<DrmSessionState>(&dh);
     let data_device_state = DataDeviceState::new::<DrmSessionState>(&dh);
     let primary_selection_state = PrimarySelectionState::new::<DrmSessionState>(&dh);
+    let text_input_cap = crate::text_input_capability_from_env(
+        std::env::var("SLOPOS_TEXT_INPUT")
+            .ok()
+            .as_deref()
+            .or(Some("full")),
+    );
+    let text_input_state = if matches!(
+        text_input_cap,
+        crate::TextInputCapability::TextInputV3
+            | crate::TextInputCapability::InputMethodAndTextInput
+    ) {
+        eprintln!(
+            "[slopos-compositor/drm] {}",
+            crate::text_input_capability_summary(text_input_cap)
+        );
+        Some(TextInputManagerState::new::<DrmSessionState>(&dh))
+    } else {
+        eprintln!(
+            "[slopos-compositor/drm] {}",
+            crate::text_input_capability_summary(crate::TextInputCapability::None)
+        );
+        None
+    };
+    let input_method_state = if matches!(
+        text_input_cap,
+        crate::TextInputCapability::InputMethodAndTextInput
+    ) {
+        eprintln!("[slopos-compositor/drm] input_method=zwp_input_method_v2");
+        Some(InputMethodManagerState::new::<DrmSessionState, _>(
+            &dh,
+            |_client| true,
+        ))
+    } else {
+        None
+    };
     let output_manager_state = OutputManagerState::new_with_xdg_output::<DrmSessionState>(&dh);
     // XWayland is available on the nested X11 path; DRM path wires XWM in a follow-up
     // once XWayland spawn is attached to this seat/session loop.
@@ -1258,6 +1298,9 @@ pub fn run_drm_session() -> Result<()> {
         xdg_shell_state,
         data_device_state,
         primary_selection_state,
+        _text_input_state: text_input_state,
+        _input_method_state: input_method_state,
+        im_popups: Vec::new(),
         output_manager_state,
         layer_shell_state,
         foreign_toplevel_list,
@@ -1586,6 +1629,12 @@ struct DrmSessionState {
     xdg_shell_state: XdgShellState,
     data_device_state: DataDeviceState,
     primary_selection_state: PrimarySelectionState,
+    /// Present when SLOPOS_TEXT_INPUT enables text-input-v3.
+    _text_input_state: Option<TextInputManagerState>,
+    /// Present when SLOPOS_TEXT_INPUT enables input-method-v2.
+    _input_method_state: Option<InputMethodManagerState>,
+    /// Input-method popup surfaces (candidate/preedit UI).
+    im_popups: Vec<InputMethodPopupSurface>,
     #[allow(dead_code)]
     output_manager_state: OutputManagerState,
     layer_shell_state: WlrLayerShellState,
@@ -3261,6 +3310,37 @@ impl XdgShellHandler for DrmSessionState {
     }
 }
 delegate_xdg_shell!(DrmSessionState);
+
+// ---------------------------------------------------------------------------
+// Text input / input method (text-input-v3 + input-method-v2)
+// ---------------------------------------------------------------------------
+
+impl InputMethodHandler for DrmSessionState {
+    fn new_popup(&mut self, surface: InputMethodPopupSurface) {
+        self.im_popups.push(surface);
+        self.request_full_redraw();
+    }
+
+    fn dismiss_popup(&mut self, surface: InputMethodPopupSurface) {
+        self.im_popups.retain(|popup| popup != &surface);
+        self.request_full_redraw();
+    }
+
+    fn popup_repositioned(&mut self, _surface: InputMethodPopupSurface) {
+        self.request_full_redraw();
+    }
+
+    fn parent_geometry(&self, parent: &WlSurface) -> Rectangle<i32, Logical> {
+        self.windows
+            .iter()
+            .find(|window| window.toplevel.wl_surface() == parent)
+            .map(|window| Rectangle::new(window.position, window.size))
+            .unwrap_or_default()
+    }
+}
+
+delegate_text_input_manager!(DrmSessionState);
+delegate_input_method_manager!(DrmSessionState);
 
 impl OutputHandler for DrmSessionState {}
 delegate_output!(DrmSessionState);
