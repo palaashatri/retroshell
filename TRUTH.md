@@ -5,7 +5,7 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`0579025157954f26d95e5e5c9764dc30f9089b6b`
+`4ed9a6b59386501127b83be92abed7118368e972`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review, commit-delta review, exact-commit GitHub
 Actions evidence and retained VM/UTM runtime evidence.
@@ -395,6 +395,41 @@ display-manager, HDR/VRR or long-soak evidence. Clipboard/DnD/IME therefore
 advances conservatively from 6 to **7/8**, strict compositor completion from 74
 to **75/100**, and overall SLOPOS-I remains **63/100**.
 
+### Current implementation wave — native cross-client DnD runtime
+
+Implementation commits `8ecad10afd05ff5238d8d51d6bcc796297757da`,
+`69d2df1b330addb8cfa8a5aaa9c64ebd32ab4bcf`,
+`cb7e432101d45b662c91d91fd9cc2208ed365d38` and
+`d5c0e0bd4117f0c0eba9259636bd18b6439c6620` add and harden an explicit,
+headless-only input test path and a separate two-process native Wayland DnD
+client. The source receives a genuine Smithay `wl_pointer.button` serial,
+starts a drag with an icon, and remains alive until both requested MIME sends
+complete. The target accepts the offer, verifies `text/plain;charset=utf-8`
+and `text/uri-list`, reads the exact 45-byte and 28-byte payloads, accepts the
+normal post-drop leave, and verifies a validated drop. The invalid-serial smoke
+uses an unmapped origin surface so it cannot perturb the positive test's window
+cascade.
+
+The exact-current-head Ubuntu UTM runtime gate at `4ed9a6b59386501127b83be92abed7118368e972`
+passed with schema 11. Its JSON records `status: passed`, native DnD offer,
+text, URI, source-start, drag-icon, client-drop and validated-drop markers, the
+invalid-serial rejection marker, the existing clipboard/primary-selection
+failure paths, pointer constraints, XDG/popup lifecycle and abrupt-disconnect
+recovery. The output-topology gate and daily-driver checklist also passed at
+the same SHA. Fresh exact-head build/test/Clippy/release logs are retained
+under `artifacts/qa/2026-08-08-build-tests-4ed9a6b/`; runtime evidence is under
+`artifacts/qa/2026-08-08-compositor-runtime-4ed9a6b/`,
+`artifacts/qa/2026-08-08-compositor-topology-4ed9a6b/` and
+`artifacts/qa/2026-08-08-daily-driver-4ed9a6b/`.
+
+This remains env-gated synthetic headless protocol evidence. The JSON keeps
+`hardware_verified: false` and `input_verified: false`; it does not prove
+physical input, GTK/Qt/Electron, XWayland, IME preedit/commit, DnD cancellation
+or target-death recovery, images, display-manager login, DRM/KMS, rendering,
+HDR/VRR or long-running stability. The native cross-client DnD point therefore
+advances Clipboard/DnD/IME from 7 to **8/8** and strict compositor completion
+from 75 to **76/100**; overall SLOPOS-I remains **63/100**.
+
 ---
 
 ## 3. Production scoring model
@@ -423,7 +458,7 @@ than aspirational.
 | UI and UX | **59** | Distinctive and coherent, but renderer, typography, image display, animation and integration remain alpha-grade |
 | Product functionality | **61** | Real shell, compositor, applications and Vision paths; many daily-driver workflows are incomplete |
 | Linux daily-driver readiness | **51** | Suitable for controlled development and QA, not yet for a non-technical user’s only desktop |
-| Compositor strict completion | **73** | Native text clipboard transfer is now runtime-observed; hardware, input, displays, XWayland and compatibility gates remain |
+| Compositor strict completion | **76** | Native clipboard, primary-selection and first-party text/URI DnD are runtime-observed; hardware, input, displays, XWayland and compatibility gates remain |
 | Security and release readiness | **52** | Good session/filesystem hardening, incomplete sandbox, signing, packaging, upgrades and recovery |
 | Accessibility readiness | **38** | Meaningful AT-SPI work, incomplete live tree and Orca operation |
 | POSIX/FreeBSD portability | **22** | Direction is defined; implementation and native evidence remain early |
@@ -443,7 +478,7 @@ The most important blockers are:
 
 1. incomplete physical compositor/input/multi-monitor coverage;
 2. prototype text and image rendering;
-3. incomplete cross-application DnD and IME;
+3. incomplete third-party DnD compatibility and IME;
 4. partial XWayland and third-party application compatibility;
 5. SLOPOS Spaces model not yet connected to a complete user experience;
 6. Settings not yet authoritative for all system services;
@@ -500,7 +535,7 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | Session sovereignty and lifecycle | 9 | 10 | Display-manager, suspend/resume, lid and longer failure coverage |
 | Core Wayland lifecycle | 12 | 14 | Broader popup, subsurface, transient and modal compatibility |
 | Input correctness | 9 | 10 | Physical multi-device, touch, gestures and hotplug |
-| Clipboard, DnD and IME | 7 | 8 | Cross-client DnD, drag icons, GTK/Qt/Electron and text-input/input-method |
+| Clipboard, DnD and IME | 8 | 8 | GTK/Qt/Electron/XWayland compatibility, DnD failure paths and text-input/input-method |
 | Rendering and frame scheduling | 9 | 12 | Direct scanout, occlusion, GPU recovery and physical pacing evidence |
 | Displays and scaling | 9 | 12 | Hotplug, mixed scale/refresh, rotation, migration and topology recovery |
 | External Wayland compatibility | 6 | 12 | GTK, Qt, Electron, browsers, office, media, games and popup-heavy apps |
@@ -526,7 +561,7 @@ Passing CI proves engineering health. It does not erase these product gaps.
 
 - physical DRM/input/multi-monitor matrix on current code;
 - touch, touchpad gestures and multiple-device hotplug;
-- production DnD and IME;
+- third-party DnD failure paths and IME;
 - broad Wayland client matrix;
 - first-class XWayland;
 - HDR/VRR on capable displays;
@@ -549,7 +584,7 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | Search/launcher | 45 | Early local functionality; indexing, ranking and actions remain incomplete |
 | Portals | 47 | Source exists; compatibility and permission behaviour are not broadly proved |
 | Clipboard | 65 | Real selection paths; large/cancelled/format-diverse transfers need QA |
-| Cross-app drag-and-drop | 51 | In-app movement exists; complete data-device workflow remains |
+| Cross-app drag-and-drop | 51 | Native first-party text/URI DnD is runtime-observed; third-party and shell workflows remain |
 | SLOPOS Spaces model | 71 | Dynamic model, persistence and output policy are substantive |
 | SLOPOS Spaces UX | 25 | No complete overview, gestures, drag-between-Spaces or Settings product |
 | Multi-monitor desktop UX | 43 | Policy/types exist; complete live topology behaviour is not established |
