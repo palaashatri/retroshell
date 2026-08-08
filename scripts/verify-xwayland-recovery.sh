@@ -87,7 +87,7 @@ cleanup() {
         wait "$compositor_pid" 2>/dev/null || true
     fi
     ready_count="$(grep -c 'XWayland ready on DISPLAY=' "$log" 2>/dev/null || true)"
-    disconnected_count="$(grep -c 'XWayland WM disconnected' "$log" 2>/dev/null || true)"
+    disconnected_count="$(grep -c 'XWayland WM disconnected$' "$log" 2>/dev/null || true)"
     write_result
     rm -rf "$runtime_dir"
     exit "$exit_code"
@@ -178,7 +178,7 @@ for attempt in 1 2 3 4; do
     fi
     kill -KILL "$xwayland_pid"
 
-    if ! wait_for_count 'XWayland WM disconnected' "$attempt"; then
+    if ! wait_for_count 'XWayland WM disconnected$' "$attempt"; then
         failure="disconnect_not_observed_${attempt}"
         exit 1
     fi
