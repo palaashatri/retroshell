@@ -5,19 +5,60 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`fb194e4e6abf78854cb7b74e7380f4606d498a14`
+`5f1867a1666e2f524a4146e2382300f013e9ebbe`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review through the audited SHA, commit-delta
 review, exact-commit Ubuntu UTM build/test/lint/release evidence, retained
 native Wayland protocol logs, exact-commit headless Spaces runtime evidence with
-a real Preview client, and exact-commit Settings/IPC/Spaces output-assignment QA
-in Ubuntu UTM.
+a real Preview client, exact-commit Settings/IPC/Spaces output-assignment QA,
+and exact-commit application-ID Spaces-policy runtime QA in Ubuntu UTM.
 **Public target:** a 100/100 production Linux desktop environment that genuinely
 competes with KDE Plasma and GNOME as a daily driver.
 **Current verdict:** **63/100 — functional custom desktop alpha.**
 
 Documentation commits after the audited implementation do not change the
 product score unless they are accompanied by implementation and evidence.
+
+### Current implementation wave — application-ID Spaces policy runtime
+
+Implementation commit `5f1867a1666e2f524a4146e2382300f013e9ebbe` adds the
+compositor-owned application-ID policy path for SLOPOS Spaces. A validated
+policy can target one stable Space ID, every Space, or `Current` (which clears
+the stored policy and restores active-Space placement). The compositor applies
+the policy both when a matching window is mapped and when a stored policy is
+changed, publishes the policy in the atomic Spaces snapshot, persists it, and
+restores it after restart. Invalid application IDs and unknown Space IDs are
+rejected without a revision change.
+
+The exact Ubuntu UTM clone at this SHA passed `cargo fmt --all -- --check`,
+locked workspace check, locked workspace tests, Clippy with `-D warnings`, and
+the locked release workspace build. All five exit markers are `0` under
+`artifacts/qa/2026-08-08-build-tests-5f1867a-r1/utm/`. Focused UTM suites also
+passed compositor 164/164 plus the 23-test completion contract, bus 12/12 plus
+the 6-test Spaces protocol suite, shell Spaces reconciliation 5/5, and Settings
+17/17; the combined log and `focused.exit=0` are retained there.
+
+The exact release compositor and a real Preview client then passed the reusable
+headless policy harness at
+`artifacts/qa/2026-08-08-spaces-application-policy-5f1867a-r2/utm/` with
+`runtime.exit=0`, `logs/status.txt` reporting `qa_exit=0`, and
+`logs/result.txt` reporting `qa_complete=true`. Machine-readable snapshots show
+`Id { id: 2 }` placing Preview on Space 2, `All` reassigning that existing
+window to all eight Spaces, `Current` clearing the policy and returning it to
+active Space 1, unchanged revisions for invalid Space 999 and an invalid
+newline-containing application ID, persistence of target Space 3, compositor
+restart restoration, and a restarted Preview mapping to Space 3. The first
+compositor log retains both rejection errors and the persisted model JSON is
+copied under the same evidence directory.
+
+This is real headless software-renderer and compositor-authority evidence. It
+does not prove a Settings or shell control for configuring application policies:
+the current Settings surface validates policy readback but does not yet expose
+the command, and no physical DRM/output, live-thumbnail, drag/gesture,
+accessibility, third-party compatibility, packaging, performance-budget or
+long-running-soak claim follows from this gate. The overall score remains
+**63/100**, Spaces UX remains **38/100**, and strict compositor completion
+remains **76/100**.
 
 ### Current implementation wave — Settings-controlled Spaces output assignment
 
@@ -812,8 +853,9 @@ The most important blockers are:
 2. incomplete retained rendering acceptance: complete text authority, image colour/mipmap/animation paths and measured scale/performance proof;
 3. incomplete third-party DnD compatibility and application-level IME integration;
 4. partial XWayland and third-party application compatibility;
-5. SLOPOS Spaces now has compositor and Settings mutation paths, but not a
-   complete user experience;
+5. SLOPOS Spaces now has compositor and partial Settings mutation paths, but
+   application-ID policies are not yet user-configurable and the complete
+   Spaces experience is unfinished;
 6. Settings is authoritative for the new Spaces slice, but not for all system
    services;
 7. first-party applications remain incomplete for normal daily use;
@@ -921,7 +963,7 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | Clipboard | 65 | Real selection paths; large/cancelled/format-diverse transfers need QA |
 | Cross-app drag-and-drop | 51 | Native first-party text/URI DnD is runtime-observed; third-party and shell workflows remain |
 | SLOPOS Spaces model | 71 | Dynamic model, persistence and output policy are substantive |
-| SLOPOS Spaces UX | 38 | Live overview, snapshot-backed Settings mutations and output assignment exist; gestures, drag-between-Spaces, thumbnails and accessibility remain |
+| SLOPOS Spaces UX | 38 | Live overview, snapshot-backed Settings mutations, output assignment and compositor application-policy runtime exist; application-policy controls, gestures, drag-between-Spaces, thumbnails and accessibility remain |
 | Multi-monitor desktop UX | 43 | Policy/types exist; complete live topology behaviour is not established |
 | **Shell/desktop overall** | **57** | Real custom shell alpha, not finished product |
 
