@@ -37,6 +37,7 @@ fn headless_runtime_gate_exercises_native_clipboard_transfer() {
     for marker in [
         "SLOPOS_CLIPBOARD_OFFER_VERIFIED",
         "SLOPOS_CLIPBOARD_TRANSFER_VERIFIED",
+        "SLOPOS_CLIPBOARD_LARGE_TRANSFER_VERIFIED",
         "SLOPOS_CLIPBOARD_MISSING_MIME_EOF_VERIFIED",
     ] {
         assert!(

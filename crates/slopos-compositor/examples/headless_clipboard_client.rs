@@ -29,8 +29,11 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 
 const MIME_TEXT_UTF8: &str = "text/plain;charset=utf-8";
 const MIME_TEXT: &str = "text/plain";
+const MIME_LARGE: &str = "application/x-slopos-large";
 const MIME_MISSING: &str = "application/x-slopos-missing";
 const PAYLOAD: &[u8] = b"SLOPOS native clipboard transfer\nUTF-8: cafe\xCC\x81\n";
+const LARGE_PAYLOAD_SIZE: usize = 1024 * 1024;
+static LARGE_PAYLOAD: [u8; LARGE_PAYLOAD_SIZE] = [b'L'; LARGE_PAYLOAD_SIZE];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Mode {
@@ -130,13 +133,18 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for State {
         match event {
             wl_data_source::Event::Send { mime_type, fd } => {
                 let mut file = std::fs::File::from(fd);
-                if mime_type == MIME_TEXT_UTF8 || mime_type == MIME_TEXT {
-                    let _ = file.write_all(PAYLOAD);
+                let data = match mime_type.as_str() {
+                    MIME_TEXT_UTF8 | MIME_TEXT => Some(PAYLOAD),
+                    MIME_LARGE => Some(&LARGE_PAYLOAD[..]),
+                    _ => None,
+                };
+                if let Some(data) = data {
+                    let _ = file.write_all(data);
                     let _ = file.flush();
                     state.source_send_count = state.source_send_count.saturating_add(1);
                     println!(
                         "SLOPOS_CLIPBOARD_SOURCE_SENT mime={mime_type} bytes={}",
-                        PAYLOAD.len()
+                        data.len()
                     );
                     let _ = std::io::stdout().flush();
                 }
@@ -244,6 +252,7 @@ fn run_source(connection: &Connection) -> Result<(), Box<dyn Error>> {
     let source = manager.create_data_source(&queue_handle, ());
     source.offer(MIME_TEXT_UTF8.to_owned());
     source.offer(MIME_TEXT.to_owned());
+    source.offer(MIME_LARGE.to_owned());
 
     let (surface, _xdg_surface, _toplevel) = create_toplevel(
         &compositor,
@@ -319,6 +328,7 @@ fn run_sink(connection: &Connection) -> Result<(), Box<dyn Error>> {
         .iter()
         .any(|mime| mime == MIME_TEXT_UTF8)
         || !state.offered_mimes.iter().any(|mime| mime == MIME_TEXT)
+        || !state.offered_mimes.iter().any(|mime| mime == MIME_LARGE)
     {
         return Err(format!(
             "clipboard offer missing expected MIME types: {:?}",
@@ -336,6 +346,19 @@ fn run_sink(connection: &Connection) -> Result<(), Box<dyn Error>> {
         return Err(format!("clipboard payload mismatch: got {} bytes", bytes.len()).into());
     }
     println!("SLOPOS_CLIPBOARD_TRANSFER_VERIFIED bytes={}", bytes.len());
+
+    let large = read_offer(connection, &offer, MIME_LARGE)?;
+    if large.len() != LARGE_PAYLOAD_SIZE || large.iter().any(|byte| *byte != b'L') {
+        return Err(format!(
+            "large clipboard payload mismatch: got {} bytes",
+            large.len()
+        )
+        .into());
+    }
+    println!(
+        "SLOPOS_CLIPBOARD_LARGE_TRANSFER_VERIFIED bytes={}",
+        large.len()
+    );
 
     let missing = read_offer(connection, &offer, MIME_MISSING)?;
     if !missing.is_empty() {

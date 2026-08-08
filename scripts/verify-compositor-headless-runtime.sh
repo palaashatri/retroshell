@@ -74,7 +74,7 @@ write_artifact() {
   local failure="${2:-}"
   cat >"$artifact.tmp" <<JSON
 {
-  "schema": 6,
+  "schema": 7,
   "component": "slopos-compositor",
   "commit": "$commit_sha",
   "branch": "$branch",
@@ -97,6 +97,7 @@ write_artifact() {
   "pointer_confine_request_verified": $([[ -s "$pointer_constraints_log" ]] && grep -q "^SLOPOS_POINTER_CONFINE_REQUEST_ACCEPTED " "$pointer_constraints_log" && printf true || printf false),
   "clipboard_offer_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_OFFER_VERIFIED && printf true || printf false),
   "clipboard_transfer_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_TRANSFER_VERIFIED && printf true || printf false),
+  "clipboard_large_transfer_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_LARGE_TRANSFER_VERIFIED && printf true || printf false),
   "clipboard_missing_mime_eof_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_MISSING_MIME_EOF_VERIFIED && printf true || printf false),
   "hardware_verified": false,
   "drm_verified": false,
@@ -276,6 +277,7 @@ WAYLAND_DISPLAY="$socket_name" timeout 30s \
 for marker in \
   SLOPOS_CLIPBOARD_OFFER_VERIFIED \
   SLOPOS_CLIPBOARD_TRANSFER_VERIFIED \
+  SLOPOS_CLIPBOARD_LARGE_TRANSFER_VERIFIED \
   SLOPOS_CLIPBOARD_MISSING_MIME_EOF_VERIFIED; do
   if ! has_clipboard_marker "$marker"; then
     write_artifact failed "missing_${marker}"
