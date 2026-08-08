@@ -43,7 +43,7 @@ use slopos_render::font::{
     ellipsize_text as render_ellipsize_text, shape_text, ShapedGlyph, TextLayout, TextLayoutOptions,
 };
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::Write;
@@ -2172,7 +2172,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         );
     }
 
-    fn ensure_image_texture(&mut self, upload: &ImageUpload) -> Result<(), String> {
+    fn ensure_image_texture(
+        &mut self,
+        upload: &ImageUpload,
+        protected_keys: &HashSet<ImageTileKey>,
+    ) -> Result<(), String> {
         if let Some(cached) = self.image_cache.get_mut(&upload.key) {
             cached.last_used = self.image_frame;
             return Ok(());
@@ -2224,13 +2228,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let Some(oldest_key) = self
                 .image_cache
                 .iter()
+                .filter(|(key, _)| !protected_keys.contains(key))
                 .min_by_key(|(_, cached)| cached.last_used)
                 .map(|(key, _)| *key)
             else {
-                break;
+                return Err("visible image tiles exceed the retained GPU cache budget".to_string());
             };
             let Some(evicted) = self.image_cache.remove(&oldest_key) else {
-                break;
+                return Err("image cache eviction lost its selected tile".to_string());
             };
             self.image_cache_bytes = self.image_cache_bytes.saturating_sub(evicted.bytes);
         }
@@ -2322,9 +2327,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let draw_data = canvas.finish();
         self.image_frame = self.image_frame.wrapping_add(1);
         self.upload_glyph_atlas();
+        let protected_image_keys: HashSet<ImageTileKey> = draw_data
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                DrawCommand::Image { upload, .. } => Some(upload.key),
+                _ => None,
+            })
+            .collect();
         for command in &draw_data.commands {
             if let DrawCommand::Image { upload, .. } = command {
-                self.ensure_image_texture(upload)?;
+                self.ensure_image_texture(upload, &protected_image_keys)?;
             }
         }
 

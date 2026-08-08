@@ -185,7 +185,11 @@ fn fit_zoom(image_width: u32, image_height: u32, viewport_width: f32, viewport_h
     }
     let width_ratio = viewport_width / image_width as f32;
     let height_ratio = viewport_height / image_height as f32;
-    clamp_zoom(width_ratio.min(height_ratio))
+    let ratio = width_ratio.min(height_ratio);
+    if ratio.is_nan() {
+        return 1.0;
+    }
+    ratio.clamp(f32::MIN_POSITIVE, MAX_ZOOM)
 }
 
 fn solid_panel(fill: [f32; 4]) -> Panel {
@@ -248,7 +252,11 @@ impl ImageCanvas {
     }
 
     fn set_zoom(&mut self, zoom: f32) {
-        self.zoom = clamp_zoom(zoom);
+        self.zoom = if zoom.is_finite() && zoom > 0.0 {
+            zoom
+        } else {
+            1.0
+        };
         let size = self.natural_size();
         let rect = self.rect();
         self.state.rect = Rect::new(rect.x, rect.y, size.width, size.height);
@@ -1331,8 +1339,17 @@ impl Drop for PreviewView {
     }
 }
 
-fn zoom_percent(zoom: f32) -> u32 {
-    (clamp_zoom(zoom) * 100.0).round() as u32
+fn zoom_percent(zoom: f32) -> String {
+    let percent = if zoom.is_finite() && zoom > 0.0 {
+        zoom * 100.0
+    } else {
+        clamp_zoom(zoom) * 100.0
+    };
+    if percent > 0.0 && percent < 1.0 {
+        "<1".to_string()
+    } else {
+        format!("{:.0}", percent.clamp(1.0, MAX_ZOOM * 100.0))
+    }
 }
 
 fn safe_file_label(path: &Path) -> Option<FileLabel> {
@@ -1666,7 +1683,7 @@ mod tests {
     fn fit_zoom_preserves_aspect_ratio_and_bounds_extremes() {
         assert!((fit_zoom(1600, 800, 800.0, 400.0) - 0.5).abs() < f32::EPSILON);
         assert_eq!(fit_zoom(1, 1, 10_000.0, 10_000.0), MAX_ZOOM);
-        assert_eq!(fit_zoom(40_000_000, 1, 1.0, 1.0), MIN_ZOOM);
+        assert!(fit_zoom(40_000_000, 1, 1.0, 1.0) < MIN_ZOOM);
         assert_eq!(fit_zoom(0, 100, 100.0, 100.0), 1.0);
     }
 
