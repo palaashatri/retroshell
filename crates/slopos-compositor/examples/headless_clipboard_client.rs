@@ -1,14 +1,16 @@
 // Copyright (c) 2026 Palaash Atri
 // SPDX-License-Identifier: MIT
 
-//! Native Wayland clipboard source/sink used by the compositor runtime gate.
+//! Native Wayland clipboard and primary-selection clients used by the compositor
+//! runtime gate.
 //!
 //! The source and sink are separate client processes. The source creates a real
-//! `wl_data_source`, offers two text MIME types, and keeps its focused toplevel
-//! alive. The sink creates another toplevel, receives the selection offer, reads
-//! the exact payload, and verifies that an unsupported MIME request terminates
-//! with EOF. This is protocol/runtime evidence only; it is not GTK, Qt,
-//! XWayland, physical-input, DnD or hardware compatibility evidence.
+//! `wl_data_source` or `zwp_primary_selection_source_v1`, offers text MIME
+//! types, and keeps its focused toplevel alive. The sink creates another
+//! toplevel, receives the selection offer, reads the exact payload, and verifies
+//! that an unsupported MIME request terminates with EOF. This is protocol/runtime
+//! evidence only; it is not GTK, Qt, XWayland, physical-input, DnD or hardware
+//! compatibility evidence.
 
 use std::{
     env,

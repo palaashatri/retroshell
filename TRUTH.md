@@ -5,7 +5,7 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`c6235bed5dc5713f7d6f3e690e48455c27b00954`
+`0f4dac76be7cf0a439e586cbd4ad5cfe0035ac8f`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review, commit-delta review, exact-commit GitHub
 Actions evidence and retained VM/UTM runtime evidence.
@@ -334,6 +334,34 @@ HDR/VRR, live display-manager login, or long-running stability. This QA wave
 therefore changes no product capability score: overall SLOPOS-I remains
 **63/100**, and strict compositor completion remains **73/100**.
 
+### Current implementation wave — native primary-selection runtime
+
+Implementation commit `0f4dac76be7cf0a439e586cbd4ad5cfe0035ac8f` is **BUILD
+VERIFIED** and **TEST VERIFIED** in the Ubuntu UTM guest. The native Wayland QA
+client now exercises `zwp_primary_selection_device_manager_v1` with separate
+source and sink processes. The source advertises
+`text/plain;charset=utf-8` and `text/plain`, transfers the exact 46-byte UTF-8
+payload, and the sink verifies EOF for an unsupported MIME request.
+
+The exact-head headless runtime JSON reports `status: passed` with
+`primary_selection_offer_verified`, `primary_selection_transfer_verified` and
+`primary_selection_missing_mime_eof_verified` all true. The same run retains
+the normal clipboard offer/transfer, 1 MiB transfer, unsupported-MIME EOF and
+source-death clear markers; the logical-output topology and locked Ubuntu
+workspace regression gates also passed. Evidence is retained under
+`artifacts/qa/2026-08-08-compositor-runtime-0f4dac7/`,
+`artifacts/qa/2026-08-08-compositor-topology-0f4dac7/`,
+`artifacts/qa/2026-08-08-daily-driver-0f4dac7/` and
+`artifacts/qa/2026-08-08-build-tests-0f4dac7/`.
+
+This is native headless Wayland selection evidence only. It does not prove
+clipboard cancellation, target death, drag-and-drop, IME preedit/commit,
+GTK/Qt/Electron or XWayland compatibility, physical DRM/KMS/input or
+multi-monitor behaviour, HDR/VRR, live display-manager login, or long-running
+stability. Clipboard/DnD/IME therefore advances conservatively from 5 to
+**6/8**, strict compositor completion from 73 to **74/100**, and overall
+SLOPOS-I remains **63/100**.
+
 ---
 
 ## 3. Production scoring model
@@ -439,7 +467,7 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | Session sovereignty and lifecycle | 9 | 10 | Display-manager, suspend/resume, lid and longer failure coverage |
 | Core Wayland lifecycle | 12 | 14 | Broader popup, subsurface, transient and modal compatibility |
 | Input correctness | 9 | 10 | Physical multi-device, touch, gestures and hotplug |
-| Clipboard, DnD and IME | 5 | 8 | Cross-client DnD, drag icons, cancellation, large transfers and text-input/input-method |
+| Clipboard, DnD and IME | 6 | 8 | Cross-client DnD, drag icons, cancellation and text-input/input-method |
 | Rendering and frame scheduling | 9 | 12 | Direct scanout, occlusion, GPU recovery and physical pacing evidence |
 | Displays and scaling | 9 | 12 | Hotplug, mixed scale/refresh, rotation, migration and topology recovery |
 | External Wayland compatibility | 6 | 12 | GTK, Qt, Electron, browsers, office, media, games and popup-heavy apps |
