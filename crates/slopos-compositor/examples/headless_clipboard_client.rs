@@ -398,6 +398,7 @@ fn run_source(connection: &Connection, keep_alive: bool) -> Result<(), Box<dyn E
     let (globals, mut event_queue) = registry_queue_init::<State>(connection)?;
     let queue_handle = event_queue.handle();
     let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&queue_handle, 1..=6, ())?;
+    let wm_base = globals.bind::<xdg_wm_base::XdgWmBase, _, _>(&queue_handle, 1..=6, ())?;
     let manager = globals.bind::<wl_data_device_manager::WlDataDeviceManager, _, _>(
         &queue_handle,
         1..=3,
@@ -757,7 +758,6 @@ fn run_dnd_invalid_serial(connection: &Connection) -> Result<(), Box<dyn Error>>
     let (globals, mut event_queue) = registry_queue_init::<State>(connection)?;
     let queue_handle = event_queue.handle();
     let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&queue_handle, 1..=6, ())?;
-    let wm_base = globals.bind::<xdg_wm_base::XdgWmBase, _, _>(&queue_handle, 1..=6, ())?;
     let manager = globals.bind::<wl_data_device_manager::WlDataDeviceManager, _, _>(
         &queue_handle,
         1..=3,
