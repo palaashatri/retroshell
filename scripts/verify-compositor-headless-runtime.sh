@@ -38,6 +38,8 @@ stress_log="$artifact_dir/${commit_sha}-disconnect-stress.log"
 protocol_log="$artifact_dir/${commit_sha}-xdg-protocol.log"
 pointer_constraints_log="$artifact_dir/${commit_sha}-pointer-constraints.log"
 clipboard_log="$artifact_dir/${commit_sha}-clipboard.log"
+clipboard_source_log="$artifact_dir/${commit_sha}-clipboard-source.log"
+clipboard_sink_log="$artifact_dir/${commit_sha}-clipboard-sink.log"
 runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/slopos-headless-runtime.XXXXXX")"
 chmod 700 "$runtime_dir"
 
@@ -58,7 +60,13 @@ stress_passed() {
 
 has_clipboard_marker() {
   local marker="$1"
-  [[ -s "$clipboard_log" ]] && grep -q "^${marker} " "$clipboard_log"
+  [[ -s "$clipboard_sink_log" ]] && grep -q "^${marker} " "$clipboard_sink_log"
+}
+
+combine_clipboard_logs() {
+  : >"$clipboard_log"
+  [[ -f "$clipboard_source_log" ]] && cat "$clipboard_source_log" >>"$clipboard_log"
+  [[ -f "$clipboard_sink_log" ]] && cat "$clipboard_sink_log" >>"$clipboard_log"
 }
 
 write_artifact() {
@@ -105,7 +113,9 @@ write_artifact() {
   "disconnect_stress_log": "$(basename "$stress_log")",
   "xdg_protocol_log": "$(basename "$protocol_log")",
   "pointer_constraints_log": "$(basename "$pointer_constraints_log")",
-  "clipboard_log": "$(basename "$clipboard_log")"
+  "clipboard_log": "$(basename "$clipboard_log")",
+  "clipboard_source_log": "$(basename "$clipboard_source_log")",
+  "clipboard_sink_log": "$(basename "$clipboard_sink_log")"
 }
 JSON
   mv "$artifact.tmp" "$artifact"
@@ -118,6 +128,7 @@ cleanup() {
     kill -TERM "$clipboard_source_pid" 2>/dev/null || true
     wait "$clipboard_source_pid" 2>/dev/null || true
   fi
+  combine_clipboard_logs
   if [[ -n "$compositor_pid" ]] && kill -0 "$compositor_pid" 2>/dev/null; then
     kill -TERM "$compositor_pid" 2>/dev/null || true
     for _ in $(seq 1 50); do
@@ -238,43 +249,45 @@ fi
 
 printf 'Exercising native cross-client clipboard offer, transfer and missing-MIME EOF\n'
 WAYLAND_DISPLAY="$socket_name" timeout 120s \
-  target/debug/examples/headless_clipboard_client source >"$clipboard_log" 2>&1 &
+  target/debug/examples/headless_clipboard_client source >"$clipboard_source_log" 2>&1 &
 clipboard_source_pid=$!
 source_ready=false
 for _ in $(seq 1 100); do
-  if grep -q '^SLOPOS_CLIPBOARD_SOURCE_READY ' "$clipboard_log" 2>/dev/null; then
+  if grep -q '^SLOPOS_CLIPBOARD_SOURCE_READY ' "$clipboard_source_log" 2>/dev/null; then
     source_ready=true
     break
   fi
   if ! kill -0 "$clipboard_source_pid" 2>/dev/null; then
     wait "$clipboard_source_pid" || true
     write_artifact failed "clipboard_source_exited_before_ready"
-    cat "$clipboard_log" >&2
+    cat "$clipboard_source_log" >&2
     exit 1
   fi
   sleep 0.1
 done
 if [[ "$source_ready" != true ]]; then
   write_artifact failed "clipboard_source_readiness_timeout"
-  cat "$clipboard_log" >&2
+  cat "$clipboard_source_log" >&2
   exit 1
 fi
 
 WAYLAND_DISPLAY="$socket_name" timeout 30s \
-  target/debug/examples/headless_clipboard_client sink >>"$clipboard_log" 2>&1
+  target/debug/examples/headless_clipboard_client sink >"$clipboard_sink_log" 2>&1
 for marker in \
   SLOPOS_CLIPBOARD_OFFER_VERIFIED \
   SLOPOS_CLIPBOARD_TRANSFER_VERIFIED \
   SLOPOS_CLIPBOARD_MISSING_MIME_EOF_VERIFIED; do
   if ! has_clipboard_marker "$marker"; then
     write_artifact failed "missing_${marker}"
-    cat "$clipboard_log" >&2
+    cat "$clipboard_source_log" >&2
+    cat "$clipboard_sink_log" >&2
     exit 1
   fi
 done
 kill -TERM "$clipboard_source_pid" 2>/dev/null || true
 wait "$clipboard_source_pid" 2>/dev/null || true
 clipboard_source_pid=""
+combine_clipboard_logs
 if ! kill -0 "$compositor_pid" 2>/dev/null; then
   write_artifact failed "compositor_died_after_clipboard_transfer"
   cat "$compositor_log" >&2
