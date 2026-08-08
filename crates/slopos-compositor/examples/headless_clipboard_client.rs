@@ -259,14 +259,35 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for State {
                     _ => None,
                 };
                 if let Some(data) = data {
-                    let _ = file.write_all(data);
-                    let _ = file.flush();
-                    state.source_send_count = state.source_send_count.saturating_add(1);
-                    println!(
-                        "SLOPOS_CLIPBOARD_SOURCE_SENT mime={mime_type} bytes={}",
-                        data.len()
-                    );
-                    let _ = std::io::stdout().flush();
+                    match file.write_all(data) {
+                        Ok(()) => {
+                            let _ = file.flush();
+                            state.source_send_count = state.source_send_count.saturating_add(1);
+                            println!(
+                                "SLOPOS_CLIPBOARD_SOURCE_SENT mime={mime_type} bytes={}",
+                                data.len()
+                            );
+                            let _ = std::io::stdout().flush();
+                        }
+                        Err(err)
+                            if matches!(
+                                err.kind(),
+                                std::io::ErrorKind::BrokenPipe
+                                    | std::io::ErrorKind::ConnectionReset
+                            ) =>
+                        {
+                            println!(
+                                "SLOPOS_SELECTION_TARGET_DISCONNECTED mime={mime_type} error={err}"
+                            );
+                            let _ = std::io::stdout().flush();
+                        }
+                        Err(err) => {
+                            println!(
+                                "SLOPOS_CLIPBOARD_SOURCE_SEND_FAILED mime={mime_type} error={err}"
+                            );
+                            let _ = std::io::stdout().flush();
+                        }
+                    }
                 }
                 // Unsupported MIME requests intentionally receive EOF by closing
                 // the compositor-provided fd without writing any bytes.

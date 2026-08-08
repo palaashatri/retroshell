@@ -79,6 +79,15 @@ has_compositor_marker() {
   [[ -s "$compositor_log" ]] && grep -q "$marker" "$compositor_log"
 }
 
+has_selection_target_disconnected_marker() {
+  for log in "$compositor_log" "$clipboard_source_log" "$clipboard_replacement_source_log"; do
+    if [[ -s "$log" ]] && grep -q "$1" "$log"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 clipboard_source_cancelled_exactly_once() {
   [[ -s "$clipboard_source_log" ]] &&
     [[ "$(grep -c '^SLOPOS_CLIPBOARD_SOURCE_CANCELLED$' "$clipboard_source_log" || true)" == 1 ]]
@@ -136,7 +145,7 @@ write_artifact() {
   "clipboard_source_death_cleared": $(has_clipboard_marker SLOPOS_CLIPBOARD_SOURCE_DEATH_CLEARED && printf true || printf false),
   "clipboard_source_cancelled_verified": $(clipboard_source_cancelled_exactly_once && printf true || printf false),
   "clipboard_target_death_recovered_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_TARGET_DEATH_RECOVERED && printf true || printf false),
-  "selection_target_disconnected_verified": $(has_compositor_marker SLOPOS_SELECTION_TARGET_DISCONNECTED && printf true || printf false),
+  "selection_target_disconnected_verified": $(has_selection_target_disconnected_marker SLOPOS_SELECTION_TARGET_DISCONNECTED && printf true || printf false),
   "primary_selection_offer_verified": $(has_primary_selection_marker SLOPOS_PRIMARY_SELECTION_OFFER_VERIFIED && printf true || printf false),
   "primary_selection_transfer_verified": $(has_primary_selection_marker SLOPOS_PRIMARY_SELECTION_TRANSFER_VERIFIED && printf true || printf false),
   "primary_selection_missing_mime_eof_verified": $(has_primary_selection_marker SLOPOS_PRIMARY_SELECTION_MISSING_MIME_EOF_VERIFIED && printf true || printf false),
@@ -353,7 +362,7 @@ if ! has_clipboard_marker SLOPOS_CLIPBOARD_TARGET_DEATH_RECOVERED; then
 fi
 selection_target_disconnected=false
 for _ in $(seq 1 100); do
-  if has_compositor_marker SLOPOS_SELECTION_TARGET_DISCONNECTED; then
+  if has_selection_target_disconnected_marker SLOPOS_SELECTION_TARGET_DISCONNECTED; then
     selection_target_disconnected=true
     break
   fi
@@ -365,6 +374,7 @@ done
 if [[ "$selection_target_disconnected" != true ]]; then
   write_artifact failed "missing_SLOPOS_SELECTION_TARGET_DISCONNECTED"
   cat "$clipboard_sink_abort_log" >&2
+  cat "$clipboard_source_log" >&2
   cat "$compositor_log" >&2
   exit 1
 fi
