@@ -53,6 +53,9 @@ pub enum SpacesControlCommand {
         window_id: String,
         target: SpaceTargetWire,
     },
+    MoveActiveWindow {
+        target: SpaceTargetWire,
+    },
     SetWallpaper {
         id: u64,
         wallpaper: Option<String>,

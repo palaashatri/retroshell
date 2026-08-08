@@ -225,7 +225,8 @@ use slopos_kit::window::Window;
 use slopos_kit::workspace_grid_view::WorkspaceGridView;
 use slopos_kit::PointerDispatcher;
 use slopos_kit::{
-    DockView, Event, EventResult, Layout, LayoutConstraint, Point, Rect, Size, Widget, WidgetState,
+    AccessibilityNode, AccessibilityTree, DockView, Event, EventResult, Layout, LayoutConstraint,
+    Point, Rect, Size, Widget, WidgetState,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -1083,14 +1084,73 @@ impl ShellDesktop {
         self.workspace_manager.read().active
     }
 
-    /// Return the current ordered Space labels/counts for the overview.
-    fn workspace_overview_data(&self) -> (usize, String, Vec<String>, Vec<usize>) {
+    /// Find the live Spaces grid inside a shell-owned overview window. The
+    /// returned node is produced by the actual widget, so labels, bounds and
+    /// selected/focused state follow the same model used for painting and
+    /// keyboard dispatch.
+    fn workspace_grid_accessibility(widget: &dyn Widget) -> Option<AccessibilityNode> {
+        if let Some(grid) = widget.as_any().downcast_ref::<WorkspaceGridView>() {
+            return grid.accessibility();
+        }
+        for child in widget.children() {
+            if let Some(node) = Self::workspace_grid_accessibility(child) {
+                return Some(node);
+            }
+        }
+        None
+    }
+
+    /// Build the current shell accessibility snapshot. The static chrome
+    /// nodes preserve the existing AT-SPI focus/action paths; when the live
+    /// Spaces overview exists, its real WorkspaceGridView is appended as a
+    /// dynamic list node.
+    fn accessibility_tree(&self) -> AccessibilityTree {
+        let mut tree = slopos_kit::shell_chrome_accessibility_tree("SLOPOS-I");
+
+        let grid = self
+            .workspace_overview
+            .as_ref()
+            .and_then(|window| Self::workspace_grid_accessibility(window))
+            .or_else(|| {
+                self.windows
+                    .iter()
+                    .find(|window| window.window.title() == "Workspace")
+                    .and_then(|window| Self::workspace_grid_accessibility(&window.window))
+            });
+        if let Some(grid) = grid {
+            tree.add(grid);
+        }
+        tree
+    }
+
+    /// Synchronize the live widget snapshot with the process AT-SPI export.
+    /// When no session/a11y bus was available at startup the kit returns
+    /// `Ok(false)`; the shell still retains its in-process accessibility tree
+    /// and action queue without claiming an external registration.
+    fn sync_accessibility_tree(&self) {
+        let tree = self.accessibility_tree();
+        if let Err(error) = slopos_kit::sync_at_spi_registered_tree(&tree) {
+            tracing::debug!(%error, "could not synchronize live AT-SPI tree");
+        }
+    }
+
+    /// Return the current ordered Space IDs, labels and counts for the overview.
+    ///
+    /// IDs are carried alongside the render labels so accessibility and input
+    /// paths can address the compositor by stable identity rather than by a
+    /// transient row index.
+    fn workspace_overview_data(&self) -> (usize, String, Vec<u64>, Vec<String>, Vec<usize>) {
         let manager = self.workspace_manager.read();
         let active = manager.active;
         let name = manager
             .active_workspace()
             .map(|workspace| workspace.name.clone())
             .unwrap_or_else(|| format!("Desktop {}", active + 1));
+        let ids = manager
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id)
+            .collect::<Vec<_>>();
         let labels = manager
             .workspaces
             .iter()
@@ -1101,17 +1161,20 @@ impl ShellDesktop {
             .iter()
             .map(|workspace| workspace.window_count)
             .collect::<Vec<_>>();
-        (active, name, labels, counts)
+        (active, name, ids, labels, counts)
     }
 
     fn update_workspace_grid(
         widget: &mut dyn Widget,
         active: usize,
+        ids: &[u64],
         labels: &[String],
         counts: &[usize],
     ) {
         if let Some(grid) = widget.as_any_mut().downcast_mut::<WorkspaceGridView>() {
             grid.active_index = active;
+            grid.space_ids.clear();
+            grid.space_ids.extend(ids.iter().copied());
             grid.items.clear();
             grid.items.extend(labels.iter().cloned());
             grid.window_counts.clear();
@@ -1122,18 +1185,18 @@ impl ShellDesktop {
 
     /// Keep an already-open overview in sync with a newly reconciled snapshot.
     fn refresh_workspace_overview(&mut self) {
-        let (active, _, labels, counts) = self.workspace_overview_data();
+        let (active, _, ids, labels, counts) = self.workspace_overview_data();
         for shell_window in &mut self.windows {
             if shell_window.window.title() == "Workspace" {
                 let mut update = |widget: &mut dyn Widget| {
-                    Self::update_workspace_grid(widget, active, &labels, &counts)
+                    Self::update_workspace_grid(widget, active, &ids, &labels, &counts)
                 };
                 for_each_widget_mut(&mut shell_window.window, &mut update);
             }
         }
         if let Some(window) = self.workspace_overview.as_mut() {
             let mut update = |widget: &mut dyn Widget| {
-                Self::update_workspace_grid(widget, active, &labels, &counts)
+                Self::update_workspace_grid(widget, active, &ids, &labels, &counts)
             };
             for_each_widget_mut(window, &mut update);
         }
@@ -1688,7 +1751,7 @@ impl ShellDesktop {
                 return;
             }
 
-            let (active, name, labels, counts) = self.workspace_overview_data();
+            let (active, name, ids, labels, counts) = self.workspace_overview_data();
             let visible_count = counts.get(active).copied().unwrap_or(0);
             let mut layout = Layout::vertical(12.0);
             layout.add(Box::new(Label::new("Select/Switch Workspace:")));
@@ -1697,6 +1760,7 @@ impl ShellDesktop {
             grid.active_index = active;
             grid.focused_index = active;
             grid.widget_state_mut().focused = true;
+            grid.space_ids = ids;
             grid.items = labels;
             grid.window_counts = counts;
             layout.add(Box::new(grid));
@@ -1720,7 +1784,7 @@ impl ShellDesktop {
             }
         }
 
-        let (active, name, labels, counts) = self.workspace_overview_data();
+        let (active, name, ids, labels, counts) = self.workspace_overview_data();
 
         let visible_count = self
             .windows
@@ -1735,6 +1799,7 @@ impl ShellDesktop {
 
         let mut grid = WorkspaceGridView::new();
         grid.active_index = active;
+        grid.space_ids = ids;
         grid.items = labels;
         grid.window_counts = counts;
         layout.add(Box::new(grid));
@@ -4408,6 +4473,13 @@ impl Widget for ShellDesktop {
 
             self.notification_popup_windows.push(popup);
         }
+
+        // Export the current Spaces overview metadata to the retained AT-SPI
+        // object graph. The kit compares the semantic snapshot and performs
+        // no D-Bus churn when nothing changed; when the overview opens,
+        // closes, or changes selection, assistive technologies receive the
+        // same stable list/item structure used by the live widget.
+        self.sync_accessibility_tree();
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -5593,6 +5665,29 @@ mod tests {
             !desktop.windows.iter().any(|w| w.id == overview_id),
             "overview closes after switching"
         );
+    }
+
+    #[test]
+    fn accessibility_snapshot_includes_live_workspace_grid_state() {
+        let (mut desktop, _) = test_desktop();
+        desktop.open_workspace_status_window();
+
+        let tree = desktop.accessibility_tree();
+        let spaces = tree
+            .nodes()
+            .iter()
+            .find(|node| node.role == slopos_kit::AccessibilityRole::List && node.label == "Spaces")
+            .expect("live Spaces list is exported from the overview widget");
+        assert_eq!(
+            spaces.children.len(),
+            desktop.workspace_manager.read().total
+        );
+        assert_eq!(spaces.children[0].label, "Desktop 1");
+        assert!(spaces.children[0].state.selected);
+        assert!(spaces.children[0].description.contains("Stable Space ID 1"));
+        assert!(spaces.children[0].description.contains("0 windows"));
+        assert!(spaces.children[0].rect.width > 0.0);
+        assert!(spaces.children[0].rect.height > 0.0);
     }
 
     #[cfg(unix)]

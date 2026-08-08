@@ -167,6 +167,7 @@ pub enum SpacesError {
     InvalidApplicationTarget(String),
     InvalidMetadata { field: &'static str, value: String },
     InvalidOutputId(String),
+    OutputNotAvailable { space: SpaceId, output_id: String },
     OutputAssignmentNotAllowedInSharedSpan { space: SpaceId, output_id: String },
     OutputMigrationToSameOutput(String),
     SpaceIdExhausted,
@@ -215,6 +216,10 @@ impl fmt::Display for SpacesError {
                 write!(formatter, "invalid {field} value {value:?}")
             }
             Self::InvalidOutputId(id) => write!(formatter, "invalid output ID {id:?}"),
+            Self::OutputNotAvailable { space, output_id } => write!(
+                formatter,
+                "output {output_id:?} is not available for Space {space}"
+            ),
             Self::OutputAssignmentNotAllowedInSharedSpan { space, output_id } => write!(
                 formatter,
                 "Space {space} cannot be assigned to output {output_id:?} in shared-span mode"
@@ -649,6 +654,72 @@ impl SpacesModel {
         Ok(())
     }
 
+    /// Set or clear a Space's output assignment against the compositor's
+    /// current output inventory.
+    ///
+    /// Syntax validation alone is insufficient after a connector disappears:
+    /// accepting a stale name would persist an assignment that can never be
+    /// presented.  Validate the entire inventory before mutating the model,
+    /// then reject an unavailable requested output without changing the
+    /// existing assignment.
+    pub fn set_space_output_with_inventory<I, S>(
+        &mut self,
+        id: SpaceId,
+        output_id: Option<String>,
+        available_outputs: I,
+    ) -> Result<(), SpacesError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let available_outputs = collect_output_inventory(available_outputs)?;
+        if let Some(output_id) = output_id.as_deref() {
+            if !available_outputs.contains(output_id) {
+                return Err(SpacesError::OutputNotAvailable {
+                    space: id,
+                    output_id: output_id.to_owned(),
+                });
+            }
+        }
+        self.set_space_output(id, output_id)
+    }
+
+    /// Reconcile persisted output assignments after the compositor observes a
+    /// new output topology.
+    ///
+    /// Assignments to disconnected outputs are cleared, preserving the Space
+    /// identity, ordering, windows and other metadata.  The returned IDs are
+    /// the rows whose assignment changed so the caller can publish one
+    /// authoritative snapshot and persist the repaired state.  Shared-span
+    /// mode has no per-output assignments, so any legacy values are cleared as
+    /// part of the same recovery operation.
+    pub fn reconcile_output_assignments<I, S>(
+        &mut self,
+        available_outputs: I,
+    ) -> Result<Vec<SpaceId>, SpacesError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let available_outputs = collect_output_inventory(available_outputs)?;
+        let stale = self
+            .spaces
+            .iter()
+            .filter_map(|space| {
+                let output_id = space.output_id.as_deref()?;
+                let stale = self.multi_monitor_policy == MultiMonitorPolicy::SharedSpan
+                    || !available_outputs.contains(output_id);
+                stale.then_some(space.id)
+            })
+            .collect::<Vec<_>>();
+
+        for id in &stale {
+            self.space_mut(*id)?.output_id = None;
+        }
+        self.validate()?;
+        Ok(stale)
+    }
+
     /// Assign a Space to one output in independent-per-display mode.
     pub fn assign_space_to_output(
         &mut self,
@@ -1060,6 +1131,35 @@ impl SpacesModel {
         self.assign_window(window, target)
     }
 
+    /// Move the compositor's currently activated window to a wire-selected
+    /// Space target.
+    ///
+    /// The caller supplies the live mapped-window IDs so a stale activation
+    /// cannot mutate the model. Target conversion and validation happen before
+    /// [`Self::move_window`] removes the old membership, keeping rejected
+    /// commands transactional.
+    pub fn move_active_window<I, S>(
+        &mut self,
+        active_window_id: Option<&str>,
+        known_window_ids: I,
+        target: slopos_bus::SpaceTargetWire,
+    ) -> Result<(), SpacesError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let window_id =
+            active_window_id.ok_or_else(|| SpacesError::InvalidWindowId(String::new()))?;
+        if !known_window_ids
+            .into_iter()
+            .any(|candidate| candidate.as_ref() == window_id)
+        {
+            return Err(SpacesError::InvalidWindowId(window_id.to_owned()));
+        }
+        let target = application_target_from_wire(target)?;
+        self.move_window(window_id.to_owned(), target)
+    }
+
     pub fn assign_window_to_current(
         &mut self,
         window: impl Into<String>,
@@ -1316,6 +1416,20 @@ fn validate_output_id(output_id: &str) -> Result<(), SpacesError> {
     Ok(())
 }
 
+fn collect_output_inventory<I, S>(available_outputs: I) -> Result<BTreeSet<String>, SpacesError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut inventory = BTreeSet::new();
+    for output_id in available_outputs {
+        let output_id = output_id.as_ref();
+        validate_output_id(output_id)?;
+        inventory.insert(output_id.to_owned());
+    }
+    Ok(inventory)
+}
+
 fn validate_window_id(window: &str) -> Result<(), SpacesError> {
     if window.is_empty()
         || window
@@ -1487,6 +1601,66 @@ mod tests {
     }
 
     #[test]
+    fn move_active_window_updates_authoritative_membership() {
+        let mut model = SpacesModel::with_default_count(2).expect("default spaces");
+        let source = model.active_space();
+        let target = model.space_ids()[1];
+        model
+            .assign_window("window-7", SpaceTarget::Id(source))
+            .expect("assign focused window");
+
+        model
+            .move_active_window(
+                Some("window-7"),
+                ["window-7"],
+                slopos_bus::SpaceTargetWire::Id { id: target.get() },
+            )
+            .expect("move focused window");
+
+        assert_eq!(model.window_spaces("window-7"), vec![target]);
+    }
+
+    #[test]
+    fn move_active_window_rejects_stale_focus_without_mutation() {
+        let mut model = SpacesModel::with_default_count(2).expect("default spaces");
+        let target = model.space_ids()[1];
+        model
+            .assign_window("window-7", SpaceTarget::Current)
+            .expect("assign window");
+        let before = model.clone();
+
+        let result = model.move_active_window(
+            Some("window-stale"),
+            ["window-7"],
+            slopos_bus::SpaceTargetWire::Id { id: target.get() },
+        );
+
+        assert!(matches!(
+            result,
+            Err(SpacesError::InvalidWindowId(id)) if id == "window-stale"
+        ));
+        assert_eq!(model, before);
+    }
+
+    #[test]
+    fn move_active_window_rejects_invalid_target_without_mutation() {
+        let mut model = SpacesModel::with_default_count(2).expect("default spaces");
+        model
+            .assign_window("window-7", SpaceTarget::Current)
+            .expect("assign window");
+        let before = model.clone();
+
+        let result = model.move_active_window(
+            Some("window-7"),
+            ["window-7"],
+            slopos_bus::SpaceTargetWire::Id { id: 0 },
+        );
+
+        assert!(matches!(result, Err(SpacesError::InvalidSpaceId(0))));
+        assert_eq!(model, before);
+    }
+
+    #[test]
     fn membership_targets_current_named_and_all() {
         let mut model = SpacesModel::new();
         let work = model.create_space("Work").expect("work");
@@ -1601,6 +1775,64 @@ mod tests {
 
         assert_eq!(decoded, model);
         assert_eq!(decoded.output_for_space(first), Some("DP-1"));
+    }
+
+    #[test]
+    fn output_assignment_rejects_unknown_inventory_without_mutating() {
+        let mut model = SpacesModel::new();
+        let first = model.active_space();
+        model.set_multi_monitor_policy(MultiMonitorPolicy::IndependentPerDisplay);
+        model
+            .assign_space_to_output(first, "DP-1")
+            .expect("initial output assignment");
+
+        let result =
+            model.set_space_output_with_inventory(first, Some("DP-2".to_string()), ["DP-1"]);
+
+        assert!(matches!(
+            result,
+            Err(SpacesError::OutputNotAvailable { space, output_id })
+                if space == first && output_id == "DP-2"
+        ));
+        assert_eq!(model.output_for_space(first), Some("DP-1"));
+    }
+
+    #[test]
+    fn reconcile_output_assignments_clears_disconnected_outputs_transactionally() {
+        let mut model = SpacesModel::new();
+        let first = model.active_space();
+        let second = model.create_space("Work").expect("work");
+        model.set_multi_monitor_policy(MultiMonitorPolicy::IndependentPerDisplay);
+        model
+            .assign_space_to_output(first, "DP-1")
+            .expect("first output");
+        model
+            .assign_space_to_output(second, "DP-2")
+            .expect("second output");
+
+        let cleared = model
+            .reconcile_output_assignments(["DP-1"])
+            .expect("reconcile outputs");
+
+        assert_eq!(cleared, vec![second]);
+        assert_eq!(model.output_for_space(first), Some("DP-1"));
+        assert_eq!(model.output_for_space(second), None);
+        model.validate().expect("reconciled model remains valid");
+    }
+
+    #[test]
+    fn reconcile_output_assignments_rejects_invalid_inventory_without_mutating() {
+        let mut model = SpacesModel::new();
+        let first = model.active_space();
+        model.set_multi_monitor_policy(MultiMonitorPolicy::IndependentPerDisplay);
+        model
+            .assign_space_to_output(first, "DP-1")
+            .expect("output assignment");
+
+        let result = model.reconcile_output_assignments(["DP-1", " DP-2"]);
+
+        assert!(matches!(result, Err(SpacesError::InvalidOutputId(id)) if id == " DP-2"));
+        assert_eq!(model.output_for_space(first), Some("DP-1"));
     }
 
     #[test]

@@ -71,6 +71,14 @@ pub enum SessionControlRequest {
     ReconfigureOutputs {
         layout: String,
     },
+    /// Apply the compositor-owned display policy to the running session.
+    ///
+    /// The values are canonical wire strings (`60hz`, `adaptive`, `srgb`,
+    /// `rec2020`, or `scrgb`).  The compositor validates them against the
+    /// capabilities of the active backend before mutating any state.
+    SetDisplayPolicy {
+        policy: DisplayPolicyRequest,
+    },
     /// Drive the nested/headless compositor's Smithay pointer path for a
     /// deterministic protocol test. Production nested and DRM sessions
     /// explicitly ignore this request.
@@ -89,6 +97,47 @@ pub const SPACES_STATE_FILE: &str = "spaces-state.json";
 
 /// Name of the compositor-authoritative output topology projection.
 pub const OUTPUTS_STATE_FILE: &str = "outputs-state.json";
+
+/// Name of the compositor-authoritative display-policy projection.
+pub const DISPLAY_POLICY_STATE_FILE: &str = "display-policy-state.json";
+
+/// Typed intent sent by Settings or another session-scoped policy client.
+/// Strings are used at this boundary so the bus crate remains independent of
+/// the compositor's implementation enums; the compositor performs strict
+/// canonical parsing before applying the request.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DisplayPolicyRequest {
+    pub hdr_requested: bool,
+    pub vrr_adaptive: bool,
+    pub refresh_rate: String,
+    pub color_space: String,
+}
+
+/// Authoritative applied display policy and backend capability projection.
+///
+/// Requested values are retained for diagnostics, while the `*_applied`
+/// fields describe the state the compositor actually uses.  A revision is
+/// advanced only after an accepted runtime transaction; rejected requests do
+/// not change this file.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct DisplayPolicySnapshot {
+    pub backend: String,
+    pub revision: u64,
+    pub hdr_requested: bool,
+    pub hdr_supported: bool,
+    pub hdr_active: bool,
+    pub vrr_adaptive: bool,
+    pub vrr_supported: bool,
+    pub refresh_rate_requested: String,
+    pub refresh_rate_applied: String,
+    pub color_space_requested: String,
+    pub color_space_applied: String,
+    pub exact_match: bool,
+    pub fallback_reason: Option<String>,
+    pub runtime_mutation_supported: bool,
+    pub supported_refresh_rates: Vec<String>,
+    pub supported_color_spaces: Vec<String>,
+}
 
 /// One logical output as published by the compositor for Settings and shell
 /// policy consumers.  The geometry is logical; `scale_percent` is the
@@ -118,6 +167,75 @@ pub fn session_outputs_state_path() -> Option<PathBuf> {
     std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR")
         .map(PathBuf::from)
         .map(|runtime| runtime.join(OUTPUTS_STATE_FILE))
+}
+
+/// Return the exact display-policy projection path for the current session.
+pub fn session_display_policy_state_path() -> Option<PathBuf> {
+    std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .map(|runtime| runtime.join(DISPLAY_POLICY_STATE_FILE))
+}
+
+/// Publish one complete display-policy projection atomically.
+#[cfg(unix)]
+pub fn write_display_policy_snapshot(snapshot: &DisplayPolicySnapshot) -> io::Result<()> {
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let path = session_display_policy_state_path().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "SLOPOS_SESSION_RUNTIME_DIR is not set",
+        )
+    })?;
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "display-policy path has no parent",
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    let bytes = serde_json::to_vec_pretty(snapshot).map_err(io::Error::other)?;
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!(".{}.{}.tmp", DISPLAY_POLICY_STATE_FILE, counter));
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp)?;
+    let result = (|| {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp, &path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
+#[cfg(not(unix))]
+pub fn write_display_policy_snapshot(_snapshot: &DisplayPolicySnapshot) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "display-policy snapshots require the Unix session runtime",
+    ))
+}
+
+/// Read the latest compositor display-policy projection.
+pub fn read_display_policy_snapshot() -> io::Result<DisplayPolicySnapshot> {
+    let path = session_display_policy_state_path().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "SLOPOS_SESSION_RUNTIME_DIR is not set",
+        )
+    })?;
+    let bytes = std::fs::read(path)?;
+    serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
 
 /// Publish one complete output projection atomically.
@@ -652,6 +770,50 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<SessionControlRequest>(&encoded).unwrap(),
             request
+        );
+    }
+
+    #[test]
+    fn display_policy_request_round_trips_through_json() {
+        let request = SessionControlRequest::SetDisplayPolicy {
+            policy: DisplayPolicyRequest {
+                hdr_requested: false,
+                vrr_adaptive: false,
+                refresh_rate: "120hz".into(),
+                color_space: "srgb".into(),
+            },
+        };
+        let encoded = serde_json::to_vec(&request).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<SessionControlRequest>(&encoded).unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn display_policy_snapshot_round_trips_through_json() {
+        let snapshot = DisplayPolicySnapshot {
+            backend: "headless".into(),
+            revision: 2,
+            hdr_requested: false,
+            hdr_supported: false,
+            hdr_active: false,
+            vrr_adaptive: false,
+            vrr_supported: false,
+            refresh_rate_requested: "120hz".into(),
+            refresh_rate_applied: "120hz".into(),
+            color_space_requested: "srgb".into(),
+            color_space_applied: "srgb".into(),
+            exact_match: true,
+            fallback_reason: None,
+            runtime_mutation_supported: true,
+            supported_refresh_rates: vec!["60hz".into(), "120hz".into()],
+            supported_color_spaces: vec!["srgb".into()],
+        };
+        let encoded = serde_json::to_vec(&snapshot).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<DisplayPolicySnapshot>(&encoded).unwrap(),
+            snapshot
         );
     }
 

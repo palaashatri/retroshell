@@ -141,6 +141,21 @@ enum Choice {
 }
 
 impl Choice {
+    fn is_display_policy(self) -> bool {
+        matches!(
+            self,
+            Self::HdrOff
+                | Self::HdrOn
+                | Self::VrrOff
+                | Self::VrrAdaptive
+                | Self::Refresh60
+                | Self::Refresh120
+                | Self::RefreshAdaptive
+                | Self::ColorSrgb
+                | Self::ColorRec2020
+        )
+    }
+
     fn is_display_topology(self) -> bool {
         matches!(
             self,
@@ -1522,6 +1537,18 @@ impl SettingsView {
             }
         }
 
+        // Runtime display policy is compositor-authoritative too. Send the
+        // typed request before persistence, and refuse to save when the live
+        // session is unavailable or its published capabilities reject it.
+        if choice.is_display_policy() {
+            if let Err(error) = candidate.display_config().apply_policy_session() {
+                self.last_error = Some(format!("DISPLAY POLICY APPLY {error}"));
+                self.refresh_labels();
+                self.relayout_if_visible();
+                return false;
+            }
+        }
+
         match self.store.save(&candidate) {
             Ok(()) => {
                 self.settings = candidate;
@@ -1540,6 +1567,14 @@ impl SettingsView {
                     if let Err(rollback_error) = rollback {
                         self.last_error = Some(format!(
                             "SAVE FAILED {error}; DISPLAY ROLLBACK FAILED {rollback_error}"
+                        ));
+                    } else {
+                        self.last_error = Some(format!("SAVE FAILED {error}"));
+                    }
+                } else if choice.is_display_policy() {
+                    if let Err(rollback_error) = previous.display_config().apply_policy_session() {
+                        self.last_error = Some(format!(
+                            "SAVE FAILED {error}; DISPLAY POLICY ROLLBACK FAILED {rollback_error}"
                         ));
                     } else {
                         self.last_error = Some(format!("SAVE FAILED {error}"));
@@ -2467,19 +2502,21 @@ mod tests {
 
     #[test]
     fn settings_option_click_updates_and_saves_state() {
-        let path = temp_settings_path();
-        let store = SettingsStore::new(path.clone());
-        let mut view = SettingsView::load(store);
-        view.select_category(Category::Display);
-        view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
-        view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
+        with_control_runtime(|_runtime, _listener| {
+            let path = temp_settings_path();
+            let store = SettingsStore::new(path.clone());
+            let mut view = SettingsView::load(store);
+            view.select_category(Category::Display);
+            view.set_rect(Rect::new(0.0, 0.0, 640.0, 420.0));
+            view.layout(LayoutConstraint::tight(Size::new(640.0, 420.0)));
 
-        let hdr_rect = view.option_buttons[1].rect();
-        click(&mut view, hdr_rect);
+            let hdr_rect = view.option_buttons[1].rect();
+            click(&mut view, hdr_rect);
 
-        let loaded = SettingsStore::new(path).load();
-        assert!(loaded.hdr_requested);
-        assert!(view.status.text.contains("HDR REQUESTED"));
+            let loaded = SettingsStore::new(path).load();
+            assert!(loaded.hdr_requested);
+            assert!(view.status.text.contains("HDR REQUESTED"));
+        });
     }
 
     #[test]

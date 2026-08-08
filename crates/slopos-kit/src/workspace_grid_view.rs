@@ -13,6 +13,10 @@ pub struct WorkspaceGridView {
     /// the compositor-authoritative Space, while this field is local pending
     /// keyboard focus until a selection is committed.
     pub focused_index: usize,
+    /// Stable compositor Space IDs aligned with [`Self::items`]. The grid
+    /// does not mutate these IDs; the shell replaces them from its
+    /// authoritative Spaces snapshot.
+    pub space_ids: Vec<u64>,
     pub items: Vec<String>,
     /// Number of ordinary windows currently assigned to each item.
     ///
@@ -45,6 +49,7 @@ impl WorkspaceGridView {
             state: WidgetState::new(),
             active_index: 0,
             focused_index: 0,
+            space_ids: Vec::new(),
             items: Vec::new(),
             window_counts: Vec::new(),
             activated: None,
@@ -222,10 +227,34 @@ impl Widget for WorkspaceGridView {
     }
 
     fn accessibility(&self) -> Option<AccessibilityNode> {
-        Some(AccessibilityNode::new(
-            AccessibilityRole::Group,
-            "Workspace Grid",
-        ))
+        let mut list = AccessibilityNode::new(AccessibilityRole::List, "Spaces");
+        list.rect = self.rect();
+        list.state.focused = self.state.focused;
+
+        for (index, label) in self.items.iter().enumerate() {
+            let mut cell = AccessibilityNode::new(AccessibilityRole::ListItem, label);
+            cell.index = index;
+            // The list is a direct parent in the widget's accessibility
+            // subtree. The eventual AT-SPI exporter may assign a different
+            // top-level index, but the child relationship remains explicit.
+            cell.parent = Some(0);
+            cell.rect = self.cell_rect(index);
+            cell.state.selected = index == self.active_index;
+            cell.state.focused = self.state.focused && index == self.focused_index;
+
+            let mut description = Vec::new();
+            if let Some(id) = self.space_ids.get(index) {
+                description.push(format!("Stable Space ID {id}"));
+            }
+            if let Some(count) = self.window_counts.get(index) {
+                let noun = if *count == 1 { "window" } else { "windows" };
+                description.push(format!("{count} {noun}"));
+            }
+            cell.description = description.join("; ");
+            list.children.push(cell);
+        }
+
+        Some(list)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -244,6 +273,7 @@ mod tests {
     fn grid() -> WorkspaceGridView {
         let mut g = WorkspaceGridView::new();
         g.items = (0..4).map(|i| format!("Desktop {}", i + 1)).collect();
+        g.space_ids = (1..=4).collect();
         g.window_counts = vec![0; 4];
         g.set_rect(Rect::new(100.0, 100.0, 240.0, 160.0));
         g
@@ -414,5 +444,63 @@ mod tests {
             None,
             "empty grids cannot activate a stale cell"
         );
+    }
+
+    #[test]
+    fn accessibility_exposes_dynamic_space_cells_and_state() {
+        let mut g = grid();
+        g.active_index = 2;
+        g.focused_index = 1;
+        g.widget_state_mut().focused = true;
+
+        let node = g.accessibility().expect("workspace accessibility node");
+        assert_eq!(node.role, AccessibilityRole::List);
+        assert_eq!(node.label, "Spaces");
+        assert_eq!(node.rect.x, g.rect().x);
+        assert_eq!(node.rect.y, g.rect().y);
+        assert_eq!(node.rect.width, g.rect().width);
+        assert_eq!(node.rect.height, g.rect().height);
+        assert_eq!(node.children.len(), g.items.len());
+
+        let focused = &node.children[1];
+        assert_eq!(focused.role, AccessibilityRole::ListItem);
+        assert_eq!(focused.label, "Desktop 2");
+        assert!(!focused.state.selected);
+        assert!(focused.state.focused);
+        assert_eq!(focused.index, 1);
+        assert_eq!(focused.parent, Some(0));
+        assert_eq!(focused.rect.x, g.cell_rect(1).x);
+        assert_eq!(focused.rect.y, g.cell_rect(1).y);
+        assert_eq!(focused.rect.width, g.cell_rect(1).width);
+        assert_eq!(focused.rect.height, g.cell_rect(1).height);
+        assert_eq!(focused.description, "Stable Space ID 2; 0 windows");
+
+        let active = &node.children[2];
+        assert!(active.state.selected);
+        assert!(!active.state.focused);
+        assert_eq!(active.description, "Stable Space ID 3; 0 windows");
+    }
+
+    #[test]
+    fn accessibility_tracks_dynamic_items_without_stale_cells_or_metadata() {
+        let mut g = WorkspaceGridView::new();
+        g.items = vec!["Personal".into(), "Work".into(), "Video".into()];
+        g.space_ids = vec![11, 22];
+        g.window_counts = vec![1, 3, 99, 100];
+        g.active_index = 99;
+        g.focused_index = 99;
+
+        let node = g.accessibility().expect("workspace accessibility node");
+        assert_eq!(node.children.len(), 3);
+        assert!(node.children.iter().all(|child| !child.state.selected));
+        assert!(node.children.iter().all(|child| !child.state.focused));
+        assert_eq!(node.children[0].description, "Stable Space ID 11; 1 window");
+        assert_eq!(
+            node.children[1].description,
+            "Stable Space ID 22; 3 windows"
+        );
+        assert_eq!(node.children[2].description, "99 windows");
+        assert_eq!(node.children[2].rect.x, g.cell_rect(2).x);
+        assert_eq!(node.children[2].rect.y, g.cell_rect(2).y);
     }
 }

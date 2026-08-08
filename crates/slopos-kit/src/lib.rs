@@ -41,13 +41,14 @@ pub use accessibility::{
     prev_chrome_focus_region, push_pending_action, register_action_invoke_handler,
     register_at_spi_app, register_at_spi_app_with_tree, register_at_spi_shell_chrome,
     role_has_actions, role_to_atspi_role, sanitize_path_segment, serialize_event_for_dbus,
-    shell_chrome_accessibility_tree, state_to_atspi_bitset, try_emit_atspi_dbus_event,
-    try_invoke_registered_action, AccessibilityEventBus, AccessibilityNode, AccessibilityRole,
-    AccessibilityState, AccessibilityTree, AccessibleAction, AccessibleEvent, AccessibleEventKind,
-    ActionInvokeHandler, AtSpiRegistrationInfo, ChromeFocusRegion, EventQueue,
-    PendingAccessibleAction, SerializedAtspiEvent, ACTION_ACTIVATE, ACTION_FOCUS, ACTION_PRESS,
-    ATSPI_ACCESSIBLE_IFACE, ATSPI_ACCESSIBLE_PREFIX, ATSPI_ACTION_IFACE, ATSPI_APPLICATION_IFACE,
-    ATSPI_EVENT_FOCUS_IFACE, ATSPI_EVENT_OBJECT_IFACE, ATSPI_NULL_PATH, ATSPI_ROOT_PATH,
+    shell_chrome_accessibility_tree, state_to_atspi_bitset, sync_at_spi_registered_tree,
+    try_emit_atspi_dbus_event, try_invoke_registered_action, AccessibilityEventBus,
+    AccessibilityNode, AccessibilityRole, AccessibilityState, AccessibilityTree, AccessibleAction,
+    AccessibleEvent, AccessibleEventKind, ActionInvokeHandler, AtSpiRegistrationInfo,
+    ChromeFocusRegion, EventQueue, PendingAccessibleAction, SerializedAtspiEvent, ACTION_ACTIVATE,
+    ACTION_FOCUS, ACTION_PRESS, ATSPI_ACCESSIBLE_IFACE, ATSPI_ACCESSIBLE_PREFIX,
+    ATSPI_ACTION_IFACE, ATSPI_APPLICATION_IFACE, ATSPI_EVENT_FOCUS_IFACE, ATSPI_EVENT_OBJECT_IFACE,
+    ATSPI_NULL_PATH, ATSPI_ROOT_PATH,
 };
 pub use button::Button;
 pub use clipboard::Clipboard;

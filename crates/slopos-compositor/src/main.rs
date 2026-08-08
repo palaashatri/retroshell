@@ -33,12 +33,13 @@ mod linux {
     use std::time::Duration;
 
     use slopos_bus::{
-        write_outputs_snapshot, write_spaces_snapshot, HeadlessInputEvent, OutputSnapshot,
+        write_display_policy_snapshot, write_outputs_snapshot, write_spaces_snapshot,
+        DisplayPolicyRequest, DisplayPolicySnapshot, HeadlessInputEvent, OutputSnapshot,
         OutputsSnapshot, SessionControlListener, SessionControlRequest, SpaceTargetWire,
         SpacesControlCommand, SpacesSnapshot, WindowPresentationAction,
     };
     use slopos_compositor::frame_timing::{FrameScheduler, RefreshRate};
-    use slopos_compositor::hdr::HdrCapabilities;
+    use slopos_compositor::hdr::{ColorSpace, HdrCapabilities, HdrFallbackReason};
     use slopos_compositor::work_area::{compute_exclusive_work_area, ExclusiveZoneReservation};
     use slopos_compositor::{
         accumulate_damage_for_window_move, accumulate_damage_rect, application_target_from_wire,
@@ -674,6 +675,12 @@ mod linux {
         #[allow(dead_code)]
         hdr_caps: HdrCapabilities,
         frame_scheduler: FrameScheduler,
+        /// Whether this backend has a real runtime VRR transaction path.
+        vrr_supported: bool,
+        /// Monotonic revision for the authoritative display-policy projection.
+        display_policy_revision: u64,
+        /// Last applied HDR/colour fallback, if policy was not exact.
+        display_policy_fallback_reason: Option<String>,
 
         // ---- Damage / present honesty ----
         /// Union of dirty regions from window moves/resizes (partial present plan).
@@ -829,6 +836,162 @@ mod linux {
             }
         }
 
+        /// Repair per-display Space assignments whenever the authoritative
+        /// connector inventory changes. A persisted connector name is only
+        /// usable while that connector is present; clearing a stale value is
+        /// safer than leaving a Space stranded on a removed output.
+        fn reconcile_space_output_assignments(&mut self) {
+            let output_names = self.output_names.clone();
+            match self.spaces.reconcile_output_assignments(output_names) {
+                Ok(cleared) if !cleared.is_empty() => {
+                    tracing::info!(spaces = ?cleared, "cleared disconnected Space output assignments");
+                    self.sync_legacy_workspace_state();
+                    self.publish_spaces_state(true);
+                    self.request_full_redraw();
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "could not reconcile Space output assignments")
+                }
+            }
+        }
+
+        fn display_backend_name(&self) -> &'static str {
+            match self.backend_kind {
+                CompositorBackendKind::NestedX11 => "nested",
+                CompositorBackendKind::Headless => "headless",
+                CompositorBackendKind::SessionDrm => "drm",
+            }
+        }
+
+        fn supported_display_refresh_rates(&self) -> Vec<String> {
+            let mut rates = vec![
+                RefreshRate::Hz60.as_str().to_string(),
+                RefreshRate::Hz120.as_str().to_string(),
+                RefreshRate::Hz144.as_str().to_string(),
+                RefreshRate::Hz165.as_str().to_string(),
+            ];
+            if self.vrr_supported {
+                rates.push(RefreshRate::Adaptive.as_str().to_string());
+            }
+            rates
+        }
+
+        fn display_policy_snapshot(&self) -> DisplayPolicySnapshot {
+            let effective_refresh = self.display_policy.effective_refresh_rate();
+            DisplayPolicySnapshot {
+                backend: self.display_backend_name().to_string(),
+                revision: self.display_policy_revision,
+                hdr_requested: self.display_policy.hdr_requested,
+                hdr_supported: self.hdr_caps.hdr_supported,
+                hdr_active: self.display_policy.hdr_requested
+                    && self.hdr_caps.hdr_supported
+                    && self.hdr_caps.current_color_space.is_hdr_encoding(),
+                vrr_adaptive: matches!(effective_refresh, RefreshRate::Adaptive),
+                vrr_supported: self.vrr_supported,
+                refresh_rate_requested: self.display_policy.refresh_rate.as_str().to_string(),
+                refresh_rate_applied: effective_refresh.as_str().to_string(),
+                color_space_requested: self.display_policy.color_space.as_str().to_string(),
+                color_space_applied: self.hdr_caps.current_color_space.as_str().to_string(),
+                exact_match: self.display_policy_fallback_reason.is_none(),
+                fallback_reason: self.display_policy_fallback_reason.clone(),
+                runtime_mutation_supported: true,
+                supported_refresh_rates: self.supported_display_refresh_rates(),
+                supported_color_spaces: self
+                    .hdr_caps
+                    .supported_color_spaces
+                    .iter()
+                    .map(|space| space.as_str().to_string())
+                    .collect(),
+            }
+        }
+
+        fn publish_display_policy_state(&self) {
+            if let Err(error) = write_display_policy_snapshot(&self.display_policy_snapshot()) {
+                tracing::debug!(%error, "could not publish display-policy snapshot");
+            }
+        }
+
+        fn apply_display_policy_request(&mut self, request: DisplayPolicyRequest) {
+            let Some(refresh_rate) = RefreshRate::parse_flexible(&request.refresh_rate) else {
+                tracing::warn!(value = %request.refresh_rate, "rejecting invalid display refresh policy");
+                return;
+            };
+            let Some(color_space) = ColorSpace::from_str_flexible(&request.color_space) else {
+                tracing::warn!(value = %request.color_space, "rejecting invalid display colour policy");
+                return;
+            };
+
+            if request.hdr_requested && !self.hdr_caps.hdr_supported {
+                tracing::warn!("rejecting HDR policy on a backend without verified HDR support");
+                return;
+            }
+            if request.vrr_adaptive && !self.vrr_supported {
+                tracing::warn!("rejecting VRR policy on a backend without verified VRR support");
+                return;
+            }
+            if matches!(refresh_rate, RefreshRate::Adaptive) && !self.vrr_supported {
+                tracing::warn!(
+                    "rejecting adaptive refresh policy on a backend without verified VRR support"
+                );
+                return;
+            }
+            if !self.hdr_caps.supported_color_spaces.contains(&color_space) {
+                tracing::warn!(value = %request.color_space, "rejecting unsupported display colour policy");
+                return;
+            }
+
+            let mut next_caps = self.hdr_caps.clone();
+            let outcome = next_caps.negotiate_request(request.hdr_requested, color_space);
+            let effective_refresh = if request.vrr_adaptive {
+                RefreshRate::Adaptive
+            } else {
+                refresh_rate
+            };
+            let previous_refresh_mhz = self.refresh_mhz;
+            let next_refresh_mhz = match effective_refresh {
+                RefreshRate::Adaptive => 60_000,
+                rate => (rate.as_hz() as i32) * 1000,
+            };
+
+            self.hdr_caps = next_caps;
+            self.display_policy = DisplayPolicy {
+                hdr_requested: request.hdr_requested,
+                vrr_adaptive: request.vrr_adaptive,
+                refresh_rate,
+                color_space,
+            };
+            self.display_policy_fallback_reason = match outcome.fallback_reason {
+                HdrFallbackReason::None => None,
+                HdrFallbackReason::HdrUnsupported => Some("hdr_unsupported".to_string()),
+                HdrFallbackReason::RequestedColorSpaceUnsupported => {
+                    Some("requested_color_space_unsupported".to_string())
+                }
+                HdrFallbackReason::SdrPolicyForcesSrgb => {
+                    Some("sdr_policy_forces_srgb".to_string())
+                }
+                HdrFallbackReason::NoUsableHdrColorSpace => {
+                    Some("no_usable_hdr_color_space".to_string())
+                }
+            };
+            self.frame_scheduler.set_refresh_rate(effective_refresh);
+            self.refresh_mhz = next_refresh_mhz;
+            if previous_refresh_mhz != next_refresh_mhz {
+                for (output, laid_out) in self.outputs.iter().zip(&self.laid_out_outputs) {
+                    configure_output(output, laid_out, next_refresh_mhz, self.output_scale);
+                }
+            }
+            self.display_policy_revision = self.display_policy_revision.saturating_add(1);
+            self.publish_display_policy_state();
+            self.request_full_redraw();
+            tracing::info!(
+                policy = %self.display_policy_snapshot().refresh_rate_applied,
+                color_space = %self.display_policy_snapshot().color_space_applied,
+                revision = self.display_policy_revision,
+                "runtime display policy applied"
+            );
+        }
+
         fn reapply_application_policy(&mut self, app_id: &str) {
             let window_ids: Vec<String> = self
                 .windows
@@ -888,6 +1051,14 @@ mod linux {
                         .move_window(window_id, target)
                         .map(|()| self.spaces.active_space())
                 }
+                SpacesControlCommand::MoveActiveWindow { target } => self
+                    .spaces
+                    .move_active_window(
+                        self.activated_window_id.as_deref(),
+                        self.windows.iter().map(|window| window.window_id.as_str()),
+                        target,
+                    )
+                    .map(|()| self.spaces.active_space()),
                 SpacesControlCommand::SetWallpaper { id, wallpaper } => SpaceId::new(id)
                     .ok_or(SpacesError::InvalidSpaceId(id))
                     .and_then(|id| self.spaces.set_wallpaper(id, wallpaper).map(|()| id)),
@@ -909,9 +1080,16 @@ mod linux {
                         .set_multi_monitor_policy(multi_monitor_policy_from_wire(policy));
                     Ok(self.spaces.active_space())
                 }
-                SpacesControlCommand::AssignOutput { id, output_id } => SpaceId::new(id)
-                    .ok_or(SpacesError::InvalidSpaceId(id))
-                    .and_then(|id| self.spaces.set_space_output(id, output_id).map(|()| id)),
+                SpacesControlCommand::AssignOutput { id, output_id } => {
+                    let output_names = self.output_names.clone();
+                    SpaceId::new(id)
+                        .ok_or(SpacesError::InvalidSpaceId(id))
+                        .and_then(|id| {
+                            self.spaces
+                                .set_space_output_with_inventory(id, output_id, output_names)
+                                .map(|()| id)
+                        })
+                }
                 SpacesControlCommand::SetApplicationPolicy { app_id, target } => {
                     application_target_from_wire(target).and_then(|target| {
                         self.spaces
@@ -1930,6 +2108,7 @@ mod linux {
             self.output_size =
                 Size::<i32, Physical>::from((new_physical.width, new_physical.height));
             self.publish_outputs_state();
+            self.reconcile_space_output_assignments();
 
             // Preserve each layer's connector identity when possible. A removed
             // connector deterministically falls back to the first active output.
@@ -2100,6 +2279,9 @@ mod linux {
                     if let Err(error) = self.reconfigure_outputs(&layout) {
                         tracing::warn!(%error, "runtime output topology rejected");
                     }
+                }
+                SessionControlRequest::SetDisplayPolicy { policy } => {
+                    self.apply_display_policy_request(policy);
                 }
                 SessionControlRequest::HeadlessTestInput { event } => {
                     if !self.headless_test_input_enabled {
@@ -4585,10 +4767,35 @@ mod linux {
         );
 
         // ---- Display policy (HDR / VRR / refresh / color) ----
-        let display_policy = DisplayPolicy::resolve();
+        // Nested/headless have software pacing but no verified variable-refresh
+        // or HDR scanout path. Keep those capabilities explicit so a runtime
+        // request cannot silently fabricate hardware support.
+        let vrr_supported = false;
+        let mut display_policy = DisplayPolicy::resolve();
         let mut hdr_caps = HdrCapabilities::detect();
-        let color_applied =
-            hdr_caps.apply_request(display_policy.hdr_requested, display_policy.color_space);
+        let initial_outcome =
+            hdr_caps.negotiate_request(display_policy.hdr_requested, display_policy.color_space);
+        let mut display_policy_fallback_reason = match initial_outcome.fallback_reason {
+            HdrFallbackReason::None => None,
+            HdrFallbackReason::HdrUnsupported => Some("hdr_unsupported".to_string()),
+            HdrFallbackReason::RequestedColorSpaceUnsupported => {
+                Some("requested_color_space_unsupported".to_string())
+            }
+            HdrFallbackReason::SdrPolicyForcesSrgb => Some("sdr_policy_forces_srgb".to_string()),
+            HdrFallbackReason::NoUsableHdrColorSpace => {
+                Some("no_usable_hdr_color_space".to_string())
+            }
+        };
+        if !vrr_supported
+            && (display_policy.vrr_adaptive
+                || matches!(display_policy.refresh_rate, RefreshRate::Adaptive))
+        {
+            display_policy.vrr_adaptive = false;
+            if matches!(display_policy.refresh_rate, RefreshRate::Adaptive) {
+                display_policy.refresh_rate = RefreshRate::Hz60;
+            }
+            display_policy_fallback_reason = Some("vrr_unsupported".to_string());
+        }
         let effective_refresh = display_policy.effective_refresh_rate();
         let frame_scheduler = FrameScheduler::new(effective_refresh);
         let refresh_mhz: i32 = match effective_refresh {
@@ -4597,7 +4804,11 @@ mod linux {
         };
 
         let policy_line = display_policy.summary_line(hdr_caps.hdr_supported);
-        tracing::info!("display policy applied: {policy_line} color_applied={color_applied}");
+        tracing::info!(
+            "display policy applied: {policy_line} color_applied={} fallback={:?}",
+            initial_outcome.exact_match,
+            display_policy_fallback_reason
+        );
         eprintln!("[slopos-compositor] display policy: {policy_line}");
         if display_policy.hdr_requested && !hdr_caps.hdr_supported {
             tracing::info!(
@@ -4919,6 +5130,9 @@ mod linux {
             display_policy,
             hdr_caps,
             frame_scheduler,
+            vrr_supported,
+            display_policy_revision: 0,
+            display_policy_fallback_reason,
             pending_damage: None,
             need_full_redraw: true, // first frame is always full
             placeholder_stats: PlaceholderPresentStats::new(),
@@ -4930,8 +5144,10 @@ mod linux {
         };
 
         state.sync_legacy_workspace_state();
+        state.reconcile_space_output_assignments();
         state.publish_spaces_state(false);
         state.publish_outputs_state();
+        state.publish_display_policy_state();
 
         // P1.3: best-effort XWayland after state exists (needs loop_handle).
         try_start_xwayland(&mut state);

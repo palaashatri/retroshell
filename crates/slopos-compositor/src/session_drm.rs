@@ -133,9 +133,10 @@ use crate::{
     DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
 };
 use slopos_bus::{
-    write_outputs_snapshot, write_spaces_snapshot, OutputSnapshot, OutputsSnapshot,
-    SessionControlListener, SessionControlRequest, SpaceTargetWire, SpacesControlCommand,
-    SpacesSnapshot, WindowPresentationAction,
+    write_display_policy_snapshot, write_outputs_snapshot, write_spaces_snapshot,
+    DisplayPolicySnapshot, OutputSnapshot, OutputsSnapshot, SessionControlListener,
+    SessionControlRequest, SpaceTargetWire, SpacesControlCommand, SpacesSnapshot,
+    WindowPresentationAction,
 };
 // Workspace cycle helpers (`cycle_workspace_*` / `activate_workspace_index`) request a
 // full redraw and re-focus the topmost visible window. Super+key bindings can call them
@@ -792,7 +793,8 @@ pub fn run_drm_session() -> Result<()> {
 
     let display_policy = DisplayPolicy::resolve();
     let mut hdr_caps = HdrCapabilities::detect();
-    let _ = hdr_caps.apply_request(display_policy.hdr_requested, display_policy.color_space);
+    let initial_hdr_outcome =
+        hdr_caps.negotiate_request(display_policy.hdr_requested, display_policy.color_space);
     let effective_refresh = display_policy.effective_refresh_rate();
     let mut frame_scheduler = FrameScheduler::new(effective_refresh);
     let refresh_mhz: i32 = match effective_refresh {
@@ -1400,8 +1402,40 @@ pub fn run_drm_session() -> Result<()> {
     }
 
     state.sync_legacy_workspace_state();
+    state.reconcile_space_output_assignments();
     state.publish_spaces_state(false);
     state.publish_outputs_state();
+    let effective_policy_refresh = display_policy.effective_refresh_rate();
+    let display_policy_snapshot = DisplayPolicySnapshot {
+        backend: "drm".to_string(),
+        revision: 0,
+        hdr_requested: display_policy.hdr_requested,
+        hdr_supported: hdr_caps.hdr_supported,
+        hdr_active: display_policy.hdr_requested
+            && hdr_caps.hdr_supported
+            && hdr_caps.current_color_space.is_hdr_encoding(),
+        vrr_adaptive: matches!(effective_policy_refresh, RefreshRate::Adaptive),
+        // KMS capability probing exists, but runtime policy transactions are
+        // intentionally not exposed until connector/CRTC commits are atomic.
+        vrr_supported: false,
+        refresh_rate_requested: display_policy.refresh_rate.as_str().to_string(),
+        refresh_rate_applied: effective_policy_refresh.as_str().to_string(),
+        color_space_requested: display_policy.color_space.as_str().to_string(),
+        color_space_applied: hdr_caps.current_color_space.as_str().to_string(),
+        exact_match: initial_hdr_outcome.exact_match,
+        fallback_reason: (!initial_hdr_outcome.exact_match)
+            .then(|| format!("{:?}", initial_hdr_outcome.fallback_reason)),
+        runtime_mutation_supported: false,
+        supported_refresh_rates: Vec::new(),
+        supported_color_spaces: hdr_caps
+            .supported_color_spaces
+            .iter()
+            .map(|space| space.as_str().to_string())
+            .collect(),
+    };
+    if let Err(error) = write_display_policy_snapshot(&display_policy_snapshot) {
+        tracing::debug!(%error, "could not publish DRM display-policy snapshot");
+    }
 
     eprintln!(
         "[slopos-compositor] DRM session loop running (Wayland + seat + udev + libinput + layer-shell + foreign-toplevel; scanout_armed={scanout_armed})"
@@ -1963,6 +1997,29 @@ impl DrmSessionState {
         }
     }
 
+    /// Repair persisted Space assignments against the one connector that this
+    /// DRM backend currently owns. Connector removal/hotplug handling remains
+    /// a future KMS transaction, but a stale persisted name must not survive
+    /// into the live session projection.
+    fn reconcile_space_output_assignments(&mut self) {
+        let output_name = self.output_name.clone();
+        match self
+            .spaces
+            .reconcile_output_assignments([output_name.as_str()])
+        {
+            Ok(cleared) if !cleared.is_empty() => {
+                tracing::info!(spaces = ?cleared, "cleared disconnected DRM Space output assignments");
+                self.sync_legacy_workspace_state();
+                self.publish_spaces_state(true);
+                self.request_full_redraw();
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "could not reconcile DRM Space output assignments")
+            }
+        }
+    }
+
     fn output_scale_percent(&self) -> u32 {
         // DRM currently exposes one uniform integer buffer scale.  The
         // compositor's wl_output state is configured from this field during
@@ -2037,6 +2094,14 @@ impl DrmSessionState {
                     .move_window(window_id, target)
                     .map(|()| active_space)
             }
+            SpacesControlCommand::MoveActiveWindow { target } => self
+                .spaces
+                .move_active_window(
+                    self.activated_window_id.as_deref(),
+                    self.windows.iter().map(|window| window.window_id.as_str()),
+                    target,
+                )
+                .map(|()| self.spaces.active_space()),
             SpacesControlCommand::SetWallpaper { id, wallpaper } => SpaceId::new(id)
                 .ok_or(SpacesError::InvalidSpaceId(id))
                 .and_then(|id| self.spaces.set_wallpaper(id, wallpaper).map(|()| id)),
@@ -2055,9 +2120,16 @@ impl DrmSessionState {
                     .set_multi_monitor_policy(multi_monitor_policy_from_wire(policy));
                 Ok(self.spaces.active_space())
             }
-            SpacesControlCommand::AssignOutput { id, output_id } => SpaceId::new(id)
-                .ok_or(SpacesError::InvalidSpaceId(id))
-                .and_then(|id| self.spaces.set_space_output(id, output_id).map(|()| id)),
+            SpacesControlCommand::AssignOutput { id, output_id } => {
+                let output_name = self.output_name.clone();
+                SpaceId::new(id)
+                    .ok_or(SpacesError::InvalidSpaceId(id))
+                    .and_then(|id| {
+                        self.spaces
+                            .set_space_output_with_inventory(id, output_id, [output_name])
+                            .map(|()| id)
+                    })
+            }
             SpacesControlCommand::SetApplicationPolicy { app_id, target } => {
                 application_target_from_wire(target).and_then(|target| {
                     self.spaces
@@ -2251,6 +2323,15 @@ impl DrmSessionState {
                 tracing::warn!(
                     %layout,
                     "runtime logical-output control is not the DRM connector-hotplug authority"
+                );
+            }
+            SessionControlRequest::SetDisplayPolicy { policy } => {
+                tracing::warn!(
+                    hdr_requested = policy.hdr_requested,
+                    vrr_adaptive = policy.vrr_adaptive,
+                    refresh_rate = %policy.refresh_rate,
+                    color_space = %policy.color_space,
+                    "runtime display policy is unsupported on DRM until physical KMS policy transactions are implemented"
                 );
             }
             SessionControlRequest::HeadlessTestInput { .. } => {

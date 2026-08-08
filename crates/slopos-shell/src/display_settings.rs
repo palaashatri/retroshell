@@ -10,7 +10,11 @@
 //! Shell startup re-applies the same path via `apply_display_config_from_settings`.
 
 use serde::{Deserialize, Serialize};
-use slopos_bus::{read_outputs_snapshot, send_session_control, SessionControlRequest};
+use slopos_bus::{
+    read_display_policy_snapshot, read_outputs_snapshot, send_session_control,
+    session_display_policy_state_path, DisplayPolicyRequest, DisplayPolicySnapshot,
+    SessionControlRequest,
+};
 use std::fs;
 use std::path::PathBuf;
 
@@ -320,6 +324,86 @@ impl DisplayConfig {
         apply_display_plan_env(&plan);
         Ok(plan)
     }
+
+    /// Build the typed policy intent consumed by the compositor.
+    pub fn display_policy_request(&self) -> Result<DisplayPolicyRequest, String> {
+        if !self.validate() {
+            return Err("display policy contains an invalid value".to_string());
+        }
+        Ok(DisplayPolicyRequest {
+            hdr_requested: self.hdr_enabled,
+            vrr_adaptive: self.vrr_enabled,
+            refresh_rate: self.refresh_rate.clone(),
+            color_space: self.color_space.clone(),
+        })
+    }
+
+    /// Apply HDR/VRR/refresh/colour intent to the running compositor.
+    ///
+    /// Settings must reach the compositor before persisting the preference.
+    /// When an authoritative capability projection is available, reject
+    /// requests that the active backend cannot support locally so unsupported
+    /// nested/headless HDR or VRR never gets represented as applied state. The
+    /// compositor repeats this validation at the control-socket boundary.
+    pub fn apply_policy_session(&self) -> Result<DisplayPolicyRequest, String> {
+        let request = self.display_policy_request()?;
+        if let Some(path) = session_display_policy_state_path() {
+            match read_display_policy_snapshot() {
+                Ok(snapshot) => validate_policy_against_snapshot(&request, &snapshot)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound && !path.exists() => {}
+                Err(error) => {
+                    return Err(format!(
+                        "display policy projection unavailable at {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        send_session_control(&SessionControlRequest::SetDisplayPolicy {
+            policy: request.clone(),
+        })
+        .map_err(|error| format!("session compositor unavailable: {error}"))?;
+        Ok(request)
+    }
+}
+
+fn validate_policy_against_snapshot(
+    request: &DisplayPolicyRequest,
+    snapshot: &DisplayPolicySnapshot,
+) -> Result<(), String> {
+    if !snapshot.runtime_mutation_supported {
+        return Err(format!(
+            "{} backend does not expose runtime display-policy control",
+            snapshot.backend
+        ));
+    }
+    if request.hdr_requested && !snapshot.hdr_supported {
+        return Err("HDR is not supported by the active display backend".to_string());
+    }
+    if request.vrr_adaptive && !snapshot.vrr_supported {
+        return Err("VRR is not supported by the active display backend".to_string());
+    }
+    if !snapshot
+        .supported_refresh_rates
+        .iter()
+        .any(|rate| rate == &request.refresh_rate)
+    {
+        return Err(format!(
+            "refresh rate {} is not supported by the active display backend",
+            request.refresh_rate
+        ));
+    }
+    if !snapshot
+        .supported_color_spaces
+        .iter()
+        .any(|space| space == &request.color_space)
+    {
+        return Err(format!(
+            "colour space {} is not supported by the active display backend",
+            request.color_space
+        ));
+    }
+    Ok(())
 }
 
 fn parse_conf_bool(value: &str, fallback: bool) -> bool {
@@ -333,6 +417,7 @@ fn parse_conf_bool(value: &str, fallback: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     #[test]
     fn test_display_config_default() {
@@ -427,5 +512,114 @@ mod tests {
         config.merge_flat_settings_conf("arrange_mode=not_a_mode\nscale_percent=12\n");
         assert_eq!(config.arrange_mode, "extend_right");
         assert_eq!(config.scale_percent, 100);
+    }
+
+    #[test]
+    fn display_policy_request_uses_canonical_wire_values() {
+        let config = DisplayConfig::from_settings_fields(
+            true,
+            false,
+            "120hz",
+            "rec2020",
+            "extend_right",
+            100,
+        );
+        assert_eq!(
+            config.display_policy_request().unwrap(),
+            DisplayPolicyRequest {
+                hdr_requested: true,
+                vrr_adaptive: false,
+                refresh_rate: "120hz".into(),
+                color_space: "rec2020".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn display_policy_capability_projection_rejects_unsupported_requests() {
+        let request = DisplayPolicyRequest {
+            hdr_requested: true,
+            vrr_adaptive: true,
+            refresh_rate: "120hz".into(),
+            color_space: "rec2020".into(),
+        };
+        let snapshot = DisplayPolicySnapshot {
+            backend: "headless".into(),
+            revision: 0,
+            hdr_requested: false,
+            hdr_supported: false,
+            hdr_active: false,
+            vrr_adaptive: false,
+            vrr_supported: false,
+            refresh_rate_requested: "60hz".into(),
+            refresh_rate_applied: "60hz".into(),
+            color_space_requested: "srgb".into(),
+            color_space_applied: "srgb".into(),
+            exact_match: true,
+            fallback_reason: None,
+            runtime_mutation_supported: true,
+            supported_refresh_rates: vec!["60hz".into(), "120hz".into()],
+            supported_color_spaces: vec!["srgb".into()],
+        };
+        let error = validate_policy_against_snapshot(&request, &snapshot).unwrap_err();
+        assert!(error.contains("HDR"));
+    }
+
+    #[test]
+    fn display_policy_capability_projection_accepts_supported_request() {
+        let request = DisplayPolicyRequest {
+            hdr_requested: false,
+            vrr_adaptive: false,
+            refresh_rate: "120hz".into(),
+            color_space: "srgb".into(),
+        };
+        let snapshot = DisplayPolicySnapshot {
+            backend: "headless".into(),
+            revision: 3,
+            hdr_requested: false,
+            hdr_supported: false,
+            hdr_active: false,
+            vrr_adaptive: false,
+            vrr_supported: false,
+            refresh_rate_requested: "60hz".into(),
+            refresh_rate_applied: "60hz".into(),
+            color_space_requested: "srgb".into(),
+            color_space_applied: "srgb".into(),
+            exact_match: true,
+            fallback_reason: None,
+            runtime_mutation_supported: true,
+            supported_refresh_rates: vec!["60hz".into(), "120hz".into()],
+            supported_color_spaces: vec!["srgb".into()],
+        };
+        assert!(validate_policy_against_snapshot(&request, &snapshot).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn malformed_display_policy_projection_fails_closed() {
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+        let runtime = std::env::temp_dir().join(format!(
+            "slopos-display-policy-malformed-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&runtime).unwrap();
+        std::fs::write(
+            runtime.join(slopos_bus::DISPLAY_POLICY_STATE_FILE),
+            b"not-json",
+        )
+        .unwrap();
+        let previous_runtime = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR");
+        std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", &runtime);
+
+        let error = DisplayConfig::default().apply_policy_session().unwrap_err();
+        assert!(error.contains("display policy projection unavailable"));
+
+        if let Some(previous_runtime) = previous_runtime {
+            std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", previous_runtime);
+        } else {
+            std::env::remove_var("SLOPOS_SESSION_RUNTIME_DIR");
+        }
+        std::fs::remove_dir_all(runtime).unwrap();
     }
 }

@@ -15,9 +15,10 @@
 //!   registry / a11y bus / prior [`register_at_spi_app_with_tree`]. In-process
 //!   queue always succeeds. Orca may still miss events if registry Embed failed
 //!   or listeners never attached.
-//! - **No live tree re-export**: the D-Bus tree is snapshotted at register time;
-//!   focus/selection changes update pure helpers + optional signals only until
-//!   re-register/sync lands.
+//! - **Tree synchronization is explicit**: [`sync_at_spi_registered_tree`]
+//!   replaces the exported object graph when the owning application supplies a
+//!   new widget snapshot.  Applications without an update loop remain
+//!   register-time snapshots.
 //! - **`org.a11y.atspi.Text` is exported on D-Bus** for text-bearing roles at
 //!   registration (label snapshot + caret props). **Live typing is not synced**
 //!   until re-register; Orca may still miss mid-session edits.
@@ -37,11 +38,11 @@
 //! not claiming full assistive-tech parity.
 
 use crate::Rect;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
 use zbus::blocking::connection::Builder as ConnectionBuilder;
-use zbus::blocking::Connection;
+use zbus::blocking::{Connection, ObjectServer};
 use zbus::zvariant::OwnedObjectPath;
 use zbus::{fdo, interface};
 
@@ -1971,6 +1972,10 @@ struct AtSpiRegistration {
     child_count: usize,
     bus_name: String,
     embedded: bool,
+    /// Last widget snapshot exported on the registered object graph.  The
+    /// shell compares incoming snapshots against this value before replacing
+    /// D-Bus objects, so an idle frame does not churn the AT-SPI registry.
+    tree: AccessibilityTree,
 }
 
 static REGISTRATION: Mutex<Option<AtSpiRegistration>> = Mutex::new(None);
@@ -2013,6 +2018,369 @@ pub fn register_at_spi_app(app_name: &str) -> Result<(), Box<dyn std::error::Err
 pub fn register_at_spi_shell_chrome(app_name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let tree = shell_chrome_accessibility_tree(app_name);
     register_at_spi_app_with_tree(app_name, &tree)
+}
+
+/// Replace the D-Bus object graph for an already registered application.
+///
+/// AT-SPI applications own their accessible objects, so the toolkit can
+/// publish a current widget snapshot by removing the old interfaces and
+/// registering the new ones at the same stable numeric paths.  This is a
+/// synchronized snapshot path, not an assertion that a registry or assistive
+/// technology is present: when registration was skipped, the function returns
+/// `Ok(false)` and leaves the in-process tree/event helpers available.
+pub fn sync_at_spi_registered_tree(
+    tree: &AccessibilityTree,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let events = {
+        let mut guard = REGISTRATION
+            .lock()
+            .map_err(|_| "AT-SPI registration mutex poisoned")?;
+        let Some(registration) = guard.as_mut() else {
+            return Ok(false);
+        };
+
+        let tree = normalized_accessibility_tree(&registration.app_name, tree);
+        if accessibility_tree_signature(&registration.tree) == accessibility_tree_signature(&tree) {
+            return Ok(true);
+        }
+
+        let events = accessibility_tree_diff_events(&registration.tree, &tree);
+        let server = registration.connection.object_server();
+        remove_atspi_tree(&server, &registration.tree)?;
+        let child_count = export_atspi_tree(
+            &server,
+            &registration.app_name,
+            &registration.bus_name,
+            &tree,
+        )?;
+        registration.child_count = child_count;
+        registration.tree = tree;
+        events
+    };
+
+    // Emit after releasing REGISTRATION: the public emitter takes the same
+    // mutex to borrow the live zbus connection. This keeps the update path
+    // deadlock-free while ensuring AT-SPI listeners see ChildrenChanged,
+    // StateChanged, Focus and BoundsChanged after the new objects exist.
+    for event in &events {
+        let _ = try_emit_atspi_dbus_event(event);
+    }
+    Ok(true)
+}
+
+/// Return a non-empty tree so the application root always has a usable
+/// accessible child.  The normalized value is stored in the registration and
+/// is therefore also the tree used by later synchronization comparisons.
+fn normalized_accessibility_tree(app_name: &str, tree: &AccessibilityTree) -> AccessibilityTree {
+    if tree.is_empty() {
+        default_accessibility_tree(app_name)
+    } else {
+        tree.clone()
+    }
+}
+
+/// Stable, cheap comparison key for the exported graph.  Rectangles and state
+/// are included because a live overview must update selection/focus and
+/// component geometry even when labels and row counts are unchanged.
+fn accessibility_tree_signature(tree: &AccessibilityTree) -> String {
+    fn append_node(node: &AccessibilityNode, out: &mut String) {
+        use std::fmt::Write as _;
+
+        let _ = write!(
+            out,
+            "{}\u{1f}{}\u{1f}{}\u{1f}{:.3},{:.3},{:.3},{:.3}\u{1f}{:?}\u{1f}{:?}\u{1f}{:?};",
+            node.role_name(),
+            node.label,
+            node.description,
+            node.rect.x,
+            node.rect.y,
+            node.rect.width,
+            node.rect.height,
+            node.state,
+            node.index,
+            node.parent,
+        );
+        for child in &node.children {
+            append_node(child, out);
+        }
+    }
+
+    let mut signature = String::new();
+    for node in tree.nodes() {
+        append_node(node, &mut signature);
+    }
+    signature
+}
+
+struct AccessibilityNodeEntry<'a> {
+    path: String,
+    parent_path: String,
+    child_index: usize,
+    node: &'a AccessibilityNode,
+}
+
+fn collect_accessibility_nodes<'a>(tree: &'a AccessibilityTree) -> Vec<AccessibilityNodeEntry<'a>> {
+    fn visit<'a>(
+        node: &'a AccessibilityNode,
+        path: String,
+        parent_path: String,
+        child_index: usize,
+        entries: &mut Vec<AccessibilityNodeEntry<'a>>,
+    ) {
+        entries.push(AccessibilityNodeEntry {
+            path: path.clone(),
+            parent_path,
+            child_index,
+            node,
+        });
+        for (index, child) in node.children.iter().enumerate() {
+            visit(
+                child,
+                format!("{path}/c{index}"),
+                path.clone(),
+                index,
+                entries,
+            );
+        }
+    }
+
+    let mut entries = Vec::new();
+    for (index, node) in tree.nodes.iter().enumerate() {
+        visit(
+            node,
+            atspi_object_path(index),
+            ATSPI_ROOT_PATH.to_string(),
+            index,
+            &mut entries,
+        );
+    }
+    entries
+}
+
+fn rect_changed(previous: Rect, current: Rect) -> bool {
+    previous.x.to_bits() != current.x.to_bits()
+        || previous.y.to_bits() != current.y.to_bits()
+        || previous.width.to_bits() != current.width.to_bits()
+        || previous.height.to_bits() != current.height.to_bits()
+}
+
+fn children_changed_event(
+    kind: AccessibleEventKind,
+    parent_path: &str,
+    child_index: usize,
+    child_path: &str,
+) -> AccessibleEvent {
+    AccessibleEvent {
+        path: parent_path.to_string(),
+        kind,
+        detail1: i32::try_from(child_index).unwrap_or(i32::MAX),
+        detail2: 0,
+        any_data: child_path.to_string(),
+    }
+}
+
+fn accessibility_tree_diff_events(
+    previous: &AccessibilityTree,
+    current: &AccessibilityTree,
+) -> Vec<AccessibleEvent> {
+    let previous_entries = collect_accessibility_nodes(previous);
+    let current_entries = collect_accessibility_nodes(current);
+    let previous_by_path: HashMap<&str, &AccessibilityNodeEntry<'_>> = previous_entries
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry))
+        .collect();
+    let current_by_path: HashMap<&str, &AccessibilityNodeEntry<'_>> = current_entries
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry))
+        .collect();
+
+    let mut events = Vec::new();
+    for current_entry in &current_entries {
+        let Some(previous_entry) = previous_by_path.get(current_entry.path.as_str()) else {
+            events.push(children_changed_event(
+                AccessibleEventKind::ObjectCreated,
+                &current_entry.parent_path,
+                current_entry.child_index,
+                &current_entry.path,
+            ));
+            continue;
+        };
+
+        let previous_state = &previous_entry.node.state;
+        let current_state = &current_entry.node.state;
+        let state_changes = [
+            ("focused", previous_state.focused, current_state.focused),
+            ("enabled", previous_state.enabled, current_state.enabled),
+            ("visible", previous_state.visible, current_state.visible),
+            ("selected", previous_state.selected, current_state.selected),
+            (
+                "checked",
+                previous_state.checked.unwrap_or(false),
+                current_state.checked.unwrap_or(false),
+            ),
+            (
+                "expanded",
+                previous_state.expanded.unwrap_or(false),
+                current_state.expanded.unwrap_or(false),
+            ),
+            ("busy", previous_state.busy, current_state.busy),
+        ];
+        for (state_name, previous_value, current_value) in state_changes {
+            if previous_value != current_value {
+                events.push(AccessibleEvent::state_changed(
+                    &current_entry.path,
+                    state_name,
+                    current_value,
+                ));
+                if state_name == "focused" && current_value {
+                    events.push(AccessibleEvent::focus(&current_entry.path));
+                }
+            }
+        }
+        if rect_changed(previous_entry.node.rect, current_entry.node.rect) {
+            events.push(AccessibleEvent::bounds_changed(&current_entry.path));
+        }
+    }
+
+    for previous_entry in &previous_entries {
+        if !current_by_path.contains_key(previous_entry.path.as_str()) {
+            events.push(children_changed_event(
+                AccessibleEventKind::ObjectDestroyed,
+                &previous_entry.parent_path,
+                previous_entry.child_index,
+                &previous_entry.path,
+            ));
+        }
+    }
+    events
+}
+
+/// Remove every interface exported for `tree`, including the root object.
+/// Removal is deliberately best-effort per interface: older snapshots may not
+/// have advertised Action/Text/Component, and zbus reports those as absent.
+fn remove_atspi_tree(
+    server: &ObjectServer,
+    tree: &AccessibilityTree,
+) -> Result<(), Box<dyn std::error::Error>> {
+    fn remove_node(server: &ObjectServer, node: &AccessibilityNode, path: &str) {
+        for (child_index, child) in node.children.iter().enumerate() {
+            remove_node(server, child, &format!("{path}/c{child_index}"));
+        }
+        let _ = server.remove::<AtspiComponent, _>(path);
+        let _ = server.remove::<AtspiText, _>(path);
+        let _ = server.remove::<AtspiAction, _>(path);
+        let _ = server.remove::<AtspiAccessible, _>(path);
+    }
+
+    for (index, node) in tree.nodes().iter().enumerate() {
+        remove_node(server, node, &atspi_object_path(index));
+    }
+    let _ = server.remove::<AtspiApplication, _>(ATSPI_ROOT_PATH);
+    let _ = server.remove::<AtspiAccessible, _>(ATSPI_ROOT_PATH);
+    Ok(())
+}
+
+/// Export one complete tree onto an existing zbus object server.
+fn export_atspi_tree(
+    server: &ObjectServer,
+    app_name: &str,
+    bus_name: &str,
+    tree: &AccessibilityTree,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let child_paths: Vec<String> = tree.to_atspi_paths();
+
+    let root = AtspiAccessible {
+        name: app_name.to_string(),
+        description: format!("SLOPOS-I application {app_name}"),
+        role: 75, // ATSPI_ROLE_APPLICATION
+        role_name: "application".to_string(),
+        bus_name: bus_name.to_string(),
+        parent_bus: String::new(),
+        parent_path: ATSPI_NULL_PATH.to_string(),
+        child_paths: child_paths.clone(),
+        index_in_parent: -1,
+        state: state_to_atspi_bitset(&AccessibilityState::default(), AccessibilityRole::Window),
+        accessible_id: "root".to_string(),
+        interfaces: vec![
+            ATSPI_ACCESSIBLE_IFACE.to_string(),
+            ATSPI_APPLICATION_IFACE.to_string(),
+        ],
+    };
+    server.at(ATSPI_ROOT_PATH, root)?;
+    server.at(
+        ATSPI_ROOT_PATH,
+        AtspiApplication {
+            id: 0,
+            bus_address: String::new(),
+        },
+    )?;
+
+    fn export_node(
+        server: &ObjectServer,
+        bus_name: &str,
+        node: &AccessibilityNode,
+        path: &str,
+        parent_path: &str,
+        index_in_parent: usize,
+        accessible_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let child_paths: Vec<String> = (0..node.children.len())
+            .map(|child_index| format!("{path}/c{child_index}"))
+            .collect();
+        let object = AtspiAccessible {
+            name: node.label.clone(),
+            description: node.description.clone(),
+            role: role_to_atspi_role(node.role),
+            role_name: node.role_name().to_string(),
+            bus_name: bus_name.to_string(),
+            parent_bus: bus_name.to_string(),
+            parent_path: parent_path.to_string(),
+            child_paths,
+            index_in_parent: i32::try_from(index_in_parent).unwrap_or(i32::MAX),
+            state: state_to_atspi_bitset(&node.state, node.role),
+            accessible_id: accessible_id.to_string(),
+            interfaces: interfaces_for_role(node.role),
+        };
+        server.at(path, object)?;
+        if role_has_actions(node.role) {
+            server.at(path, AtspiAction::from_role(node.role, path, &node.label))?;
+        }
+        if role_has_text(node.role) {
+            server.at(path, AtspiText::from_label(&node.label))?;
+        }
+        if role_has_component(node.role) {
+            server.at(path, AtspiComponent::from_node(node))?;
+        }
+        for (child_index, child) in node.children.iter().enumerate() {
+            let child_path = format!("{path}/c{child_index}");
+            let child_id = format!("{accessible_id}_c{child_index}");
+            export_node(
+                server,
+                bus_name,
+                child,
+                &child_path,
+                path,
+                child_index,
+                &child_id,
+            )?;
+        }
+        Ok(())
+    }
+
+    for (index, node) in tree.nodes().iter().enumerate() {
+        let path = atspi_object_path(index);
+        export_node(
+            server,
+            bus_name,
+            node,
+            &path,
+            ATSPI_ROOT_PATH,
+            index,
+            &format!("n{index}"),
+        )?;
+    }
+
+    Ok(child_paths.len())
 }
 
 /// Register this process as an AT-SPI2 application exposing `tree`.
@@ -2085,116 +2453,17 @@ pub fn register_at_spi_app_with_tree(
         return Ok(());
     }
 
-    // Ensure non-empty children for demo/AT visibility when caller passes empty tree.
-    let owned_tree;
-    let tree = if tree.is_empty() {
-        owned_tree = default_accessibility_tree(app_name);
-        &owned_tree
-    } else {
-        tree
-    };
-
-    let child_paths: Vec<String> = tree.to_atspi_paths();
+    // Ensure non-empty children for demo/AT visibility when caller passes an
+    // empty tree. Keep the normalized clone in the registration so later
+    // synchronization compares against exactly what was exported.
+    let tree = normalized_accessibility_tree(app_name, tree);
+    let child_count = tree.len();
 
     // 3–4. Export root + children. Scope the object_server borrow so `conn`
     // can be moved into the process-lifetime registration handle afterward.
     {
         let server = conn.object_server();
-
-        // Root accessible (Application role) + Application interface
-        let root = AtspiAccessible {
-            name: app_name.to_string(),
-            description: format!("SLOPOS-I application {app_name}"),
-            role: 75, // ATSPI_ROLE_APPLICATION
-            role_name: "application".to_string(),
-            bus_name: bus_name.clone(),
-            parent_bus: String::new(),
-            parent_path: ATSPI_NULL_PATH.to_string(),
-            child_paths: child_paths.clone(),
-            index_in_parent: -1,
-            state: state_to_atspi_bitset(&AccessibilityState::default(), AccessibilityRole::Window),
-            accessible_id: "root".to_string(),
-            interfaces: vec![
-                ATSPI_ACCESSIBLE_IFACE.to_string(),
-                ATSPI_APPLICATION_IFACE.to_string(),
-            ],
-        };
-        server.at(ATSPI_ROOT_PATH, root)?;
-
-        let app_iface = AtspiApplication {
-            id: 0,
-            bus_address: String::new(),
-        };
-        server.at(ATSPI_ROOT_PATH, app_iface)?;
-
-        // Child nodes
-        for (i, node) in tree.nodes().iter().enumerate() {
-            let path = atspi_object_path(i);
-            // Nested children of a flat node (if any) are exported as shallow
-            // leaf objects under `{path}/c{j}` for structural honesty.
-            let nested_paths: Vec<String> = (0..node.children.len())
-                .map(|j| format!("{path}/c{j}"))
-                .collect();
-
-            for (j, child) in node.children.iter().enumerate() {
-                let cpath = format!("{path}/c{j}");
-                let child_obj = AtspiAccessible {
-                    name: child.label.clone(),
-                    description: child.description.clone(),
-                    role: role_to_atspi_role(child.role),
-                    role_name: child.role_name().to_string(),
-                    bus_name: bus_name.clone(),
-                    parent_bus: bus_name.clone(),
-                    parent_path: path.clone(),
-                    child_paths: vec![],
-                    index_in_parent: j as i32,
-                    state: state_to_atspi_bitset(&child.state, child.role),
-                    accessible_id: format!("n{i}_c{j}"),
-                    interfaces: interfaces_for_role(child.role),
-                };
-                server.at(cpath.as_str(), child_obj)?;
-                if role_has_actions(child.role) {
-                    server.at(
-                        cpath.as_str(),
-                        AtspiAction::from_role(child.role, &cpath, &child.label),
-                    )?;
-                }
-                if role_has_text(child.role) {
-                    server.at(cpath.as_str(), AtspiText::from_label(&child.label))?;
-                }
-                if role_has_component(child.role) {
-                    server.at(cpath.as_str(), AtspiComponent::from_node(child))?;
-                }
-            }
-
-            let obj = AtspiAccessible {
-                name: node.label.clone(),
-                description: node.description.clone(),
-                role: role_to_atspi_role(node.role),
-                role_name: node.role_name().to_string(),
-                bus_name: bus_name.clone(),
-                parent_bus: bus_name.clone(),
-                parent_path: ATSPI_ROOT_PATH.to_string(),
-                child_paths: nested_paths,
-                index_in_parent: i as i32,
-                state: state_to_atspi_bitset(&node.state, node.role),
-                accessible_id: format!("n{i}"),
-                interfaces: interfaces_for_role(node.role),
-            };
-            server.at(path.as_str(), obj)?;
-            if role_has_actions(node.role) {
-                server.at(
-                    path.as_str(),
-                    AtspiAction::from_role(node.role, &path, &node.label),
-                )?;
-            }
-            if role_has_text(node.role) {
-                server.at(path.as_str(), AtspiText::from_label(&node.label))?;
-            }
-            if role_has_component(node.role) {
-                server.at(path.as_str(), AtspiComponent::from_node(node))?;
-            }
-        }
+        export_atspi_tree(&server, app_name, &bus_name, &tree)?;
     }
 
     // 5. Best-effort registry Embed
@@ -2204,7 +2473,7 @@ pub fn register_at_spi_app_with_tree(
                 app = app_name,
                 bus = %bus_name,
                 bus_kind,
-                children = child_paths.len(),
+                children = child_count,
                 "AT-SPI2 registered with accessibility registry (Socket.Embed)"
             );
             true
@@ -2214,7 +2483,7 @@ pub fn register_at_spi_app_with_tree(
                 app = app_name,
                 bus = %bus_name,
                 bus_kind,
-                children = child_paths.len(),
+                children = child_count,
                 error = %err,
                 "AT-SPI2 objects exported but registry Embed failed (registry may be absent)"
             );
@@ -2227,7 +2496,7 @@ pub fn register_at_spi_app_with_tree(
         bus = %bus_name,
         bus_kind,
         root = ATSPI_ROOT_PATH,
-        children = child_paths.len(),
+        children = child_count,
         embedded,
         "AT-SPI2 Accessible tree exported (Action on actionable roles; still Orca-incomplete)"
     );
@@ -2236,9 +2505,10 @@ pub fn register_at_spi_app_with_tree(
         *guard = Some(AtSpiRegistration {
             connection: conn,
             app_name: app_name.to_string(),
-            child_count: child_paths.len(),
+            child_count,
             bus_name,
             embedded,
+            tree: tree.clone(),
         });
     }
 
@@ -2399,6 +2669,121 @@ mod tests {
         assert_eq!(tree.len(), 2);
         assert!(!tree.is_empty());
         assert_eq!(tree.get(0).map(|n| n.label.as_str()), Some("A"));
+    }
+
+    #[test]
+    fn accessibility_tree_signature_tracks_live_state_without_dbus() {
+        let mut tree = AccessibilityTree::new();
+        let mut spaces = AccessibilityNode::new(AccessibilityRole::List, "Spaces");
+        let mut first = AccessibilityNode::new(AccessibilityRole::ListItem, "Personal");
+        first.state.selected = true;
+        spaces.children.push(first);
+        tree.add(spaces);
+
+        let before = accessibility_tree_signature(&tree);
+        tree.nodes[0].children[0].state.selected = false;
+        tree.nodes[0].children[0].state.focused = true;
+        let after = accessibility_tree_signature(&tree);
+
+        assert_ne!(before, after, "selection/focus changes must trigger sync");
+    }
+
+    #[test]
+    fn sync_without_registration_reports_unavailable_external_bus() {
+        if at_spi_registration_info().is_none() {
+            let tree = default_accessibility_tree("test");
+            assert!(!sync_at_spi_registered_tree(&tree).unwrap());
+        }
+    }
+
+    #[test]
+    fn registered_tree_sync_updates_exported_child_count() {
+        struct RegistrationReset;
+        impl Drop for RegistrationReset {
+            fn drop(&mut self) {
+                if let Ok(mut registration) = REGISTRATION.lock() {
+                    *registration = None;
+                }
+            }
+        }
+
+        let _reset = RegistrationReset;
+        let mut initial = AccessibilityTree::new();
+        initial.add(AccessibilityNode::new(AccessibilityRole::List, "Spaces"));
+        register_at_spi_app_with_tree("sync-test", &initial).unwrap();
+        let Some(info) = at_spi_registration_info() else {
+            // Headless CI without a session bus is explicitly supported; the
+            // no-registration test above covers that truthful fallback.
+            return;
+        };
+        assert_eq!(info.child_count, 1);
+
+        let mut updated = initial.clone();
+        updated.add(AccessibilityNode::new(
+            AccessibilityRole::ListItem,
+            "Personal",
+        ));
+        assert!(sync_at_spi_registered_tree(&updated).unwrap());
+        assert_eq!(at_spi_registration_info().unwrap().child_count, 2);
+    }
+
+    #[test]
+    fn accessibility_tree_diff_reports_live_children_state_and_bounds() {
+        let mut previous = AccessibilityTree::new();
+        let mut list = AccessibilityNode::new(AccessibilityRole::List, "Spaces");
+        list.rect = Rect::new(10.0, 20.0, 300.0, 200.0);
+        let mut personal = AccessibilityNode::new(AccessibilityRole::ListItem, "Personal");
+        personal.rect = Rect::new(20.0, 30.0, 100.0, 80.0);
+        list.children.push(personal);
+        previous.add(list);
+
+        let mut current = previous.clone();
+        current.nodes[0].rect.width = 320.0;
+        current.nodes[0].children[0].state.selected = true;
+        current.nodes[0]
+            .children
+            .push(AccessibilityNode::new(AccessibilityRole::ListItem, "Work"));
+
+        let events = accessibility_tree_diff_events(&previous, &current);
+        assert!(events.iter().any(|event| {
+            event.kind == AccessibleEventKind::BoundsChanged && event.path == atspi_object_path(0)
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == AccessibleEventKind::StateChanged
+                && event.path == format!("{}/c0", atspi_object_path(0))
+                && event.any_data == "selected"
+                && event.detail1 == 1
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == AccessibleEventKind::ObjectCreated
+                && event.path == atspi_object_path(0)
+                && event.detail1 == 1
+                && event.any_data == format!("{}/c1", atspi_object_path(0))
+        }));
+    }
+
+    #[test]
+    fn accessibility_tree_diff_reports_removals_and_is_quiet_without_changes() {
+        let mut previous = AccessibilityTree::new();
+        let mut list = AccessibilityNode::new(AccessibilityRole::List, "Spaces");
+        list.children.push(AccessibilityNode::new(
+            AccessibilityRole::ListItem,
+            "Personal",
+        ));
+        list.children
+            .push(AccessibilityNode::new(AccessibilityRole::ListItem, "Work"));
+        previous.add(list);
+
+        let mut current = previous.clone();
+        current.nodes[0].children.pop();
+        let events = accessibility_tree_diff_events(&previous, &current);
+        assert!(events.iter().any(|event| {
+            event.kind == AccessibleEventKind::ObjectDestroyed
+                && event.path == atspi_object_path(0)
+                && event.detail1 == 1
+                && event.any_data == format!("{}/c1", atspi_object_path(0))
+        }));
+        assert!(accessibility_tree_diff_events(&current, &current).is_empty());
     }
 
     #[test]
