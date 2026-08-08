@@ -170,6 +170,33 @@ mod linux {
     // Retro gray: rgb(152, 152, 148) — the classic Mac OS desktop fill
     const RETRO_GRAY: (u8, u8, u8) = (152, 152, 148);
     const MAX_DISABLED_OUTPUT_GLOBALS: usize = 64;
+    const XWAYLAND_RESTART_BUDGET: u8 = 3;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) struct XWaylandRecoveryBudget {
+        remaining: u8,
+    }
+
+    impl XWaylandRecoveryBudget {
+        pub(super) const fn new(restarts: u8) -> Self {
+            Self {
+                remaining: restarts,
+            }
+        }
+
+        pub(super) fn remaining(self) -> u8 {
+            self.remaining
+        }
+
+        pub(super) fn take_restart(&mut self) -> bool {
+            if self.remaining == 0 {
+                return false;
+            }
+
+            self.remaining -= 1;
+            true
+        }
+    }
 
     fn spaces_persistence_path() -> Option<PathBuf> {
         let data_home = std::env::var_os("XDG_DATA_HOME")
@@ -693,6 +720,8 @@ mod linux {
         // ---- XWayland (P1.3) ----
         xwm: Option<X11Wm>,
         xdisplay: Option<u32>,
+        /// Session-scoped cap on XWayland WM recovery attempts.
+        xwayland_recovery_budget: XWaylandRecoveryBudget,
         /// X11 surfaces we know about (not fully managed yet under nested X11).
         x11_surfaces: Vec<X11WmSurface>,
         /// XWayland windows associated with live Wayland surfaces.
@@ -4134,6 +4163,19 @@ mod linux {
             self.xdisplay = None;
             self.x11_surfaces.clear();
             self.x11_surface_associations.clear();
+            std::env::remove_var("SLOPOS_XWAYLAND_DISPLAY");
+
+            if self.xwayland_recovery_budget.take_restart() {
+                tracing::warn!(
+                    remaining = self.xwayland_recovery_budget.remaining(),
+                    "XWayland WM disconnected; restarting XWayland"
+                );
+                try_start_xwayland(self);
+            } else {
+                tracing::error!(
+                    "XWayland recovery budget exhausted; entering terminal disconnected state"
+                );
+            }
         }
     }
 
@@ -5138,6 +5180,7 @@ mod linux {
             placeholder_stats: PlaceholderPresentStats::new(),
             xwm: None,
             xdisplay: None,
+            xwayland_recovery_budget: XWaylandRecoveryBudget::new(XWAYLAND_RESTART_BUDGET),
             x11_surfaces: Vec::new(),
             x11_surface_associations: HashMap::new(),
             wayland_socket_name: socket_name.clone(),
@@ -5394,5 +5437,19 @@ mod tests {
             linux::x11_resize_edge_to_resize_edges(smithay::xwayland::xwm::ResizeEdge::BottomRight,),
             slopos_compositor::ResizeEdges::BOTTOM_RIGHT
         );
+    }
+
+    #[test]
+    fn xwayland_recovery_budget_is_session_scoped_and_bounded() {
+        let mut budget = linux::XWaylandRecoveryBudget::new(3);
+
+        assert_eq!(budget.remaining(), 3);
+        assert!(budget.take_restart());
+        assert!(budget.take_restart());
+        assert!(budget.take_restart());
+        assert_eq!(budget.remaining(), 0);
+        assert!(!budget.take_restart());
+        assert!(!budget.take_restart());
+        assert_eq!(budget.remaining(), 0);
     }
 }
