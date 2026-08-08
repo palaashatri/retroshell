@@ -66,7 +66,7 @@ mod linux {
     use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
     use smithay::xwayland::xwm::{Reorder, ResizeEdge, X11Window, XwmId};
     use smithay::xwayland::{
-        X11Surface as X11WmSurface, X11Wm, XWayland, XWaylandEvent, XwmHandler,
+        X11Surface as X11WmSurface, X11Wm, XWayland, XWaylandClientData, XWaylandEvent, XwmHandler,
     };
     use smithay::{
         backend::{
@@ -2393,7 +2393,16 @@ mod linux {
             &self,
             client: &'a smithay::reexports::wayland_server::Client,
         ) -> &'a CompositorClientState {
-            &client.get_data::<ClientState>().unwrap().compositor_state
+            if let Some(state) = client.get_data::<ClientState>() {
+                &state.compositor_state
+            } else if let Some(state) = client.get_data::<XWaylandClientData>() {
+                // Smithay owns the XWayland bridge client and stores its
+                // compositor state in XWaylandClientData rather than our
+                // ordinary ClientState.
+                &state.compositor_state
+            } else {
+                panic!("Wayland client is missing compositor client state")
+            }
         }
 
         fn commit(&mut self, surface: &WlSurface) {
