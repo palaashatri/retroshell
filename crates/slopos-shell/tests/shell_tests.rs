@@ -2,6 +2,20 @@ use slopos_shell::notification_center::NotificationPriority;
 use slopos_shell::*;
 
 #[test]
+fn session_entry_documents_output_layout_and_backend_selection() {
+    let script = include_str!("../../../scripts/start-slopos-i");
+    assert!(script.contains("SLOPOS_OUTPUTS_LAYOUT"));
+    assert!(script.contains("compositor selection"));
+}
+
+#[test]
+fn daily_driver_checklist_does_not_require_ripgrep() {
+    let script = include_str!("../../../scripts/verify_daily_driver_checklist.sh");
+    assert!(!script.contains("rg -q"));
+    assert!(script.contains("grep -Eq") || script.contains("grep -Fq"));
+}
+
+#[test]
 fn test_shell_startup() {
     let shell = SloposI::startup().unwrap();
     assert_eq!(shell.workspace_manager.read().total, 8);

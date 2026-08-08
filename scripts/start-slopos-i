@@ -57,4 +57,14 @@ if [ -z "$backend" ]; then
   fi
 fi
 
+# The shell/settings display service may provide a validated logical layout in
+# `name:WxH@x,y:sNN;...` form.  Keep it in the session environment so the
+# compositor remains the single authority for output topology and geometry.
+outputs_layout="${SLOPOS_OUTPUTS_LAYOUT:-}"
+if [ -n "$outputs_layout" ]; then
+  export SLOPOS_OUTPUTS_LAYOUT="$outputs_layout"
+fi
+printf 'start-slopos-i: compositor selection backend=%s outputs_layout=%s\n' \
+  "$backend" "${outputs_layout:-auto}" >&2
+
 exec "$SESSION_BIN" --backend "$backend" "$@"

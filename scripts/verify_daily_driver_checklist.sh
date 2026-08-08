@@ -92,41 +92,41 @@ do
 done
 
 echo "==> greeter readiness stays honest (no live DM claim in notes path)"
-if rg -q "live greeter login still requires DM" crates/slopos-shell/src/session_packaging.rs; then
+if grep -Fq "live greeter login still requires DM" crates/slopos-shell/src/session_packaging.rs; then
   pass "session_packaging honest greeter note present"
 else
   die "session_packaging missing honest greeter note"
 fi
-if rg -q "install_ready" crates/slopos-shell/src/session_packaging.rs \
-  && rg -q "Does \*\*not\*\* claim a live display manager" crates/slopos-shell/src/session_packaging.rs; then
+if grep -Fq "install_ready" crates/slopos-shell/src/session_packaging.rs \
+  && grep -Fq "Does **not** claim a live display manager" crates/slopos-shell/src/session_packaging.rs; then
   pass "install_ready documented as packaging-only"
 else
   die "install_ready honesty comment missing"
 fi
-if rg -q "session_entry_smoke_report" crates/slopos-shell/src/session_packaging.rs \
-  && rg -q "live_greeter_verified" crates/slopos-shell/src/session_packaging.rs \
-  && rg -q "live_greeter_verified: false" crates/slopos-shell/src/session_packaging.rs; then
+if grep -Fq "session_entry_smoke_report" crates/slopos-shell/src/session_packaging.rs \
+  && grep -Fq "live_greeter_verified" crates/slopos-shell/src/session_packaging.rs \
+  && grep -Fq "live_greeter_verified: false" crates/slopos-shell/src/session_packaging.rs; then
   pass "session_entry_smoke_report always reports live_greeter_verified: false"
 else
   die "session_entry_smoke_report / live_greeter_verified honesty missing"
 fi
 
 echo "==> compositor workspace filter is referenced from main (live path)"
-if rg -q "workspace_state|is_visible|windows_visible_for_paint" crates/slopos-compositor/src/main.rs; then
+if grep -Eq "workspace_state|is_visible|windows_visible_for_paint" crates/slopos-compositor/src/main.rs; then
   pass "compositor main references workspace visibility"
 else
   die "compositor main missing workspace visibility wiring"
 fi
 
 echo "==> portal Secret/Print/Inhibit on dbus module"
-if rg -q "PortalSecretIface|PortalPrintIface|PortalInhibitIface" crates/slopos-shell/src/portal_dbus.rs; then
+if grep -Eq "PortalSecretIface|PortalPrintIface|PortalInhibitIface" crates/slopos-shell/src/portal_dbus.rs; then
   pass "portal_dbus exports Secret/Print/Inhibit interfaces"
 else
   die "portal_dbus missing Secret/Print/Inhibit"
 fi
 
 echo "==> i18n used outside catalog module"
-if rg -q '\btr\(' crates/slopos-shell/src/lib.rs crates/slopos-shell/src/menu_server.rs 2>/dev/null; then
+if grep -Eq '(^|[^[:alnum:]_])tr\(' crates/slopos-shell/src/lib.rs crates/slopos-shell/src/menu_server.rs 2>/dev/null; then
   pass "tr() used in shell UI paths"
 else
   warn "tr() may still be lock-only — check lib.rs"
