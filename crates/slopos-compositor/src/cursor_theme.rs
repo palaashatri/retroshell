@@ -10,8 +10,6 @@
 //! Wiring this resolver into the DRM render-element list is a later step; this
 //! module only resolves and produces pixels.
 
-#![cfg(target_os = "linux")]
-
 use std::cmp::Reverse;
 use std::collections::HashSet;
 use std::env;

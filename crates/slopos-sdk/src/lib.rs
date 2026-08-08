@@ -2677,12 +2677,10 @@ fn draw_workspace_grid_view(canvas: &mut Canvas<'_>, _rect: Rect, grid: &Workspa
             } else {
                 [0.80, 0.87, 0.94, 1.0]
             }
+        } else if render_dark_mode() {
+            [0.15, 0.15, 0.16, 1.0]
         } else {
-            if render_dark_mode() {
-                [0.15, 0.15, 0.16, 1.0]
-            } else {
-                [0.94, 0.94, 0.92, 1.0]
-            }
+            [0.94, 0.94, 0.92, 1.0]
         };
         canvas.rect(cell_r, bg_color);
 
@@ -2769,12 +2767,10 @@ fn draw_tab_view(canvas: &mut Canvas<'_>, rect: Rect, tv: &TabView) {
         }
         let text_color = if is_selected {
             theme_color("text")
+        } else if render_dark_mode() {
+            [0.55, 0.55, 0.53, 1.0]
         } else {
-            if render_dark_mode() {
-                [0.55, 0.55, 0.53, 1.0]
-            } else {
-                [0.39, 0.39, 0.37, 1.0]
-            }
+            [0.39, 0.39, 0.37, 1.0]
         };
         let text_x = (tab_rect.x + (tab_width - title_w) * 0.5).round();
         canvas.text(&tab.title, text_x, tab_rect.y + 7.0, text_color);

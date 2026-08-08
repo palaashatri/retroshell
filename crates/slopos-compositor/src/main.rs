@@ -3476,16 +3476,23 @@ mod linux {
         });
     }
 
-    fn build_axis_frame(
+    #[derive(Clone, Copy)]
+    struct AxisFrameInput {
         time: u32,
         source: AxisSource,
-        horizontal_direction: AxisRelativeDirection,
-        vertical_direction: AxisRelativeDirection,
-        horizontal_amount: Option<f64>,
-        vertical_amount: Option<f64>,
-        horizontal_v120: Option<f64>,
-        vertical_v120: Option<f64>,
-    ) -> AxisFrame {
+        directions: (AxisRelativeDirection, AxisRelativeDirection),
+        amounts: (Option<f64>, Option<f64>),
+        v120: (Option<f64>, Option<f64>),
+    }
+
+    fn build_axis_frame(input: AxisFrameInput) -> AxisFrame {
+        let AxisFrameInput {
+            time,
+            source,
+            directions: (horizontal_direction, vertical_direction),
+            amounts: (horizontal_amount, vertical_amount),
+            v120: (horizontal_v120, vertical_v120),
+        } = input;
         let mut frame = AxisFrame::new(time)
             .source(source)
             .relative_direction(Axis::Horizontal, horizontal_direction)
@@ -3511,16 +3518,19 @@ mod linux {
     where
         E: PointerAxisEvent<X11Input>,
     {
-        build_axis_frame(
-            ev.time_msec(),
-            ev.source(),
-            ev.relative_direction(Axis::Horizontal),
-            ev.relative_direction(Axis::Vertical),
-            ev.amount(Axis::Horizontal),
-            ev.amount(Axis::Vertical),
-            ev.amount_v120(Axis::Horizontal),
-            ev.amount_v120(Axis::Vertical),
-        )
+        build_axis_frame(AxisFrameInput {
+            time: ev.time_msec(),
+            source: ev.source(),
+            directions: (
+                ev.relative_direction(Axis::Horizontal),
+                ev.relative_direction(Axis::Vertical),
+            ),
+            amounts: (ev.amount(Axis::Horizontal), ev.amount(Axis::Vertical)),
+            v120: (
+                ev.amount_v120(Axis::Horizontal),
+                ev.amount_v120(Axis::Vertical),
+            ),
+        })
     }
 
     fn handle_pointer_axis<E>(state: &mut SloposCompositor, ev: &E)
@@ -3918,7 +3928,7 @@ mod linux {
         display: Option<&str>,
     ) -> Result<(), String> {
         if matches!(requested_backend, "nested" | "x11" | "winit")
-            && !display.is_some_and(|value| !value.is_empty())
+            && display.is_none_or(|value| value.is_empty())
         {
             return Err(
                 "nested backend requires a non-empty DISPLAY (nested transport is X11-only); use --backend drm or --backend headless"
@@ -4372,16 +4382,16 @@ mod linux {
 
         #[test]
         fn axis_frame_keeps_timestamp_directions_and_both_value_forms() {
-            let frame = build_axis_frame(
-                1234,
-                AxisSource::Continuous,
-                AxisRelativeDirection::Inverted,
-                AxisRelativeDirection::Identical,
-                Some(1.5),
-                Some(-2.25),
-                Some(60.0),
-                Some(-120.0),
-            );
+            let frame = build_axis_frame(AxisFrameInput {
+                time: 1234,
+                source: AxisSource::Continuous,
+                directions: (
+                    AxisRelativeDirection::Inverted,
+                    AxisRelativeDirection::Identical,
+                ),
+                amounts: (Some(1.5), Some(-2.25)),
+                v120: (Some(60.0), Some(-120.0)),
+            });
 
             assert_eq!(frame.time, 1234);
             assert_eq!(frame.source, Some(AxisSource::Continuous));

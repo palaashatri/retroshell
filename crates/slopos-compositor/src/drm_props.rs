@@ -9,8 +9,6 @@
 //! - `drivers/gpu/drm/drm_connector.c` — connector properties;
 //! - CTA-861-G §6.9 — static HDR metadata encoding.
 
-#![cfg(target_os = "linux")]
-
 use std::collections::HashMap;
 use std::io;
 

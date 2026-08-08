@@ -15,8 +15,6 @@
 //! primary card, advertises an output, and runs a real protocol loop. Connectors
 //! without modes fall back to env sizing (`SLOPOS_COMPOSITOR_WIDTH/HEIGHT`).
 
-#![cfg(target_os = "linux")]
-
 use std::collections::HashMap;
 use std::os::unix::io::OwnedFd;
 use std::path::{Path, PathBuf};
@@ -31,7 +29,9 @@ use smithay::backend::drm::compositor::{DrmCompositor, FrameFlags};
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::DrmDeviceFd;
 use smithay::backend::egl::{EGLContext, EGLDisplay};
-use smithay::backend::input::ButtonState;
+use smithay::backend::input::{
+    Axis, AxisRelativeDirection, AxisSource, ButtonState, PointerAxisEvent,
+};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::element::surface::{
     render_elements_from_surface_tree, WaylandSurfaceRenderElement,
@@ -135,6 +135,69 @@ type MimePayload = Arc<HashMap<String, Vec<u8>>>;
 /// Convert Smithay relative-motion microseconds to a nonzero Wayland timestamp.
 fn relative_motion_time_millis(utime: u64) -> u32 {
     u32::try_from(utime / 1_000).unwrap_or(u32::MAX).max(1)
+}
+
+#[derive(Clone, Copy)]
+struct AxisFrameInput {
+    time: u32,
+    source: AxisSource,
+    directions: (AxisRelativeDirection, AxisRelativeDirection),
+    amounts: (Option<f64>, Option<f64>),
+    v120: (Option<f64>, Option<f64>),
+}
+
+fn build_axis_frame(input: AxisFrameInput) -> AxisFrame {
+    let AxisFrameInput {
+        time,
+        source,
+        directions: (horizontal_direction, vertical_direction),
+        amounts: (horizontal_amount, vertical_amount),
+        v120: (horizontal_v120, vertical_v120),
+    } = input;
+    let mut frame = AxisFrame::new(time)
+        .source(source)
+        .relative_direction(Axis::Horizontal, horizontal_direction)
+        .relative_direction(Axis::Vertical, vertical_direction);
+
+    if let Some(amount) = horizontal_amount {
+        frame = frame.value(Axis::Horizontal, amount);
+        if source == AxisSource::Finger && amount == 0.0 {
+            frame = frame.stop(Axis::Horizontal);
+        }
+    }
+    if let Some(amount) = vertical_amount {
+        frame = frame.value(Axis::Vertical, amount);
+        if source == AxisSource::Finger && amount == 0.0 {
+            frame = frame.stop(Axis::Vertical);
+        }
+    }
+    if let Some(steps) = horizontal_v120 {
+        frame = frame.v120(Axis::Horizontal, steps.round() as i32);
+    }
+    if let Some(steps) = vertical_v120 {
+        frame = frame.v120(Axis::Vertical, steps.round() as i32);
+    }
+
+    frame
+}
+
+fn axis_frame_from_event<E>(event: &E) -> AxisFrame
+where
+    E: PointerAxisEvent<LibinputInputBackend>,
+{
+    build_axis_frame(AxisFrameInput {
+        time: smithay::backend::input::Event::time_msec(event),
+        source: event.source(),
+        directions: (
+            event.relative_direction(Axis::Horizontal),
+            event.relative_direction(Axis::Vertical),
+        ),
+        amounts: (event.amount(Axis::Horizontal), event.amount(Axis::Vertical)),
+        v120: (
+            event.amount_v120(Axis::Horizontal),
+            event.amount_v120(Axis::Vertical),
+        ),
+    })
 }
 
 fn current_monotonic_time_millis() -> u32 {
@@ -2366,6 +2429,18 @@ impl DrmSessionState {
                 }
                 self.request_redraw();
             }
+            InputEvent::PointerAxis { event } => {
+                // Forward libinput wheel, finger and continuous scroll frames
+                // through the current pointer focus/grab. Dropping this event
+                // makes physical DRM sessions appear non-scrollable even
+                // though nested X11 sessions deliver the same protocol path.
+                let frame = axis_frame_from_event(&event);
+                if let Some(pointer) = self.seat.get_pointer() {
+                    pointer.axis(self, frame);
+                    pointer.frame(self);
+                }
+                self.request_redraw();
+            }
             InputEvent::PointerButton { event } => {
                 let serial = self.next_serial();
                 let time = event.time_msec();
@@ -3314,5 +3389,48 @@ mod tests {
             layer_surface_hit_origin(Point::from((120, 80)), Point::from((7, 11))),
             Point::from((127.0, 91.0)),
         );
+    }
+
+    #[test]
+    fn axis_frame_preserves_libinput_scroll_metadata() {
+        let frame = build_axis_frame(AxisFrameInput {
+            time: 1234,
+            source: AxisSource::Continuous,
+            directions: (
+                AxisRelativeDirection::Inverted,
+                AxisRelativeDirection::Identical,
+            ),
+            amounts: (Some(1.5), Some(-2.25)),
+            v120: (Some(60.0), Some(-120.0)),
+        });
+
+        assert_eq!(frame.time, 1234);
+        assert_eq!(frame.source, Some(AxisSource::Continuous));
+        assert_eq!(
+            frame.relative_direction,
+            (
+                AxisRelativeDirection::Inverted,
+                AxisRelativeDirection::Identical,
+            )
+        );
+        assert_eq!(frame.axis, (1.5, -2.25));
+        assert_eq!(frame.v120, Some((60, -120)));
+    }
+
+    #[test]
+    fn finger_zero_amount_emits_axis_stop_without_v120() {
+        let frame = build_axis_frame(AxisFrameInput {
+            time: 9,
+            source: AxisSource::Finger,
+            directions: (
+                AxisRelativeDirection::Identical,
+                AxisRelativeDirection::Inverted,
+            ),
+            amounts: (Some(0.0), Some(0.0)),
+            v120: (None, None),
+        });
+
+        assert_eq!(frame.stop, (true, true));
+        assert_eq!(frame.v120, None);
     }
 }

@@ -197,7 +197,7 @@ fn default_backend_for_host(display: Option<&str>, _wayland_display: Option<&str
 }
 
 fn validate_backend_transport(backend: Backend, display: Option<&str>) -> Result<(), String> {
-    if backend == Backend::Nested && !display.is_some_and(|value| !value.is_empty()) {
+    if backend == Backend::Nested && display.is_none_or(|value| value.is_empty()) {
         return Err(
             "nested backend requires a non-empty DISPLAY (nested transport is X11-only); use --backend drm or --backend headless"
                 .to_owned(),

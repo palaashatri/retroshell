@@ -149,9 +149,9 @@ fn run_cycle(cycle: u32) -> Result<(), Box<dyn Error>> {
     let _popup = popup_xdg.get_popup(Some(&parent_xdg), &positioner, &handle, ());
     popup_surface.commit();
 
-    while !(state.popup_configured && state.popup_geometry_received)
-        && !state.close_requested
-        && !state.popup_done
+    while !(state.close_requested
+        || state.popup_done
+        || (state.popup_configured && state.popup_geometry_received))
     {
         queue.blocking_dispatch(&mut state)?;
     }
