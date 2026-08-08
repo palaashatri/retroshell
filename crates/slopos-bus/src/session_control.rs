@@ -53,6 +53,12 @@ pub enum SessionControlRequest {
     ActivateApplication {
         bundle_id: String,
     },
+    /// Activate one of the current compositor's indexed virtual workspaces.
+    /// The live Space model is still fixed to indices 0..7; invalid values
+    /// are rejected by the compositor without changing state.
+    SwitchWorkspace {
+        index: u8,
+    },
     /// Atomically replace the compositor's logical output topology.
     /// The value uses `name:WIDTHxHEIGHT@x,y:sSCALE` entries separated by `;`.
     ReconfigureOutputs {
@@ -373,6 +379,16 @@ mod tests {
     }
 
     #[test]
+    fn switch_workspace_request_round_trips_through_json() {
+        let request = SessionControlRequest::SwitchWorkspace { index: 3 };
+        let encoded = serde_json::to_vec(&request).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<SessionControlRequest>(&encoded).unwrap(),
+            request
+        );
+    }
+
+    #[test]
     fn headless_test_input_request_round_trips_through_json() {
         let request = SessionControlRequest::HeadlessTestInput {
             event: HeadlessInputEvent::Motion {
@@ -402,6 +418,27 @@ mod tests {
         let request = SessionControlRequest::FocusedWindow {
             action: WindowPresentationAction::Minimize,
         };
+        sender
+            .send_to(
+                serde_json::to_vec(&request).unwrap().as_slice(),
+                runtime.join(SESSION_CONTROL_SOCKET),
+            )
+            .unwrap();
+        assert_eq!(listener.drain(), vec![request]);
+        drop(listener);
+        let _ = std::fs::remove_dir(runtime);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listener_drains_switch_workspace_request() {
+        use std::os::unix::net::UnixDatagram;
+
+        let runtime = std::env::temp_dir().join(format!("slo-ws-{}", std::process::id()));
+        std::fs::create_dir_all(&runtime).unwrap();
+        let listener = SessionControlListener::bind(&runtime).unwrap();
+        let sender = UnixDatagram::unbound().unwrap();
+        let request = SessionControlRequest::SwitchWorkspace { index: 6 };
         sender
             .send_to(
                 serde_json::to_vec(&request).unwrap().as_slice(),

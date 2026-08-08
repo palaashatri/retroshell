@@ -1404,9 +1404,25 @@ impl ShellDesktop {
     }
 
     fn switch_workspace(&mut self, workspace: usize) -> bool {
-        if !self.workspace_manager.write().switch_to(workspace) {
+        let mut workspace_manager = self.workspace_manager.write();
+        if workspace >= workspace_manager.total {
             return false;
         }
+        let Ok(index) = u8::try_from(workspace) else {
+            return false;
+        };
+        if self.compositor_owns_ordinary_windows() {
+            let request = SessionControlRequest::SwitchWorkspace { index };
+            if let Err(error) = send_session_control(&request) {
+                tracing::warn!(workspace, %error, "could not send workspace switch to compositor");
+                return false;
+            }
+            tracing::info!(workspace, "sent workspace switch to compositor");
+        }
+        if !workspace_manager.switch_to(workspace) {
+            return false;
+        }
+        drop(workspace_manager);
         let active_workspace = self.active_workspace();
         for shell_window in &mut self.windows {
             shell_window.window.is_active = false;
@@ -1430,15 +1446,29 @@ impl ShellDesktop {
     }
 
     fn switch_to_next_workspace(&mut self) {
-        self.workspace_manager.write().next();
-        let active = self.active_workspace();
-        let _ = self.switch_workspace(active);
+        let next = {
+            let manager = self.workspace_manager.read();
+            (manager.total > 0).then(|| (manager.active + 1) % manager.total)
+        };
+        if let Some(next) = next {
+            let _ = self.switch_workspace(next);
+        }
     }
 
     fn switch_to_previous_workspace(&mut self) {
-        self.workspace_manager.write().previous();
-        let active = self.active_workspace();
-        let _ = self.switch_workspace(active);
+        let previous = {
+            let manager = self.workspace_manager.read();
+            (manager.total > 0).then(|| {
+                if manager.active == 0 {
+                    manager.total - 1
+                } else {
+                    manager.active - 1
+                }
+            })
+        };
+        if let Some(previous) = previous {
+            let _ = self.switch_workspace(previous);
+        }
     }
 
     fn open_workspace_status_window(&mut self) {
@@ -4190,6 +4220,7 @@ mod tests {
 
     static MENU_MANIFEST_ENV_LOCK: Mutex<()> = Mutex::new(());
     static LOCK_PASSWORD_ENV_LOCK: Mutex<()> = Mutex::new(());
+    static SESSION_RUNTIME_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn foreign_toplevel_matching_accepts_only_known_or_exact_bundle_ids() {
@@ -4743,6 +4774,70 @@ mod tests {
 
         desktop.handle_menu_action("workspace.previous");
         assert_eq!(desktop.active_workspace(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_workspace_switch_sends_control_before_committing_local_mirror() {
+        use slopos_bus::{SessionControlListener, SessionControlRequest};
+
+        let _environment_guard = SESSION_RUNTIME_ENV_LOCK.lock().unwrap();
+        let runtime = std::env::temp_dir().join(format!(
+            "slo-shell-ws-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&runtime).unwrap();
+        let listener = SessionControlListener::bind(&runtime).unwrap();
+        let previous_runtime = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR");
+        std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", &runtime);
+
+        let (mut desktop, _) = test_desktop();
+        desktop.set_layer_shell_bound(true);
+        assert!(desktop.switch_workspace(2));
+        assert_eq!(desktop.active_workspace(), 2);
+        assert_eq!(
+            listener.drain(),
+            vec![SessionControlRequest::SwitchWorkspace { index: 2 }]
+        );
+
+        if let Some(previous_runtime) = previous_runtime {
+            std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", previous_runtime);
+        } else {
+            std::env::remove_var("SLOPOS_SESSION_RUNTIME_DIR");
+        }
+        drop(listener);
+        fs::remove_dir_all(runtime).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_live_workspace_switch_keeps_local_mirror_unchanged() {
+        let _environment_guard = SESSION_RUNTIME_ENV_LOCK.lock().unwrap();
+        let runtime = std::env::temp_dir().join(format!(
+            "slo-shell-ws-missing-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let previous_runtime = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR");
+        std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", &runtime);
+
+        let (mut desktop, _) = test_desktop();
+        desktop.set_layer_shell_bound(true);
+        assert!(!desktop.switch_workspace(2));
+        assert_eq!(desktop.active_workspace(), 0);
+
+        if let Some(previous_runtime) = previous_runtime {
+            std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", previous_runtime);
+        } else {
+            std::env::remove_var("SLOPOS_SESSION_RUNTIME_DIR");
+        }
     }
 
     #[test]

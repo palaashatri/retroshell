@@ -69,9 +69,9 @@ pub use window_state::{
     TilePlacement, WindowPresentationState, WindowRestoreState, ZoomAction, ZoomPolicyConfig,
 };
 pub use workspace_focus::{
-    assign_new_window_to_active, focus_window_after_workspace_switch, hit_test_allowed,
-    move_window_to_index, should_clear_focus_after_workspace_switch, visible_paint_order,
-    window_paint_source, WindowPaintSource,
+    activate_workspace_index, assign_new_window_to_active, focus_window_after_workspace_switch,
+    hit_test_allowed, move_window_to_index, should_clear_focus_after_workspace_switch,
+    visible_paint_order, window_paint_source, WindowPaintSource,
 };
 
 /// DRM/KMS + libseat session path (Linux only). Nested X11 lives in the binary.

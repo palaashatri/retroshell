@@ -119,10 +119,11 @@ use crate::frame_timing::{FrameScheduler, RefreshRate};
 use crate::hdr::HdrCapabilities;
 use crate::work_area::{compute_exclusive_work_area, ExclusiveZoneReservation};
 use crate::{
-    assign_new_window_to_active, clamp_window_to_work_area, clear_interactive_grab_state,
-    detect_output_scale_from_env, discover_drm_nodes, drm_presentation_pipeline,
-    focus_window_after_workspace_switch, geometry_for_interactive_grab, output_scale_summary,
-    plan_drm_modeset, pointer_grab_request_is_valid_for_window, preferred_primary_drm_node,
+    activate_workspace_index as activate_workspace_state, assign_new_window_to_active,
+    clamp_window_to_work_area, clear_interactive_grab_state, detect_output_scale_from_env,
+    discover_drm_nodes, drm_presentation_pipeline, focus_window_after_workspace_switch,
+    geometry_for_interactive_grab, output_scale_summary, plan_drm_modeset,
+    pointer_grab_request_is_valid_for_window, preferred_primary_drm_node,
     register_wayland_display_source, session_mode_summary, surface_tree_root,
     transition_presentation_state, visible_paint_order, CompositorBackendKind, DisplayPolicy,
     DrmPresentationStage, InteractiveGrab, InteractiveGrabKind, OutputScale,
@@ -1894,6 +1895,9 @@ impl DrmSessionState {
             SessionControlRequest::ActivateApplication { bundle_id } => {
                 self.activate_application(&bundle_id);
             }
+            SessionControlRequest::SwitchWorkspace { index } => {
+                self.activate_workspace_index(index);
+            }
             SessionControlRequest::ReconfigureOutputs { layout } => {
                 tracing::warn!(
                     %layout,
@@ -2062,15 +2066,15 @@ impl DrmSessionState {
 
     #[allow(dead_code)]
     fn activate_workspace_index(&mut self, index: u8) {
-        if let Some(ws) = WorkspaceId::new(index) {
-            if self.workspace_state.activate(ws) {
-                self.request_full_redraw();
-                eprintln!(
-                    "[slopos-compositor/drm] {}",
-                    self.workspace_state.summary_line()
-                );
-                self.apply_focus_after_workspace_switch();
-            }
+        if activate_workspace_state(&mut self.workspace_state, index) {
+            self.request_full_redraw();
+            eprintln!(
+                "[slopos-compositor/drm] {}",
+                self.workspace_state.summary_line()
+            );
+            self.apply_focus_after_workspace_switch();
+        } else {
+            tracing::warn!(index, "rejecting invalid workspace activation request");
         }
     }
 

@@ -59,6 +59,18 @@ pub fn move_window_to_index(
     }
 }
 
+/// Activate a workspace from a typed session-control index.
+///
+/// The control plane uses a raw `u8` so it can remain independent of the
+/// compositor's private `WorkspaceId` representation. Invalid indices are
+/// rejected without changing the active workspace.
+pub fn activate_workspace_index(state: &mut WorkspaceState, workspace_index: u8) -> bool {
+    match WorkspaceId::new(workspace_index) {
+        Some(workspace) => state.activate(workspace),
+        None => false,
+    }
+}
+
 /// How a single **visible** window should be painted this frame.
 ///
 /// Honesty contract:
@@ -138,6 +150,15 @@ mod tests {
         assert!(!hit_test_allowed(&st, "w"));
         st.activate(WorkspaceId(3));
         assert!(hit_test_allowed(&st, "w"));
+    }
+
+    #[test]
+    fn activate_workspace_index_accepts_valid_and_rejects_invalid_ids() {
+        let mut st = WorkspaceState::new();
+        assert!(activate_workspace_index(&mut st, 7));
+        assert_eq!(st.active, WorkspaceId(7));
+        assert!(!activate_workspace_index(&mut st, 8));
+        assert_eq!(st.active, WorkspaceId(7));
     }
 
     #[test]

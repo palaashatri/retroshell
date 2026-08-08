@@ -39,7 +39,8 @@ mod linux {
     use slopos_compositor::hdr::HdrCapabilities;
     use slopos_compositor::work_area::{compute_exclusive_work_area, ExclusiveZoneReservation};
     use slopos_compositor::{
-        accumulate_damage_for_window_move, accumulate_damage_rect, apply_scale_to_output_config,
+        accumulate_damage_for_window_move, accumulate_damage_rect,
+        activate_workspace_index as activate_workspace_state, apply_scale_to_output_config,
         assign_new_window_to_active, calculate_presentation_geometry, cascade_position,
         clamp_window_to_work_area, clear_interactive_grab_state, detect_output_scale_from_env,
         focus_window_after_workspace_switch, geometry_for_interactive_grab,
@@ -1763,6 +1764,9 @@ mod linux {
                 SessionControlRequest::ActivateApplication { bundle_id } => {
                     self.activate_application(&bundle_id);
                 }
+                SessionControlRequest::SwitchWorkspace { index } => {
+                    self.activate_workspace_index(index);
+                }
                 SessionControlRequest::ReconfigureOutputs { layout } => {
                     if let Err(error) = self.reconfigure_outputs(&layout) {
                         tracing::warn!(%error, "runtime output topology rejected");
@@ -2110,15 +2114,15 @@ mod linux {
         }
 
         fn activate_workspace_index(&mut self, index: u8) {
-            if let Some(ws) = WorkspaceId::new(index) {
-                if self.workspace_state.activate(ws) {
-                    self.request_full_redraw();
-                    eprintln!(
-                        "[slopos-compositor] {}",
-                        self.workspace_state.summary_line()
-                    );
-                    self.apply_focus_after_workspace_switch();
-                }
+            if activate_workspace_state(&mut self.workspace_state, index) {
+                self.request_full_redraw();
+                eprintln!(
+                    "[slopos-compositor] {}",
+                    self.workspace_state.summary_line()
+                );
+                self.apply_focus_after_workspace_switch();
+            } else {
+                tracing::warn!(index, "rejecting invalid workspace activation request");
             }
         }
 
