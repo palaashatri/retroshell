@@ -39,6 +39,7 @@ fn headless_runtime_gate_exercises_native_clipboard_transfer() {
         "SLOPOS_CLIPBOARD_TRANSFER_VERIFIED",
         "SLOPOS_CLIPBOARD_LARGE_TRANSFER_VERIFIED",
         "SLOPOS_CLIPBOARD_MISSING_MIME_EOF_VERIFIED",
+        "SLOPOS_CLIPBOARD_SOURCE_DEATH_CLEARED",
     ] {
         assert!(
             script.contains(marker),

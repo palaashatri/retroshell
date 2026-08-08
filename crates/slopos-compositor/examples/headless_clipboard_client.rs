@@ -16,6 +16,7 @@ use std::{
     io::{Read, Write},
     os::fd::AsFd,
     os::unix::net::UnixStream,
+    thread,
     time::Duration,
 };
 
@@ -38,7 +39,9 @@ static LARGE_PAYLOAD: [u8; LARGE_PAYLOAD_SIZE] = [b'L'; LARGE_PAYLOAD_SIZE];
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Mode {
     Source,
+    SourceOnce,
     Sink,
+    SinkAfterSourceDeath,
 }
 
 #[derive(Default)]
@@ -237,7 +240,7 @@ fn wait_for_toplevel(
     Ok(())
 }
 
-fn run_source(connection: &Connection) -> Result<(), Box<dyn Error>> {
+fn run_source(connection: &Connection, keep_alive: bool) -> Result<(), Box<dyn Error>> {
     let (globals, mut event_queue) = registry_queue_init::<State>(connection)?;
     let queue_handle = event_queue.handle();
     let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&queue_handle, 1..=6, ())?;
@@ -269,6 +272,13 @@ fn run_source(connection: &Connection) -> Result<(), Box<dyn Error>> {
     println!("SLOPOS_CLIPBOARD_SOURCE_READY offers={MIME_TEXT_UTF8},{MIME_TEXT},{MIME_LARGE}");
     std::io::stdout().flush()?;
 
+    if !keep_alive {
+        // Let the compositor consume SetSelection before this source dies. The
+        // sink launched afterwards must observe that the selection was cleared.
+        thread::sleep(Duration::from_millis(250));
+        return Ok(());
+    }
+
     loop {
         event_queue.blocking_dispatch(&mut state)?;
     }
@@ -289,7 +299,7 @@ fn read_offer(
     Ok(bytes)
 }
 
-fn run_sink(connection: &Connection) -> Result<(), Box<dyn Error>> {
+fn run_sink(connection: &Connection, expect_selection: bool) -> Result<(), Box<dyn Error>> {
     let (globals, mut event_queue) = registry_queue_init::<State>(connection)?;
     let queue_handle = event_queue.handle();
     let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&queue_handle, 1..=6, ())?;
@@ -312,6 +322,19 @@ fn run_sink(connection: &Connection) -> Result<(), Box<dyn Error>> {
     wait_for_toplevel(&mut event_queue, &mut state)?;
     surface.commit();
     connection.flush()?;
+
+    if !expect_selection {
+        for _ in 0..20 {
+            event_queue.dispatch_pending(&mut state)?;
+            if state.selection_received {
+                return Err("clipboard selection survived source disconnect".into());
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        println!("SLOPOS_CLIPBOARD_SOURCE_DEATH_CLEARED");
+        std::io::stdout().flush()?;
+        return Ok(());
+    }
 
     while !state.selection_received {
         if state.close_requested {
@@ -375,12 +398,19 @@ fn run_sink(connection: &Connection) -> Result<(), Box<dyn Error>> {
 fn main() -> Result<(), Box<dyn Error>> {
     let mode = match env::args().nth(1).as_deref() {
         Some("source") => Mode::Source,
+        Some("source-once") => Mode::SourceOnce,
         Some("sink") => Mode::Sink,
-        _ => return Err("usage: headless_clipboard_client <source|sink>".into()),
+        Some("sink-after-source-death") => Mode::SinkAfterSourceDeath,
+        _ => return Err(
+            "usage: headless_clipboard_client <source|source-once|sink|sink-after-source-death>"
+                .into(),
+        ),
     };
     let connection = Connection::connect_to_env()?;
     match mode {
-        Mode::Source => run_source(&connection),
-        Mode::Sink => run_sink(&connection),
+        Mode::Source => run_source(&connection, true),
+        Mode::SourceOnce => run_source(&connection, false),
+        Mode::Sink => run_sink(&connection, true),
+        Mode::SinkAfterSourceDeath => run_sink(&connection, false),
     }
 }

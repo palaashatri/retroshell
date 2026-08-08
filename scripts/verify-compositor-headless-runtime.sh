@@ -74,7 +74,7 @@ write_artifact() {
   local failure="${2:-}"
   cat >"$artifact.tmp" <<JSON
 {
-  "schema": 7,
+  "schema": 8,
   "component": "slopos-compositor",
   "commit": "$commit_sha",
   "branch": "$branch",
@@ -99,6 +99,7 @@ write_artifact() {
   "clipboard_transfer_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_TRANSFER_VERIFIED && printf true || printf false),
   "clipboard_large_transfer_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_LARGE_TRANSFER_VERIFIED && printf true || printf false),
   "clipboard_missing_mime_eof_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_MISSING_MIME_EOF_VERIFIED && printf true || printf false),
+  "clipboard_source_death_cleared": $(has_clipboard_marker SLOPOS_CLIPBOARD_SOURCE_DEATH_CLEARED && printf true || printf false),
   "hardware_verified": false,
   "drm_verified": false,
   "rendering_verified": false,
@@ -289,6 +290,28 @@ done
 kill -TERM "$clipboard_source_pid" 2>/dev/null || true
 wait "$clipboard_source_pid" 2>/dev/null || true
 clipboard_source_pid=""
+
+printf 'Exercising clipboard source-death clearing\n'
+if ! WAYLAND_DISPLAY="$socket_name" timeout 10s \
+  target/debug/examples/headless_clipboard_client source-once >>"$clipboard_source_log" 2>&1; then
+  write_artifact failed "clipboard_source_death_source_failed"
+  cat "$clipboard_source_log" >&2
+  exit 1
+fi
+if ! WAYLAND_DISPLAY="$socket_name" timeout 10s \
+  target/debug/examples/headless_clipboard_client sink-after-source-death >>"$clipboard_sink_log" 2>&1; then
+  write_artifact failed "clipboard_source_death_sink_failed"
+  cat "$clipboard_source_log" >&2
+  cat "$clipboard_sink_log" >&2
+  exit 1
+fi
+if ! has_clipboard_marker SLOPOS_CLIPBOARD_SOURCE_DEATH_CLEARED; then
+  write_artifact failed "missing_SLOPOS_CLIPBOARD_SOURCE_DEATH_CLEARED"
+  cat "$clipboard_source_log" >&2
+  cat "$clipboard_sink_log" >&2
+  exit 1
+fi
+
 combine_clipboard_logs
 if ! kill -0 "$compositor_pid" 2>/dev/null; then
   write_artifact failed "compositor_died_after_clipboard_transfer"
