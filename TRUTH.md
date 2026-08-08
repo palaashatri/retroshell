@@ -17,6 +17,49 @@ competes with KDE Plasma and GNOME as a daily driver.
 Documentation commits after the audited implementation do not change the
 product score unless they are accompanied by implementation and evidence.
 
+### Current implementation wave — compositor-authoritative workspace switching
+
+Implementation commit `d1ea8239621c0c761d0471caea2a1f042e9677b6` adds a typed
+`SwitchWorkspace { index: u8 }` request to the exact session control socket.
+Both the nested and DRM compositor backends validate the indexed workspace
+through shared compositor policy, redraw and rebind focus after a valid switch,
+and reject invalid indices without changing state. Live shell workspace
+switches send this request before committing their local mirror; failed sends
+leave that mirror unchanged. Fallback/in-process shell tests remain local-only.
+
+Focused tests cover request JSON/socket delivery, valid 0..7 and rejected 8
+activation, and live-shell success/failure ordering. Host formatting, locked
+workspace check/tests, Clippy with `-D warnings`, and the optimized workspace
+build passed after the change.
+
+The exact Ubuntu UTM clone at this SHA passed the same five locked workspace
+gates. The first test attempt stopped at the linker because the guest disk was
+full; after removing only old generated Cargo `target/` output, the rerun
+completed with `test_exit=0`. Both attempts are retained under
+`artifacts/qa/2026-08-08-build-tests-d1ea823/`.
+
+The repository headless compositor protocol gate and logical-output topology
+gate both report `status: "passed"` at this SHA. Evidence is retained under
+`artifacts/qa/2026-08-08-compositor-runtime-d1ea823/` and
+`artifacts/qa/2026-08-08-compositor-topology-d1ea823/`; their JSON explicitly
+keeps DRM/KMS, physical input, rendering and hardware flags false.
+
+A separate UTM runtime control smoke launched two real release Preview clients
+against the SLOPOS-owned headless compositor. Both clients mapped and observed
+WGPU Vulkan `llvmpipe`; the compositor then logged
+`workspace active=2/8 windows=2 visible=0` for the valid request and rejected
+index 8. The request was sent by a retained control-plane harness, not by a
+pixel-inspected shell menu click, so this proves compositor authority and
+failure handling but not the complete dynamic Spaces product or visual shell
+interaction. Evidence is under
+`artifacts/qa/2026-08-08-spaces-control-d1ea823/r2/`.
+
+This closes one shell/compositor mismatch but does not integrate the dynamic
+`SpacesModel`, replace the fixed eight-workspace state, prove overview/drag/
+keyboard/accessibility workflows, or cover hardware and third-party gates. The
+overall score therefore remains **63/100** and strict compositor completion
+remains **76/100**.
+
 ### Current implementation wave — bounded multi-page retained glyph atlas
 
 Implementation commit `d42d09eb002502d70dad26b039299534e0ebf2cc` extends the
