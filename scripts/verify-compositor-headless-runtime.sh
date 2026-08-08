@@ -169,9 +169,8 @@ sock.close()
 PY
 }
 
-window_origin() {
-  local title="$1"
-  sed -n "s/.*surface mapped at (\\([0-9][0-9]*\\),\\([0-9][0-9]*\\)) title=${title}.*/\\1 \\2/p" "$compositor_log" | tail -n 1
+last_window_origins() {
+  sed -n "s/.*surface mapped at (\\([0-9][0-9]*\\),\\([0-9][0-9]*\\)).*/\\1 \\2/p" "$compositor_log" | tail -n 2
 }
 
 combine_clipboard_logs() {
@@ -628,15 +627,14 @@ if [[ "$target_ready" != true ]]; then
   exit 1
 fi
 
-abort_source_origin="$(window_origin 'SLOPOS DnD source')"
-abort_target_origin="$(window_origin 'SLOPOS DnD target')"
-if [[ -z "$abort_source_origin" || -z "$abort_target_origin" ]]; then
+mapfile -t abort_origins < <(last_window_origins)
+if [[ "${#abort_origins[@]}" -ne 2 ]]; then
   write_artifact failed "dnd_abort_window_geometry_missing"
   cat "$compositor_log" >&2
   exit 1
 fi
-read -r abort_source_x abort_source_y <<<"$abort_source_origin"
-read -r abort_target_x abort_target_y <<<"$abort_target_origin"
+read -r abort_source_x abort_source_y <<<"${abort_origins[0]}"
+read -r abort_target_x abort_target_y <<<"${abort_origins[1]}"
 # The origins come from the compositor's authoritative mapped-window log. The
 # offsets stay within each 320x240 test buffer while remaining independent of
 # the cascade position used by earlier protocol clients.
