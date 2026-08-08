@@ -2614,6 +2614,8 @@ impl<'a> Canvas<'a> {
     /// Draw a decoded RGBA8 image through retained, bounded GPU tile textures.
     /// Only tiles intersecting the current clip are emitted, so a zoomed or
     /// scrolled image does not upload invisible pixels for the current frame.
+    /// Quarter-turn rotation changes only the tile geometry and UVs; decoded
+    /// source bytes remain shared with the retained texture cache.
     pub fn image(&mut self, image: &ImageView, rect: Rect) {
         if image.width() == 0 || image.height() == 0 || rect.width <= 0.0 || rect.height <= 0.0 {
             return;
@@ -2627,27 +2629,71 @@ impl<'a> Canvas<'a> {
 
         let source_width = image.width();
         let source_height = image.height();
-        let scale_x = rect.width / source_width as f32;
-        let scale_y = rect.height / source_height as f32;
+        let rotation = image.rotation_quadrants() % 4;
+        let display_width = if rotation.is_multiple_of(2) {
+            source_width
+        } else {
+            source_height
+        };
+        let display_height = if rotation.is_multiple_of(2) {
+            source_height
+        } else {
+            source_width
+        };
+        let scale_x = rect.width / display_width as f32;
+        let scale_y = rect.height / display_height as f32;
         if !scale_x.is_finite() || !scale_y.is_finite() || scale_x <= 0.0 || scale_y <= 0.0 {
             return;
         }
-        let source_x_start =
-            (((visible.x - rect.x) / scale_x).floor().max(0.0)).min(source_width as f32) as u32;
-        let source_y_start =
-            (((visible.y - rect.y) / scale_y).floor().max(0.0)).min(source_height as f32) as u32;
-        let source_x_end = (((visible.x + visible.width - rect.x) / scale_x)
+        // Map the visible display rectangle back into source coordinates
+        // before selecting tiles. This keeps rotated images just as bounded
+        // as unrotated ones instead of walking every source tile for a small
+        // clipped viewport.
+        let display_x_start =
+            (((visible.x - rect.x) / scale_x).floor().max(0.0)).min(display_width as f32);
+        let display_y_start =
+            (((visible.y - rect.y) / scale_y).floor().max(0.0)).min(display_height as f32);
+        let display_x_end = (((visible.x + visible.width - rect.x) / scale_x)
             .ceil()
             .max(0.0))
-        .min(source_width as f32) as u32;
-        let source_y_end = (((visible.y + visible.height - rect.y) / scale_y)
+        .min(display_width as f32);
+        let display_y_end = (((visible.y + visible.height - rect.y) / scale_y)
             .ceil()
             .max(0.0))
-        .min(source_height as f32) as u32;
+        .min(display_height as f32);
+        let (source_x_start, source_x_end, source_y_start, source_y_end) = match rotation {
+            0 => (
+                display_x_start,
+                display_x_end,
+                display_y_start,
+                display_y_end,
+            ),
+            1 => (
+                display_y_start,
+                display_y_end,
+                source_height as f32 - display_x_end,
+                source_height as f32 - display_x_start,
+            ),
+            2 => (
+                source_width as f32 - display_x_end,
+                source_width as f32 - display_x_start,
+                source_height as f32 - display_y_end,
+                source_height as f32 - display_y_start,
+            ),
+            _ => (
+                source_width as f32 - display_y_end,
+                source_width as f32 - display_y_start,
+                display_x_start,
+                display_x_end,
+            ),
+        };
+        let source_x_start = source_x_start.floor().clamp(0.0, source_width as f32) as u32;
+        let source_x_end = source_x_end.ceil().clamp(0.0, source_width as f32) as u32;
+        let source_y_start = source_y_start.floor().clamp(0.0, source_height as f32) as u32;
+        let source_y_end = source_y_end.ceil().clamp(0.0, source_height as f32) as u32;
         if source_x_start >= source_x_end || source_y_start >= source_y_end {
             return;
         }
-
         let first_tile_x = source_x_start / IMAGE_TILE_SIZE;
         let first_tile_y = source_y_start / IMAGE_TILE_SIZE;
         let last_tile_x = source_x_end.saturating_sub(1) / IMAGE_TILE_SIZE;
@@ -2659,21 +2705,70 @@ impl<'a> Canvas<'a> {
                 let tile_source_y = tile_y * IMAGE_TILE_SIZE;
                 let tile_width = IMAGE_TILE_SIZE.min(source_width - tile_source_x);
                 let tile_height = IMAGE_TILE_SIZE.min(source_height - tile_source_y);
-                let tile_rect = Rect::new(
-                    rect.x + tile_source_x as f32 * scale_x,
-                    rect.y + tile_source_y as f32 * scale_y,
-                    tile_width as f32 * scale_x,
-                    tile_height as f32 * scale_y,
-                );
+                let tile_rect = match rotation {
+                    0 => Rect::new(
+                        rect.x + tile_source_x as f32 * scale_x,
+                        rect.y + tile_source_y as f32 * scale_y,
+                        tile_width as f32 * scale_x,
+                        tile_height as f32 * scale_y,
+                    ),
+                    1 => Rect::new(
+                        rect.x + (source_height - tile_source_y - tile_height) as f32 * scale_x,
+                        rect.y + tile_source_x as f32 * scale_y,
+                        tile_height as f32 * scale_x,
+                        tile_width as f32 * scale_y,
+                    ),
+                    2 => Rect::new(
+                        rect.x + (source_width - tile_source_x - tile_width) as f32 * scale_x,
+                        rect.y + (source_height - tile_source_y - tile_height) as f32 * scale_y,
+                        tile_width as f32 * scale_x,
+                        tile_height as f32 * scale_y,
+                    ),
+                    _ => Rect::new(
+                        rect.x + tile_source_y as f32 * scale_x,
+                        rect.y + (source_width - tile_source_x - tile_width) as f32 * scale_y,
+                        tile_height as f32 * scale_x,
+                        tile_width as f32 * scale_y,
+                    ),
+                };
                 let Some(draw_rect) = intersect_rect(tile_rect, visible) else {
                     continue;
                 };
-                let u0 = ((draw_rect.x - tile_rect.x) / tile_rect.width).clamp(0.0, 1.0);
-                let v0 = ((draw_rect.y - tile_rect.y) / tile_rect.height).clamp(0.0, 1.0);
-                let u1 = ((draw_rect.x + draw_rect.width - tile_rect.x) / tile_rect.width)
+                let tx0 = ((draw_rect.x - tile_rect.x) / tile_rect.width).clamp(0.0, 1.0);
+                let ty0 = ((draw_rect.y - tile_rect.y) / tile_rect.height).clamp(0.0, 1.0);
+                let tx1 = ((draw_rect.x + draw_rect.width - tile_rect.x) / tile_rect.width)
                     .clamp(0.0, 1.0);
-                let v1 = ((draw_rect.y + draw_rect.height - tile_rect.y) / tile_rect.height)
+                let ty1 = ((draw_rect.y + draw_rect.height - tile_rect.y) / tile_rect.height)
                     .clamp(0.0, 1.0);
+                let uv_corners = match rotation {
+                    0 => [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+                    // Clockwise quarter-turn: display top-left is source
+                    // bottom-left, then source top-left at display top-right.
+                    1 => [[0.0, 1.0], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                    2 => [[1.0, 1.0], [0.0, 1.0], [0.0, 0.0], [1.0, 0.0]],
+                    // Three clockwise quarter-turns (counter-clockwise
+                    // visually): source top-right starts at display
+                    // top-left.
+                    _ => [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]],
+                };
+                let uv_at = |tx: f32, ty: f32| {
+                    let top = [
+                        uv_corners[0][0] + (uv_corners[1][0] - uv_corners[0][0]) * tx,
+                        uv_corners[0][1] + (uv_corners[1][1] - uv_corners[0][1]) * tx,
+                    ];
+                    let bottom = [
+                        uv_corners[3][0] + (uv_corners[2][0] - uv_corners[3][0]) * tx,
+                        uv_corners[3][1] + (uv_corners[2][1] - uv_corners[3][1]) * tx,
+                    ];
+                    [
+                        top[0] + (bottom[0] - top[0]) * ty,
+                        top[1] + (bottom[1] - top[1]) * ty,
+                    ]
+                };
+                let uv0 = uv_at(tx0, ty0);
+                let uv1 = uv_at(tx1, ty0);
+                let uv2 = uv_at(tx1, ty1);
+                let uv3 = uv_at(tx0, ty1);
                 let p0 = self.ndc(draw_rect.x, draw_rect.y);
                 let p1 = self.ndc(draw_rect.x + draw_rect.width, draw_rect.y);
                 let p2 = self.ndc(
@@ -2685,27 +2780,27 @@ impl<'a> Canvas<'a> {
                 self.image_vertices.extend_from_slice(&[
                     ImageVertex {
                         position: p0,
-                        uv: [u0, v0],
+                        uv: uv0,
                     },
                     ImageVertex {
                         position: p1,
-                        uv: [u1, v0],
+                        uv: uv1,
                     },
                     ImageVertex {
                         position: p2,
-                        uv: [u1, v1],
+                        uv: uv2,
                     },
                     ImageVertex {
                         position: p0,
-                        uv: [u0, v0],
+                        uv: uv0,
                     },
                     ImageVertex {
                         position: p2,
-                        uv: [u1, v1],
+                        uv: uv2,
                     },
                     ImageVertex {
                         position: p3,
-                        uv: [u0, v1],
+                        uv: uv3,
                     },
                 ]);
                 self.push_command(DrawCommand::Image {
@@ -5511,6 +5606,73 @@ mod tests {
             2
         );
         assert_eq!(draw_data.image_vertices.len(), 12);
+    }
+
+    #[test]
+    fn rotated_image_vertices_keep_source_dimensions_and_use_clockwise_uvs() {
+        let source_pixels = vec![255; 2 * 3 * 4];
+        let expected_uvs = [
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            [[0.0, 1.0], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+            [[1.0, 1.0], [0.0, 1.0], [0.0, 0.0], [1.0, 0.0]],
+            [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]],
+        ];
+
+        for (rotation, expected) in expected_uvs.into_iter().enumerate() {
+            let mut image = ImageView::new(2, 3, source_pixels.clone()).unwrap();
+            image.set_rotation_quadrants(rotation as u8);
+            let (display_width, display_height) = image.display_dimensions();
+            assert_eq!(
+                (display_width, display_height),
+                if rotation % 2 == 0 { (2, 3) } else { (3, 2) }
+            );
+
+            let mut canvas = Canvas::new(100.0, 100.0);
+            canvas.image(
+                &image,
+                Rect::new(
+                    10.0,
+                    20.0,
+                    display_width as f32 * 10.0,
+                    display_height as f32 * 10.0,
+                ),
+            );
+            let draw_data = canvas.finish();
+            assert_eq!(draw_data.image_vertices.len(), 6);
+            let actual = [
+                draw_data.image_vertices[0].uv,
+                draw_data.image_vertices[1].uv,
+                draw_data.image_vertices[2].uv,
+                draw_data.image_vertices[5].uv,
+            ];
+            assert_eq!(actual, expected);
+            let Some(super::DrawCommand::Image { upload, .. }) = draw_data.commands.first() else {
+                panic!("rotated image should emit an image command");
+            };
+            assert_eq!((upload.source_width, upload.source_height), (2, 3));
+            assert_eq!(upload.pixels.as_ref(), source_pixels.as_slice());
+        }
+    }
+
+    #[test]
+    fn rotated_image_clip_selects_only_intersecting_source_tiles() {
+        let mut image = ImageView::new(4097, 1, vec![255; 4097 * 4]).unwrap();
+        image.set_rotation_quadrants(1);
+        let mut canvas = Canvas::new(1.0, 4097.0);
+        canvas.with_clip(Rect::new(0.0, 2020.0, 1.0, 20.0), |canvas| {
+            canvas.image(&image, Rect::new(0.0, 0.0, 1.0, 4097.0));
+        });
+        let draw_data = canvas.finish();
+
+        assert_eq!(
+            draw_data
+                .commands
+                .iter()
+                .filter(|command| matches!(command, super::DrawCommand::Image { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(draw_data.image_vertices.len(), 6);
     }
 
     #[test]

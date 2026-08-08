@@ -44,7 +44,30 @@ static ARTIFACT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ZoomMode {
     Fit,
+    Fill,
     Manual,
+}
+
+impl ZoomMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Fit => "Fit",
+            Self::Fill => "Fill",
+            Self::Manual => "Manual",
+        }
+    }
+}
+
+fn normalize_rotation(quadrants: u8) -> u8 {
+    quadrants % 4
+}
+
+fn rotated_dimensions(width: u32, height: u32, rotation_quadrants: u8) -> (u32, u32) {
+    if normalize_rotation(rotation_quadrants).is_multiple_of(2) {
+        (width, height)
+    } else {
+        (height, width)
+    }
 }
 
 #[derive(Debug)]
@@ -200,6 +223,31 @@ fn fit_zoom(image_width: u32, image_height: u32, viewport_width: f32, viewport_h
     ratio.clamp(f32::MIN_POSITIVE, MAX_ZOOM)
 }
 
+fn fill_zoom(
+    image_width: u32,
+    image_height: u32,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> f32 {
+    if image_width == 0 || image_height == 0 || viewport_width <= 0.0 || viewport_height <= 0.0 {
+        return 1.0;
+    }
+    let width_ratio = viewport_width / image_width as f32;
+    let height_ratio = viewport_height / image_height as f32;
+    let ratio = width_ratio.max(height_ratio);
+    if ratio.is_nan() {
+        return 1.0;
+    }
+    if ratio.is_finite() {
+        ratio.clamp(f32::MIN_POSITIVE, MAX_ZOOM)
+    } else {
+        // A finite viewport and non-zero dimensions normally make this
+        // unreachable; retain a bounded value if a caller supplies an
+        // overflowing float so layout never receives NaN or infinity.
+        MAX_ZOOM
+    }
+}
+
 fn solid_panel(fill: [f32; 4]) -> Panel {
     let mut panel = Panel::new();
     panel.themed = false;
@@ -219,6 +267,7 @@ struct ImageCanvas {
     source_width: u32,
     source_height: u32,
     zoom: f32,
+    rotation_quadrants: u8,
 }
 
 impl ImageCanvas {
@@ -232,6 +281,7 @@ impl ImageCanvas {
             source_width: 0,
             source_height: 0,
             zoom: 1.0,
+            rotation_quadrants: 0,
         }
     }
 
@@ -246,16 +296,38 @@ impl ImageCanvas {
             source_width: image.width,
             source_height: image.height,
             zoom: 1.0,
+            rotation_quadrants: 0,
         })
+    }
+
+    fn rotation_quadrants(&self) -> u8 {
+        self.rotation_quadrants
+    }
+
+    fn set_rotation_quadrants(&mut self, quadrants: u8) {
+        let quadrants = normalize_rotation(quadrants);
+        self.rotation_quadrants = quadrants;
+        if let Some(image) = &mut self.image {
+            image.set_rotation_quadrants(quadrants);
+        }
+    }
+
+    fn display_dimensions(&self) -> (u32, u32) {
+        rotated_dimensions(
+            self.source_width,
+            self.source_height,
+            self.rotation_quadrants(),
+        )
     }
 
     fn natural_size(&self) -> Size {
         if self.source_width == 0 || self.source_height == 0 {
             return Size::new(1.0, 1.0);
         }
+        let (display_width, display_height) = self.display_dimensions();
         Size::new(
-            self.source_width as f32 * self.zoom,
-            self.source_height as f32 * self.zoom,
+            display_width as f32 * self.zoom,
+            display_height as f32 * self.zoom,
         )
     }
 
@@ -333,6 +405,7 @@ pub struct PreviewView {
     state: WidgetState,
     source_path: Option<PathBuf>,
     source_dimensions: Option<(u32, u32)>,
+    rotation_quadrants: u8,
     zoom: f32,
     zoom_mode: ZoomMode,
     background: Panel,
@@ -345,7 +418,10 @@ pub struct PreviewView {
     zoom_out_button: Button,
     zoom_in_button: Button,
     fit_button: Button,
+    fill_button: Button,
     actual_size_button: Button,
+    rotate_left_button: Button,
+    rotate_right_button: Button,
     extract_text_button: Button,
     lift_subject_button: Button,
     image_scroll: ScrollView,
@@ -364,7 +440,10 @@ enum ViewAction {
     ZoomIn,
     ZoomOut,
     Fit,
+    Fill,
     ActualSize,
+    RotateLeft,
+    RotateRight,
     ExtractText,
     LiftSubject,
 }
@@ -658,6 +737,7 @@ impl PreviewView {
             state: WidgetState::new(),
             source_path: path,
             source_dimensions,
+            rotation_quadrants: 0,
             zoom: 1.0,
             zoom_mode: ZoomMode::Fit,
             background: solid_panel([0.93, 0.93, 0.92, 1.0]),
@@ -670,7 +750,10 @@ impl PreviewView {
             zoom_out_button: Button::new("-"),
             zoom_in_button: Button::new("+"),
             fit_button: Button::new("Fit"),
+            fill_button: Button::new("Fill"),
             actual_size_button: Button::new("100%"),
+            rotate_left_button: Button::new("Rotate Left"),
+            rotate_right_button: Button::new("Rotate Right"),
             extract_text_button: Button::new("Extract Text"),
             lift_subject_button: Button::new("Lift Subject"),
             image_scroll,
@@ -694,6 +777,26 @@ impl PreviewView {
         self.vision_event_waker = waker;
     }
 
+    #[cfg(test)]
+    fn rotation_quadrants(&self) -> u8 {
+        self.rotation_quadrants
+    }
+
+    #[cfg(test)]
+    fn zoom_mode(&self) -> ZoomMode {
+        self.zoom_mode
+    }
+
+    #[cfg(test)]
+    fn status_text(&self) -> &str {
+        &self.status_text
+    }
+
+    pub fn display_dimensions(&self) -> Option<(u32, u32)> {
+        self.source_dimensions
+            .map(|(width, height)| rotated_dimensions(width, height, self.rotation_quadrants))
+    }
+
     pub fn window_title(&self) -> String {
         match self
             .source_path
@@ -711,14 +814,22 @@ impl PreviewView {
             "com.slopos.preview.zoom.in" => Some(ViewAction::ZoomIn),
             "com.slopos.preview.zoom.out" => Some(ViewAction::ZoomOut),
             "com.slopos.preview.zoom.fit" => Some(ViewAction::Fit),
+            "com.slopos.preview.zoom.fill" => Some(ViewAction::Fill),
             "com.slopos.preview.zoom.actual_size" => Some(ViewAction::ActualSize),
+            "com.slopos.preview.rotate.left" => Some(ViewAction::RotateLeft),
+            "com.slopos.preview.rotate.right" => Some(ViewAction::RotateRight),
             "com.slopos.preview.vision.extract_text" => Some(ViewAction::ExtractText),
             "com.slopos.preview.vision.lift_subject" => Some(ViewAction::LiftSubject),
             other => match other.rsplit_once('.') {
                 Some((_, "zoom_in")) => Some(ViewAction::ZoomIn),
                 Some((_, "zoom_out")) => Some(ViewAction::ZoomOut),
                 Some((_, "fit_to_window")) => Some(ViewAction::Fit),
+                Some((_, "fill" | "fill_window")) => Some(ViewAction::Fill),
                 Some((_, "actual_size")) => Some(ViewAction::ActualSize),
+                Some((_, "rotate_left" | "rotate_counterclockwise")) => {
+                    Some(ViewAction::RotateLeft)
+                }
+                Some((_, "rotate_right" | "rotate_clockwise")) => Some(ViewAction::RotateRight),
                 Some((_, "extract_text")) => Some(ViewAction::ExtractText),
                 Some((_, "lift_subject")) => Some(ViewAction::LiftSubject),
                 _ => None,
@@ -734,15 +845,46 @@ impl PreviewView {
             ViewAction::ZoomIn => self.change_zoom(1.25),
             ViewAction::ZoomOut => self.change_zoom(0.8),
             ViewAction::Fit => self.set_zoom_mode(ZoomMode::Fit),
+            ViewAction::Fill => self.set_zoom_mode(ZoomMode::Fill),
             ViewAction::ActualSize => {
                 self.zoom_mode = ZoomMode::Manual;
                 self.zoom = 1.0;
                 self.reflow_image();
-                self.set_status("Actual size (100%)");
+                self.set_status(format!(
+                    "Actual size (100%) — {} rotation",
+                    rotation_label(self.rotation_quadrants)
+                ));
             }
+            ViewAction::RotateLeft => self.rotate_image(-1),
+            ViewAction::RotateRight => self.rotate_image(1),
             ViewAction::ExtractText => self.submit_vision_job(VisionAction::ExtractText),
             ViewAction::LiftSubject => self.submit_vision_job(VisionAction::LiftSubject),
         }
+    }
+
+    fn rotate_image(&mut self, delta: i8) {
+        if self.source_dimensions.is_none() {
+            self.set_status("Rotate unavailable: no image is loaded.");
+            return;
+        }
+        let current = self.rotation_quadrants as i8;
+        self.rotation_quadrants = (current + delta).rem_euclid(4) as u8;
+        let rotation_quadrants = self.rotation_quadrants;
+        if let Some(canvas) = self.image_canvas_mut() {
+            canvas.set_rotation_quadrants(rotation_quadrants);
+        }
+        // A turn can change both content dimensions and the ScrollView's
+        // range. Starting at the origin avoids carrying an out-of-range pan
+        // into the new orientation; the subsequent layout still clamps any
+        // stale offset if the caller had one.
+        self.image_scroll.scroll_x = 0.0;
+        self.image_scroll.scroll_y = 0.0;
+        self.reflow_image();
+        self.set_status(format!(
+            "Rotation: {} — {} mode",
+            rotation_label(self.rotation_quadrants),
+            self.zoom_mode.label()
+        ));
     }
 
     fn submit_vision_job(&mut self, action: VisionAction) {
@@ -1047,25 +1189,44 @@ impl PreviewView {
         self.zoom_mode = ZoomMode::Manual;
         self.zoom = clamp_zoom(self.zoom * factor);
         self.reflow_image();
-        self.set_status(format!("Zoom set to {}%", zoom_percent(self.zoom)));
+        self.set_status(format!(
+            "Zoom set to {}% — Manual mode — {} rotation",
+            zoom_percent(self.zoom),
+            rotation_label(self.rotation_quadrants)
+        ));
     }
 
     fn set_zoom_mode(&mut self, mode: ZoomMode) {
+        if self.source_dimensions.is_none() {
+            self.zoom_mode = mode;
+            self.set_status(format!("{} unavailable: no image is loaded.", mode.label()));
+            return;
+        }
         self.zoom_mode = mode;
-        if mode == ZoomMode::Fit {
-            if let Some((width, height)) = self.source_dimensions {
+        if matches!(mode, ZoomMode::Fit | ZoomMode::Fill) {
+            if let Some((width, height)) = self.display_dimensions() {
                 let rect = self.image_scroll.rect();
-                self.zoom = fit_zoom(
-                    width,
-                    height,
-                    (rect.width - SCROLLBAR_WIDTH - 4.0).max(1.0),
-                    (rect.height - 4.0).max(1.0),
-                );
+                let viewport_width = (rect.width - SCROLLBAR_WIDTH - 4.0).max(1.0);
+                let viewport_height = (rect.height - 4.0).max(1.0);
+                self.zoom = match mode {
+                    ZoomMode::Fit => fit_zoom(width, height, viewport_width, viewport_height),
+                    ZoomMode::Fill => fill_zoom(width, height, viewport_width, viewport_height),
+                    ZoomMode::Manual => unreachable!("manual mode is handled above"),
+                };
             }
             self.image_scroll.scroll_x = 0.0;
             self.image_scroll.scroll_y = 0.0;
             self.reflow_image();
-            self.set_status(format!("Fit to window — {}%", zoom_percent(self.zoom)));
+            let mode_status = match mode {
+                ZoomMode::Fit => "Fit to window",
+                ZoomMode::Fill => "Fill window",
+                ZoomMode::Manual => "Manual zoom",
+            };
+            self.set_status(format!(
+                "{mode_status} — {}% — {} rotation",
+                zoom_percent(self.zoom),
+                rotation_label(self.rotation_quadrants)
+            ));
         }
     }
 
@@ -1077,15 +1238,27 @@ impl PreviewView {
 
     fn update_labels(&mut self) {
         self.dimensions_label.text = match self.source_dimensions {
-            Some((width, height)) => format!("{width} x {height}"),
+            Some((width, height)) => {
+                let (display_width, display_height) =
+                    rotated_dimensions(width, height, self.rotation_quadrants);
+                if (display_width, display_height) == (width, height) {
+                    format!("{width} x {height}")
+                } else {
+                    format!("{width} x {height} → {display_width} x {display_height}")
+                }
+            }
             None => "No image loaded".to_string(),
         };
         self.zoom_label.text = match self.source_dimensions {
             Some((width, height)) => {
+                let (display_width, display_height) =
+                    rotated_dimensions(width, height, self.rotation_quadrants);
                 let offset = self.image_scroll.scroll_offset();
                 format!(
-                    "{width} x {height}  |  {}%  |  scroll {:.0}, {:.0}",
+                    "{display_width} x {display_height}  |  {}%  |  {}  |  {} rotation  |  scroll {:.0}, {:.0}",
                     zoom_percent(self.zoom),
+                    self.zoom_mode.label(),
+                    rotation_label(self.rotation_quadrants),
                     offset.x,
                     offset.y
                 )
@@ -1183,7 +1356,10 @@ impl Widget for PreviewView {
             (&mut self.zoom_out_button, 32.0),
             (&mut self.zoom_in_button, 32.0),
             (&mut self.fit_button, 48.0),
+            (&mut self.fill_button, 48.0),
             (&mut self.actual_size_button, 58.0),
+            (&mut self.rotate_left_button, 90.0),
+            (&mut self.rotate_right_button, 95.0),
             (&mut self.extract_text_button, 102.0),
             (&mut self.lift_subject_button, 100.0),
         ] {
@@ -1193,14 +1369,15 @@ impl Widget for PreviewView {
         }
 
         self.image_scroll.set_rect(image_rect);
-        if self.zoom_mode == ZoomMode::Fit {
-            if let Some((width, height)) = self.source_dimensions {
-                self.zoom = fit_zoom(
-                    width,
-                    height,
-                    (image_rect.width - SCROLLBAR_WIDTH - 4.0).max(1.0),
-                    (image_rect.height - 4.0).max(1.0),
-                );
+        if matches!(self.zoom_mode, ZoomMode::Fit | ZoomMode::Fill) {
+            if let Some((width, height)) = self.display_dimensions() {
+                let viewport_width = (image_rect.width - SCROLLBAR_WIDTH - 4.0).max(1.0);
+                let viewport_height = (image_rect.height - 4.0).max(1.0);
+                self.zoom = match self.zoom_mode {
+                    ZoomMode::Fit => fit_zoom(width, height, viewport_width, viewport_height),
+                    ZoomMode::Fill => fill_zoom(width, height, viewport_width, viewport_height),
+                    ZoomMode::Manual => unreachable!("manual mode is handled above"),
+                };
             }
         }
         let zoom = self.zoom;
@@ -1233,11 +1410,16 @@ impl Widget for PreviewView {
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
         if let Event::KeyDown { key, modifiers } = event {
-            let action = match (key, modifiers.meta) {
-                (KeyCode::Equals, true) | (KeyCode::Equals, false) => Some(ViewAction::ZoomIn),
-                (KeyCode::Minus, true) | (KeyCode::Minus, false) => Some(ViewAction::ZoomOut),
-                (KeyCode::Key0, true) | (KeyCode::Key0, false) => Some(ViewAction::ActualSize),
-                (KeyCode::F, false) => Some(ViewAction::Fit),
+            let action = match key {
+                KeyCode::Equals => Some(ViewAction::ZoomIn),
+                KeyCode::Minus => Some(ViewAction::ZoomOut),
+                KeyCode::Key0 => Some(ViewAction::ActualSize),
+                KeyCode::LeftBracket => Some(ViewAction::RotateLeft),
+                KeyCode::RightBracket => Some(ViewAction::RotateRight),
+                KeyCode::R if modifiers.shift => Some(ViewAction::RotateLeft),
+                KeyCode::R => Some(ViewAction::RotateRight),
+                KeyCode::F if modifiers.shift => Some(ViewAction::Fill),
+                KeyCode::F => Some(ViewAction::Fit),
                 _ => None,
             };
             if let Some(action) = action {
@@ -1252,7 +1434,10 @@ impl Widget for PreviewView {
             for (button, action) in [
                 (&mut self.lift_subject_button, ViewAction::LiftSubject),
                 (&mut self.extract_text_button, ViewAction::ExtractText),
+                (&mut self.rotate_right_button, ViewAction::RotateRight),
+                (&mut self.rotate_left_button, ViewAction::RotateLeft),
                 (&mut self.actual_size_button, ViewAction::ActualSize),
+                (&mut self.fill_button, ViewAction::Fill),
                 (&mut self.fit_button, ViewAction::Fit),
                 (&mut self.zoom_in_button, ViewAction::ZoomIn),
                 (&mut self.zoom_out_button, ViewAction::ZoomOut),
@@ -1299,7 +1484,10 @@ impl Widget for PreviewView {
             &self.zoom_out_button,
             &self.zoom_in_button,
             &self.fit_button,
+            &self.fill_button,
             &self.actual_size_button,
+            &self.rotate_left_button,
+            &self.rotate_right_button,
             &self.extract_text_button,
             &self.lift_subject_button,
             &self.image_scroll,
@@ -1320,7 +1508,10 @@ impl Widget for PreviewView {
             &mut self.zoom_out_button,
             &mut self.zoom_in_button,
             &mut self.fit_button,
+            &mut self.fill_button,
             &mut self.actual_size_button,
+            &mut self.rotate_left_button,
+            &mut self.rotate_right_button,
             &mut self.extract_text_button,
             &mut self.lift_subject_button,
             &mut self.image_scroll,
@@ -1358,6 +1549,11 @@ fn zoom_percent(zoom: f32) -> String {
     } else {
         format!("{:.0}", percent.clamp(1.0, MAX_ZOOM * 100.0))
     }
+}
+
+fn rotation_label(rotation_quadrants: u8) -> String {
+    let degrees = u16::from(normalize_rotation(rotation_quadrants)) * 90;
+    format!("{degrees}° clockwise")
 }
 
 fn safe_file_label(path: &Path) -> Option<FileLabel> {
@@ -1603,6 +1799,7 @@ mod tests {
     use super::*;
     use image::codecs::png::PngEncoder;
     use image::ImageEncoder;
+    use slopos_kit::event::Modifiers;
     use slopos_vision_protocol::{AssetId, StoredImage};
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {
@@ -1692,6 +1889,126 @@ mod tests {
         assert_eq!(fit_zoom(1, 1, 10_000.0, 10_000.0), MAX_ZOOM);
         assert!(fit_zoom(40_000_000, 1, 1.0, 1.0) < MIN_ZOOM);
         assert_eq!(fit_zoom(0, 100, 100.0, 100.0), 1.0);
+    }
+
+    #[test]
+    fn fill_zoom_uses_the_covering_ratio() {
+        assert!((fill_zoom(1600, 800, 800.0, 600.0) - 0.75).abs() < f32::EPSILON);
+        assert!((fill_zoom(800, 1600, 800.0, 600.0) - 1.0).abs() < f32::EPSILON);
+        assert!(fill_zoom(1600, 800, 800.0, 600.0) * 1600.0 >= 800.0);
+        assert!(fill_zoom(1600, 800, 800.0, 600.0) * 800.0 >= 600.0);
+        assert_eq!(fill_zoom(0, 100, 100.0, 100.0), 1.0);
+    }
+
+    #[test]
+    fn rotation_normalization_and_display_dimensions_are_shared_by_preview() {
+        assert_eq!(normalize_rotation(0), 0);
+        assert_eq!(normalize_rotation(4), 0);
+        assert_eq!(normalize_rotation(7), 3);
+        assert_eq!(rotated_dimensions(640, 480, 0), (640, 480));
+        assert_eq!(rotated_dimensions(640, 480, 1), (480, 640));
+        assert_eq!(rotated_dimensions(640, 480, 3), (480, 640));
+
+        let canvas = ImageCanvas {
+            state: WidgetState::new(),
+            image: None,
+            path: PathBuf::new(),
+            encoded: Vec::new(),
+            media_type: None,
+            source_width: 640,
+            source_height: 480,
+            zoom: 1.0,
+            rotation_quadrants: 7,
+        };
+        assert_eq!(canvas.display_dimensions(), (480, 640));
+    }
+
+    #[test]
+    fn preview_rotation_and_fill_actions_update_state_and_status() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sample.png");
+        fs::write(&path, png_bytes(4, 2)).unwrap();
+        let mut view = PreviewView::new(Some(path));
+
+        view.handle_action("com.slopos.preview.rotate.right");
+        assert_eq!(view.rotation_quadrants(), 1);
+        assert_eq!(view.display_dimensions(), Some((2, 4)));
+        assert!(view.status_text().contains("90° clockwise"));
+
+        view.handle_action("com.slopos.preview.zoom.fill");
+        assert_eq!(view.zoom_mode(), ZoomMode::Fill);
+        assert!(view.status_text().contains("Fill window"));
+        assert!(view.status_text().contains("90° clockwise"));
+
+        view.handle_action("com.slopos.preview.rotate.left");
+        assert_eq!(view.rotation_quadrants(), 0);
+        view.handle_action("com.slopos.preview.zoom.fill_window");
+        assert_eq!(view.zoom_mode(), ZoomMode::Fill);
+    }
+
+    #[test]
+    fn preview_keyboard_actions_reach_fill_and_rotation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sample.png");
+        fs::write(&path, png_bytes(4, 2)).unwrap();
+        let mut view = PreviewView::new(Some(path));
+
+        assert!(matches!(
+            view.handle_event(&Event::KeyDown {
+                key: KeyCode::F,
+                modifiers: Modifiers {
+                    shift: true,
+                    ..Modifiers::NONE
+                },
+            }),
+            EventResult::Handled
+        ));
+        assert_eq!(view.zoom_mode(), ZoomMode::Fill);
+        assert!(matches!(
+            view.handle_event(&Event::KeyDown {
+                key: KeyCode::RightBracket,
+                modifiers: Modifiers::NONE,
+            }),
+            EventResult::Handled
+        ));
+        assert_eq!(view.rotation_quadrants(), 1);
+    }
+
+    #[test]
+    fn fill_layout_covers_rotated_viewport_and_clamps_scroll() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("wide.png");
+        fs::write(&path, png_bytes(200, 100)).unwrap();
+        let mut view = PreviewView::new(Some(path));
+        view.handle_action("com.slopos.preview.rotate.right");
+        view.handle_action("com.slopos.preview.zoom.fill");
+        let _ = view.layout(LayoutConstraint::tight(Size::new(320.0, 240.0)));
+
+        let (display_width, display_height) = view.display_dimensions().unwrap();
+        let viewport = view.image_scroll.rect();
+        let available_width = (viewport.width - SCROLLBAR_WIDTH - 4.0).max(1.0);
+        let available_height = (viewport.height - 4.0).max(1.0);
+        assert!(display_width as f32 * view.zoom + f32::EPSILON >= available_width);
+        assert!(display_height as f32 * view.zoom + f32::EPSILON >= available_height);
+
+        view.image_scroll.scroll_x = f32::MAX;
+        view.image_scroll.scroll_y = f32::MAX;
+        let _ = view.layout(LayoutConstraint::tight(Size::new(320.0, 240.0)));
+        let content_size = view
+            .image_scroll
+            .content
+            .as_ref()
+            .map(|content| content.rect())
+            .unwrap();
+        let viewport = view.image_scroll.rect();
+        let max_scroll_x = (content_size.width - viewport.width).max(0.0);
+        let max_scroll_y = (content_size.height - viewport.height).max(0.0);
+        assert!(view.image_scroll.scroll_x.is_finite());
+        assert!(view.image_scroll.scroll_y.is_finite());
+        assert!(view.image_scroll.scroll_x >= 0.0);
+        assert!(view.image_scroll.scroll_y >= 0.0);
+        assert!(view.image_scroll.scroll_x <= max_scroll_x + f32::EPSILON);
+        assert!(view.image_scroll.scroll_y <= max_scroll_y + f32::EPSILON);
     }
 
     #[test]

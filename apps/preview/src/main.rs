@@ -12,7 +12,10 @@ const BUNDLE_ID: &str = "com.slopos.preview";
 const ACTION_ZOOM_IN: &str = "com.slopos.preview.zoom.in";
 const ACTION_ZOOM_OUT: &str = "com.slopos.preview.zoom.out";
 const ACTION_ZOOM_FIT: &str = "com.slopos.preview.zoom.fit";
+const ACTION_ZOOM_FILL: &str = "com.slopos.preview.zoom.fill";
 const ACTION_ZOOM_ACTUAL: &str = "com.slopos.preview.zoom.actual_size";
+const ACTION_ROTATE_LEFT: &str = "com.slopos.preview.rotate.left";
+const ACTION_ROTATE_RIGHT: &str = "com.slopos.preview.rotate.right";
 const ACTION_EXTRACT_TEXT: &str = "com.slopos.preview.vision.extract_text";
 const ACTION_LIFT_SUBJECT: &str = "com.slopos.preview.vision.lift_subject";
 
@@ -60,9 +63,22 @@ fn preview_menus() -> Vec<slopos_kit::Menu> {
         .with_action(ACTION_ZOOM_OUT);
     zoom.add_action("Fit to Window")
         .with_action(ACTION_ZOOM_FIT);
+    zoom.add_action("Fill Window")
+        .with_shortcut(KeyCode::F, shift_shortcut())
+        .with_action(ACTION_ZOOM_FILL);
     zoom.add_action("Actual Size")
         .with_shortcut(KeyCode::Key0, meta_shortcut())
         .with_action(ACTION_ZOOM_ACTUAL);
+
+    let mut rotate = build_menu("Rotate");
+    rotate
+        .add_action("Rotate Left")
+        .with_shortcut(KeyCode::LeftBracket, Modifiers::NONE)
+        .with_action(ACTION_ROTATE_LEFT);
+    rotate
+        .add_action("Rotate Right")
+        .with_shortcut(KeyCode::RightBracket, Modifiers::NONE)
+        .with_action(ACTION_ROTATE_RIGHT);
 
     let mut vision = build_menu("Vision");
     vision
@@ -72,7 +88,7 @@ fn preview_menus() -> Vec<slopos_kit::Menu> {
         .add_action("Lift Subject")
         .with_action(ACTION_LIFT_SUBJECT);
 
-    vec![zoom, vision]
+    vec![zoom, rotate, vision]
 }
 
 const fn meta_shortcut() -> Modifiers {
@@ -81,6 +97,15 @@ const fn meta_shortcut() -> Modifiers {
         control: false,
         alt: false,
         meta: true,
+    }
+}
+
+const fn shift_shortcut() -> Modifiers {
+    Modifiers {
+        shift: true,
+        control: false,
+        alt: false,
+        meta: false,
     }
 }
 
@@ -118,5 +143,18 @@ mod tests {
             .iter()
             .flat_map(|menu| menu.items.iter())
             .all(|item| item.label != "Open..."));
+    }
+
+    #[test]
+    fn preview_menus_expose_fill_and_rotation_actions() {
+        let menus = preview_menus();
+        let actions: Vec<(&str, &str)> = menus
+            .iter()
+            .flat_map(|menu| menu.items.iter())
+            .map(|item| (item.label.as_str(), item.action_id.as_str()))
+            .collect();
+        assert!(actions.contains(&("Fill Window", ACTION_ZOOM_FILL)));
+        assert!(actions.contains(&("Rotate Left", ACTION_ROTATE_LEFT)));
+        assert!(actions.contains(&("Rotate Right", ACTION_ROTATE_RIGHT)));
     }
 }
