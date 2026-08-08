@@ -40,10 +40,12 @@ struct AppState {
 struct ImeState {
     activate_count: u32,
     deactivate_count: u32,
+    active: bool,
     unavailable: bool,
     done_count: u32,
     surrounding: Option<(String, u32, u32)>,
     content_type: Option<(u32, u32)>,
+    commit_sent: bool,
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for AppState {
@@ -143,7 +145,11 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for AppState {
         _queue_handle: &QueueHandle<Self>,
     ) {
         match event {
-            zwp_text_input_v3::Event::Enter { .. } => state.entered = true,
+            zwp_text_input_v3::Event::Enter { .. } => {
+                state.entered = true;
+                println!("SLOPOS_TEXT_INPUT_APP_ENTER observed=true");
+                let _ = std::io::stdout().flush();
+            }
             zwp_text_input_v3::Event::Leave { .. } => state.left = true,
             zwp_text_input_v3::Event::PreeditString {
                 text,
@@ -158,7 +164,9 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for AppState {
                 after_length,
             } => state.deleted = Some((before_length, after_length)),
             zwp_text_input_v3::Event::Done { .. } => {
-                state.done_count = state.done_count.saturating_add(1)
+                state.done_count = state.done_count.saturating_add(1);
+                println!("SLOPOS_TEXT_INPUT_APP_DONE observed=true");
+                let _ = std::io::stdout().flush();
             }
             _ => {}
         }
@@ -189,11 +197,13 @@ impl Dispatch<zwp_input_method_v2::ZwpInputMethodV2, ()> for ImeState {
         match event {
             zwp_input_method_v2::Event::Activate => {
                 state.activate_count = state.activate_count.saturating_add(1);
+                state.active = true;
                 println!("SLOPOS_IME_ACTIVATE observed=true");
                 let _ = std::io::stdout().flush();
             }
             zwp_input_method_v2::Event::Deactivate => {
                 state.deactivate_count = state.deactivate_count.saturating_add(1);
+                state.active = false;
                 println!("SLOPOS_IME_DEACTIVATE observed=true");
                 let _ = std::io::stdout().flush();
             }
@@ -207,14 +217,22 @@ impl Dispatch<zwp_input_method_v2::ZwpInputMethodV2, ()> for ImeState {
             }
             zwp_input_method_v2::Event::Done => {
                 state.done_count = state.done_count.saturating_add(1);
-                if state.done_count == 1 {
+                if state.active
+                    && !state.commit_sent
+                    && state.surrounding.is_some()
+                    && state.content_type.is_some()
+                {
                     input_method.commit_string("世界".to_owned());
                     input_method.set_preedit_string("かな".to_owned(), 0, 6);
                     input_method.delete_surrounding_text(1, 0);
-                    input_method.commit(1);
-                    let _ = connection.flush();
-                    println!("SLOPOS_IME_COMMIT_SENT observed=true");
-                    let _ = std::io::stdout().flush();
+                    input_method.commit(state.done_count);
+                    if let Err(error) = connection.flush() {
+                        eprintln!("SLOPOS_IME_COMMIT_FLUSH_FAILED error={error}");
+                    } else {
+                        state.commit_sent = true;
+                        println!("SLOPOS_IME_COMMIT_SENT observed=true");
+                        let _ = std::io::stdout().flush();
+                    }
                 }
             }
             zwp_input_method_v2::Event::Unavailable => {
@@ -323,12 +341,16 @@ fn run_ime(connection: &Connection) -> Result<(), Box<dyn Error>> {
     let mut state = ImeState::default();
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while std::time::Instant::now() < deadline
-        && (state.activate_count == 0 || state.deactivate_count == 0)
+        && (!state.commit_sent || state.deactivate_count == 0)
     {
         event_queue.blocking_dispatch(&mut state)?;
     }
-    if state.activate_count == 0 {
-        return Err("input method never received activate".into());
+    if state.activate_count != 1 {
+        return Err(format!(
+            "expected exactly one input-method activate, got {}",
+            state.activate_count
+        )
+        .into());
     }
     if state.surrounding.as_ref().map(|v| v.0.as_str()) != Some("café") {
         return Err(format!("unexpected surrounding text: {:?}", state.surrounding).into());
@@ -336,10 +358,18 @@ fn run_ime(connection: &Connection) -> Result<(), Box<dyn Error>> {
     if state.content_type != Some((0, 0)) {
         return Err(format!("unexpected content type: {:?}", state.content_type).into());
     }
-    if state.deactivate_count == 0 {
-        return Err("input method never received deactivate".into());
+    if state.commit_sent != true {
+        return Err("input method did not send a serial-checked commit".into());
+    }
+    if state.deactivate_count != 1 {
+        return Err(format!(
+            "expected exactly one input-method deactivate, got {}",
+            state.deactivate_count
+        )
+        .into());
     }
     println!("SLOPOS_TEXT_INPUT_SURROUNDING_VERIFIED observed=true");
+    println!("SLOPOS_TEXT_INPUT_CONTENT_TYPE_VERIFIED observed=true");
     println!("SLOPOS_TEXT_INPUT_DEACTIVATE_VERIFIED observed=true");
     std::io::stdout().flush()?;
     drop(input_method);
