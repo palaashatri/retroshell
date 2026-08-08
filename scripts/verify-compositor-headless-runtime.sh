@@ -74,7 +74,7 @@ write_artifact() {
   local failure="${2:-}"
   cat >"$artifact.tmp" <<JSON
 {
-  "schema": 5,
+  "schema": 6,
   "component": "slopos-compositor",
   "commit": "$commit_sha",
   "branch": "$branch",

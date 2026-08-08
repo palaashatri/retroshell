@@ -5,7 +5,7 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`361d32f15f439c84a9ce8b49decf362173f67309`
+`116f52dcca70ba485ccadd0611876eb8ed9070b7`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review, commit-delta review, exact-commit GitHub
 Actions evidence and retained VM/UTM runtime evidence.
@@ -277,6 +277,33 @@ third-party application compatibility, HDR/VRR or long-running stability.
 This wave changes no product capability score. Overall SLOPOS-I remains
 **63/100** and strict compositor completion remains **72/100**.
 
+### Current implementation wave — native cross-client clipboard runtime
+
+Implementation commit `116f52dcca70ba485ccadd0611876eb8ed9070b7` is **BUILD
+VERIFIED** and **TEST VERIFIED** in the Ubuntu UTM guest. It adds a real
+two-process Wayland clipboard client: the source owns a focused XDG toplevel,
+offers `text/plain;charset=utf-8` and `text/plain`, and services asynchronous
+`wl_data_source.send` requests; the sink owns a separate focused toplevel,
+receives the offer, reads the exact UTF-8 payload, and verifies EOF for an
+unsupported MIME request.
+
+The exact-head headless runtime gate passed the existing registry, pointer
+constraint, 64-cycle abrupt disconnect, XDG toplevel/popup lifecycle checks and
+the new clipboard markers: `SLOPOS_CLIPBOARD_OFFER_VERIFIED`,
+`SLOPOS_CLIPBOARD_TRANSFER_VERIFIED` (47 bytes), and
+`SLOPOS_CLIPBOARD_MISSING_MIME_EOF_VERIFIED`. The logical-output topology gate
+also passed add/reorder/remove at this SHA. The complete Ubuntu mandatory gate
+set and daily-driver checklist passed; retained evidence is under
+`artifacts/qa/2026-08-08-compositor-runtime-116f52d/` and
+`artifacts/qa/2026-08-08-compositor-gates-116f52d/`.
+
+This is native Wayland clipboard runtime evidence only. It does not prove
+large-payload limits, cancellation/source-death recovery, primary selection,
+drag-and-drop, IME, GTK/Qt/Electron compatibility, XWayland bridging or
+hardware input. Clipboard/DnD/IME therefore advances conservatively from 4 to
+**5/8**, strict compositor completion from 72 to **73/100**, and overall
+SLOPOS-I remains **63/100**.
+
 ---
 
 ## 3. Production scoring model
@@ -305,7 +332,7 @@ than aspirational.
 | UI and UX | **59** | Distinctive and coherent, but renderer, typography, image display, animation and integration remain alpha-grade |
 | Product functionality | **61** | Real shell, compositor, applications and Vision paths; many daily-driver workflows are incomplete |
 | Linux daily-driver readiness | **51** | Suitable for controlled development and QA, not yet for a non-technical user’s only desktop |
-| Compositor strict completion | **72** | Strong protocol/state foundation; hardware, input, displays, XWayland and compatibility gates remain |
+| Compositor strict completion | **73** | Native text clipboard transfer is now runtime-observed; hardware, input, displays, XWayland and compatibility gates remain |
 | Security and release readiness | **52** | Good session/filesystem hardening, incomplete sandbox, signing, packaging, upgrades and recovery |
 | Accessibility readiness | **38** | Meaningful AT-SPI work, incomplete live tree and Orca operation |
 | POSIX/FreeBSD portability | **22** | Direction is defined; implementation and native evidence remain early |
@@ -382,14 +409,14 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | Session sovereignty and lifecycle | 9 | 10 | Display-manager, suspend/resume, lid and longer failure coverage |
 | Core Wayland lifecycle | 12 | 14 | Broader popup, subsurface, transient and modal compatibility |
 | Input correctness | 9 | 10 | Physical multi-device, touch, gestures and hotplug |
-| Clipboard, DnD and IME | 4 | 8 | Cross-client DnD, drag icons, cancellation, large transfers and text-input/input-method |
+| Clipboard, DnD and IME | 5 | 8 | Cross-client DnD, drag icons, cancellation, large transfers and text-input/input-method |
 | Rendering and frame scheduling | 9 | 12 | Direct scanout, occlusion, GPU recovery and physical pacing evidence |
 | Displays and scaling | 9 | 12 | Hotplug, mixed scale/refresh, rotation, migration and topology recovery |
 | External Wayland compatibility | 6 | 12 | GTK, Qt, Electron, browsers, office, media, games and popup-heavy apps |
 | XWayland | 4 | 8 | Rootless scene, override-redirect, clipboard/DnD, DPI, restart and application matrix |
 | HDR, VRR and colour | 3 | 6 | Physical capable hardware, metadata/presentation proof and full colour path |
 | Security, stability and release QA | 7 | 8 | Soaks, resource plateaus, fuzzing and hostile-client breadth |
-| **Total** | **72** | **100** | First subsystem targeted for a genuine 100 |
+| **Total** | **73** | **100** | First subsystem targeted for a genuine 100 |
 
 ### Strong current compositor work
 
