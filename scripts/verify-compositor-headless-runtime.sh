@@ -52,6 +52,8 @@ primary_selection_sink_log="$artifact_dir/${commit_sha}-primary-selection-sink.l
 dnd_log="$artifact_dir/${commit_sha}-dnd.log"
 dnd_source_log="$artifact_dir/${commit_sha}-dnd-source.log"
 dnd_target_log="$artifact_dir/${commit_sha}-dnd-target.log"
+dnd_abort_source_log="$artifact_dir/${commit_sha}-dnd-target-disconnect-source.log"
+dnd_abort_target_log="$artifact_dir/${commit_sha}-dnd-target-disconnect-target.log"
 text_input_log="$artifact_dir/${commit_sha}-text-input.log"
 text_input_app_log="$artifact_dir/${commit_sha}-text-input-app.log"
 text_input_ime_log="$artifact_dir/${commit_sha}-text-input-ime.log"
@@ -63,6 +65,8 @@ clipboard_source_pid=""
 primary_selection_source_pid=""
 dnd_source_pid=""
 dnd_target_pid=""
+dnd_abort_source_pid=""
+dnd_abort_target_pid=""
 text_input_ime_pid=""
 socket_name=""
 shutdown_status="not_started"
@@ -115,6 +119,16 @@ has_dnd_marker() {
   [[ -s "$dnd_log" ]] && grep -Eq "^$1([[:space:]]|$)" "$dnd_log"
 }
 
+has_dnd_abort_marker() {
+  local marker="$1"
+  for log in "$dnd_abort_source_log" "$dnd_abort_target_log"; do
+    if [[ -s "$log" ]] && grep -Eq "^${marker}([[:space:]]|$)" "$log"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 has_text_input_marker() {
   local marker="$1"
   for log in "$text_input_app_log" "$text_input_ime_log"; do
@@ -149,6 +163,11 @@ payload = {
         "event": json.loads(event_json),
     }
 }
+
+window_origin() {
+  local title="$1"
+  sed -n "s/.*surface mapped at (\\([0-9][0-9]*\\),\\([0-9][0-9]*\\)) title=${title}.*/\\1 \\2/p" "$compositor_log" | tail -n 1
+}
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
 sock.sendto(json.dumps(payload).encode("utf-8"), socket_path)
 sock.close()
@@ -161,6 +180,14 @@ combine_clipboard_logs() {
   [[ -f "$clipboard_replacement_source_log" ]] && cat "$clipboard_replacement_source_log" >>"$clipboard_log"
   [[ -f "$clipboard_sink_log" ]] && cat "$clipboard_sink_log" >>"$clipboard_log"
   [[ -f "$clipboard_sink_abort_log" ]] && cat "$clipboard_sink_abort_log" >>"$clipboard_log"
+}
+
+combine_dnd_logs() {
+  : >"$dnd_log"
+  [[ -f "$dnd_source_log" ]] && cat "$dnd_source_log" >>"$dnd_log"
+  [[ -f "$dnd_target_log" ]] && cat "$dnd_target_log" >>"$dnd_log"
+  [[ -f "$dnd_abort_source_log" ]] && cat "$dnd_abort_source_log" >>"$dnd_log"
+  [[ -f "$dnd_abort_target_log" ]] && cat "$dnd_abort_target_log" >>"$dnd_log"
 }
 
 combine_primary_selection_logs() {
@@ -220,6 +247,8 @@ write_artifact() {
   "dnd_cross_client_drag_icon_verified": $(has_compositor_marker SLOPOS_DND_ICON_ATTACHED && printf true || printf false),
   "dnd_cross_client_client_dropped": $(has_compositor_marker SLOPOS_DND_DROPPED && printf true || printf false),
   "dnd_cross_client_drop_verified": $(has_dnd_marker SLOPOS_DND_SOURCE_DROP_PERFORMED && printf true || printf false),
+  "dnd_target_disconnect_cancelled_verified": $(has_dnd_abort_marker SLOPOS_DND_SOURCE_CANCELLED && printf true || printf false),
+  "dnd_target_disconnect_target_exit_verified": $(has_dnd_abort_marker SLOPOS_DND_TARGET_DISCONNECTED && printf true || printf false),
   "text_input_registry_verified": $([[ -s "$globals_log" ]] && grep -q "interface: 'zwp_text_input_manager_v3'" "$globals_log" && grep -q "interface: 'zwp_input_method_manager_v2'" "$globals_log" && printf true || printf false),
   "text_input_app_enter_verified": $(has_text_input_marker SLOPOS_TEXT_INPUT_APP_ENTER && printf true || printf false),
   "text_input_app_done_verified": $(has_text_input_marker SLOPOS_TEXT_INPUT_APP_DONE && printf true || printf false),
@@ -259,7 +288,9 @@ write_artifact() {
   "primary_selection_sink_log": "$(basename "$primary_selection_sink_log")",
   "dnd_log": "$(basename "$dnd_log")",
   "dnd_source_log": "$(basename "$dnd_source_log")",
-  "dnd_target_log": "$(basename "$dnd_target_log")"
+  "dnd_target_log": "$(basename "$dnd_target_log")",
+  "dnd_abort_source_log": "$(basename "$dnd_abort_source_log")",
+  "dnd_abort_target_log": "$(basename "$dnd_abort_target_log")"
 }
 JSON
   mv "$artifact.tmp" "$artifact"
@@ -284,12 +315,21 @@ cleanup() {
     kill -TERM "$dnd_target_pid" 2>/dev/null || true
     wait "$dnd_target_pid" 2>/dev/null || true
   fi
+  if [[ -n "$dnd_abort_source_pid" ]] && kill -0 "$dnd_abort_source_pid" 2>/dev/null; then
+    kill -TERM "$dnd_abort_source_pid" 2>/dev/null || true
+    wait "$dnd_abort_source_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$dnd_abort_target_pid" ]] && kill -0 "$dnd_abort_target_pid" 2>/dev/null; then
+    kill -TERM "$dnd_abort_target_pid" 2>/dev/null || true
+    wait "$dnd_abort_target_pid" 2>/dev/null || true
+  fi
   if [[ -n "$text_input_ime_pid" ]] && kill -0 "$text_input_ime_pid" 2>/dev/null; then
     kill -TERM "$text_input_ime_pid" 2>/dev/null || true
     wait "$text_input_ime_pid" 2>/dev/null || true
   fi
   combine_clipboard_logs
   combine_primary_selection_logs
+  combine_dnd_logs
   combine_text_input_logs
   if [[ -n "$compositor_pid" ]] && kill -0 "$compositor_pid" 2>/dev/null; then
     kill -TERM "$compositor_pid" 2>/dev/null || true
@@ -537,6 +577,105 @@ if ! has_compositor_marker SLOPOS_DND_DROPPED; then
 fi
 if ! kill -0 "$compositor_pid" 2>/dev/null; then
   write_artifact failed "compositor_died_after_cross_client_dnd"
+  cat "$compositor_log" >&2
+  exit 1
+fi
+
+printf 'Exercising DnD target disconnect cancellation and compositor survival\n'
+WAYLAND_DISPLAY="$socket_name" timeout 45s \
+  target/debug/examples/headless_dnd_client source >"$dnd_abort_source_log" 2>&1 &
+dnd_abort_source_pid=$!
+source_ready=false
+for _ in $(seq 1 100); do
+  if grep -q '^SLOPOS_DND_SOURCE_READY$' "$dnd_abort_source_log" 2>/dev/null; then
+    source_ready=true
+    break
+  fi
+  if ! kill -0 "$dnd_abort_source_pid" 2>/dev/null; then
+    wait "$dnd_abort_source_pid" || true
+    write_artifact failed "dnd_abort_source_exited_before_ready"
+    cat "$dnd_abort_source_log" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+if [[ "$source_ready" != true ]]; then
+  write_artifact failed "dnd_abort_source_readiness_timeout"
+  cat "$dnd_abort_source_log" >&2
+  exit 1
+fi
+
+WAYLAND_DISPLAY="$socket_name" timeout 45s \
+  target/debug/examples/headless_dnd_client target-abort >"$dnd_abort_target_log" 2>&1 &
+dnd_abort_target_pid=$!
+target_ready=false
+for _ in $(seq 1 100); do
+  if grep -q '^SLOPOS_DND_TARGET_READY$' "$dnd_abort_target_log" 2>/dev/null; then
+    target_ready=true
+    break
+  fi
+  if ! kill -0 "$dnd_abort_target_pid" 2>/dev/null; then
+    wait "$dnd_abort_target_pid" || true
+    write_artifact failed "dnd_abort_target_exited_before_ready"
+    cat "$dnd_abort_target_log" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+if [[ "$target_ready" != true ]]; then
+  write_artifact failed "dnd_abort_target_readiness_timeout"
+  cat "$dnd_abort_target_log" >&2
+  exit 1
+fi
+
+abort_source_origin="$(window_origin 'SLOPOS DnD source')"
+abort_target_origin="$(window_origin 'SLOPOS DnD target')"
+if [[ -z "$abort_source_origin" || -z "$abort_target_origin" ]]; then
+  write_artifact failed "dnd_abort_window_geometry_missing"
+  cat "$compositor_log" >&2
+  exit 1
+fi
+read -r abort_source_x abort_source_y <<<"$abort_source_origin"
+read -r abort_target_x abort_target_y <<<"$abort_target_origin"
+# The origins come from the compositor's authoritative mapped-window log. The
+# offsets stay within each 320x240 test buffer while remaining independent of
+# the cascade position used by earlier protocol clients.
+send_headless_input "{\"Motion\":{\"x\":$((abort_source_x + 8)),\"y\":$((abort_source_y + 8)),\"time_msec\":200}}"
+send_headless_input '{"Button":{"button":272,"pressed":true,"time_msec":210}}'
+sleep 0.2
+send_headless_input "{\"Motion\":{\"x\":$((abort_target_x + 200)),\"y\":$((abort_target_y + 100)),\"time_msec\":220}}"
+
+if ! wait "$dnd_abort_target_pid"; then
+  write_artifact failed "dnd_abort_target_runtime_failed"
+  cat "$dnd_abort_source_log" >&2
+  cat "$dnd_abort_target_log" >&2
+  cat "$compositor_log" >&2
+  exit 1
+fi
+dnd_abort_target_pid=""
+send_headless_input '{"Button":{"button":272,"pressed":false,"time_msec":230}}' || true
+if ! wait "$dnd_abort_source_pid"; then
+  write_artifact failed "dnd_abort_source_runtime_failed"
+  cat "$dnd_abort_source_log" >&2
+  cat "$dnd_abort_target_log" >&2
+  cat "$compositor_log" >&2
+  exit 1
+fi
+dnd_abort_source_pid=""
+combine_dnd_logs
+for marker in SLOPOS_DND_TARGET_ABORTING SLOPOS_DND_TARGET_DISCONNECTED SLOPOS_DND_SOURCE_CANCELLED; do
+  if ! has_dnd_abort_marker "$marker"; then
+    write_artifact failed "missing_${marker}"
+    cat "$dnd_abort_source_log" >&2
+    cat "$dnd_abort_target_log" >&2
+    cat "$compositor_log" >&2
+    exit 1
+  fi
+done
+if ! kill -0 "$compositor_pid" 2>/dev/null; then
+  write_artifact failed "compositor_died_after_dnd_target_disconnect"
+  cat "$dnd_abort_source_log" >&2
+  cat "$dnd_abort_target_log" >&2
   cat "$compositor_log" >&2
   exit 1
 fi

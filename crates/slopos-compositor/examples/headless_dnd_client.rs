@@ -39,6 +39,7 @@ const BTN_LEFT: u32 = 0x110;
 enum Role {
     Source,
     Target,
+    TargetAbort,
 }
 
 struct State {
@@ -54,6 +55,7 @@ struct State {
     target_left: bool,
     target_left_before_drop: bool,
     target_dropped: bool,
+    target_abort_requested: bool,
     target_motion_count: u32,
     dnd_offer: Option<wl_data_offer::WlDataOffer>,
     offered_mimes: Vec<String>,
@@ -83,6 +85,7 @@ impl State {
             target_left: false,
             target_left_before_drop: false,
             target_dropped: false,
+            target_abort_requested: false,
             target_motion_count: 0,
             dnd_offer: None,
             offered_mimes: Vec::new(),
@@ -169,7 +172,7 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for State {
                 serial,
                 id: Some(offer),
                 ..
-            } if state.role == Role::Target => {
+            } if matches!(state.role, Role::Target | Role::TargetAbort) => {
                 state.target_entered = true;
                 state.dnd_offer = Some(offer.clone());
                 offer.accept(serial, Some(MIME_TEXT.to_owned()));
@@ -179,20 +182,33 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for State {
                 );
                 println!("SLOPOS_DND_ENTER_VERIFIED serial={serial} mime={MIME_TEXT} action=copy");
                 let _ = std::io::stdout().flush();
+                if state.role == Role::TargetAbort {
+                    state.target_abort_requested = true;
+                    println!("SLOPOS_DND_TARGET_ABORTING");
+                    let _ = std::io::stdout().flush();
+                }
             }
-            wl_data_device::Event::Enter { .. } if state.role == Role::Target => {
+            wl_data_device::Event::Enter { .. }
+                if matches!(state.role, Role::Target | Role::TargetAbort) =>
+            {
                 state.target_entered = true;
             }
-            wl_data_device::Event::Leave if state.role == Role::Target => {
+            wl_data_device::Event::Leave
+                if matches!(state.role, Role::Target | Role::TargetAbort) =>
+            {
                 if !state.target_dropped {
                     state.target_left_before_drop = true;
                 }
                 state.target_left = true;
             }
-            wl_data_device::Event::Motion { .. } if state.role == Role::Target => {
+            wl_data_device::Event::Motion { .. }
+                if matches!(state.role, Role::Target | Role::TargetAbort) =>
+            {
                 state.target_motion_count = state.target_motion_count.saturating_add(1);
             }
-            wl_data_device::Event::Drop if state.role == Role::Target => {
+            wl_data_device::Event::Drop
+                if matches!(state.role, Role::Target | Role::TargetAbort) =>
+            {
                 state.target_dropped = true;
             }
             _ => {}
@@ -509,9 +525,15 @@ fn read_offer(
     Ok(bytes)
 }
 
-fn run_target(connection: &Connection) -> Result<(), Box<dyn Error>> {
-    let (mut state, mut event_queue, queue_handle, seat, manager, wm_base) =
-        bind_common(connection, Role::Target)?;
+fn run_target(connection: &Connection, abort_after_enter: bool) -> Result<(), Box<dyn Error>> {
+    let (mut state, mut event_queue, queue_handle, seat, manager, wm_base) = bind_common(
+        connection,
+        if abort_after_enter {
+            Role::TargetAbort
+        } else {
+            Role::Target
+        },
+    )?;
     let compositor = state.compositor.clone().ok_or("missing compositor")?;
     let data_device = manager.get_data_device(&seat, &queue_handle, ());
     let (surface, _xdg_surface, _toplevel) =
@@ -528,11 +550,16 @@ fn run_target(connection: &Connection) -> Result<(), Box<dyn Error>> {
     connection.flush()?;
     println!("SLOPOS_DND_TARGET_READY");
     std::io::stdout().flush()?;
-    while !state.target_dropped {
+    while !state.target_dropped && !state.target_abort_requested {
         event_queue.blocking_dispatch(&mut state)?;
         if state.close_requested {
             return Err("compositor closed DnD target".into());
         }
+    }
+    if state.target_abort_requested {
+        println!("SLOPOS_DND_TARGET_DISCONNECTED");
+        std::io::stdout().flush()?;
+        return Ok(());
     }
     if !state.target_entered || state.target_left_before_drop || state.target_motion_count == 0 {
         return Err(format!(
@@ -578,11 +605,12 @@ fn run_target(connection: &Connection) -> Result<(), Box<dyn Error>> {
 fn main() -> Result<(), Box<dyn Error>> {
     let mode = env::args()
         .nth(1)
-        .ok_or("usage: headless_dnd_client <source|target>")?;
+        .ok_or("usage: headless_dnd_client <source|target|target-abort>")?;
     let connection = Connection::connect_to_env()?;
     match mode.as_str() {
         "source" => run_source(&connection),
-        "target" => run_target(&connection),
-        _ => Err("usage: headless_dnd_client <source|target>".into()),
+        "target" => run_target(&connection, false),
+        "target-abort" => run_target(&connection, true),
+        _ => Err("usage: headless_dnd_client <source|target|target-abort>".into()),
     }
 }

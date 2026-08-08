@@ -255,6 +255,39 @@ fn headless_runtime_gate_requires_cross_client_dnd_lifecycle_evidence() {
 }
 
 #[test]
+fn headless_runtime_gate_exercises_dnd_target_disconnect_cancellation() {
+    let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
+    let client = include_str!("../examples/headless_dnd_client.rs");
+    assert!(
+        script.contains("headless_dnd_client target-abort"),
+        "headless runtime gate must run a target-disconnect DnD client"
+    );
+    for marker in [
+        "SLOPOS_DND_TARGET_ABORTING",
+        "SLOPOS_DND_TARGET_DISCONNECTED",
+        "SLOPOS_DND_SOURCE_CANCELLED",
+    ] {
+        assert!(
+            script.contains(marker),
+            "target-disconnect DnD gate must require marker {marker}"
+        );
+        assert!(
+            client.contains(marker),
+            "target-disconnect DnD client must emit marker {marker}"
+        );
+    }
+    assert!(
+        script.contains("dnd_target_disconnect_cancelled_verified")
+            && script.contains("dnd_target_disconnect_target_exit_verified"),
+        "runtime evidence must retain target-disconnect cancellation fields"
+    );
+    assert!(
+        client.contains("Role::TargetAbort") && client.contains("target-abort"),
+        "client must expose an explicit target-abort mode"
+    );
+}
+
+#[test]
 fn headless_dnd_motion_points_leave_the_raised_source_buffer() {
     let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
     assert!(
