@@ -5,7 +5,7 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`1941ed0d8411b4d3b4fed07411df3eb25f44c1c4`
+`c6235bed5dc5713f7d6f3e690e48455c27b00954`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review, commit-delta review, exact-commit GitHub
 Actions evidence and retained VM/UTM runtime evidence.
@@ -303,6 +303,36 @@ drag-and-drop, IME, GTK/Qt/Electron compatibility, XWayland bridging or
 hardware input. Clipboard/DnD/IME therefore advances conservatively from 4 to
 **5/8**, strict compositor completion from 72 to **73/100**, and overall
 SLOPOS-I remains **63/100**.
+
+### Current implementation wave — source-death clipboard proof and exact current-head QA
+
+Implementation commits `0a3772a0e3d108ef54fd27c92a196ad1ded396d8` and
+`c6235bed5dc5713f7d6f3e690e48455c27b00954` are **BUILD VERIFIED** and **TEST
+VERIFIED** in the Ubuntu UTM guest. The native clipboard QA client now
+distinguishes `wl_data_device.selection(Some(offer))` from the protocol's
+explicit `selection(NULL)` clear event and requires the latter for the
+source-disconnect failure path. The clear marker was also made parseable by
+the shell gate; this fixes an evidence/client-assertion defect rather than
+adding a new production application feature.
+
+At `c6235be`, the exact Ubuntu UTM headless runtime JSON reports `status:
+passed`, `clipboard_large_transfer_verified: true`,
+`clipboard_missing_mime_eof_verified: true`, and
+`clipboard_source_death_cleared: true`. The same commit passed the logical
+output add/reorder/remove gate, the daily-driver packaging/unit checklist
+(158, 162 and 327 tests), and the complete locked workspace fmt/check/test,
+Clippy `-D warnings` and release build set. Retained evidence is under
+`artifacts/qa/2026-08-08-compositor-runtime-c6235be/`,
+`artifacts/qa/2026-08-08-compositor-topology-c6235be-rerun/`,
+`artifacts/qa/2026-08-08-daily-driver-c6235be/`, and
+`artifacts/qa/2026-08-08-build-tests-c6235be/`.
+
+These remain headless/logical and packaging/unit evidence only. They do not
+prove primary selection, cancellation, drag-and-drop, IME, GTK/Qt/Electron or
+XWayland compatibility, physical DRM/KMS/input/multi-monitor behaviour,
+HDR/VRR, live display-manager login, or long-running stability. This QA wave
+therefore changes no product capability score: overall SLOPOS-I remains
+**63/100**, and strict compositor completion remains **73/100**.
 
 ---
 
