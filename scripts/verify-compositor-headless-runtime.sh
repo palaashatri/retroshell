@@ -641,7 +641,10 @@ read -r abort_target_x abort_target_y <<<"${abort_origins[1]}"
 send_headless_input "{\"Motion\":{\"x\":$((abort_source_x + 8)),\"y\":$((abort_source_y + 8)),\"time_msec\":200}}"
 send_headless_input '{"Button":{"button":272,"pressed":true,"time_msec":210}}'
 sleep 0.2
-send_headless_input "{\"Motion\":{\"x\":$((abort_target_x + 200)),\"y\":$((abort_target_y + 100)),\"time_msec\":220}}"
+# The source is raised for the implicit drag grab. Its right edge is 320px
+# after the source origin; the target begins 32px later, so +300 in the target
+# buffer is target-only while remaining inside the 320px target width.
+send_headless_input "{\"Motion\":{\"x\":$((abort_target_x + 300)),\"y\":$((abort_target_y + 100)),\"time_msec\":220}}"
 
 if ! wait "$dnd_abort_target_pid"; then
   write_artifact failed "dnd_abort_target_runtime_failed"
