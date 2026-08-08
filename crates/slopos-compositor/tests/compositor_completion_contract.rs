@@ -173,6 +173,19 @@ fn invalid_serial_dnd_smoke_does_not_advance_window_cascade() {
 }
 
 #[test]
+fn dnd_runtime_evidence_preserves_bare_and_invalid_serial_markers() {
+    let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
+    assert!(
+        script.contains("grep -Eq \"^$1([[:space:]]|$)\""),
+        "DnD evidence matching must accept markers with or without a payload"
+    );
+    assert!(
+        script.contains("cat \"$dnd_source_log\" \"$dnd_target_log\" >>\"$dnd_log\""),
+        "positive DnD evidence must preserve the earlier invalid-serial marker"
+    );
+}
+
+#[test]
 fn headless_runtime_gate_requires_cross_client_dnd_lifecycle_evidence() {
     let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
     let compositor = include_str!("../src/main.rs");

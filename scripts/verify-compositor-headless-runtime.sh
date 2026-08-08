@@ -107,7 +107,7 @@ has_primary_selection_marker() {
 }
 
 has_dnd_marker() {
-  [[ -s "$dnd_log" ]] && grep -q "^$1 " "$dnd_log"
+  [[ -s "$dnd_log" ]] && grep -Eq "^$1([[:space:]]|$)" "$dnd_log"
 }
 
 send_headless_input() {
@@ -453,7 +453,7 @@ if ! wait "$dnd_source_pid"; then
   exit 1
 fi
 dnd_source_pid=""
-cat "$dnd_source_log" "$dnd_target_log" >"$dnd_log"
+cat "$dnd_source_log" "$dnd_target_log" >>"$dnd_log"
 for marker in \
   SLOPOS_DND_SOURCE_STARTED \
   SLOPOS_DND_ENTER_VERIFIED \
