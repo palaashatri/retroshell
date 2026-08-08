@@ -5,7 +5,7 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`116f52dcca70ba485ccadd0611876eb8ed9070b7`
+`1941ed0d8411b4d3b4fed07411df3eb25f44c1c4`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review, commit-delta review, exact-commit GitHub
 Actions evidence and retained VM/UTM runtime evidence.
@@ -279,7 +279,7 @@ This wave changes no product capability score. Overall SLOPOS-I remains
 
 ### Current implementation wave — native cross-client clipboard runtime
 
-Implementation commit `116f52dcca70ba485ccadd0611876eb8ed9070b7` is **BUILD
+Implementation commit `1941ed0d8411b4d3b4fed07411df3eb25f44c1c4` is **BUILD
 VERIFIED** and **TEST VERIFIED** in the Ubuntu UTM guest. It adds a real
 two-process Wayland clipboard client: the source owns a focused XDG toplevel,
 offers `text/plain;charset=utf-8` and `text/plain`, and services asynchronous
@@ -294,8 +294,8 @@ the new clipboard markers: `SLOPOS_CLIPBOARD_OFFER_VERIFIED`,
 `SLOPOS_CLIPBOARD_MISSING_MIME_EOF_VERIFIED`. The logical-output topology gate
 also passed add/reorder/remove at this SHA. The complete Ubuntu mandatory gate
 set and daily-driver checklist passed; retained evidence is under
-`artifacts/qa/2026-08-08-compositor-runtime-116f52d/` and
-`artifacts/qa/2026-08-08-compositor-gates-116f52d/`.
+`artifacts/qa/2026-08-08-compositor-runtime-1941ed0/` and
+`artifacts/qa/2026-08-08-compositor-gates-1941ed0/`.
 
 This is native Wayland clipboard runtime evidence only. It does not prove
 large-payload limits, cancellation/source-death recovery, primary selection,
