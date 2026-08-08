@@ -28,6 +28,25 @@ fn headless_runtime_gate_builds_the_binary_it_executes() {
 }
 
 #[test]
+fn headless_runtime_gate_exercises_native_clipboard_transfer() {
+    let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
+    assert!(
+        script.contains("headless_clipboard_client"),
+        "headless runtime gate must run the native clipboard source/sink client"
+    );
+    for marker in [
+        "SLOPOS_CLIPBOARD_OFFER_VERIFIED",
+        "SLOPOS_CLIPBOARD_TRANSFER_VERIFIED",
+        "SLOPOS_CLIPBOARD_MISSING_MIME_EOF_VERIFIED",
+    ] {
+        assert!(
+            script.contains(marker),
+            "headless runtime gate must require clipboard marker {marker}"
+        );
+    }
+}
+
+#[test]
 fn presentation_round_trip_preserves_the_original_normal_frame() {
     let normal = WindowGeometry::new(137, 91, 731, 509);
     let work_area = WindowGeometry::new(0, 24, 1600, 876);

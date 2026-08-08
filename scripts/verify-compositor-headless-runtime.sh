@@ -37,10 +37,12 @@ globals_log="$artifact_dir/${commit_sha}-wayland-info.log"
 stress_log="$artifact_dir/${commit_sha}-disconnect-stress.log"
 protocol_log="$artifact_dir/${commit_sha}-xdg-protocol.log"
 pointer_constraints_log="$artifact_dir/${commit_sha}-pointer-constraints.log"
+clipboard_log="$artifact_dir/${commit_sha}-clipboard.log"
 runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/slopos-headless-runtime.XXXXXX")"
 chmod 700 "$runtime_dir"
 
 compositor_pid=""
+clipboard_source_pid=""
 socket_name=""
 shutdown_status="not_started"
 socket_cleanup="not_observed"
@@ -52,6 +54,11 @@ has_protocol_marker() {
 
 stress_passed() {
   [[ -s "$stress_log" ]] && grep -q '^SLOPOS_ABRUPT_DISCONNECT_STRESS cycles=' "$stress_log"
+}
+
+has_clipboard_marker() {
+  local marker="$1"
+  [[ -s "$clipboard_log" ]] && grep -q "^${marker} " "$clipboard_log"
 }
 
 write_artifact() {
@@ -80,6 +87,9 @@ write_artifact() {
   "pointer_constraints_registry_verified": $([[ -s "$globals_log" ]] && grep -q "interface: 'zwp_pointer_constraints_v1'" "$globals_log" && printf true || printf false),
   "pointer_lock_request_verified": $([[ -s "$pointer_constraints_log" ]] && grep -q "^SLOPOS_POINTER_LOCK_REQUEST_ACCEPTED " "$pointer_constraints_log" && printf true || printf false),
   "pointer_confine_request_verified": $([[ -s "$pointer_constraints_log" ]] && grep -q "^SLOPOS_POINTER_CONFINE_REQUEST_ACCEPTED " "$pointer_constraints_log" && printf true || printf false),
+  "clipboard_offer_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_OFFER_VERIFIED && printf true || printf false),
+  "clipboard_transfer_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_TRANSFER_VERIFIED && printf true || printf false),
+  "clipboard_missing_mime_eof_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_MISSING_MIME_EOF_VERIFIED && printf true || printf false),
   "hardware_verified": false,
   "drm_verified": false,
   "rendering_verified": false,
@@ -94,7 +104,8 @@ write_artifact() {
   "wayland_info_log": "$(basename "$globals_log")",
   "disconnect_stress_log": "$(basename "$stress_log")",
   "xdg_protocol_log": "$(basename "$protocol_log")",
-  "pointer_constraints_log": "$(basename "$pointer_constraints_log")"
+  "pointer_constraints_log": "$(basename "$pointer_constraints_log")",
+  "clipboard_log": "$(basename "$clipboard_log")"
 }
 JSON
   mv "$artifact.tmp" "$artifact"
@@ -103,6 +114,10 @@ JSON
 cleanup() {
   local exit_code=$?
   trap - EXIT INT TERM
+  if [[ -n "$clipboard_source_pid" ]] && kill -0 "$clipboard_source_pid" 2>/dev/null; then
+    kill -TERM "$clipboard_source_pid" 2>/dev/null || true
+    wait "$clipboard_source_pid" 2>/dev/null || true
+  fi
   if [[ -n "$compositor_pid" ]] && kill -0 "$compositor_pid" 2>/dev/null; then
     kill -TERM "$compositor_pid" 2>/dev/null || true
     for _ in $(seq 1 50); do
@@ -217,6 +232,51 @@ for marker in SLOPOS_POINTER_LOCK_REQUEST_ACCEPTED SLOPOS_POINTER_CONFINE_REQUES
 done
 if ! kill -0 "$compositor_pid" 2>/dev/null; then
   write_artifact failed "compositor_died_after_pointer_constraints"
+  cat "$compositor_log" >&2
+  exit 1
+fi
+
+printf 'Exercising native cross-client clipboard offer, transfer and missing-MIME EOF\n'
+WAYLAND_DISPLAY="$socket_name" timeout 120s \
+  target/debug/examples/headless_clipboard_client source >"$clipboard_log" 2>&1 &
+clipboard_source_pid=$!
+source_ready=false
+for _ in $(seq 1 100); do
+  if grep -q '^SLOPOS_CLIPBOARD_SOURCE_READY ' "$clipboard_log" 2>/dev/null; then
+    source_ready=true
+    break
+  fi
+  if ! kill -0 "$clipboard_source_pid" 2>/dev/null; then
+    wait "$clipboard_source_pid" || true
+    write_artifact failed "clipboard_source_exited_before_ready"
+    cat "$clipboard_log" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+if [[ "$source_ready" != true ]]; then
+  write_artifact failed "clipboard_source_readiness_timeout"
+  cat "$clipboard_log" >&2
+  exit 1
+fi
+
+WAYLAND_DISPLAY="$socket_name" timeout 30s \
+  target/debug/examples/headless_clipboard_client sink >>"$clipboard_log" 2>&1
+for marker in \
+  SLOPOS_CLIPBOARD_OFFER_VERIFIED \
+  SLOPOS_CLIPBOARD_TRANSFER_VERIFIED \
+  SLOPOS_CLIPBOARD_MISSING_MIME_EOF_VERIFIED; do
+  if ! has_clipboard_marker "$marker"; then
+    write_artifact failed "missing_${marker}"
+    cat "$clipboard_log" >&2
+    exit 1
+  fi
+done
+kill -TERM "$clipboard_source_pid" 2>/dev/null || true
+wait "$clipboard_source_pid" 2>/dev/null || true
+clipboard_source_pid=""
+if ! kill -0 "$compositor_pid" 2>/dev/null; then
+  write_artifact failed "compositor_died_after_clipboard_transfer"
   cat "$compositor_log" >&2
   exit 1
 fi
