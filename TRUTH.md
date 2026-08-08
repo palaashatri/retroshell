@@ -5,8 +5,8 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`d7e2b7533c35844ea2b47c5b0f9abb4d779cbb94`
-**Audit date:** 2026-08-08
+`78fa7de93aa0456efb467d0486c3936c1b0359b2`
+**Audit date:** 2026-08-09
 **Audit basis:** current-source review through the audited SHA, commit-delta
 review, exact-commit Ubuntu UTM build/test/lint/release evidence, retained
 native Wayland protocol logs, exact-commit headless Spaces runtime evidence with
@@ -14,14 +14,67 @@ a real Preview client, exact-commit Settings/IPC/Spaces output-assignment QA,
 exact-commit application-ID Spaces-policy runtime QA, exact-commit
 Settings application-policy control/reconciliation tests in Ubuntu UTM, exact-
 commit display-topology source/contract and headless runtime evidence, and the
-exact-commit keyboard-overview focused suites plus headless compositor and
-topology reruns recorded below.
+exact-commit keyboard-overview focused suites, display-policy failure-path
+runtime QA, active-window Spaces move runtime QA with a real Preview client,
+and exact-commit compositor contract/headless protocol reruns recorded below.
 **Public target:** a 100/100 production Linux desktop environment that genuinely
 competes with KDE Plasma and GNOME as a daily driver.
 **Current verdict:** **63/100 — functional custom desktop alpha.**
 
 Documentation commits after the audited implementation do not change the
 product score unless they are accompanied by implementation and evidence.
+
+### Current implementation wave — typed display policy, live accessibility, output recovery and active-window Spaces moves
+
+Implementation commit `78fa7de93aa0456efb467d0486c3936c1b0359b2` completes a
+bounded set of compositor-authority gaps. The session bus now carries typed
+display-policy requests and atomic capability snapshots. Nested/headless
+backends apply only capability-supported HDR/VRR/refresh/colour requests and
+reject unsupported values without advancing the policy revision; DRM publishes
+its detected policy while correctly reporting that runtime mutation is not
+available. Settings applies a policy to the live compositor before persisting
+it and rolls back both the compositor and UI/config state when persistence or
+session delivery fails.
+
+The same commit adds live-tree projection and diff handling for AT-SPI dynamic
+Spaces and shell widgets: stable IDs, labels, bounds, selection/focus, window counts, recursive
+add/remove projection, and diff-based `ChildrenChanged`, `StateChanged`,
+`Focus`, and `BoundsChanged` events are connected to the toolkit tree. Space
+output assignment now validates the current connector inventory transactionally
+and clears stale persisted assignments after topology changes. A typed
+`MoveActiveWindow` command is implemented in both nested and DRM dispatch; it
+validates the compositor's activated window against mapped windows before
+mutating authoritative membership.
+
+Exact-commit host gates all passed under
+`artifacts/qa/2026-08-09-final-gates-host-78fa7de/` (format, locked workspace
+check, locked workspace tests, Clippy with `-D warnings`, and locked release
+build). The Ubuntu UTM checkout was detached at the exact audited SHA and all
+five locked gates also passed under
+`artifacts/qa/2026-08-09-final-gates-utm-78fa7de/`; the workspace log includes
+170 `slopos-compositor` unit tests, 178 `slopos-kit` tests and 337
+`slopos-shell` tests with zero failures. The canonical compositor contract
+gate passed 170 unit, 8 binary, 23 contract and 17 integration tests under
+`artifacts/qa/2026-08-09-compositor-contract-78fa7de/utm/`.
+
+The exact-commit headless Wayland protocol smoke passed under
+`artifacts/qa/2026-08-09-compositor-runtime-78fa7de/utm/`; its machine-readable
+result explicitly leaves DRM/KMS, physical input, rendering, XWayland, HDR,
+VRR and hardware compatibility false. The display-policy runtime harness under
+`artifacts/qa/2026-08-09-display-policy-runtime-78fa7de/utm/` applied `120hz`
+SRGB and rejected invalid refresh, HDR, VRR and colour requests without a
+revision change. The active-window harness under
+`artifacts/qa/2026-08-09-spaces-active-window-runtime-78fa7de/utm/` used a real
+Preview client, moved it from Space 1 to Space 2 through the compositor-owned
+command, and confirmed that an invalid Space 999 target preserved the revision.
+
+These are software/headless and VM runtime results, not physical-hardware or
+third-party compatibility proof. Live thumbnails, shell drag/gesture callers,
+Orca workflows, physical DRM/input/output migration, broad GTK/Qt/Electron/
+XWayland compatibility, renderer budgets, packaging/recovery, security trust,
+and long-running soaks remain open. The overall score therefore remains
+**63/100**; no weighted score increase is claimed from this bounded wave, and
+strict compositor completion remains **76/100**.
 
 ### Current implementation wave — compositor keyboard focus for live Spaces overview
 
