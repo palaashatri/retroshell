@@ -5,7 +5,7 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`4296882e1344e52dad082d4a377c9e9579928798`
+`ef1666faaa9066e419e71f9005f720a08e8471b3`
 **Audit date:** 2026-08-09
 **Audit basis:** current-source review through the audited SHA, commit-delta
 review, exact-commit Ubuntu UTM build/test/lint/release evidence, retained
@@ -18,13 +18,55 @@ exact-commit keyboard-overview focused suites, display-policy failure-path
 runtime QA, active-window Spaces move runtime QA with a real Preview client,
 and exact-commit compositor contract/headless protocol reruns recorded below.
 The current audit also includes the exact-commit App Store authenticity tests,
-Ubuntu UTM Clippy/release validation and host regression gates recorded below.
+target-disconnect DnD cancellation runtime, Ubuntu UTM Clippy/release
+validation and host regression gates recorded below.
 **Public target:** a 100/100 production Linux desktop environment that genuinely
 competes with KDE Plasma and GNOME as a daily driver.
 **Current verdict:** **63/100 — functional custom desktop alpha.**
 
 Documentation commits after the audited implementation do not change the
 product score unless they are accompanied by implementation and evidence.
+
+### Current implementation wave — DnD target-disconnect cancellation recovery
+
+Implementation commits `c2d32bc62a0f74882ad9ef5b7604d4d304855ecd`,
+`7fad997be76900943f4dcaa2d706a00515f5a202`,
+`9af7fa8aa2ad9dd1b00a88cb0036fa7afcad31bb`,
+`53c4412853e68aa7146ec1da0a4a3d165d8f4467` and
+`ef1666faaa9066e419e71f9005f720a08e8471b3` add a deterministic DnD failure
+path to the native headless protocol client and compositor contract. A target
+can now accept a drag and intentionally disconnect before drop; the source
+must receive the protocol `Cancelled` event, and the compositor must remain
+alive. The QA script derives the source/target points from the last two
+compositor-mapped window origins, keeps the target-only portion outside the
+raised source buffer, and preserves the earlier invalid-serial marker in the
+combined evidence log.
+
+The exact Ubuntu UTM checkout at the audited SHA is
+`/home/ubuntu/rust-slopos-qa-d1ea823` on `ubuntu@192.168.64.17` (detached at
+`ef1666faaa9066e419e71f9005f720a08e8471b3`). The headless runtime gate passed
+with status `passed`; its machine-readable JSON records
+`dnd_target_disconnect_cancelled_verified: true`,
+`dnd_target_disconnect_target_exit_verified: true`, the existing invalid
+serial/text/URI/icon/drop fields as true, and hardware/DRM/rendering/input as
+false. The JSON and retained source/target logs are under
+`artifacts/qa/2026-08-09-dnd-utm-ef1666f/`. The target-disconnect source log
+contains `SLOPOS_DND_SOURCE_CANCELLED`; the target log contains
+`SLOPOS_DND_TARGET_ABORTING` and `SLOPOS_DND_TARGET_DISCONNECTED`.
+
+The exact UTM locked gates all exited `0` under
+`artifacts/qa/2026-08-09-dnd-final-gates-utm-ef1666f/` (format, locked check,
+workspace tests, Clippy with `-D warnings`, and locked release build). That
+workspace test log includes 24 compositor completion-contract tests, 170
+compositor unit tests, 339 shell tests, 178 kit tests and 30 App Store tests
+with no failures. The same five host gates exited `0` under
+`artifacts/qa/2026-08-09-dnd-final-gates-host-ef1666f/`.
+
+This is deterministic native Wayland/headless and Ubuntu VM evidence, not
+physical input, GTK/Qt/Electron/XWayland compatibility, DRM/KMS, hardware,
+accessibility, performance-budget, packaging/recovery or long-soak proof. The
+overall SLOPOS-I verdict remains **63/100** and strict compositor completion
+remains **76/100**; the broader compositor matrix is still open.
 
 ### Current implementation wave — authenticated App Store catalogs and packages
 
