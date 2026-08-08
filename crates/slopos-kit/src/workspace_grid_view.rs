@@ -1,11 +1,18 @@
 use crate::{
-    theme::ThemeContext, AccessibilityNode, AccessibilityRole, Event, EventResult,
-    LayoutConstraint, Point, Rect, Size, Widget, WidgetState,
+    event::{KeyCode, MouseButton},
+    theme::ThemeContext,
+    AccessibilityNode, AccessibilityRole, Event, EventResult, LayoutConstraint, Point, Rect, Size,
+    Visibility, Widget, WidgetState,
 };
 
 pub struct WorkspaceGridView {
     state: WidgetState,
     pub active_index: usize,
+    /// Cell that receives keyboard navigation and Enter/Space activation.
+    /// This is intentionally independent from `active_index`: the latter is
+    /// the compositor-authoritative Space, while this field is local pending
+    /// keyboard focus until a selection is committed.
+    pub focused_index: usize,
     pub items: Vec<String>,
     /// Number of ordinary windows currently assigned to each item.
     ///
@@ -37,6 +44,7 @@ impl WorkspaceGridView {
         Self {
             state: WidgetState::new(),
             active_index: 0,
+            focused_index: 0,
             items: Vec::new(),
             window_counts: Vec::new(),
             activated: None,
@@ -88,6 +96,39 @@ impl WorkspaceGridView {
     pub fn take_activated(&mut self) -> Option<usize> {
         self.activated.take()
     }
+
+    /// Keep keyboard focus valid after the shell replaces the live Space
+    /// snapshot while this overview is open.
+    pub fn normalize_focus(&mut self) {
+        if self.items.is_empty() {
+            self.focused_index = 0;
+        } else if self.focused_index >= self.items.len() {
+            self.focused_index = self.active_index.min(self.items.len().saturating_sub(1));
+        }
+    }
+
+    fn move_focus(&mut self, key: KeyCode) -> bool {
+        self.normalize_focus();
+        let len = self.items.len();
+        if len == 0 {
+            return false;
+        }
+
+        let current = self.focused_index;
+        let next = match key {
+            KeyCode::ArrowLeft if !current.is_multiple_of(GRID_COLS) => Some(current - 1),
+            KeyCode::ArrowRight if current % GRID_COLS + 1 < GRID_COLS && current + 1 < len => {
+                Some(current + 1)
+            }
+            KeyCode::ArrowUp if current >= GRID_COLS => Some(current - GRID_COLS),
+            KeyCode::ArrowDown if current + GRID_COLS < len => Some(current + GRID_COLS),
+            _ => None,
+        };
+        if let Some(next) = next {
+            self.focused_index = next;
+        }
+        true
+    }
 }
 
 impl Widget for WorkspaceGridView {
@@ -96,6 +137,14 @@ impl Widget for WorkspaceGridView {
     }
     fn widget_state_mut(&mut self) -> &mut WidgetState {
         &mut self.state
+    }
+
+    fn focusable(&self) -> bool {
+        self.state.enabled && self.state.visibility == Visibility::Visible
+    }
+
+    fn wants_click_focus(&self) -> bool {
+        self.focusable()
     }
 
     fn layout(&mut self, constraint: LayoutConstraint) -> Size {
@@ -117,8 +166,17 @@ impl Widget for WorkspaceGridView {
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
         match event {
+            Event::FocusIn => {
+                self.state.focused = true;
+                self.normalize_focus();
+                EventResult::Handled
+            }
+            Event::FocusOut => {
+                self.state.focused = false;
+                EventResult::Handled
+            }
             Event::MouseDown {
-                button: crate::event::MouseButton::Left,
+                button: MouseButton::Left,
                 point,
                 ..
             } => {
@@ -127,10 +185,36 @@ impl Widget for WorkspaceGridView {
                 }
                 match self.cell_at(*point) {
                     Some(cell) => {
+                        self.state.focused = true;
+                        self.focused_index = cell;
                         self.activated = Some(cell);
                         EventResult::Handled
                     }
                     None => EventResult::Ignored,
+                }
+            }
+            Event::KeyDown { key, modifiers }
+                if !modifiers.meta && !modifiers.control && !modifiers.alt =>
+            {
+                if !self.state.focused {
+                    return EventResult::Ignored;
+                }
+                match key {
+                    KeyCode::ArrowLeft
+                    | KeyCode::ArrowRight
+                    | KeyCode::ArrowUp
+                    | KeyCode::ArrowDown => {
+                        self.move_focus(*key);
+                        EventResult::Handled
+                    }
+                    KeyCode::Enter | KeyCode::Space => {
+                        self.normalize_focus();
+                        if self.focused_index < self.items.len() {
+                            self.activated = Some(self.focused_index);
+                        }
+                        EventResult::Handled
+                    }
+                    _ => EventResult::Ignored,
                 }
             }
             _ => EventResult::Ignored,
@@ -155,7 +239,7 @@ impl Widget for WorkspaceGridView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{Modifiers, MouseButton};
+    use crate::event::Modifiers;
 
     fn grid() -> WorkspaceGridView {
         let mut g = WorkspaceGridView::new();
@@ -169,6 +253,13 @@ mod tests {
         Event::MouseDown {
             button: MouseButton::Left,
             point: Point::new(x, y),
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    fn key(key: KeyCode) -> Event {
+        Event::KeyDown {
+            key,
             modifiers: Modifiers::NONE,
         }
     }
@@ -235,5 +326,93 @@ mod tests {
         let unused = g.cell_rect(0);
         assert!(unused.width == 0.0 && unused.height == 0.0);
         assert_eq!(g.cell_at(Point::new(100.0, 100.0)), None);
+    }
+
+    #[test]
+    fn keyboard_navigation_is_focus_gated_and_bounds_safe() {
+        let mut g = grid();
+        assert!(matches!(
+            g.handle_event(&key(KeyCode::ArrowRight)),
+            EventResult::Ignored
+        ));
+        assert_eq!(g.focused_index, 0);
+
+        g.widget_state_mut().focused = true;
+        assert!(matches!(
+            g.handle_event(&key(KeyCode::ArrowRight)),
+            EventResult::Handled
+        ));
+        assert_eq!(g.focused_index, 1);
+        assert!(matches!(
+            g.handle_event(&key(KeyCode::ArrowDown)),
+            EventResult::Handled
+        ));
+        assert_eq!(g.focused_index, 3);
+        assert!(matches!(
+            g.handle_event(&key(KeyCode::ArrowRight)),
+            EventResult::Handled
+        ));
+        assert_eq!(g.focused_index, 3, "right at row edge must not wrap");
+        assert!(matches!(
+            g.handle_event(&key(KeyCode::ArrowDown)),
+            EventResult::Handled
+        ));
+        assert_eq!(
+            g.focused_index, 3,
+            "down beyond the last row must not overflow"
+        );
+        assert!(matches!(
+            g.handle_event(&key(KeyCode::ArrowLeft)),
+            EventResult::Handled
+        ));
+        assert_eq!(g.focused_index, 2);
+        assert!(matches!(
+            g.handle_event(&key(KeyCode::ArrowUp)),
+            EventResult::Handled
+        ));
+        assert_eq!(g.focused_index, 0);
+    }
+
+    #[test]
+    fn enter_and_space_activate_the_focused_cell_once() {
+        let mut g = grid();
+        g.widget_state_mut().focused = true;
+        g.focused_index = 2;
+
+        assert!(matches!(
+            g.handle_event(&key(KeyCode::Enter)),
+            EventResult::Handled
+        ));
+        assert_eq!(g.take_activated(), Some(2));
+        assert_eq!(g.take_activated(), None);
+
+        assert!(matches!(
+            g.handle_event(&key(KeyCode::Space)),
+            EventResult::Handled
+        ));
+        assert_eq!(g.take_activated(), Some(2));
+    }
+
+    #[test]
+    fn focus_is_clamped_when_items_shrink_or_empty() {
+        let mut g = grid();
+        g.focused_index = 3;
+        g.items.truncate(2);
+        g.normalize_focus();
+        assert_eq!(g.focused_index, 0, "focus falls back to the active Space");
+
+        g.items.clear();
+        g.normalize_focus();
+        assert_eq!(g.focused_index, 0);
+        g.widget_state_mut().focused = true;
+        assert!(matches!(
+            g.handle_event(&key(KeyCode::Enter)),
+            EventResult::Handled
+        ));
+        assert_eq!(
+            g.take_activated(),
+            None,
+            "empty grids cannot activate a stale cell"
+        );
     }
 }

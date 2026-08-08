@@ -1116,6 +1116,7 @@ impl ShellDesktop {
             grid.items.extend(labels.iter().cloned());
             grid.window_counts.clear();
             grid.window_counts.extend(counts.iter().copied());
+            grid.normalize_focus();
         }
     }
 
@@ -1689,6 +1690,8 @@ impl ShellDesktop {
 
             let mut grid = WorkspaceGridView::new();
             grid.active_index = active;
+            grid.focused_index = active;
+            grid.widget_state_mut().focused = true;
             grid.items = labels;
             grid.window_counts = counts;
             layout.add(Box::new(grid));
@@ -2044,6 +2047,65 @@ impl ShellDesktop {
                 WindowAction::OpenFile(path) => self.open_path_with_mime(path),
             }
         }
+    }
+
+    /// Route keyboard input to the live Spaces overview before generic shell
+    /// navigation. The overlay is a compositor-owned modal surface: Escape
+    /// dismisses it, arrows move a local focus cell, and Enter/Space commit
+    /// the focused cell through the same stable-ID request used by pointer
+    /// activation. No local Space mirror is changed optimistically.
+    fn handle_live_workspace_overview_key(&mut self, event: &Event) -> Option<EventResult> {
+        if !self.compositor_owns_ordinary_windows() || self.workspace_overview.is_none() {
+            return None;
+        }
+
+        let key = match event {
+            Event::KeyDown { key, .. } => *key,
+            _ => return None,
+        };
+        if key == slopos_kit::event::KeyCode::Escape {
+            self.workspace_overview = None;
+            return Some(EventResult::Handled);
+        }
+        if !matches!(
+            key,
+            slopos_kit::event::KeyCode::ArrowLeft
+                | slopos_kit::event::KeyCode::ArrowRight
+                | slopos_kit::event::KeyCode::ArrowUp
+                | slopos_kit::event::KeyCode::ArrowDown
+                | slopos_kit::event::KeyCode::Enter
+                | slopos_kit::event::KeyCode::Space
+        ) {
+            return None;
+        }
+
+        let mut result = EventResult::Ignored;
+        let mut activated = None;
+        if let Some(overview) = self.workspace_overview.as_mut() {
+            for_each_widget_mut(overview, &mut |widget| {
+                if !matches!(result, EventResult::Ignored) {
+                    return;
+                }
+                if let Some(grid) = widget.as_any_mut().downcast_mut::<WorkspaceGridView>() {
+                    result = grid.handle_event(event);
+                    activated = grid.take_activated();
+                }
+            });
+        }
+        if let Some(cell) = activated {
+            // Invalid/stale cells are intentionally ignored by
+            // `select_workspace_cell`; in particular they do not emit an IPC
+            // request or close the overlay.
+            let _ = self.select_workspace_cell(cell);
+        }
+
+        // Keep recognized overview keys modal even when the grid is empty or
+        // stale, so they cannot fall through to generic workspace shortcuts.
+        Some(if matches!(result, EventResult::StopPropagation) {
+            EventResult::StopPropagation
+        } else {
+            EventResult::Handled
+        })
     }
 
     /// Open a filesystem path via MIME registry (`open_plan` + optional live spawn).
@@ -3945,6 +4007,10 @@ impl Widget for ShellDesktop {
             }
         }
 
+        if let Some(result) = self.handle_live_workspace_overview_key(event) {
+            return result;
+        }
+
         let result = self.menu_bar.handle_event(event);
         if matches!(result, EventResult::Handled | EventResult::StopPropagation) {
             return result;
@@ -5606,6 +5672,115 @@ mod tests {
             }]
         );
         assert!(desktop.workspace_overview.is_none());
+
+        if let Some(previous_runtime) = previous_runtime {
+            std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", previous_runtime);
+        } else {
+            std::env::remove_var("SLOPOS_SESSION_RUNTIME_DIR");
+        }
+        drop(listener);
+        fs::remove_dir_all(runtime).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_workspace_overview_keyboard_selects_dismisses_and_rejects_stale() {
+        use slopos_bus::{SessionControlListener, SessionControlRequest, SpacesControlCommand};
+
+        let _environment_guard = SESSION_RUNTIME_ENV_LOCK.lock().unwrap();
+        let runtime = std::env::temp_dir().join(format!(
+            "slo-wsk-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&runtime).unwrap();
+        let listener = SessionControlListener::bind(&runtime).unwrap();
+        let previous_runtime = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR");
+        std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", &runtime);
+
+        let mut desktop = test_desktop().0;
+        desktop
+            .workspace_manager
+            .write()
+            .apply_snapshot(&slopos_bus::SpacesSnapshot {
+                session_epoch: 1,
+                revision: 10,
+                active_space: 11,
+                multi_monitor_policy: slopos_bus::SpacesDisplayPolicy::SharedSpan,
+                application_policies: Vec::new(),
+                spaces: vec![
+                    slopos_bus::SpaceSnapshot {
+                        id: 11,
+                        order: 0,
+                        name: "Personal".to_string(),
+                        active: true,
+                        window_count: 1,
+                        wallpaper: None,
+                        appearance: None,
+                        classification: slopos_bus::SpaceClassification::Normal,
+                        output_id: None,
+                    },
+                    slopos_bus::SpaceSnapshot {
+                        id: 22,
+                        order: 1,
+                        name: "Projects".to_string(),
+                        active: false,
+                        window_count: 2,
+                        wallpaper: None,
+                        appearance: None,
+                        classification: slopos_bus::SpaceClassification::Normal,
+                        output_id: None,
+                    },
+                ],
+            });
+        desktop.set_layer_shell_bound(true);
+        desktop.set_input_filter(Some(ShellPaintFilter::SpacesOverview));
+        desktop.open_workspace_status_window();
+
+        let key = |key| Event::KeyDown {
+            key,
+            modifiers: Modifiers::NONE,
+        };
+        assert!(matches!(
+            desktop.handle_event(&key(slopos_kit::event::KeyCode::ArrowRight)),
+            EventResult::Handled
+        ));
+        assert!(listener.drain().is_empty(), "navigation must not send IPC");
+        assert!(matches!(
+            desktop.handle_event(&key(slopos_kit::event::KeyCode::Enter)),
+            EventResult::Handled
+        ));
+        assert_eq!(
+            listener.drain(),
+            vec![SessionControlRequest::Spaces {
+                command: SpacesControlCommand::Select { id: 22 },
+            }]
+        );
+        assert!(desktop.workspace_overview.is_none());
+
+        desktop.open_workspace_status_window();
+        assert!(matches!(
+            desktop.handle_event(&key(slopos_kit::event::KeyCode::Escape)),
+            EventResult::Handled
+        ));
+        assert!(desktop.workspace_overview.is_none());
+        assert!(listener.drain().is_empty(), "dismissal must not send IPC");
+
+        desktop.open_workspace_status_window();
+        {
+            let mut manager = desktop.workspace_manager.write();
+            manager.workspaces.clear();
+            manager.total = 0;
+        }
+        assert!(matches!(
+            desktop.handle_event(&key(slopos_kit::event::KeyCode::Enter)),
+            EventResult::Handled
+        ));
+        assert!(listener.drain().is_empty(), "stale cells must not send IPC");
+        assert!(desktop.workspace_overview.is_some());
 
         if let Some(previous_runtime) = previous_runtime {
             std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", previous_runtime);
