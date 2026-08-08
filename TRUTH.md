@@ -5,16 +5,75 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`77f0598e5382162cbe0deb1a4b21a7ec03071fae`
+`5577f3659691a9789a0c6e374a4bdd4dabb3d7ae`
 **Audit date:** 2026-08-08
-**Audit basis:** current-source review, commit-delta review, exact-commit Linux
-VM/UTM build/test/runtime evidence and retained native Wayland protocol logs.
+**Audit basis:** current-source review through the audited SHA, commit-delta
+review, exact-commit Ubuntu UTM build/test/runtime/topology evidence and
+retained native Wayland protocol logs.
 **Public target:** a 100/100 production Linux desktop environment that genuinely
 competes with KDE Plasma and GNOME as a daily driver.
 **Current verdict:** **63/100 — functional custom desktop alpha.**
 
 Documentation commits after the audited implementation do not change the
 product score unless they are accompanied by implementation and evidence.
+
+### Current implementation wave — retained glyph atlas
+
+Implementation commit `1c603bec2ff55614cbc4d09912e5be882d9801ef` adds a bounded
+1024×1024 R8 glyph atlas, textured glyph vertices, retained shaped-glyph
+geometry, atlas reuse and a deterministic fallback path while preserving draw
+order. The focused Ubuntu UTM SDK gate at that commit passed formatting,
+workspace check, workspace tests and Clippy with `-D warnings`; evidence is
+retained under `artifacts/qa/2026-08-08-renderer-gate-1c603be-r1/` and recorded
+by QA commit `32ed35eeaddf141d7e4f95f9a6d736c717c9bb0d`.
+
+This is source/build/test evidence for the retained text path, not a complete
+visual or performance acceptance result. It does not prove that every
+first-party surface uses the path, that image rendering is GPU-backed, or that
+high-DPI, mixed-scale, font-fallback, emoji, grapheme and bidi behaviour meet
+the production contract. Preview still uses its existing low-resolution
+panel-mosaic image path. The overall score remains **63/100**.
+
+### Current implementation wave — unavailable application actions removed
+
+Implementation commit `d47ad0420b9c105587893d328158eca29ac503ef` removes
+Preview's unavailable Open action and App Store's stub Remove, Update and
+Confirm controls. The exact focused Ubuntu UTM gate recorded by QA commit
+`5577f3659691a9789a0c6e374a4bdd4dabb3d7ae` passed 14 Preview tests, 23 App
+Store tests, formatting and Clippy; evidence is under
+`artifacts/qa/2026-08-08-ui-gate-d47ad04/`.
+
+This removes misleading controls but does not complete the advertised Preview
+or software-manager workflows. The overall score remains **63/100**.
+
+### Current implementation wave — exact-current-head Ubuntu UTM regression
+
+At audited implementation commit `5577f3659691a9789a0c6e374a4bdd4dabb3d7ae`,
+the Ubuntu UTM guest ran the mandatory locked workspace gates: `cargo fmt`,
+locked workspace check, locked workspace tests, Clippy with `-D warnings`,
+and the locked release workspace build. Each command exited zero. The
+timestamped provenance and command logs are retained under
+`artifacts/qa/2026-08-08-build-tests-5577f36-r5/`.
+
+The same exact head passed the SLOPOS-owned headless Wayland runtime gate;
+schema-12 JSON reports `status: "passed"` for registry/readiness, XDG
+toplevel and popup lifecycle, pointer constraints, native clipboard and
+primary selection, text/URI DnD, text-input-v3 and input-method-v2, with
+abrupt-disconnect recovery. Evidence is under
+`artifacts/qa/2026-08-08-compositor-runtime-5577f36/`.
+
+The current-head logical-output topology gate also reports `status: "passed"`:
+add, reorder and removal of logical outputs succeeded, including readiness
+dimensions and output identity checks. Evidence is under
+`artifacts/qa/2026-08-08-compositor-topology-5577f36/`.
+
+These are Ubuntu UTM build and headless/logical runtime results only. The
+artifacts explicitly keep `hardware_verified`, DRM/KMS, rendering, physical
+input and physical multi-monitor flags false. They do not prove display-manager
+login, real GPU presentation, GTK/Qt/Electron or XWayland compatibility,
+third-party IME/DnD, HDR/VRR, accessibility, packaging/recovery or long soaks.
+The overall score remains **63/100**, and strict compositor completion remains
+**76/100**.
 
 ### Current implementation wave — native text-input-v3 and input-method-v2
 
