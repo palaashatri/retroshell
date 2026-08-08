@@ -5,7 +5,7 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`0f4dac76be7cf0a439e586cbd4ad5cfe0035ac8f`
+`0579025157954f26d95e5e5c9764dc30f9089b6b`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review, commit-delta review, exact-commit GitHub
 Actions evidence and retained VM/UTM runtime evidence.
@@ -362,6 +362,39 @@ stability. Clipboard/DnD/IME therefore advances conservatively from 5 to
 **6/8**, strict compositor completion from 73 to **74/100**, and overall
 SLOPOS-I remains **63/100**.
 
+### Current implementation wave — clipboard cancellation and target death
+
+Implementation commits `da853a258f22f860eebe644ee17834abe2bc7ade`,
+`04222003f68f8ea06251947ef4000c1841dea8fa` and
+`0579025157954f26d95e5e5c9764dc30f9089b6b` are **BUILD VERIFIED** and **TEST
+VERIFIED** in the Ubuntu UTM guest. The native QA client now covers the two
+failure paths that were previously unproved: replacing a live clipboard source
+must deliver exactly one `wl_data_source.cancelled` marker, and a target that
+closes its receive pipe after a partial 1 MiB transfer must not take down the
+source or compositor. The source-owned send path records
+`SLOPOS_SELECTION_TARGET_DISCONNECTED` for the observed `Broken pipe`; the
+nested and DRM compositor-owned send paths retain the same asynchronous marker
+for server-set selections.
+
+The exact-current-head (`0579025`) schema-10 runtime JSON reports `status:
+passed` with `clipboard_source_cancelled_verified`,
+`clipboard_target_death_recovered_verified` and
+`selection_target_disconnected_verified` all true, alongside the existing
+clipboard, primary-selection, pointer-constraint, XDG/popup and 64-cycle
+disconnect markers. Exact-head topology, daily-driver packaging/unit, locked
+workspace fmt/check/test/Clippy/release and the 14-test compositor contract
+evidence are retained under
+`artifacts/qa/2026-08-08-compositor-runtime-0579025/`,
+`artifacts/qa/2026-08-08-compositor-topology-0579025/`,
+`artifacts/qa/2026-08-08-daily-driver-0579025/` and
+`artifacts/qa/2026-08-08-build-tests-0579025/`.
+
+This remains headless native Wayland evidence, not GTK/Qt/Electron, XWayland,
+drag-and-drop, IME preedit/commit, physical DRM/KMS/input/multi-monitor,
+display-manager, HDR/VRR or long-soak evidence. Clipboard/DnD/IME therefore
+advances conservatively from 6 to **7/8**, strict compositor completion from 74
+to **75/100**, and overall SLOPOS-I remains **63/100**.
+
 ---
 
 ## 3. Production scoring model
@@ -467,7 +500,7 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | Session sovereignty and lifecycle | 9 | 10 | Display-manager, suspend/resume, lid and longer failure coverage |
 | Core Wayland lifecycle | 12 | 14 | Broader popup, subsurface, transient and modal compatibility |
 | Input correctness | 9 | 10 | Physical multi-device, touch, gestures and hotplug |
-| Clipboard, DnD and IME | 6 | 8 | Cross-client DnD, drag icons, cancellation and text-input/input-method |
+| Clipboard, DnD and IME | 7 | 8 | Cross-client DnD, drag icons, GTK/Qt/Electron and text-input/input-method |
 | Rendering and frame scheduling | 9 | 12 | Direct scanout, occlusion, GPU recovery and physical pacing evidence |
 | Displays and scaling | 9 | 12 | Hotplug, mixed scale/refresh, rotation, migration and topology recovery |
 | External Wayland compatibility | 6 | 12 | GTK, Qt, Electron, browsers, office, media, games and popup-heavy apps |
