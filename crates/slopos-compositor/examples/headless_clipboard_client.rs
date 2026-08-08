@@ -266,7 +266,7 @@ fn run_source(connection: &Connection) -> Result<(), Box<dyn Error>> {
     surface.commit();
     data_device.set_selection(Some(&source), 0);
     connection.flush()?;
-    println!("SLOPOS_CLIPBOARD_SOURCE_READY offers={MIME_TEXT_UTF8},{MIME_TEXT}");
+    println!("SLOPOS_CLIPBOARD_SOURCE_READY offers={MIME_TEXT_UTF8},{MIME_TEXT},{MIME_LARGE}");
     std::io::stdout().flush()?;
 
     loop {
