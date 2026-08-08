@@ -140,6 +140,21 @@ enum Choice {
     SpacesFullscreen,
 }
 
+impl Choice {
+    fn is_display_topology(self) -> bool {
+        matches!(
+            self,
+            Self::ArrangeExtendRight
+                | Self::ArrangeExtendDown
+                | Self::ArrangeMirror
+                | Self::ArrangePrimaryOnly
+                | Self::Scale100
+                | Self::Scale150
+                | Self::Scale200
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Category {
     General,
@@ -1491,44 +1506,47 @@ impl SettingsView {
     }
 
     fn apply_choice(&mut self, choice: Choice) -> bool {
-        self.settings.apply_choice(choice);
-        match self.store.save(&self.settings) {
+        let previous = self.settings.clone();
+        let mut candidate = previous.clone();
+        candidate.apply_choice(choice);
+
+        // Topology changes are an end-to-end compositor operation.  Do not
+        // mutate the UI mirror or persist the preference until the typed
+        // request has at least reached the exact session socket.
+        if choice.is_display_topology() {
+            if let Err(error) = candidate.display_config().apply_arrangement_session(&[]) {
+                self.last_error = Some(format!("DISPLAY APPLY {error}"));
+                self.refresh_labels();
+                self.relayout_if_visible();
+                return false;
+            }
+        }
+
+        match self.store.save(&candidate) {
             Ok(()) => {
-                // Display pane: plan arrangement + apply SLOPOS_OUTPUTS_LAYOUT env.
-                if matches!(
-                    choice,
-                    Choice::HdrOff
-                        | Choice::HdrOn
-                        | Choice::VrrOff
-                        | Choice::VrrAdaptive
-                        | Choice::Refresh60
-                        | Choice::Refresh120
-                        | Choice::RefreshAdaptive
-                        | Choice::ColorSrgb
-                        | Choice::ColorRec2020
-                        | Choice::ArrangeExtendRight
-                        | Choice::ArrangeExtendDown
-                        | Choice::ArrangeMirror
-                        | Choice::ArrangePrimaryOnly
-                        | Choice::Scale100
-                        | Choice::Scale150
-                        | Choice::Scale200
-                ) {
-                    match self.settings.display_config().apply_arrangement_env(&[]) {
-                        Ok(_) => self.last_error = None,
-                        Err(err) => {
-                            self.last_error = Some(format!("DISPLAY APPLY {err}"));
-                        }
-                    }
-                } else {
-                    self.last_error = None;
-                }
+                self.settings = candidate;
+                self.last_error = None;
                 self.refresh_labels();
                 self.relayout_if_visible();
                 true
             }
-            Err(err) => {
-                self.last_error = Some(format!("SAVE FAILED {err}"));
+            Err(error) => {
+                // The compositor may already have accepted the topology.  Try
+                // to restore the previous plan before exposing the save error
+                // to the user; either way, keep the in-memory/config state at
+                // the last known persisted value.
+                if choice.is_display_topology() {
+                    let rollback = previous.display_config().apply_arrangement_session(&[]);
+                    if let Err(rollback_error) = rollback {
+                        self.last_error = Some(format!(
+                            "SAVE FAILED {error}; DISPLAY ROLLBACK FAILED {rollback_error}"
+                        ));
+                    } else {
+                        self.last_error = Some(format!("SAVE FAILED {error}"));
+                    }
+                } else {
+                    self.last_error = Some(format!("SAVE FAILED {error}"));
+                }
                 self.refresh_labels();
                 self.relayout_if_visible();
                 false
@@ -2137,6 +2155,12 @@ mod tests {
         );
     }
 
+    fn click_and_report(view: &mut SettingsView, rect: Rect) -> bool {
+        let before = view.settings.clone();
+        click(view, rect);
+        view.settings != before
+    }
+
     fn key_down(key: KeyCode, modifiers: Modifiers) -> Event {
         Event::KeyDown { key, modifiers }
     }
@@ -2174,32 +2198,111 @@ mod tests {
         assert!(content.contains("scale_percent=200"));
     }
 
+    #[cfg(unix)]
     #[test]
-    fn settings_display_arrange_applies_env_on_save() {
+    fn settings_display_arrange_sends_typed_request_before_persisting() {
+        with_control_runtime(|_runtime, listener| {
+            let path = temp_settings_path();
+            let store = SettingsStore::new(path.clone());
+            let mut view = SettingsView::load(store);
+            view.select_category(Category::Display);
+            view.set_rect(Rect::new(0.0, 0.0, 640.0, 520.0));
+            view.layout(LayoutConstraint::tight(Size::new(640.0, 520.0)));
+
+            let mirror_rect = view
+                .option_buttons
+                .iter()
+                .find(|b| b.label.contains("Arrange Mirror"))
+                .expect("Arrange Mirror button")
+                .rect();
+            click(&mut view, mirror_rect);
+
+            let loaded = SettingsStore::new(path).load();
+            assert_eq!(loaded.arrange_mode, "mirror");
+            assert_eq!(view.settings.arrange_mode, "mirror");
+            assert!(view.status.text.contains("ARRANGE MIRROR"));
+            assert_eq!(
+                listener.drain(),
+                vec![SessionControlRequest::ReconfigureOutputs {
+                    layout: "eDP-1:1920x1080@0,0:s100".to_string()
+                }]
+            );
+
+            let layout = std::env::var("SLOPOS_OUTPUTS_LAYOUT")
+                .expect("successful typed apply mirrors the accepted layout");
+            assert!(layout.contains("eDP-1"), "layout={layout}");
+            std::env::remove_var("SLOPOS_OUTPUTS_LAYOUT");
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_display_arrange_rolls_back_when_session_is_unavailable() {
+        let _environment_guard = SESSION_RUNTIME_ENV_LOCK.lock().unwrap();
+        let previous_runtime = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR");
+        std::env::remove_var("SLOPOS_SESSION_RUNTIME_DIR");
+        std::env::remove_var("SLOPOS_OUTPUTS_LAYOUT");
+
         let path = temp_settings_path();
-        let store = SettingsStore::new(path.clone());
-        let mut view = SettingsView::load(store);
+        let mut view = SettingsView::load(SettingsStore::new(path.clone()));
         view.select_category(Category::Display);
         view.set_rect(Rect::new(0.0, 0.0, 640.0, 520.0));
         view.layout(LayoutConstraint::tight(Size::new(640.0, 520.0)));
-
-        // Arrange Mirror is index 11 in Display choices (0-based after HDR/VRR/refresh/color).
         let mirror_rect = view
             .option_buttons
             .iter()
             .find(|b| b.label.contains("Arrange Mirror"))
             .expect("Arrange Mirror button")
             .rect();
-        click(&mut view, mirror_rect);
+        assert!(!view.settings.arrange_mode.eq("mirror"));
+        assert!(!click_and_report(&mut view, mirror_rect));
 
-        let loaded = SettingsStore::new(path).load();
-        assert_eq!(loaded.arrange_mode, "mirror");
-        assert!(view.status.text.contains("ARRANGE MIRROR"));
+        assert_eq!(view.settings.arrange_mode, "extend_right");
+        assert_eq!(SettingsStore::new(path).load().arrange_mode, "extend_right");
+        assert!(view.status.text.contains("DISPLAY APPLY"));
+        assert!(view.status.text.contains("session compositor unavailable"));
+        assert!(std::env::var_os("SLOPOS_OUTPUTS_LAYOUT").is_none());
 
-        let layout = std::env::var("SLOPOS_OUTPUTS_LAYOUT")
-            .expect("apply_arrangement_env should set SLOPOS_OUTPUTS_LAYOUT");
-        assert!(layout.contains("eDP-1"), "layout={layout}");
-        std::env::remove_var("SLOPOS_OUTPUTS_LAYOUT");
+        if let Some(previous_runtime) = previous_runtime {
+            std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", previous_runtime);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_display_arrange_rolls_back_compositor_when_persistence_fails() {
+        with_control_runtime(|_runtime, listener| {
+            let parent = temp_settings_path().with_extension("parent");
+            fs::create_dir_all(parent.parent().unwrap()).unwrap();
+            fs::write(&parent, "not a directory").unwrap();
+            let path = parent.join("settings.conf");
+            let mut view = SettingsView::load(SettingsStore::new(path));
+            view.select_category(Category::Display);
+            view.set_rect(Rect::new(0.0, 0.0, 640.0, 520.0));
+            view.layout(LayoutConstraint::tight(Size::new(640.0, 520.0)));
+            let mirror_rect = view
+                .option_buttons
+                .iter()
+                .find(|b| b.label.contains("Arrange Mirror"))
+                .expect("Arrange Mirror button")
+                .rect();
+
+            assert!(!click_and_report(&mut view, mirror_rect));
+            assert_eq!(view.settings.arrange_mode, "extend_right");
+            assert!(view.status.text.contains("SAVE FAILED"));
+            assert_eq!(
+                listener.drain(),
+                vec![
+                    SessionControlRequest::ReconfigureOutputs {
+                        layout: "eDP-1:1920x1080@0,0:s100".to_string()
+                    },
+                    SessionControlRequest::ReconfigureOutputs {
+                        layout: "eDP-1:1920x1080@0,0:s100".to_string()
+                    }
+                ]
+            );
+            let _ = fs::remove_file(parent);
+        });
     }
 
     #[test]
@@ -2536,7 +2639,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn with_spaces_runtime(test: impl FnOnce(&Path, &SessionControlListener)) {
+    fn with_control_runtime(test: impl FnOnce(&Path, &SessionControlListener)) {
         let _environment_guard = SESSION_RUNTIME_ENV_LOCK.lock().unwrap();
         let runtime = PathBuf::from("/tmp").join(format!(
             "slo-s-{}-{}",
@@ -2550,7 +2653,6 @@ mod tests {
         let listener = SessionControlListener::bind(&runtime).unwrap();
         let previous_runtime = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR");
         std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", &runtime);
-        slopos_bus::write_spaces_snapshot(&spaces_snapshot_for_settings()).unwrap();
         test(&runtime, &listener);
         if let Some(previous_runtime) = previous_runtime {
             std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", previous_runtime);
@@ -2559,6 +2661,14 @@ mod tests {
         }
         drop(listener);
         fs::remove_dir_all(runtime).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn with_spaces_runtime(test: impl FnOnce(&Path, &SessionControlListener)) {
+        with_control_runtime(|runtime, listener| {
+            slopos_bus::write_spaces_snapshot(&spaces_snapshot_for_settings()).unwrap();
+            test(runtime, listener);
+        });
     }
 
     #[cfg(unix)]

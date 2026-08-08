@@ -133,8 +133,9 @@ use crate::{
     DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
 };
 use slopos_bus::{
-    write_spaces_snapshot, SessionControlListener, SessionControlRequest, SpaceTargetWire,
-    SpacesControlCommand, SpacesSnapshot, WindowPresentationAction,
+    write_outputs_snapshot, write_spaces_snapshot, OutputSnapshot, OutputsSnapshot,
+    SessionControlListener, SessionControlRequest, SpaceTargetWire, SpacesControlCommand,
+    SpacesSnapshot, WindowPresentationAction,
 };
 // Workspace cycle helpers (`cycle_workspace_*` / `activate_workspace_index`) request a
 // full redraw and re-focus the topmost visible window. Super+key bindings can call them
@@ -1347,6 +1348,8 @@ pub fn run_drm_session() -> Result<()> {
         lock_surfaces: Vec::new(),
         wayland_socket_name: socket_name,
         outputs: vec![output],
+        output_name: modeset_plan.connector_name.clone(),
+        outputs_revision: 0,
         windows: Vec::new(),
         workspace_state: WorkspaceState::new(),
         spaces: initial_spaces,
@@ -1398,6 +1401,7 @@ pub fn run_drm_session() -> Result<()> {
 
     state.sync_legacy_workspace_state();
     state.publish_spaces_state(false);
+    state.publish_outputs_state();
 
     eprintln!(
         "[slopos-compositor] DRM session loop running (Wayland + seat + udev + libinput + layer-shell + foreign-toplevel; scanout_armed={scanout_armed})"
@@ -1689,6 +1693,8 @@ struct DrmSessionState {
     wayland_socket_name: String,
     #[allow(dead_code)]
     outputs: Vec<Output>,
+    output_name: String,
+    outputs_revision: u64,
     windows: Vec<MappedWindow>,
     /// Legacy indexed workspace mirror retained for compatibility with shared
     /// helpers; dynamic visibility and membership are authoritative in `spaces`.
@@ -1934,6 +1940,40 @@ impl DrmSessionState {
                 }
             }
         }
+    }
+
+    fn publish_outputs_state(&mut self) {
+        self.outputs_revision = self.outputs_revision.saturating_add(1);
+        let scale_percent = (self.output_scale_percent()).max(1);
+        let snapshot = OutputsSnapshot {
+            backend: "drm".to_string(),
+            revision: self.outputs_revision,
+            outputs: vec![OutputSnapshot {
+                name: self.output_name.clone(),
+                width: self.output_size.0.max(1) as u32,
+                height: self.output_size.1.max(1) as u32,
+                x: 0,
+                y: 0,
+                scale_percent,
+                primary: true,
+            }],
+        };
+        if let Err(error) = write_outputs_snapshot(&snapshot) {
+            tracing::debug!(%error, "could not publish DRM output topology snapshot");
+        }
+    }
+
+    fn output_scale_percent(&self) -> u32 {
+        // DRM currently exposes one uniform integer buffer scale.  The
+        // compositor's wl_output state is configured from this field during
+        // bootstrap; keep the projection honest until dynamic fractional
+        // scaling has a real modeset/renderer transaction.
+        std::env::var("SLOPOS_OUTPUT_SCALE")
+            .ok()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(|value| (value * 100.0).round() as u32)
+            .unwrap_or(100)
     }
 
     fn reapply_application_policy(&mut self, app_id: &str) {

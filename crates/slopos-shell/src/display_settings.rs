@@ -10,6 +10,7 @@
 //! Shell startup re-applies the same path via `apply_display_config_from_settings`.
 
 use serde::{Deserialize, Serialize};
+use slopos_bus::{read_outputs_snapshot, send_session_control, SessionControlRequest};
 use std::fs;
 use std::path::PathBuf;
 
@@ -72,6 +73,55 @@ impl Default for DisplayConfig {
 }
 
 impl DisplayConfig {
+    /// Read the compositor's current output projection for a live transaction.
+    ///
+    /// The pure planning API still accepts an explicit output list.  Runtime
+    /// Settings/shell paths use this projection so they do not fabricate an
+    /// `eDP-1:1920x1080` topology that may not match the current session.
+    pub fn session_outputs() -> Vec<DisplayOutput> {
+        if let Ok(snapshot) = read_outputs_snapshot() {
+            let mut outputs = snapshot
+                .outputs
+                .into_iter()
+                .filter_map(|output| {
+                    if output.name.is_empty()
+                        || output.name.trim() != output.name
+                        || output.name.chars().any(char::is_control)
+                        || output.width == 0
+                        || output.height == 0
+                        || !(50..=400).contains(&output.scale_percent)
+                    {
+                        return None;
+                    }
+                    let mut display = DisplayOutput::new(output.name, output.width, output.height)
+                        .with_scale(output.scale_percent);
+                    display.is_primary = output.primary;
+                    Some(display)
+                })
+                .collect::<Vec<_>>();
+            if !outputs.is_empty() {
+                if !outputs.iter().any(|output| output.is_primary) {
+                    outputs[0].is_primary = true;
+                }
+                return outputs;
+            }
+        }
+
+        let width = std::env::var("SLOPOS_COMPOSITOR_WIDTH")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|width| *width > 0)
+            .unwrap_or(1920);
+        let height = std::env::var("SLOPOS_COMPOSITOR_HEIGHT")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|height| *height > 0)
+            .unwrap_or(1080);
+        let mut primary = DisplayOutput::new("eDP-1", width, height);
+        primary.is_primary = true;
+        vec![primary]
+    }
+
     /// Load display settings from config file.
     pub fn load(config_path: &PathBuf) -> Self {
         if let Ok(content) = fs::read_to_string(config_path) {
@@ -221,6 +271,54 @@ impl DisplayConfig {
     ) -> Result<Vec<(String, String)>, String> {
         let plan = self.plan_arrangement(outputs)?;
         Ok(apply_display_plan_env(&plan))
+    }
+
+    /// Apply an arrangement to the already-running compositor through the
+    /// typed session control plane, then mirror the delivered payload in this
+    /// process for children launched after the change.
+    ///
+    /// The datagram send is deliberately performed before the environment
+    /// mirror.  A missing or inaccessible session therefore cannot make the
+    /// Settings UI look successfully applied merely because a process-local
+    /// variable changed.
+    pub fn apply_arrangement_session(
+        &self,
+        outputs: &[DisplayOutput],
+    ) -> Result<DisplayApplyPlan, String> {
+        if outputs.is_empty()
+            && read_outputs_snapshot()
+                .ok()
+                .is_some_and(|snapshot| snapshot.backend == "drm")
+        {
+            return Err(
+                "live display topology changes require the DRM output manager; this session exposes no runtime logical-layout control"
+                    .to_string(),
+            );
+        }
+        let live_outputs = if outputs.is_empty() {
+            Self::session_outputs()
+        } else {
+            outputs.to_vec()
+        };
+        if live_outputs
+            .iter()
+            .any(|output| output.scale_percent != self.scale_percent)
+        {
+            return Err(
+                "live display scale changes are unavailable until mixed-scale renderer support is enabled"
+                    .to_string(),
+            );
+        }
+        let plan = self.plan_arrangement(&live_outputs)?;
+        let layout = plan
+            .layout_value()
+            .ok_or_else(|| "display plan did not produce an output layout".to_string())?;
+        send_session_control(&SessionControlRequest::ReconfigureOutputs {
+            layout: layout.to_string(),
+        })
+        .map_err(|error| format!("session compositor unavailable: {error}"))?;
+        apply_display_plan_env(&plan);
+        Ok(plan)
     }
 }
 

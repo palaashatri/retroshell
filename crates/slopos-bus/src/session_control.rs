@@ -87,6 +87,98 @@ pub enum SessionControlRequest {
 /// runtime directory.
 pub const SPACES_STATE_FILE: &str = "spaces-state.json";
 
+/// Name of the compositor-authoritative output topology projection.
+pub const OUTPUTS_STATE_FILE: &str = "outputs-state.json";
+
+/// One logical output as published by the compositor for Settings and shell
+/// policy consumers.  The geometry is logical; `scale_percent` is the
+/// compositor's current uniform buffer scale.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OutputSnapshot {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub x: i32,
+    pub y: i32,
+    pub scale_percent: u32,
+    pub primary: bool,
+}
+
+/// Complete, atomically replaced output projection.  `revision` is scoped to
+/// the compositor process and increases after every accepted topology change.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OutputsSnapshot {
+    pub backend: String,
+    pub revision: u64,
+    pub outputs: Vec<OutputSnapshot>,
+}
+
+/// Return the exact output projection path for the current session.
+pub fn session_outputs_state_path() -> Option<PathBuf> {
+    std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .map(|runtime| runtime.join(OUTPUTS_STATE_FILE))
+}
+
+/// Publish one complete output projection atomically.
+#[cfg(unix)]
+pub fn write_outputs_snapshot(snapshot: &OutputsSnapshot) -> io::Result<()> {
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let path = session_outputs_state_path().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "SLOPOS_SESSION_RUNTIME_DIR is not set",
+        )
+    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "outputs path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let bytes = serde_json::to_vec_pretty(snapshot).map_err(io::Error::other)?;
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!(".{}.{}.tmp", OUTPUTS_STATE_FILE, counter));
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp)?;
+    let result = (|| {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp, &path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
+#[cfg(not(unix))]
+pub fn write_outputs_snapshot(_snapshot: &OutputsSnapshot) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "output snapshots require the Unix session runtime",
+    ))
+}
+
+/// Read the latest compositor output projection.
+pub fn read_outputs_snapshot() -> io::Result<OutputsSnapshot> {
+    let path = session_outputs_state_path().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "SLOPOS_SESSION_RUNTIME_DIR is not set",
+        )
+    })?;
+    let bytes = std::fs::read(path)?;
+    serde_json::from_slice(&bytes).map_err(io::Error::other)
+}
+
 /// Return the exact Spaces snapshot path for the current session.
 pub fn session_spaces_state_path() -> Option<PathBuf> {
     std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR")
@@ -560,6 +652,28 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<SessionControlRequest>(&encoded).unwrap(),
             request
+        );
+    }
+
+    #[test]
+    fn output_snapshot_round_trips_through_json() {
+        let snapshot = OutputsSnapshot {
+            backend: "headless".into(),
+            revision: 4,
+            outputs: vec![OutputSnapshot {
+                name: "LEFT".into(),
+                width: 800,
+                height: 600,
+                x: 0,
+                y: 0,
+                scale_percent: 100,
+                primary: true,
+            }],
+        };
+        let encoded = serde_json::to_vec(&snapshot).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<OutputsSnapshot>(&encoded).unwrap(),
+            snapshot
         );
     }
 

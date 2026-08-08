@@ -33,8 +33,9 @@ mod linux {
     use std::time::Duration;
 
     use slopos_bus::{
-        write_spaces_snapshot, HeadlessInputEvent, SessionControlListener, SessionControlRequest,
-        SpaceTargetWire, SpacesControlCommand, SpacesSnapshot, WindowPresentationAction,
+        write_outputs_snapshot, write_spaces_snapshot, HeadlessInputEvent, OutputSnapshot,
+        OutputsSnapshot, SessionControlListener, SessionControlRequest, SpaceTargetWire,
+        SpacesControlCommand, SpacesSnapshot, WindowPresentationAction,
     };
     use slopos_compositor::frame_timing::{FrameScheduler, RefreshRate};
     use slopos_compositor::hdr::HdrCapabilities;
@@ -597,6 +598,8 @@ mod linux {
         output_names: Vec<String>,
         output_scale: OutputScale,
         refresh_mhz: i32,
+        backend_kind: CompositorBackendKind,
+        outputs_revision: u64,
         running: bool,
 
         // Mapped windows (in painting order, bottom → top)
@@ -789,6 +792,40 @@ mod linux {
                         }
                     }
                 }
+            }
+        }
+
+        fn publish_outputs_state(&mut self) {
+            self.outputs_revision = self.outputs_revision.saturating_add(1);
+            let scale_percent = self.runtime_scale_percent();
+            let snapshot = OutputsSnapshot {
+                backend: match self.backend_kind {
+                    CompositorBackendKind::NestedX11 => "nested".to_string(),
+                    CompositorBackendKind::Headless => "headless".to_string(),
+                    CompositorBackendKind::SessionDrm => "drm".to_string(),
+                },
+                revision: self.outputs_revision,
+                outputs: self
+                    .laid_out_outputs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, output)| OutputSnapshot {
+                        name: self
+                            .output_names
+                            .get(index)
+                            .cloned()
+                            .unwrap_or_else(|| format!("output-{index}")),
+                        width: output.config.width.max(1) as u32,
+                        height: output.config.height.max(1) as u32,
+                        x: output.x,
+                        y: output.y,
+                        scale_percent,
+                        primary: index == 0,
+                    })
+                    .collect(),
+            };
+            if let Err(error) = write_outputs_snapshot(&snapshot) {
+                tracing::debug!(%error, "could not publish output topology snapshot");
             }
         }
 
@@ -1837,6 +1874,7 @@ mod linux {
             self.laid_out_outputs = new_layout;
             self.output_size =
                 Size::<i32, Physical>::from((new_physical.width, new_physical.height));
+            self.publish_outputs_state();
 
             // Preserve each layer's connector identity when possible. A removed
             // connector deterministically falls back to the first active output.
@@ -4781,6 +4819,8 @@ mod linux {
             output_names,
             output_scale,
             refresh_mhz,
+            backend_kind,
+            outputs_revision: 0,
             running: true,
             windows: Vec::new(),
             workspace_state: WorkspaceState::new(),
@@ -4827,6 +4867,7 @@ mod linux {
 
         state.sync_legacy_workspace_state();
         state.publish_spaces_state(false);
+        state.publish_outputs_state();
 
         // P1.3: best-effort XWayland after state exists (needs loop_handle).
         try_start_xwayland(&mut state);

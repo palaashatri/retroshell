@@ -51,6 +51,8 @@ write_artifact() {
   "logical_output_add_verified": $([[ "$status" == passed ]] && printf true || printf false),
   "logical_output_reorder_verified": $([[ "$status" == passed ]] && printf true || printf false),
   "logical_output_remove_verified": $([[ "$status" == passed ]] && printf true || printf false),
+  "output_snapshot_verified": $([[ "$status" == passed ]] && printf true || printf false),
+  "rejected_layout_preserves_snapshot_verified": $([[ "$status" == passed ]] && printf true || printf false),
   "surface_migration_source_contract_verified": $([[ "$status" == passed ]] && printf true || printf false),
   "hardware_verified": false,
   "drm_hotplug_verified": false,
@@ -111,6 +113,44 @@ control="$runtime_dir/control.sock"
   write_artifact failed control_socket_missing
   exit 1
 }
+outputs_state="$runtime_dir/outputs-state.json"
+for _ in $(seq 1 100); do
+  [[ -s "$outputs_state" ]] && break
+  sleep 0.1
+done
+[[ -s "$outputs_state" ]] || {
+  write_artifact failed output_snapshot_missing
+  exit 1
+}
+
+assert_snapshot() {
+  local expected_backend="$1"
+  local expected_names="$2"
+  local expected_revision="$3"
+  python3 - "$outputs_state" "$expected_backend" "$expected_names" "$expected_revision" <<'PY'
+import json
+import sys
+
+path, backend, names, revision = sys.argv[1:]
+with open(path, encoding="utf-8") as stream:
+    data = json.load(stream)
+assert data["backend"] == backend, data
+assert data["revision"] == int(revision), data
+actual = [item["name"] for item in data["outputs"]]
+assert actual == names.split(","), (actual, names)
+assert all(item["scale_percent"] == 100 for item in data["outputs"]), data
+PY
+}
+
+snapshot_revision() {
+  python3 - "$outputs_state" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    print(json.load(stream)["revision"])
+PY
+}
 
 send_layout() {
   local layout="$1"
@@ -135,12 +175,15 @@ wait_for_apply_count() {
   return 1
 }
 
+assert_snapshot headless X11-1 1
+
 send_layout 'LEFT:800x600@0,0:s100;RIGHT:1024x768@800,0:s100'
 wait_for_apply_count 1 || {
   write_artifact failed two_output_apply_timeout
   cat "$compositor_log" >&2
   exit 1
 }
+assert_snapshot headless LEFT,RIGHT 2
 WAYLAND_DISPLAY="$socket_name" timeout 10s wayland-info >"$added_log" 2>&1
 [[ "$(grep -c "interface: 'wl_output'" "$added_log")" -eq 2 ]] || {
   write_artifact failed two_output_registry_count
@@ -161,18 +204,33 @@ grep -q "name: 'RIGHT'" "$added_log" || grep -q 'RIGHT' "$added_log" || {
   exit 1
 }
 
+# Malformed and scale-mismatched requests must be rejected transactionally;
+# neither may advance the compositor's authoritative output projection.
+before_rejection_revision="$(snapshot_revision)"
+send_layout 'LEFT:800x600@0,0:s100;broken-token'
+send_layout 'LEFT:800x600@0,0:s125;RIGHT:1024x768@800,0:s125'
+sleep 0.3
+[[ "$(snapshot_revision)" == "$before_rejection_revision" ]] || {
+  write_artifact failed rejected_layout_changed_snapshot
+  cat "$compositor_log" >&2
+  exit 1
+}
+assert_snapshot headless LEFT,RIGHT "$before_rejection_revision"
+
 # Reorder and resize while preserving one total headless canvas transaction.
 send_layout 'RIGHT:1024x768@0,0:s100;LEFT:800x600@1024,0:s100'
 wait_for_apply_count 2 || {
   write_artifact failed reorder_apply_timeout
   exit 1
 }
+assert_snapshot headless RIGHT,LEFT 3
 
 send_layout 'RIGHT:1024x768@0,0:s100'
 wait_for_apply_count 3 || {
   write_artifact failed one_output_apply_timeout
   exit 1
 }
+assert_snapshot headless RIGHT 4
 WAYLAND_DISPLAY="$socket_name" timeout 10s wayland-info >"$removed_log" 2>&1
 [[ "$(grep -c "interface: 'wl_output'" "$removed_log")" -eq 1 ]] || {
   write_artifact failed one_output_registry_count

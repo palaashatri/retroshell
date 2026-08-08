@@ -3376,12 +3376,14 @@ fn apply_display_config_from_settings() {
     // accept flat arrange_mode= in settings.conf (Settings app write path).
     let mut config = DisplayConfig::load(&path);
     config.merge_flat_settings_conf(&read_settings_conf_text());
-    match config.apply_arrangement_env(&[]) {
+    let outputs = DisplayConfig::session_outputs();
+    match config.apply_arrangement_env(&outputs) {
         Ok(applied) => {
             if !applied.is_empty() {
                 tracing::info!(
                     mode = %config.arrange_mode,
                     scale = config.scale_percent,
+                    outputs = outputs.len(),
                     env = ?applied,
                     "display arrange plan applied (EmitLayoutEnv)"
                 );

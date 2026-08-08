@@ -135,6 +135,21 @@ pub struct DisplayApplyPlan {
     pub logical_height: u32,
 }
 
+impl DisplayApplyPlan {
+    /// Return the canonical layout payload for the compositor session-control
+    /// request.  The layout is produced by the same plan that drives the
+    /// nested bootstrap environment, so Settings and shell startup cannot
+    /// silently diverge on output names, geometry or scale.
+    pub fn layout_value(&self) -> Option<&str> {
+        self.steps.iter().find_map(|step| match step {
+            DisplayApplyStep::EmitLayoutEnv { key, value } if key == "SLOPOS_OUTPUTS_LAYOUT" => {
+                Some(value.as_str())
+            }
+            _ => None,
+        })
+    }
+}
+
 /// Validate arrangement: ≥1 enabled output, exactly one primary among enabled
 /// (or auto-pick first enabled).
 pub fn normalize_arrangement(mut arr: DisplayArrangement) -> Result<DisplayArrangement, String> {
