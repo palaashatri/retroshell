@@ -5,17 +5,47 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`698832658d240a3c82497a71f1d73262b974b8bc`
+`d42d09eb002502d70dad26b039299534e0ebf2cc`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review through the audited SHA, commit-delta
-review, exact-commit Ubuntu UTM build/test/runtime/topology evidence and
-retained native Wayland protocol logs.
+review, exact-commit Ubuntu UTM build/test/lint/release evidence, retained
+native Wayland protocol logs and a fresh headless Preview WGPU smoke.
 **Public target:** a 100/100 production Linux desktop environment that genuinely
 competes with KDE Plasma and GNOME as a daily driver.
 **Current verdict:** **63/100 — functional custom desktop alpha.**
 
 Documentation commits after the audited implementation do not change the
 product score unless they are accompanied by implementation and evidence.
+
+### Current implementation wave — bounded multi-page retained glyph atlas
+
+Implementation commit `d42d09eb002502d70dad26b039299534e0ebf2cc` extends the
+retained glyph path from one bounded atlas page to four bounded 1024×1024 R8
+GPU texture-array pages. Each page has a 2048-entry limit, glyph vertices carry
+their page index, dirty uploads are page-local, and glyphs remain available
+after the first page fills until all bounded pages are exhausted. Focused SDK
+regression tests cover overflow and same-frame page preservation.
+
+The exact Ubuntu UTM guest clone at this SHA passed `cargo fmt --all --
+--check`, `cargo check --workspace --all-targets --locked`, `cargo test
+--workspace --locked`, `cargo clippy --workspace --all-targets --all-features
+--locked -- -D warnings`, and `cargo build --release --workspace --locked`.
+Logs, exit markers and guest provenance are retained under
+`artifacts/qa/2026-08-08-build-tests-d42d09e/`.
+
+A fresh guest headless compositor plus release Preview smoke used a real PNG
+and remained alive until the bounded 30-second timeout (`preview_exit=124`).
+The WGPU log observed the Vulkan adapter `llvmpipe (LLVM 21.1.8, 128 bits)`.
+Evidence is retained under
+`artifacts/qa/2026-08-08-renderer-atlas-d42d09e/`.
+
+This is source, automated-test and software-renderer runtime evidence. It does
+not prove pixel readback or screenshot acceptance, physical DRM/KMS
+presentation, hardware input, authoritative use by every first-party surface,
+scale-aware performance budgets, image colour/mipmap/animation handling,
+third-party compatibility, accessibility workflows, packaging/recovery or
+long-running reliability. The overall score therefore remains **63/100** and
+strict compositor completion remains **76/100**.
 
 ### Current implementation wave — retained GPU images and Preview interactions
 
