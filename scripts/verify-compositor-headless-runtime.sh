@@ -40,11 +40,15 @@ pointer_constraints_log="$artifact_dir/${commit_sha}-pointer-constraints.log"
 clipboard_log="$artifact_dir/${commit_sha}-clipboard.log"
 clipboard_source_log="$artifact_dir/${commit_sha}-clipboard-source.log"
 clipboard_sink_log="$artifact_dir/${commit_sha}-clipboard-sink.log"
+primary_selection_log="$artifact_dir/${commit_sha}-primary-selection.log"
+primary_selection_source_log="$artifact_dir/${commit_sha}-primary-selection-source.log"
+primary_selection_sink_log="$artifact_dir/${commit_sha}-primary-selection-sink.log"
 runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/slopos-headless-runtime.XXXXXX")"
 chmod 700 "$runtime_dir"
 
 compositor_pid=""
 clipboard_source_pid=""
+primary_selection_source_pid=""
 socket_name=""
 shutdown_status="not_started"
 socket_cleanup="not_observed"
@@ -63,10 +67,21 @@ has_clipboard_marker() {
   [[ -s "$clipboard_sink_log" ]] && grep -q "^${marker} " "$clipboard_sink_log"
 }
 
+has_primary_selection_marker() {
+  local marker="$1"
+  [[ -s "$primary_selection_sink_log" ]] && grep -q "^${marker} " "$primary_selection_sink_log"
+}
+
 combine_clipboard_logs() {
   : >"$clipboard_log"
   [[ -f "$clipboard_source_log" ]] && cat "$clipboard_source_log" >>"$clipboard_log"
   [[ -f "$clipboard_sink_log" ]] && cat "$clipboard_sink_log" >>"$clipboard_log"
+}
+
+combine_primary_selection_logs() {
+  : >"$primary_selection_log"
+  [[ -f "$primary_selection_source_log" ]] && cat "$primary_selection_source_log" >>"$primary_selection_log"
+  [[ -f "$primary_selection_sink_log" ]] && cat "$primary_selection_sink_log" >>"$primary_selection_log"
 }
 
 write_artifact() {
@@ -74,7 +89,7 @@ write_artifact() {
   local failure="${2:-}"
   cat >"$artifact.tmp" <<JSON
 {
-  "schema": 8,
+  "schema": 9,
   "component": "slopos-compositor",
   "commit": "$commit_sha",
   "branch": "$branch",
@@ -100,6 +115,9 @@ write_artifact() {
   "clipboard_large_transfer_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_LARGE_TRANSFER_VERIFIED && printf true || printf false),
   "clipboard_missing_mime_eof_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_MISSING_MIME_EOF_VERIFIED && printf true || printf false),
   "clipboard_source_death_cleared": $(has_clipboard_marker SLOPOS_CLIPBOARD_SOURCE_DEATH_CLEARED && printf true || printf false),
+  "primary_selection_offer_verified": $(has_primary_selection_marker SLOPOS_PRIMARY_SELECTION_OFFER_VERIFIED && printf true || printf false),
+  "primary_selection_transfer_verified": $(has_primary_selection_marker SLOPOS_PRIMARY_SELECTION_TRANSFER_VERIFIED && printf true || printf false),
+  "primary_selection_missing_mime_eof_verified": $(has_primary_selection_marker SLOPOS_PRIMARY_SELECTION_MISSING_MIME_EOF_VERIFIED && printf true || printf false),
   "hardware_verified": false,
   "drm_verified": false,
   "rendering_verified": false,
@@ -117,7 +135,10 @@ write_artifact() {
   "pointer_constraints_log": "$(basename "$pointer_constraints_log")",
   "clipboard_log": "$(basename "$clipboard_log")",
   "clipboard_source_log": "$(basename "$clipboard_source_log")",
-  "clipboard_sink_log": "$(basename "$clipboard_sink_log")"
+  "clipboard_sink_log": "$(basename "$clipboard_sink_log")",
+  "primary_selection_log": "$(basename "$primary_selection_log")",
+  "primary_selection_source_log": "$(basename "$primary_selection_source_log")",
+  "primary_selection_sink_log": "$(basename "$primary_selection_sink_log")"
 }
 JSON
   mv "$artifact.tmp" "$artifact"
@@ -130,7 +151,12 @@ cleanup() {
     kill -TERM "$clipboard_source_pid" 2>/dev/null || true
     wait "$clipboard_source_pid" 2>/dev/null || true
   fi
+  if [[ -n "$primary_selection_source_pid" ]] && kill -0 "$primary_selection_source_pid" 2>/dev/null; then
+    kill -TERM "$primary_selection_source_pid" 2>/dev/null || true
+    wait "$primary_selection_source_pid" 2>/dev/null || true
+  fi
   combine_clipboard_logs
+  combine_primary_selection_logs
   if [[ -n "$compositor_pid" ]] && kill -0 "$compositor_pid" 2>/dev/null; then
     kill -TERM "$compositor_pid" 2>/dev/null || true
     for _ in $(seq 1 50); do
@@ -319,6 +345,48 @@ if ! kill -0 "$compositor_pid" 2>/dev/null; then
   cat "$compositor_log" >&2
   exit 1
 fi
+
+printf 'Exercising native cross-client primary-selection offer, transfer and missing-MIME EOF\n'
+WAYLAND_DISPLAY="$socket_name" timeout 120s \
+  target/debug/examples/headless_clipboard_client primary-source >"$primary_selection_source_log" 2>&1 &
+primary_selection_source_pid=$!
+primary_source_ready=false
+for _ in $(seq 1 100); do
+  if grep -q '^SLOPOS_PRIMARY_SELECTION_SOURCE_READY ' "$primary_selection_source_log" 2>/dev/null; then
+    primary_source_ready=true
+    break
+  fi
+  if ! kill -0 "$primary_selection_source_pid" 2>/dev/null; then
+    wait "$primary_selection_source_pid" || true
+    write_artifact failed "primary_selection_source_exited_before_ready"
+    cat "$primary_selection_source_log" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+if [[ "$primary_source_ready" != true ]]; then
+  write_artifact failed "primary_selection_source_readiness_timeout"
+  cat "$primary_selection_source_log" >&2
+  exit 1
+fi
+
+WAYLAND_DISPLAY="$socket_name" timeout 30s \
+  target/debug/examples/headless_clipboard_client primary-sink >"$primary_selection_sink_log" 2>&1
+for marker in \
+  SLOPOS_PRIMARY_SELECTION_OFFER_VERIFIED \
+  SLOPOS_PRIMARY_SELECTION_TRANSFER_VERIFIED \
+  SLOPOS_PRIMARY_SELECTION_MISSING_MIME_EOF_VERIFIED; do
+  if ! has_primary_selection_marker "$marker"; then
+    write_artifact failed "missing_${marker}"
+    cat "$primary_selection_source_log" >&2
+    cat "$primary_selection_sink_log" >&2
+    exit 1
+  fi
+done
+kill -TERM "$primary_selection_source_pid" 2>/dev/null || true
+wait "$primary_selection_source_pid" 2>/dev/null || true
+primary_selection_source_pid=""
+combine_primary_selection_logs
 
 printf 'Stressing abrupt toplevel and popup disconnect cleanup\n'
 WAYLAND_DISPLAY="$socket_name" SLOPOS_DISCONNECT_STRESS_CYCLES=64 timeout 45s \

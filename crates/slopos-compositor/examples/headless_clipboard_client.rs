@@ -26,13 +26,21 @@ use wayland_client::protocol::{
     wl_registry, wl_seat, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, QueueHandle};
+use wayland_protocols::wp::primary_selection::zv1::client::{
+    zwp_primary_selection_device_manager_v1, zwp_primary_selection_device_v1,
+    zwp_primary_selection_offer_v1, zwp_primary_selection_source_v1,
+};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
 const MIME_TEXT_UTF8: &str = "text/plain;charset=utf-8";
 const MIME_TEXT: &str = "text/plain";
 const MIME_LARGE: &str = "application/x-slopos-large";
 const MIME_MISSING: &str = "application/x-slopos-missing";
+const PRIMARY_MIME_TEXT_UTF8: &str = "text/plain;charset=utf-8";
+const PRIMARY_MIME_TEXT: &str = "text/plain";
+const PRIMARY_MIME_MISSING: &str = "application/x-slopos-primary-missing";
 const PAYLOAD: &[u8] = b"SLOPOS native clipboard transfer\nUTF-8: cafe\xCC\x81\n";
+const PRIMARY_PAYLOAD: &[u8] = b"SLOPOS native primary selection\nUTF-8: cafe\xCC\x81\n";
 const LARGE_PAYLOAD_SIZE: usize = 1024 * 1024;
 static LARGE_PAYLOAD: [u8; LARGE_PAYLOAD_SIZE] = [b'L'; LARGE_PAYLOAD_SIZE];
 
@@ -42,6 +50,8 @@ enum Mode {
     SourceOnce,
     Sink,
     SinkAfterSourceDeath,
+    PrimarySource,
+    PrimarySink,
 }
 
 #[derive(Default)]
@@ -53,6 +63,10 @@ struct State {
     selection_received: bool,
     selection_cleared: bool,
     source_send_count: u32,
+    primary_offer: Option<zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1>,
+    primary_offered_mimes: Vec<String>,
+    primary_selection_received: bool,
+    primary_source_send_count: u32,
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
@@ -107,6 +121,100 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for State {
                 state.selection_cleared = true;
             }
             _ => {}
+        }
+    }
+}
+
+impl Dispatch<zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1, ()>
+    for State
+{
+    fn event(
+        _state: &mut State,
+        _proxy: &zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
+        _event: zwp_primary_selection_device_manager_v1::Event,
+        _data: &(),
+        _connection: &Connection,
+        _queue_handle: &QueueHandle<State>,
+    ) {
+    }
+}
+
+impl Dispatch<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1, ()> for State {
+    wayland_client::event_created_child!(State, zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1, [
+        0 => (zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1, ())
+    ]);
+
+    fn event(
+        state: &mut State,
+        _proxy: &zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1,
+        event: zwp_primary_selection_device_v1::Event,
+        _data: &(),
+        _connection: &Connection,
+        _queue_handle: &QueueHandle<State>,
+    ) {
+        match event {
+            zwp_primary_selection_device_v1::Event::DataOffer { offer } => {
+                state.primary_offer = Some(offer)
+            }
+            zwp_primary_selection_device_v1::Event::Selection { id: Some(offer) } => {
+                state.primary_offer = Some(offer);
+                state.primary_selection_received = true;
+            }
+            zwp_primary_selection_device_v1::Event::Selection { id: None } => {
+                state.primary_offer = None;
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1, ()> for State {
+    fn event(
+        state: &mut State,
+        proxy: &zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1,
+        event: zwp_primary_selection_offer_v1::Event,
+        _data: &(),
+        _connection: &Connection,
+        _queue_handle: &QueueHandle<State>,
+    ) {
+        if let zwp_primary_selection_offer_v1::Event::Offer { mime_type } = event {
+            if state
+                .primary_offer
+                .as_ref()
+                .is_none_or(|offer| offer == proxy)
+            {
+                state.primary_offer = Some(proxy.clone());
+                state.primary_offered_mimes.push(mime_type);
+            }
+        }
+    }
+}
+
+impl Dispatch<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1, ()> for State {
+    fn event(
+        state: &mut State,
+        _proxy: &zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1,
+        event: zwp_primary_selection_source_v1::Event,
+        _data: &(),
+        _connection: &Connection,
+        _queue_handle: &QueueHandle<State>,
+    ) {
+        if let zwp_primary_selection_source_v1::Event::Send { mime_type, fd } = event {
+            let mut file = std::fs::File::from(fd);
+            let data = match mime_type.as_str() {
+                PRIMARY_MIME_TEXT_UTF8 | PRIMARY_MIME_TEXT => Some(PRIMARY_PAYLOAD),
+                _ => None,
+            };
+            if let Some(data) = data {
+                let _ = file.write_all(data);
+                let _ = file.flush();
+                state.primary_source_send_count = state.primary_source_send_count.saturating_add(1);
+                println!(
+                    "SLOPOS_PRIMARY_SELECTION_SOURCE_SENT mime={mime_type} bytes={}",
+                    data.len()
+                );
+                let _ = std::io::stdout().flush();
+            }
         }
     }
 }
@@ -289,9 +397,63 @@ fn run_source(connection: &Connection, keep_alive: bool) -> Result<(), Box<dyn E
     }
 }
 
+fn run_primary_source(connection: &Connection) -> Result<(), Box<dyn Error>> {
+    let (globals, mut event_queue) = registry_queue_init::<State>(connection)?;
+    let queue_handle = event_queue.handle();
+    let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&queue_handle, 1..=6, ())?;
+    let wm_base = globals.bind::<xdg_wm_base::XdgWmBase, _, _>(&queue_handle, 1..=6, ())?;
+    let manager = globals
+        .bind::<zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1, _, _>(
+        &queue_handle,
+        1..=1,
+        (),
+    )?;
+    let seat = globals.bind::<wl_seat::WlSeat, _, _>(&queue_handle, 1..=9, ())?;
+    let primary_device = manager.get_device(&seat, &queue_handle, ());
+    let source = manager.create_source(&queue_handle, ());
+    source.offer(PRIMARY_MIME_TEXT_UTF8.to_owned());
+    source.offer(PRIMARY_MIME_TEXT.to_owned());
+
+    let (surface, _xdg_surface, _toplevel) = create_toplevel(
+        &compositor,
+        &wm_base,
+        &queue_handle,
+        "SLOPOS primary selection source",
+    );
+    connection.flush()?;
+    let mut state = State::default();
+    wait_for_toplevel(&mut event_queue, &mut state)?;
+    surface.commit();
+    primary_device.set_selection(Some(&source), 0);
+    connection.flush()?;
+    println!(
+        "SLOPOS_PRIMARY_SELECTION_SOURCE_READY offers={PRIMARY_MIME_TEXT_UTF8},{PRIMARY_MIME_TEXT}"
+    );
+    std::io::stdout().flush()?;
+
+    loop {
+        event_queue.blocking_dispatch(&mut state)?;
+    }
+}
+
 fn read_offer(
     connection: &Connection,
     offer: &wl_data_offer::WlDataOffer,
+    mime_type: &str,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let (mut reader, writer) = UnixStream::pair()?;
+    reader.set_read_timeout(Some(Duration::from_secs(10)))?;
+    offer.receive(mime_type.to_owned(), writer.as_fd());
+    connection.flush()?;
+    drop(writer);
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn read_primary_offer(
+    connection: &Connection,
+    offer: &zwp_primary_selection_offer_v1::ZwpPrimarySelectionOfferV1,
     mime_type: &str,
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let (mut reader, writer) = UnixStream::pair()?;
@@ -403,14 +565,97 @@ fn run_sink(connection: &Connection, expect_selection: bool) -> Result<(), Box<d
     Ok(())
 }
 
+fn run_primary_sink(connection: &Connection) -> Result<(), Box<dyn Error>> {
+    let (globals, mut event_queue) = registry_queue_init::<State>(connection)?;
+    let queue_handle = event_queue.handle();
+    let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&queue_handle, 1..=6, ())?;
+    let wm_base = globals.bind::<xdg_wm_base::XdgWmBase, _, _>(&queue_handle, 1..=6, ())?;
+    let manager = globals
+        .bind::<zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1, _, _>(
+        &queue_handle,
+        1..=1,
+        (),
+    )?;
+    let seat = globals.bind::<wl_seat::WlSeat, _, _>(&queue_handle, 1..=9, ())?;
+    let _primary_device = manager.get_device(&seat, &queue_handle, ());
+    let (surface, _xdg_surface, _toplevel) = create_toplevel(
+        &compositor,
+        &wm_base,
+        &queue_handle,
+        "SLOPOS primary selection sink",
+    );
+    connection.flush()?;
+    let mut state = State::default();
+    wait_for_toplevel(&mut event_queue, &mut state)?;
+    surface.commit();
+    connection.flush()?;
+
+    while !state.primary_selection_received {
+        if state.close_requested {
+            return Err("compositor closed primary-selection sink before selection".into());
+        }
+        event_queue.blocking_dispatch(&mut state)?;
+    }
+    let offer = state
+        .primary_offer
+        .clone()
+        .ok_or("primary selection event did not include a data offer")?;
+    if !state
+        .primary_offered_mimes
+        .iter()
+        .any(|mime| mime == PRIMARY_MIME_TEXT_UTF8)
+        || !state
+            .primary_offered_mimes
+            .iter()
+            .any(|mime| mime == PRIMARY_MIME_TEXT)
+    {
+        return Err(format!(
+            "primary selection offer missing expected MIME types: {:?}",
+            state.primary_offered_mimes
+        )
+        .into());
+    }
+    println!(
+        "SLOPOS_PRIMARY_SELECTION_OFFER_VERIFIED mimes={}",
+        state.primary_offered_mimes.join(",")
+    );
+
+    let bytes = read_primary_offer(connection, &offer, PRIMARY_MIME_TEXT_UTF8)?;
+    if bytes != PRIMARY_PAYLOAD {
+        return Err(format!(
+            "primary selection payload mismatch: got {} bytes",
+            bytes.len()
+        )
+        .into());
+    }
+    println!(
+        "SLOPOS_PRIMARY_SELECTION_TRANSFER_VERIFIED bytes={}",
+        bytes.len()
+    );
+
+    let missing = read_primary_offer(connection, &offer, PRIMARY_MIME_MISSING)?;
+    if !missing.is_empty() {
+        return Err(format!(
+            "primary selection unsupported MIME returned {} bytes instead of EOF",
+            missing.len()
+        )
+        .into());
+    }
+    println!("SLOPOS_PRIMARY_SELECTION_MISSING_MIME_EOF_VERIFIED mime={PRIMARY_MIME_MISSING}");
+    std::io::stdout().flush()?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mode = match env::args().nth(1).as_deref() {
         Some("source") => Mode::Source,
         Some("source-once") => Mode::SourceOnce,
         Some("sink") => Mode::Sink,
         Some("sink-after-source-death") => Mode::SinkAfterSourceDeath,
+        Some("primary-source") => Mode::PrimarySource,
+        Some("primary-sink") => Mode::PrimarySink,
         _ => return Err(
-            "usage: headless_clipboard_client <source|source-once|sink|sink-after-source-death>"
+            "usage: headless_clipboard_client <source|source-once|sink|sink-after-source-death|primary-source|primary-sink>"
                 .into(),
         ),
     };
@@ -420,5 +665,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Mode::SourceOnce => run_source(&connection, false),
         Mode::Sink => run_sink(&connection, true),
         Mode::SinkAfterSourceDeath => run_sink(&connection, false),
+        Mode::PrimarySource => run_primary_source(&connection),
+        Mode::PrimarySink => run_primary_sink(&connection),
     }
 }

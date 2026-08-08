@@ -62,6 +62,40 @@ fn headless_runtime_gate_exercises_native_clipboard_transfer() {
 }
 
 #[test]
+fn headless_runtime_gate_exercises_native_primary_selection_transfer() {
+    let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
+    let client = include_str!("../examples/headless_clipboard_client.rs");
+    assert!(
+        script.contains("headless_clipboard_client primary-source"),
+        "headless runtime gate must run the native primary-selection source client"
+    );
+    assert!(
+        script.contains("headless_clipboard_client primary-sink"),
+        "headless runtime gate must run the native primary-selection sink client"
+    );
+    for marker in [
+        "SLOPOS_PRIMARY_SELECTION_OFFER_VERIFIED",
+        "SLOPOS_PRIMARY_SELECTION_TRANSFER_VERIFIED",
+        "SLOPOS_PRIMARY_SELECTION_MISSING_MIME_EOF_VERIFIED",
+    ] {
+        assert!(
+            script.contains(marker),
+            "headless runtime gate must require primary-selection marker {marker}"
+        );
+    }
+    for mode in ["primary-source", "primary-sink"] {
+        assert!(
+            client.contains(mode),
+            "primary-selection client must expose mode {mode}"
+        );
+    }
+    assert!(
+        client.contains("zwp_primary_selection_device_manager_v1"),
+        "primary-selection client must use the unstable Wayland primary-selection protocol"
+    );
+}
+
+#[test]
 fn presentation_round_trip_preserves_the_original_normal_frame() {
     let normal = WindowGeometry::new(137, 91, 731, 509);
     let work_area = WindowGeometry::new(0, 24, 1600, 876);
