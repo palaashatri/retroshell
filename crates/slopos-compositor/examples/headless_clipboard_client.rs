@@ -398,7 +398,6 @@ fn run_source(connection: &Connection, keep_alive: bool) -> Result<(), Box<dyn E
     let (globals, mut event_queue) = registry_queue_init::<State>(connection)?;
     let queue_handle = event_queue.handle();
     let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&queue_handle, 1..=6, ())?;
-    let wm_base = globals.bind::<xdg_wm_base::XdgWmBase, _, _>(&queue_handle, 1..=6, ())?;
     let manager = globals.bind::<wl_data_device_manager::WlDataDeviceManager, _, _>(
         &queue_handle,
         1..=3,
@@ -769,16 +768,10 @@ fn run_dnd_invalid_serial(connection: &Connection) -> Result<(), Box<dyn Error>>
     let source = manager.create_data_source(&queue_handle, ());
     source.offer(MIME_TEXT_UTF8.to_owned());
 
-    let (surface, _xdg_surface, _toplevel) = create_toplevel(
-        &compositor,
-        &wm_base,
-        &queue_handle,
-        "SLOPOS invalid DnD serial smoke",
-    );
-    connection.flush()?;
+    // An unmapped origin is sufficient for the invalid-serial rejection path
+    // and does not consume a compositor window-cascade position.
+    let surface = compositor.create_surface(&queue_handle, ());
     let mut state = State::default();
-    wait_for_toplevel(&mut event_queue, &mut state)?;
-    surface.commit();
 
     // Smithay requires this serial to identify a real pointer/touch implicit
     // grab. Headless has no input source, so serial 0 must be ignored and must

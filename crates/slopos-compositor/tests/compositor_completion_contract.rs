@@ -156,6 +156,23 @@ fn headless_runtime_gate_exercises_only_safe_dnd_serial_rejection() {
 }
 
 #[test]
+fn invalid_serial_dnd_smoke_does_not_advance_window_cascade() {
+    let client = include_str!("../examples/headless_clipboard_client.rs");
+    let mode = client
+        .split("fn run_dnd_invalid_serial")
+        .nth(1)
+        .expect("invalid-serial DnD mode must exist");
+    assert!(
+        mode.contains("compositor.create_surface(&queue_handle, ())"),
+        "invalid-serial DnD should use an unmapped origin surface"
+    );
+    assert!(
+        !mode.contains("create_toplevel("),
+        "invalid-serial DnD must not map a throwaway XDG window"
+    );
+}
+
+#[test]
 fn headless_runtime_gate_requires_cross_client_dnd_lifecycle_evidence() {
     let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
     let compositor = include_str!("../src/main.rs");
