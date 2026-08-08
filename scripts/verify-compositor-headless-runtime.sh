@@ -163,15 +163,15 @@ payload = {
         "event": json.loads(event_json),
     }
 }
-
-window_origin() {
-  local title="$1"
-  sed -n "s/.*surface mapped at (\\([0-9][0-9]*\\),\\([0-9][0-9]*\\)) title=${title}.*/\\1 \\2/p" "$compositor_log" | tail -n 1
-}
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
 sock.sendto(json.dumps(payload).encode("utf-8"), socket_path)
 sock.close()
 PY
+}
+
+window_origin() {
+  local title="$1"
+  sed -n "s/.*surface mapped at (\\([0-9][0-9]*\\),\\([0-9][0-9]*\\)) title=${title}.*/\\1 \\2/p" "$compositor_log" | tail -n 1
 }
 
 combine_clipboard_logs() {
