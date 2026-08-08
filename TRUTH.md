@@ -5,7 +5,7 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`5577f3659691a9789a0c6e374a4bdd4dabb3d7ae`
+`698832658d240a3c82497a71f1d73262b974b8bc`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review through the audited SHA, commit-delta
 review, exact-commit Ubuntu UTM build/test/runtime/topology evidence and
@@ -16,6 +16,50 @@ competes with KDE Plasma and GNOME as a daily driver.
 
 Documentation commits after the audited implementation do not change the
 product score unless they are accompanied by implementation and evidence.
+
+### Current implementation wave — retained GPU images and Preview interactions
+
+Implementation commits `bf341ef`, `8f3eba2`, `5724453` and
+`698832658d240a3c82497a71f1d73262b974b8bc` replace Preview's panel-mosaic image
+path with retained RGBA GPU tile uploads. The image path now uses 2048-pixel
+tiles, a bounded retained cache, visible-tile eviction protection, EXIF
+orientation application, alpha preservation, inverse clipped-tile selection,
+quarter-turn geometry/UV transforms and source-byte reuse. Preview exposes
+Fit, Fill, actual size, pan/scroll, rotate-left and rotate-right through its
+toolbar, menus and keyboard paths. Fit/Fill use the rotated display
+dimensions, and rotation/zoom changes clamp the ScrollView state.
+
+The exact Ubuntu UTM guest at
+`698832658d240a3c82497a71f1d73262b974b8bc` passed all five locked workspace
+gates: `cargo fmt --all -- --check`, `cargo check --workspace --all-targets
+--locked`, `cargo test --workspace --locked`, Clippy with `-D warnings`, and
+`cargo build --release --workspace --locked`. Raw logs and provenance are under
+`artifacts/qa/2026-08-08-build-tests-6988326/`.
+
+The same guest passed the SLOPOS-owned headless Wayland protocol runtime
+(schema 12) and logical output topology runtime. Registry/readiness, XDG
+toplevel and popup lifecycle, pointer constraints, native clipboard and
+primary selection, text/URI DnD, text-input-v3/input-method-v2 and abrupt
+disconnect recovery are all reported `true` in
+`artifacts/qa/2026-08-08-compositor-runtime-6988326/698832658d240a3c82497a71f1d73262b974b8bc.json`.
+Logical output add, reorder, remove and surface-migration source-contract
+checks are reported `true` in
+`artifacts/qa/2026-08-08-compositor-topology-6988326/`.
+
+A separate guest Preview smoke launched the release binary against that
+SLOPOS headless compositor with a real PNG, remained alive until the bounded
+30-second timeout (`preview_exit=124`), and logged the WGPU Vulkan adapter
+`llvmpipe (LLVM 21.1.8, 128 bits)`. Its retained log is under
+`artifacts/qa/2026-08-08-renderer-image-6988326/`.
+
+This is source, build/test and software-renderer runtime evidence. It does not
+prove pixel readback or screenshot acceptance, physical DRM/KMS presentation,
+hardware input, mipmaps/area filtering, colour-profile handling, animation,
+complete metadata/document workflows, performance budgets, third-party
+compatibility or long-running reliability. The compositor reports
+`hardware_verified`, `drm_verified` and `rendering_verified` as false for the
+headless protocol gate. The overall score therefore remains **63/100** and
+strict compositor completion remains **76/100**.
 
 ### Current implementation wave — retained glyph atlas
 
@@ -548,8 +592,8 @@ than aspirational.
 | Perspective | Score | Current truth |
 |---|---:|---|
 | Engineering foundation | **76** | Strong Rust workspace, session/compositor ownership, useful tests and exact Linux CI |
-| UI and UX | **59** | Distinctive and coherent, but renderer, typography, image display, animation and integration remain alpha-grade |
-| Product functionality | **61** | Real shell, compositor, applications and Vision paths; many daily-driver workflows are incomplete |
+| UI and UX | **59** | Distinctive and coherent; the GPU image path is real, but typography, colour/scale polish, animation and integration remain alpha-grade |
+| Product functionality | **61** | Real shell, compositor, applications and Vision paths; Preview image interaction is broader, but many daily-driver workflows are incomplete |
 | Linux daily-driver readiness | **51** | Suitable for controlled development and QA, not yet for a non-technical user’s only desktop |
 | Compositor strict completion | **76** | Native clipboard, primary-selection, text/URI DnD and first-party text-input/IME are runtime-observed; hardware, input, displays, XWayland and compatibility gates remain |
 | Security and release readiness | **52** | Good session/filesystem hardening, incomplete sandbox, signing, packaging, upgrades and recovery |
@@ -570,7 +614,7 @@ SLOPOS-I still has release-blocking gaps in each of those areas.
 The most important blockers are:
 
 1. incomplete physical compositor/input/multi-monitor coverage;
-2. prototype text and image rendering;
+2. incomplete retained rendering acceptance: complete text authority, image colour/mipmap/animation paths and measured scale/performance proof;
 3. incomplete third-party DnD compatibility and application-level IME integration;
 4. partial XWayland and third-party application compatibility;
 5. SLOPOS Spaces model not yet connected to a complete user experience;
@@ -593,8 +637,8 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | Window chrome | 73 | Native controls and typed compositor actions are real; policy UI is incomplete |
 | Global menu | 66 | Focus-driven ownership exists; command completeness varies |
 | Typography quality | 60 | Shaping APIs exist, but font roles and profiles are not authoritative everywhere |
-| Text-rendering performance | 39 | Immediate glyph-coverage rectangles remain far behind a glyph-atlas/batched path |
-| Image rendering | 32 | Preview still presents a maximum 96×64 proxy as panel cells instead of a real GPU texture |
+| Text-rendering performance | 45 | Retained glyph-atlas work is present, but authoritative use, scale-aware caches and measured budgets remain incomplete |
+| Image rendering | 56 | Retained RGBA GPU tiles, bounded cache, orientation/alpha, zoom, pan, Fit, Fill and quarter-turn rotation are implemented; mipmaps, colour profiles, animation, pixel acceptance and budgets remain open |
 | Layout and resizing | 62 | Core layout works; many applications retain fixed sizes and hand-authored geometry |
 | Keyboard navigation | 72 | Shared focus management and keyboard activation are substantive |
 | Pointer dispatch and capture | 72 | Shared dispatcher and capture are real; compositor interaction evidence remains incomplete |
@@ -608,9 +652,10 @@ Passing CI proves engineering health. It does not erase these product gaps.
 
 ### UI release blockers
 
-- replace rectangle-per-glyph rendering with a glyph atlas and batched quads;
-- replace Preview’s panel-per-pixel image path with GPU textures, large-image
-  tiling and colour-correct scaling;
+- make the retained glyph atlas authoritative across every first-party surface,
+  with grapheme/bidi/IME geometry and measured scale-aware budgets;
+- finish Preview image filtering, colour-profile handling, animation/document
+  support where advertised, and a current-head pixel/screenshot matrix;
 - make `slopos-fonts` authoritative across shell, SDK and applications;
 - implement shaped grapheme/bidi caret geometry and IME;
 - add restrained, reduced-motion-aware window and Spaces transitions;
@@ -715,8 +760,8 @@ claims are prohibited until assistive-technology workflows are demonstrated.
 | TextEdit | 67 | 61 | **64** | Selection-aware clipboard, caret insertion, find, save/recovery and undo/redo; no production multiline shaping, IME, rich text or scalable transactions |
 | Terminal | 72 | 65 | **69** | Real PTY, parser, tabs, alternate screen, selection, resize and child shutdown; cell model lacks complete CJK/combining/grapheme correctness |
 | Software manager | 46 | 48 | **47** | Hardened local archive installation; catalogue, signing, publisher trust, network delivery, updates and removal are incomplete |
-| Preview | 57 | 39 | **48** | Decode bounds, zoom state and Vision client paths exist; image presentation remains a stretched low-resolution panel mosaic |
-| **Application suite** | **59** | **54** | **57** | Useful native alpha applications, not daily-driver replacements |
+| Preview | 64 | 44 | **54** | Real retained GPU image tiles, orientation/alpha, zoom/pan, Fit/Fill, rotation and Vision client paths; metadata/document workflows, colour management and pixel acceptance remain incomplete |
+| **Application suite** | **59** | **54** | **58** | Useful native alpha applications, not daily-driver replacements |
 
 ### Naming defect
 
