@@ -5,7 +5,7 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`a688ba527495da2fd2172ab8ccc1effd9d631eed`
+`361d32f15f439c84a9ce8b49decf362173f67309`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review, commit-delta review, exact-commit GitHub
 Actions evidence and retained VM/UTM runtime evidence.
@@ -249,6 +249,33 @@ physical multi-monitor verification false. These gates therefore do not raise
 the product score or claim XWayland, physical input, rendering, application
 compatibility, HDR/VRR or long-soak completion. The overall product score
 remains **63/100** and the strict compositor score remains **72/100**.
+
+### Current implementation wave — VM-portable daily-driver and current-head QA
+
+Implementation commit `361d32f15f439c84a9ce8b49decf362173f67309` is **BUILD
+VERIFIED** and **TEST VERIFIED** in the Ubuntu UTM guest. The session wrapper
+now preserves the validated `SLOPOS_OUTPUTS_LAYOUT` environment contract and
+logs the selected compositor backend and layout. The daily-driver checklist no
+longer requires `rg`, which is absent from the guest, and its source contract
+is covered by two shell integration tests.
+
+The guest checklist passed its packaging/session checks and three unit-test
+groups (158, 162 and 327 tests) at this SHA. The complete mandatory gate set
+also passed: `cargo fmt --all -- --check`, locked workspace check, locked
+workspace tests, Clippy with `-D warnings`, and the locked release workspace
+build. Exact guest logs and environment provenance are retained under
+`artifacts/qa/2026-08-08-daily-driver-361d32f/`.
+
+Fresh current-head headless protocol and logical-output topology gates passed
+at the same SHA. Their JSON/log evidence is under
+`artifacts/qa/2026-08-08-compositor-runtime-361d32f/headless/` and
+`artifacts/qa/2026-08-08-compositor-runtime-361d32f/topology/`. These remain
+headless/logical evidence only: they do not prove live display-manager login,
+DRM/KMS rendering, physical input or multi-monitor hardware, XWayland,
+third-party application compatibility, HDR/VRR or long-running stability.
+
+This wave changes no product capability score. Overall SLOPOS-I remains
+**63/100** and strict compositor completion remains **72/100**.
 
 ---
 
