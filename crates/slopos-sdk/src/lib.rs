@@ -1169,13 +1169,15 @@ impl Vertex {
     }
 }
 
-/// Fixed-size, single-channel coverage atlas used by the textured glyph
-/// pipeline. The atlas deliberately has no unbounded growth or eviction
-/// churn: once it is full, the caller uses the existing software fallback for
-/// that glyph until a new presenter is created.
+/// Fixed-size, single-channel coverage atlas pages used by the textured glyph
+/// pipeline. Pages are backed by one bounded GPU texture array, so adding a
+/// page never invalidates vertices emitted earlier in the same frame.
 const GLYPH_ATLAS_WIDTH: u32 = 1024;
 const GLYPH_ATLAS_HEIGHT: u32 = 1024;
 const GLYPH_ATLAS_PADDING: u32 = 1;
+const GLYPH_ATLAS_PAGE_COUNT: usize = 4;
+/// Per-page entry cap keeps insertion bounded even when tiny synthetic glyphs
+/// would otherwise leave most of a page's area unused.
 const GLYPH_ATLAS_MAX_ENTRIES: usize = 2048;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1208,6 +1210,7 @@ impl GlyphAtlasKey {
 
 #[derive(Debug, Clone, Copy)]
 struct GlyphAtlasRegion {
+    page: u32,
     x: u32,
     y: u32,
     width: u32,
@@ -1219,20 +1222,20 @@ struct GlyphAtlasRegion {
 }
 
 #[derive(Debug)]
-struct GlyphAtlas {
+struct GlyphAtlasPage {
     pixels: Vec<u8>,
-    entries: HashMap<GlyphAtlasKey, GlyphAtlasRegion>,
+    entry_count: usize,
     next_x: u32,
     next_y: u32,
     row_height: u32,
     dirty: bool,
 }
 
-impl GlyphAtlas {
+impl GlyphAtlasPage {
     fn new() -> Self {
         Self {
             pixels: vec![0; (GLYPH_ATLAS_WIDTH * GLYPH_ATLAS_HEIGHT) as usize],
-            entries: HashMap::with_capacity(GLYPH_ATLAS_MAX_ENTRIES),
+            entry_count: 0,
             next_x: 0,
             next_y: 0,
             row_height: 0,
@@ -1240,16 +1243,12 @@ impl GlyphAtlas {
         }
     }
 
-    fn insert(
-        &mut self,
-        glyph: &slopos_render::font::RasterGlyph,
-        scale: f32,
-    ) -> Option<GlyphAtlasRegion> {
-        let key = GlyphAtlasKey::from_raster(glyph, scale)?;
-        if let Some(region) = self.entries.get(&key).copied() {
-            return Some(region);
-        }
-        if self.entries.len() >= GLYPH_ATLAS_MAX_ENTRIES {
+    fn insert(&mut self, glyph: &slopos_render::font::RasterGlyph) -> Option<(u32, u32)> {
+        if self.entry_count >= GLYPH_ATLAS_MAX_ENTRIES
+            || glyph.width == 0
+            || glyph.height == 0
+            || glyph.data.len() < (glyph.width as usize).saturating_mul(glyph.height as usize)
+        {
             return None;
         }
 
@@ -1271,41 +1270,80 @@ impl GlyphAtlas {
         let y = self.next_y + GLYPH_ATLAS_PADDING;
         for row in 0..glyph.height {
             let source_start = (row * glyph.width) as usize;
-            let source_end = source_start.saturating_add(glyph.width as usize);
+            let source_end = source_start + glyph.width as usize;
             let destination_start = ((y + row) * GLYPH_ATLAS_WIDTH + x) as usize;
-            let destination_end = destination_start.saturating_add(glyph.width as usize);
-            if source_end > glyph.data.len() || destination_end > self.pixels.len() {
-                return None;
-            }
+            let destination_end = destination_start + glyph.width as usize;
             self.pixels[destination_start..destination_end]
                 .copy_from_slice(&glyph.data[source_start..source_end]);
         }
 
         self.next_x = self.next_x.saturating_add(padded_width);
         self.row_height = self.row_height.max(padded_height);
-        let region = GlyphAtlasRegion {
-            x,
-            y,
-            width: glyph.width,
-            height: glyph.height,
-            u0: x as f32 / GLYPH_ATLAS_WIDTH as f32,
-            v0: y as f32 / GLYPH_ATLAS_HEIGHT as f32,
-            u1: (x + glyph.width) as f32 / GLYPH_ATLAS_WIDTH as f32,
-            v1: (y + glyph.height) as f32 / GLYPH_ATLAS_HEIGHT as f32,
-        };
-        self.entries.insert(key, region);
+        self.entry_count = self.entry_count.saturating_add(1);
         self.dirty = true;
-        Some(region)
+        Some((x, y))
+    }
+}
+
+#[derive(Debug)]
+struct GlyphAtlas {
+    pages: Vec<GlyphAtlasPage>,
+    entries: HashMap<GlyphAtlasKey, GlyphAtlasRegion>,
+}
+
+impl GlyphAtlas {
+    fn new() -> Self {
+        Self {
+            pages: (0..GLYPH_ATLAS_PAGE_COUNT)
+                .map(|_| GlyphAtlasPage::new())
+                .collect(),
+            entries: HashMap::with_capacity(GLYPH_ATLAS_MAX_ENTRIES),
+        }
     }
 
-    fn take_dirty(&mut self) -> bool {
-        let dirty = self.dirty;
-        self.dirty = false;
-        dirty
+    fn insert(
+        &mut self,
+        glyph: &slopos_render::font::RasterGlyph,
+        scale: f32,
+    ) -> Option<GlyphAtlasRegion> {
+        let key = GlyphAtlasKey::from_raster(glyph, scale)?;
+        if let Some(region) = self.entries.get(&key).copied() {
+            return Some(region);
+        }
+        for (page_index, page) in self.pages.iter_mut().enumerate() {
+            let Some((x, y)) = page.insert(glyph) else {
+                continue;
+            };
+            let region = GlyphAtlasRegion {
+                page: page_index as u32,
+                x,
+                y,
+                width: glyph.width,
+                height: glyph.height,
+                u0: x as f32 / GLYPH_ATLAS_WIDTH as f32,
+                v0: y as f32 / GLYPH_ATLAS_HEIGHT as f32,
+                u1: (x + glyph.width) as f32 / GLYPH_ATLAS_WIDTH as f32,
+                v1: (y + glyph.height) as f32 / GLYPH_ATLAS_HEIGHT as f32,
+            };
+            self.entries.insert(key, region);
+            return Some(region);
+        }
+        None
     }
 
-    fn pixels(&self) -> &[u8] {
-        &self.pixels
+    fn take_dirty_pages(&mut self) -> Vec<usize> {
+        let mut dirty_pages = Vec::new();
+        for (index, page) in self.pages.iter_mut().enumerate() {
+            if page.dirty {
+                page.dirty = false;
+                dirty_pages.push(index);
+            }
+        }
+        dirty_pages
+    }
+
+    fn pixels(&self, page: usize) -> &[u8] {
+        &self.pages[page].pixels
     }
 
     #[cfg(test)]
@@ -1361,6 +1399,7 @@ struct GlyphVertex {
     position: [f32; 2],
     uv: [f32; 2],
     color: [f32; 4],
+    page: u32,
 }
 
 impl GlyphVertex {
@@ -1383,6 +1422,12 @@ impl GlyphVertex {
                     offset: (std::mem::size_of::<[f32; 2]>() * 2) as wgpu::BufferAddress,
                     shader_location: 2,
                     format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: (std::mem::size_of::<[f32; 2]>() * 2 + std::mem::size_of::<[f32; 4]>())
+                        as wgpu::BufferAddress,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Uint32,
                 },
             ],
         }
@@ -1904,7 +1949,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             size: wgpu::Extent3d {
                 width: GLYPH_ATLAS_WIDTH,
                 height: GLYPH_ATLAS_HEIGHT,
-                depth_or_array_layers: 1,
+                depth_or_array_layers: GLYPH_ATLAS_PAGE_COUNT as u32,
             },
             mip_level_count: 1,
             sample_count: 1,
@@ -1913,8 +1958,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let glyph_atlas_view =
-            glyph_atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let glyph_atlas_view = glyph_atlas_texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            array_layer_count: Some(GLYPH_ATLAS_PAGE_COUNT as u32),
+            ..Default::default()
+        });
         let glyph_atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("RetroSDK Glyph Atlas Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -1934,7 +1982,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
                             multisampled: false,
                         },
                         count: None,
@@ -1969,6 +2017,7 @@ struct VsOut {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) page: u32,
 };
 
 @vertex
@@ -1976,20 +2025,22 @@ fn vs_main(
     @location(0) position: vec2<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) color: vec4<f32>,
+    @location(3) page: u32,
 ) -> VsOut {
     var out: VsOut;
     out.position = vec4<f32>(position, 0.0, 1.0);
     out.uv = uv;
     out.color = color;
+    out.page = page;
     return out;
 }
 
-@group(0) @binding(0) var glyph_atlas: texture_2d<f32>;
+@group(0) @binding(0) var glyph_atlas: texture_2d_array<f32>;
 @group(0) @binding(1) var glyph_sampler: sampler;
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    let coverage = textureSample(glyph_atlas, glyph_sampler, in.uv).r;
+    let coverage = textureSample(glyph_atlas, glyph_sampler, in.uv, i32(in.page)).r;
     return vec4<f32>(in.color.rgb, in.color.a * coverage);
 }
 "#
@@ -2148,28 +2199,31 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     fn upload_glyph_atlas(&mut self) {
-        if !self.glyph_atlas.take_dirty() {
-            return;
+        for page in self.glyph_atlas.take_dirty_pages() {
+            self.queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &self.glyph_atlas_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: page as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                self.glyph_atlas.pixels(page),
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(GLYPH_ATLAS_WIDTH),
+                    rows_per_image: Some(GLYPH_ATLAS_HEIGHT),
+                },
+                wgpu::Extent3d {
+                    width: GLYPH_ATLAS_WIDTH,
+                    height: GLYPH_ATLAS_HEIGHT,
+                    depth_or_array_layers: 1,
+                },
+            );
         }
-        self.queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &self.glyph_atlas_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            self.glyph_atlas.pixels(),
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(GLYPH_ATLAS_WIDTH),
-                rows_per_image: Some(GLYPH_ATLAS_HEIGHT),
-            },
-            wgpu::Extent3d {
-                width: GLYPH_ATLAS_WIDTH,
-                height: GLYPH_ATLAS_HEIGHT,
-                depth_or_array_layers: 1,
-            },
-        );
     }
 
     fn ensure_image_texture(
@@ -2890,6 +2944,13 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    #[cfg(test)]
+    fn draw_test_raster_glyph(&mut self, glyph: &slopos_render::font::RasterGlyph) {
+        if !self.draw_raster_glyph(glyph, 1.0, 1.0, 1.0, [0.0, 0.0, 0.0, 1.0]) {
+            self.draw_raster_glyph_pixels(glyph, 1.0, 1.0, 1.0, [0.0, 0.0, 0.0, 1.0]);
+        }
+    }
+
     fn draw_raster_glyph(
         &mut self,
         glyph: &slopos_render::font::RasterGlyph,
@@ -2942,31 +3003,37 @@ impl<'a> Canvas<'a> {
                 position: p0,
                 uv: [u0, v0],
                 color,
+                page: region.page,
             },
             GlyphVertex {
                 position: p1,
                 uv: [u1, v0],
                 color,
+                page: region.page,
             },
             GlyphVertex {
                 position: p2,
                 uv: [u1, v1],
                 color,
+                page: region.page,
             },
             GlyphVertex {
                 position: p0,
                 uv: [u0, v0],
                 color,
+                page: region.page,
             },
             GlyphVertex {
                 position: p2,
                 uv: [u1, v1],
                 color,
+                page: region.page,
             },
             GlyphVertex {
                 position: p3,
                 uv: [u0, v1],
                 color,
+                page: region.page,
             },
         ]);
         self.push_command(DrawCommand::Glyph { start, count: 6 });
@@ -5861,5 +5928,78 @@ mod tests {
             canvas.commands[2],
             super::DrawCommand::Color { .. }
         ));
+    }
+
+    fn synthetic_raster(value: u8, bearing_x: f32) -> slopos_render::font::RasterGlyph {
+        slopos_render::font::RasterGlyph {
+            data: vec![value],
+            width: 1,
+            height: 1,
+            advance: 1.0,
+            bearing_x,
+            bearing_y: 0.0,
+            top: 0.0,
+            ascent: 1.0,
+            descent: 0.0,
+        }
+    }
+
+    #[test]
+    fn glyph_atlas_overflow_does_not_emit_per_pixel_color_fallbacks() {
+        let mut canvas = Canvas::new(320.0, 100.0);
+        for index in 0..=super::GLYPH_ATLAS_MAX_ENTRIES + 1 {
+            let raster = synthetic_raster(200, index as f32 / 1024.0);
+            canvas.draw_test_raster_glyph(&raster);
+        }
+
+        assert_eq!(
+            canvas
+                .commands
+                .iter()
+                .filter(|command| matches!(command, super::DrawCommand::Color { .. }))
+                .count(),
+            0,
+            "atlas overflow must remain on the retained glyph path"
+        );
+    }
+
+    #[test]
+    fn glyph_atlas_page_growth_preserves_earlier_glyph_data_in_one_frame() {
+        let mut canvas = Canvas::new(320.0, 100.0);
+        let first = synthetic_raster(0x7f, 0.0);
+        let first_key = super::GlyphAtlasKey::from_raster(&first, 1.0).expect("first key");
+        canvas.draw_test_raster_glyph(&first);
+
+        for index in 1..=super::GLYPH_ATLAS_MAX_ENTRIES + 1 {
+            let raster = synthetic_raster(200, index as f32 / 1024.0);
+            canvas.draw_test_raster_glyph(&raster);
+        }
+
+        let first_region = match &canvas.atlas {
+            super::CanvasAtlas::Owned(atlas) => atlas
+                .entries
+                .get(&first_key)
+                .copied()
+                .expect("first glyph remains indexed"),
+            super::CanvasAtlas::Borrowed(_) => panic!("test canvas owns its atlas"),
+        };
+        assert_eq!(
+            match &canvas.atlas {
+                super::CanvasAtlas::Owned(atlas) =>
+                    atlas.pages[first_region.page as usize].pixels
+                        [(first_region.y * super::GLYPH_ATLAS_WIDTH + first_region.x) as usize],
+                super::CanvasAtlas::Borrowed(_) => 0,
+            },
+            0x7f
+        );
+        assert_eq!(
+            canvas
+                .commands
+                .iter()
+                .filter(|command| matches!(command, super::DrawCommand::Color { .. }))
+                .count(),
+            0,
+            "page growth must not invalidate earlier glyphs into pixel quads"
+        );
     }
 }
