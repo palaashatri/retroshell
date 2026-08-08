@@ -5,21 +5,61 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`802ca6b4a0067d086a6cbf062e6ff1d6fe923ac1`
+`d7e2b7533c35844ea2b47c5b0f9abb4d779cbb94`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review through the audited SHA, commit-delta
 review, exact-commit Ubuntu UTM build/test/lint/release evidence, retained
 native Wayland protocol logs, exact-commit headless Spaces runtime evidence with
 a real Preview client, exact-commit Settings/IPC/Spaces output-assignment QA,
-exact-commit application-ID Spaces-policy runtime QA, and exact-commit
-Settings application-policy control/reconciliation tests in Ubuntu UTM, plus
-exact-commit display-topology source/contract and headless runtime evidence.
+exact-commit application-ID Spaces-policy runtime QA, exact-commit
+Settings application-policy control/reconciliation tests in Ubuntu UTM, exact-
+commit display-topology source/contract and headless runtime evidence, and the
+exact-commit keyboard-overview focused suites plus headless compositor and
+topology reruns recorded below.
 **Public target:** a 100/100 production Linux desktop environment that genuinely
 competes with KDE Plasma and GNOME as a daily driver.
 **Current verdict:** **63/100 — functional custom desktop alpha.**
 
 Documentation commits after the audited implementation do not change the
 product score unless they are accompanied by implementation and evidence.
+
+### Current implementation wave — compositor keyboard focus for live Spaces overview
+
+Implementation commits `9ab9aa98a0596b57e8a5a344e2e2aed73cae591c` and
+`d7e2b7533c35844ea2b47c5b0f9abb4d779cbb94` close the layer-shell focus gap in
+the live SLOPOS Spaces overview. While the overview is visible, the shell now
+requests `Exclusive` keyboard interactivity on its exact Overlay surface and
+returns it to `OnDemand` when the overview closes. Both nested and DRM
+compositor backends read Smithay's cached layer keyboard-interactivity state on
+commit, focus only the visible `slopos-i-spaces-overview` surface, and restore
+the topmost visible ordinary client (or clear focus) when that surface shrinks
+or is destroyed. Escape and successful Space selection also clear the shell's
+temporary input filter. The SDK paints a visible accent ring around the local
+focused cell; no compositor or shell window model is duplicated.
+
+The exact Ubuntu UTM clone at `d7e2b7533c35844ea2b47c5b0f9abb4d779cbb94`
+passed all five locked workspace gates with zero exit markers under
+`artifacts/qa/2026-08-08-build-tests-d7e2b75/utm/`. The focused UTM suites
+passed 9/9 `slopos-kit` workspace-grid tests and 2/2 live-shell overview tests;
+both exit markers are retained under
+`artifacts/qa/2026-08-08-spaces-keyboard-focus-d7e2b75/utm/`. The compositor
+contract gate passed with 164/164 compositor unit tests, 8/8 compositor-binary
+tests, 23/23 completion-contract tests and 17/17 compositor integration tests;
+its machine-readable result is under
+`artifacts/qa/2026-08-08-compositor-contract-d7e2b75/utm/`.
+
+The exact-commit headless compositor protocol smoke passed with every protocol
+flag true under `artifacts/qa/2026-08-08-compositor-runtime-d7e2b75/utm/`, and
+the logical output topology rerun passed under
+`artifacts/qa/2026-08-08-compositor-topology-d7e2b75/utm/`. Those runtime
+artifacts explicitly keep `hardware_verified`, `drm_verified`,
+`rendering_verified` and `input_verified` false. The guest had no active Xorg
+session or `xdotool`/`wtype` injection path, so a pixel-inspected real
+layer-shell keyboard session, physical input, DRM/KMS output behaviour,
+third-party compatibility, accessibility, packaging, performance budgets and
+long-running soaks remain unverified. The overall score therefore remains
+**63/100**; no score increase is claimed from source/build evidence alone, and
+strict compositor completion remains **76/100**.
 
 ### Current implementation wave — authoritative display topology through compositor control
 
