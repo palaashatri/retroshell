@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 mod bundle_install;
 
-use bundle_install::{install_from_archive, parse_catalog, CatalogEntry};
+use bundle_install::{install_signed_archive, parse_signed_catalog, CatalogEntry, TrustStore};
 
 // Featured apps shown when no search is active (catalog stub until Task 3.8).
 const FEATURED_APPS: &[&str] = &["Finder", "TextEdit", "Settings", "Terminal"];
@@ -112,30 +112,99 @@ fn main() {
     app.run();
 }
 
-// ── Catalog stub (Task 3.6 — catalog wired in Task 3.8) ─────────────────────
+// ── Authenticated catalog and trust-store projection ─────────────────────────
 
 #[derive(Debug, Clone)]
 struct CatalogStore {
     entries: Vec<CatalogEntry>,
     source: String,
+    trust_store: Option<TrustStore>,
+    load_error: Option<String>,
 }
 
 impl CatalogStore {
     fn load() -> Self {
         let path = catalog_path();
         let source = path.display().to_string();
-        let entries = match std::fs::read(&path) {
-            Ok(bytes) => parse_catalog(&bytes).unwrap_or_default(),
-            Err(_) => Vec::new(),
+        let trust_path = trust_store_path();
+        let trust_store = match std::fs::metadata(&trust_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Self {
+                    entries: Vec::new(),
+                    source,
+                    trust_store: None,
+                    load_error: Some(format!("trust store read failed: {error}")),
+                };
+            }
+            Ok(_) => match TrustStore::load(&trust_path) {
+                Ok(store) => Some(store),
+                Err(error) => {
+                    return Self {
+                        entries: Vec::new(),
+                        source,
+                        trust_store: None,
+                        load_error: Some(format!("trust store rejected: {error:?}")),
+                    };
+                }
+            },
         };
-        Self { entries, source }
+        let mut load_error = None;
+        let entries = match std::fs::read(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => {
+                load_error = Some(format!("catalog read failed: {error}"));
+                Vec::new()
+            }
+            Ok(bytes) => {
+                let Some(store) = trust_store.as_ref() else {
+                    load_error = Some(format!(
+                        "signed catalog requires trust store {}",
+                        trust_path.display()
+                    ));
+                    return Self {
+                        entries: Vec::new(),
+                        source,
+                        trust_store: None,
+                        load_error,
+                    };
+                };
+                match parse_signed_catalog(&bytes).and_then(|catalog| {
+                    catalog.verify(store)?;
+                    Ok(catalog.entries)
+                }) {
+                    Ok(entries) => entries,
+                    Err(error) => {
+                        load_error = Some(format!("catalog authentication failed: {error:?}"));
+                        Vec::new()
+                    }
+                }
+            }
+        };
+        Self {
+            entries,
+            source,
+            trust_store,
+            load_error,
+        }
     }
 
     fn status_text(&self) -> String {
-        format!("CATALOG - {} ({} apps)", self.source, self.entries.len())
+        if let Some(error) = &self.load_error {
+            format!("CATALOG UNAVAILABLE - {} ({error})", self.source)
+        } else {
+            format!(
+                "CATALOG - {} ({} trusted apps)",
+                self.source,
+                self.entries.len()
+            )
+        }
     }
 
     fn list_lines(&self) -> Vec<String> {
+        if self.load_error.is_some() {
+            return Vec::new();
+        }
         if self.entries.is_empty() {
             return featured_list();
         }
@@ -149,6 +218,9 @@ impl CatalogStore {
         let query = query.trim();
         if query.is_empty() {
             return Err("SEARCH NEEDS QUERY".to_string());
+        }
+        if let Some(error) = &self.load_error {
+            return Err(format!("CATALOG UNAVAILABLE: {error}"));
         }
         let q = query.to_ascii_lowercase();
         let results: Vec<String> = self
@@ -191,7 +263,10 @@ impl CatalogStore {
             return AppDetails {
                 name: entry.name.clone(),
                 version: entry.version.clone(),
-                description: format!("bundle_id={} url={}", entry.bundle_id, entry.url),
+                description: format!(
+                    "bundle_id={} publisher={} key_id={}",
+                    entry.bundle_id, entry.publisher, entry.key_id
+                ),
                 state: AppInstallState::Available,
             };
         }
@@ -219,6 +294,16 @@ fn catalog_path() -> PathBuf {
         return PathBuf::from(path);
     }
     default_install_dir().join("catalog.json")
+}
+
+fn trust_store_path() -> PathBuf {
+    if let Ok(path) = std::env::var("SLOPOS_APPSTORE_TRUST_STORE") {
+        return PathBuf::from(path);
+    }
+    let config_root = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".config"));
+    config_root.join("slopos-i").join("appstore-trust.json")
 }
 
 fn resolve_archive_url(url: &str) -> PathBuf {
@@ -494,7 +579,13 @@ impl AppStoreView {
         self.progress_label.text = format!("Installing {}...", entry.name);
         self.status.text = format!("INSTALLING {}", entry.name);
 
-        match install_from_archive(&archive, &entry.sha256, &install_dir) {
+        let Some(trust_store) = self.backend.trust_store.as_ref() else {
+            self.progress_bar.indeterminate = false;
+            self.status.text = "INSTALL FAILED: TRUST STORE UNAVAILABLE".to_string();
+            self.progress_label.text = self.status.text.clone();
+            return;
+        };
+        match install_signed_archive(&archive, &entry, trust_store, &install_dir) {
             Ok(path) => {
                 self.progress_bar.indeterminate = false;
                 self.progress_bar.value = 1.0;
@@ -984,6 +1075,8 @@ mod tests {
         let backend = CatalogStore {
             entries: vec![],
             source: "empty".into(),
+            trust_store: None,
+            load_error: None,
         };
         let results = backend.search("text").expect("search ok");
         assert_eq!(results, vec!["[AVAILABLE] TextEdit".to_string()]);

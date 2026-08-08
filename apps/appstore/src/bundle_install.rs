@@ -1,8 +1,11 @@
-//! `.app` bundle install — SHA-256 integrity verification, extract, atomic move.
+//! `.app` bundle install — authenticated metadata, SHA-256 integrity, extraction,
+//! and atomic replacement.
 //!
-//! This cycle verifies a checksum from the catalog against the downloaded archive.
-//! SHA-256 is integrity-only, not authenticity; cryptographic signing
-//! (ed25519/minisign) is future hardening and is not implemented here.
+//! The legacy [`install_from_archive`] helper remains checksum-only for callers
+//! that explicitly provide an already-authenticated artifact.  The App Store
+//! production path must use [`install_signed_archive`], which authenticates the
+//! publisher and the complete archive metadata before touching the install
+//! directory.
 
 #![allow(dead_code, unused_imports)]
 
@@ -16,11 +19,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 use tar::Archive;
 
-#[derive(serde::Deserialize, Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Eq, PartialEq)]
 pub struct CatalogEntry {
     pub name: String,
     pub bundle_id: String,
@@ -29,18 +33,293 @@ pub struct CatalogEntry {
     pub sha256: String,
     #[serde(default)]
     pub size: u64,
+    /// Human-readable publisher identity bound to the signing key.
+    #[serde(default)]
+    pub publisher: String,
+    /// Stable key identifier resolved through the local trust store.
+    #[serde(default)]
+    pub key_id: String,
+    /// Hex-encoded Ed25519 signature over [`Self::archive_signing_bytes`].
+    #[serde(default)]
+    pub signature: String,
 }
 
-#[derive(Debug)]
+impl CatalogEntry {
+    /// Canonical, signature-free bytes for this archive's signed metadata.
+    ///
+    /// The explicit field order prevents serde implementation details from
+    /// changing the message and binds the publisher, key, URL, checksum and
+    /// advertised size together.  The signature itself is deliberately absent
+    /// to avoid a self-referential message.
+    pub fn archive_signing_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(&ArchiveSigningPayload {
+            name: &self.name,
+            bundle_id: &self.bundle_id,
+            version: &self.version,
+            url: &self.url,
+            sha256: &self.sha256,
+            size: self.size,
+            publisher: &self.publisher,
+            key_id: &self.key_id,
+        })
+        .expect("archive signing payload contains only serializable strings")
+    }
+
+    fn verify(&self, trust_store: &TrustStore, artifact: &'static str) -> Result<(), InstallError> {
+        verify_signed_message(
+            &self.key_id,
+            &self.publisher,
+            &self.signature,
+            &self.archive_signing_bytes(),
+            artifact,
+            trust_store,
+        )
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ArchiveSigningPayload<'a> {
+    name: &'a str,
+    bundle_id: &'a str,
+    version: &'a str,
+    url: &'a str,
+    sha256: &'a str,
+    size: u64,
+    publisher: &'a str,
+    key_id: &'a str,
+}
+
+/// A catalog whose publisher and complete entry list are authenticated by the
+/// same trust-store key.  Individual package signatures are still required at
+/// install time so a catalog cannot be used to authorize an altered archive.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Eq, PartialEq)]
+pub struct SignedCatalog {
+    pub format_version: u32,
+    pub publisher: String,
+    pub key_id: String,
+    pub entries: Vec<CatalogEntry>,
+    /// Hex-encoded Ed25519 signature over [`Self::canonical_bytes`].
+    pub signature: String,
+}
+
+impl SignedCatalog {
+    /// Canonical, signature-free bytes for the catalog metadata.
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(&CatalogSigningPayload {
+            format_version: self.format_version,
+            publisher: &self.publisher,
+            key_id: &self.key_id,
+            entries: &self.entries,
+        })
+        .expect("catalog signing payload contains only serializable values")
+    }
+
+    /// Verify the catalog publisher, signature and per-entry publisher binding.
+    pub fn verify(&self, trust_store: &TrustStore) -> Result<(), InstallError> {
+        verify_signed_message(
+            &self.key_id,
+            &self.publisher,
+            &self.signature,
+            &self.canonical_bytes(),
+            "catalog",
+            trust_store,
+        )?;
+        for entry in &self.entries {
+            if entry.publisher != self.publisher || entry.key_id != self.key_id {
+                return Err(InstallError::PublisherMismatch {
+                    key_id: self.key_id.clone(),
+                    publisher: entry.publisher.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(serde::Serialize)]
+struct CatalogSigningPayload<'a> {
+    format_version: u32,
+    publisher: &'a str,
+    key_id: &'a str,
+    entries: &'a [CatalogEntry],
+}
+
+/// One locally trusted publisher key.  Revocation is checked before signature
+/// verification so a revoked publisher cannot be used even with valid bytes.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Eq, PartialEq)]
+pub struct TrustedPublisher {
+    pub key_id: String,
+    pub publisher: String,
+    /// Hex-encoded 32-byte Ed25519 public key.
+    pub public_key: String,
+    #[serde(default)]
+    pub revoked: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, Eq, PartialEq)]
+pub struct TrustStore {
+    pub publishers: Vec<TrustedPublisher>,
+}
+
+impl TrustStore {
+    /// Parse and validate a trust store without silently accepting malformed
+    /// keys, duplicate IDs or empty publisher identities.
+    pub fn from_json(bytes: &[u8]) -> Result<Self, InstallError> {
+        let store: Self = serde_json::from_slice(bytes)
+            .map_err(|error| InstallError::InvalidTrustStore(error.to_string()))?;
+        let mut seen = HashSet::new();
+        for publisher in &store.publishers {
+            if publisher.key_id.trim().is_empty() || publisher.publisher.trim().is_empty() {
+                return Err(InstallError::InvalidTrustStore(
+                    "publisher key_id and publisher must be non-empty".to_string(),
+                ));
+            }
+            if !seen.insert(publisher.key_id.clone()) {
+                return Err(InstallError::InvalidTrustStore(format!(
+                    "duplicate publisher key id {}",
+                    publisher.key_id
+                )));
+            }
+            let bytes = hex::decode(&publisher.public_key).map_err(|error| {
+                InstallError::InvalidTrustStore(format!(
+                    "publisher {} has invalid public key: {error}",
+                    publisher.key_id
+                ))
+            })?;
+            if bytes.len() != 32 {
+                return Err(InstallError::InvalidTrustStore(format!(
+                    "publisher {} public key must be 32 bytes",
+                    publisher.key_id
+                )));
+            }
+        }
+        Ok(store)
+    }
+
+    pub fn load(path: &Path) -> Result<Self, InstallError> {
+        let file_type = fs::symlink_metadata(path)
+            .map_err(|error| InstallError::Io(error.to_string()))?
+            .file_type();
+        if file_type.is_symlink() || !file_type.is_file() {
+            return Err(InstallError::InvalidTrustStore(
+                "trust store must be a regular non-symlink file".to_string(),
+            ));
+        }
+        let bytes = fs::read(path).map_err(|error| InstallError::Io(error.to_string()))?;
+        #[cfg(unix)]
+        {
+            let mode = fs::metadata(path)
+                .map_err(|error| InstallError::Io(error.to_string()))?
+                .permissions()
+                .mode();
+            if mode & 0o077 != 0 {
+                return Err(InstallError::InvalidTrustStore(format!(
+                    "trust store must not be group/world writable or readable (mode {:o})",
+                    mode & 0o777
+                )));
+            }
+        }
+        Self::from_json(&bytes)
+    }
+
+    fn publisher(&self, key_id: &str) -> Result<&TrustedPublisher, InstallError> {
+        let publisher = self
+            .publishers
+            .iter()
+            .find(|publisher| publisher.key_id == key_id)
+            .ok_or_else(|| InstallError::UnknownKey(key_id.to_string()))?;
+        if publisher.revoked {
+            return Err(InstallError::RevokedKey(key_id.to_string()));
+        }
+        Ok(publisher)
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub enum InstallError {
     Io(String),
     Checksum { expected: String, got: String },
     Extract(String),
     NoDotApp,
     InvalidBundle(String),
+    MissingSignature { artifact: &'static str },
+    UnknownKey(String),
+    RevokedKey(String),
+    InvalidSignature { artifact: &'static str },
+    PublisherMismatch { key_id: String, publisher: String },
+    InvalidTrustStore(String),
+    ArchiveSizeMismatch { expected: u64, got: u64 },
 }
 
-/// Verify `archive`'s sha256 == `expected` (integrity only; signing is future work).
+fn verify_signed_message(
+    key_id: &str,
+    publisher: &str,
+    signature_hex: &str,
+    message: &[u8],
+    artifact: &'static str,
+    trust_store: &TrustStore,
+) -> Result<(), InstallError> {
+    if signature_hex.trim().is_empty() {
+        return Err(InstallError::MissingSignature { artifact });
+    }
+    let trusted = trust_store.publisher(key_id)?;
+    if trusted.publisher != publisher {
+        return Err(InstallError::PublisherMismatch {
+            key_id: key_id.to_string(),
+            publisher: publisher.to_string(),
+        });
+    }
+    let public_key_bytes = hex::decode(&trusted.public_key)
+        .map_err(|_| InstallError::InvalidTrustStore(format!("invalid public key for {key_id}")))?;
+    let public_key_array: [u8; 32] = public_key_bytes
+        .try_into()
+        .map_err(|_| InstallError::InvalidTrustStore(format!("invalid public key for {key_id}")))?;
+    let verifying_key = VerifyingKey::from_bytes(&public_key_array)
+        .map_err(|_| InstallError::InvalidTrustStore(format!("invalid public key for {key_id}")))?;
+    let signature_bytes =
+        hex::decode(signature_hex).map_err(|_| InstallError::InvalidSignature { artifact })?;
+    let signature = Signature::from_slice(&signature_bytes)
+        .map_err(|_| InstallError::InvalidSignature { artifact })?;
+    verifying_key
+        .verify(message, &signature)
+        .map_err(|_| InstallError::InvalidSignature { artifact })
+}
+
+/// Parse a signed catalog.  Call [`SignedCatalog::verify`] with a local trust
+/// store before exposing its entries to installation or the user.
+pub fn parse_signed_catalog(bytes: &[u8]) -> Result<SignedCatalog, InstallError> {
+    serde_json::from_slice(bytes).map_err(|error| InstallError::Io(error.to_string()))
+}
+
+/// Authenticate a package entry and then run the existing checksum/path-safe
+/// installer.  Signature verification happens before `install_from_archive`
+/// creates the install directory or staging tree.
+pub fn install_signed_archive(
+    archive: &Path,
+    entry: &CatalogEntry,
+    trust_store: &TrustStore,
+    install_dir: &Path,
+) -> Result<PathBuf, InstallError> {
+    entry.verify(trust_store, "archive")?;
+    if entry.size != 0 {
+        let got = fs::metadata(archive)
+            .map_err(|error| InstallError::Io(error.to_string()))?
+            .len();
+        if got != entry.size {
+            return Err(InstallError::ArchiveSizeMismatch {
+                expected: entry.size,
+                got,
+            });
+        }
+    }
+    install_from_archive(archive, &entry.sha256, install_dir)
+}
+
+/// Verify `archive`'s sha256 == `expected` (integrity only).
+///
+/// Production App Store installs must call [`install_signed_archive`] first;
+/// this lower-level helper intentionally does not infer authenticity from a
+/// checksum.
 /// Extract the `.app.tar.gz` into a staging dir and atomically rename the top-level
 /// `<Name>.app` into `install_dir`. Returns the installed `<Name>.app` path.
 pub fn install_from_archive(
@@ -725,6 +1004,7 @@ fn ensure_existing_path_inside(root: &Path, path: &Path) -> Result<(), InstallEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use std::io::{self, Write};
@@ -866,6 +1146,224 @@ mod tests {
         let bytes = fs::read(&archive_path).unwrap();
         let sha = sha256_bytes(&bytes);
         (archive_path, sha)
+    }
+
+    fn signing_fixture(revoked: bool) -> (SigningKey, TrustStore) {
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+        let trust_store = TrustStore {
+            publishers: vec![TrustedPublisher {
+                key_id: "slopos-test".to_string(),
+                publisher: "SLOPOS Test Publisher".to_string(),
+                public_key: hex::encode(signing_key.verifying_key().to_bytes()),
+                revoked,
+            }],
+        };
+        (signing_key, trust_store)
+    }
+
+    fn signed_entry(signing_key: &SigningKey, sha256: &str) -> CatalogEntry {
+        let mut entry = CatalogEntry {
+            name: "TinyApp".to_string(),
+            bundle_id: "com.slopos.tiny".to_string(),
+            version: "0.1.0".to_string(),
+            url: "file:///tmp/TinyApp.app.tar.gz".to_string(),
+            sha256: sha256.to_string(),
+            size: 0,
+            publisher: "SLOPOS Test Publisher".to_string(),
+            key_id: "slopos-test".to_string(),
+            signature: String::new(),
+        };
+        entry.signature = hex::encode(signing_key.sign(&entry.archive_signing_bytes()).to_bytes());
+        entry
+    }
+
+    fn signed_catalog(signing_key: &SigningKey, entry: CatalogEntry) -> SignedCatalog {
+        let mut catalog = SignedCatalog {
+            format_version: 1,
+            publisher: "SLOPOS Test Publisher".to_string(),
+            key_id: "slopos-test".to_string(),
+            entries: vec![entry],
+            signature: String::new(),
+        };
+        catalog.signature = hex::encode(signing_key.sign(&catalog.canonical_bytes()).to_bytes());
+        catalog
+    }
+
+    #[test]
+    fn signed_catalog_canonical_json_roundtrips_and_verifies() {
+        let (signing_key, trust_store) = signing_fixture(false);
+        let entry = signed_entry(&signing_key, &"a".repeat(64));
+        let catalog = signed_catalog(&signing_key, entry);
+        let encoded = serde_json::to_vec(&catalog).expect("encode signed catalog");
+        let decoded = parse_signed_catalog(&encoded).expect("decode signed catalog");
+
+        assert_eq!(decoded, catalog);
+        decoded.verify(&trust_store).expect("verify signed catalog");
+    }
+
+    #[test]
+    fn signed_catalog_rejects_metadata_tampering_before_exposing_entries() {
+        let (signing_key, trust_store) = signing_fixture(false);
+        let entry = signed_entry(&signing_key, &"a".repeat(64));
+        let mut catalog = signed_catalog(&signing_key, entry);
+        catalog.entries[0].version = "9.9.9".to_string();
+
+        assert_eq!(
+            catalog.verify(&trust_store),
+            Err(InstallError::InvalidSignature {
+                artifact: "catalog"
+            })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trust_store_rejects_symlinked_files() {
+        let work = test_work("trust-store-symlink");
+        let target = work.join("trusted.json");
+        let link = work.join("appstore-trust.json");
+        fs::write(&target, br#"{"publishers":[]}"#).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(matches!(
+            TrustStore::load(&link),
+            Err(InstallError::InvalidTrustStore(message))
+                if message.contains("regular non-symlink")
+        ));
+        fs::remove_dir_all(&work).ok();
+    }
+
+    #[test]
+    fn signed_archive_installs_only_after_signature_and_publisher_verification() {
+        let work = test_work("signed-install");
+        let install_dir = work.join("Applications");
+        fs::create_dir_all(&install_dir).unwrap();
+        let (archive, sha) = build_tiny_app_tar_gz(&work);
+        let (signing_key, trust_store) = signing_fixture(false);
+        let entry = signed_entry(&signing_key, &sha);
+
+        let installed = install_signed_archive(&archive, &entry, &trust_store, &install_dir)
+            .expect("signed archive should install");
+        assert_eq!(installed, install_dir.join("TinyApp.app"));
+        assert!(installed.join("Resources").join("Info.toml").is_file());
+        fs::remove_dir_all(&work).ok();
+    }
+
+    #[test]
+    fn signed_archive_rejects_authenticated_size_mismatch_before_extract() {
+        let work = test_work("signed-size-mismatch");
+        let install_dir = work.join("Applications");
+        fs::create_dir_all(&install_dir).unwrap();
+        fs::write(install_dir.join("sentinel"), b"untouched").unwrap();
+        let (archive, sha) = build_tiny_app_tar_gz(&work);
+        let (signing_key, trust_store) = signing_fixture(false);
+        let mut entry = signed_entry(&signing_key, &sha);
+        entry.size = fs::metadata(&archive).unwrap().len() + 1;
+        entry.signature = hex::encode(signing_key.sign(&entry.archive_signing_bytes()).to_bytes());
+
+        let error = install_signed_archive(&archive, &entry, &trust_store, &install_dir)
+            .expect_err("signed size mismatch must be rejected");
+        assert!(matches!(error, InstallError::ArchiveSizeMismatch { .. }));
+        assert!(install_dir.join("sentinel").is_file());
+        assert!(!install_dir.join("TinyApp.app").exists());
+        fs::remove_dir_all(&work).ok();
+    }
+
+    #[test]
+    fn signed_archive_rejects_missing_unknown_revoked_and_tampered_signatures_without_mutation() {
+        let cases = [
+            (
+                "missing",
+                None,
+                false,
+                false,
+                InstallError::MissingSignature {
+                    artifact: "archive",
+                },
+            ),
+            (
+                "unknown",
+                Some("unknown-key"),
+                false,
+                false,
+                InstallError::UnknownKey("unknown-key".to_string()),
+            ),
+            (
+                "revoked",
+                None,
+                true,
+                false,
+                InstallError::RevokedKey("slopos-test".to_string()),
+            ),
+            (
+                "tampered",
+                None,
+                false,
+                true,
+                InstallError::InvalidSignature {
+                    artifact: "archive",
+                },
+            ),
+        ];
+
+        for (label, key_id, revoked, tampered, expected) in cases {
+            let work = test_work(&format!("signed-failure-{label}"));
+            let install_dir = work.join("Applications");
+            fs::create_dir_all(&install_dir).unwrap();
+            fs::write(install_dir.join("sentinel"), b"untouched").unwrap();
+            let before = fs::read_dir(&install_dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>();
+            let (archive, sha) = build_tiny_app_tar_gz(&work);
+            let (signing_key, trust_store) = signing_fixture(revoked);
+            let mut entry = signed_entry(&signing_key, &sha);
+            if let Some(key_id) = key_id {
+                entry.key_id = key_id.to_string();
+            }
+            if label == "missing" {
+                entry.signature.clear();
+            }
+            if tampered {
+                entry.signature = "00".repeat(64);
+            }
+
+            let error = install_signed_archive(&archive, &entry, &trust_store, &install_dir)
+                .expect_err("unauthenticated archive must be rejected");
+            assert_eq!(error, expected, "failure case {label}");
+            let after = fs::read_dir(&install_dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>();
+            assert_eq!(after, before, "failure case {label} mutated install dir");
+            assert!(!install_dir.join("TinyApp.app").exists());
+            fs::remove_dir_all(&work).ok();
+        }
+    }
+
+    #[test]
+    fn signed_archive_rejects_publisher_metadata_mismatch_before_checksum_or_extract() {
+        let work = test_work("signed-publisher-mismatch");
+        let install_dir = work.join("Applications");
+        fs::create_dir_all(&install_dir).unwrap();
+        fs::write(install_dir.join("sentinel"), b"untouched").unwrap();
+        let (archive, sha) = build_tiny_app_tar_gz(&work);
+        let (signing_key, trust_store) = signing_fixture(false);
+        let mut entry = signed_entry(&signing_key, &sha);
+        entry.publisher = "Impostor Publisher".to_string();
+
+        let error = install_signed_archive(&archive, &entry, &trust_store, &install_dir)
+            .expect_err("publisher mismatch must be rejected");
+        assert_eq!(
+            error,
+            InstallError::PublisherMismatch {
+                key_id: "slopos-test".to_string(),
+                publisher: "Impostor Publisher".to_string(),
+            }
+        );
+        assert!(install_dir.join("sentinel").is_file());
+        assert!(!install_dir.join("TinyApp.app").exists());
+        fs::remove_dir_all(&work).ok();
     }
 
     #[test]

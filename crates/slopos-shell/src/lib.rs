@@ -207,7 +207,7 @@ pub use workspace_manager::{WorkspaceManager, COMPOSITOR_WORKSPACE_COUNT, SHELL_
 use parking_lot::RwLock;
 use slopos_bus::{
     read_spaces_snapshot, send_application_menu_action, send_session_control,
-    SessionControlRequest, SpacesControlCommand, WindowPresentationAction,
+    SessionControlRequest, SpaceTargetWire, SpacesControlCommand, WindowPresentationAction,
 };
 use slopos_kit::button::Button;
 use slopos_kit::design_tokens::{MENU_BAR_HEIGHT, MENU_BAR_HEIGHT_PX, WINDOW_TITLE_BAR_HEIGHT};
@@ -1267,6 +1267,47 @@ impl ShellDesktop {
         }
     }
 
+    /// Request that the compositor move its currently focused real window to
+    /// the focused Space in the live overview.  The shell does not update its
+    /// Space mirror optimistically; the compositor's next snapshot remains
+    /// authoritative.  A failed send leaves the modal overview in place so
+    /// the user can retry or dismiss it explicitly.
+    fn move_active_window_to_workspace_cell(&mut self, cell: usize) -> bool {
+        let id = self
+            .workspace_manager
+            .read()
+            .workspaces
+            .get(cell)
+            .map(|workspace| workspace.id);
+        let Some(id) = id else {
+            return false;
+        };
+        if !self.compositor_owns_ordinary_windows() {
+            return false;
+        }
+
+        let request = SessionControlRequest::Spaces {
+            command: SpacesControlCommand::MoveActiveWindow {
+                target: SpaceTargetWire::Id { id },
+            },
+        };
+        match send_session_control(&request) {
+            Ok(()) => {
+                self.input_filter = None;
+                self.workspace_overview = None;
+                tracing::info!(
+                    space_id = id,
+                    "sent active-window move request to compositor"
+                );
+                true
+            }
+            Err(error) => {
+                tracing::warn!(space_id = id, %error, "could not send active-window move to compositor");
+                false
+            }
+        }
+    }
+
     fn open_folder_window<S: Into<String>>(&mut self, title: S, path: PathBuf) -> Uuid {
         if self.compositor_owns_ordinary_windows() {
             // Directory browsing is a real Finder client operation in the
@@ -2129,8 +2170,8 @@ impl ShellDesktop {
             return None;
         }
 
-        let key = match event {
-            Event::KeyDown { key, .. } => *key,
+        let (key, modifiers) = match event {
+            Event::KeyDown { key, modifiers } => (*key, *modifiers),
             _ => return None,
         };
         if key == slopos_kit::event::KeyCode::Escape {
@@ -2150,6 +2191,12 @@ impl ShellDesktop {
             return None;
         }
 
+        let move_active_window = key == slopos_kit::event::KeyCode::Enter
+            && modifiers.shift
+            && !modifiers.meta
+            && !modifiers.control
+            && !modifiers.alt;
+
         let mut result = EventResult::Ignored;
         let mut activated = None;
         if let Some(overview) = self.workspace_overview.as_mut() {
@@ -2164,10 +2211,14 @@ impl ShellDesktop {
             });
         }
         if let Some(cell) = activated {
-            // Invalid/stale cells are intentionally ignored by
-            // `select_workspace_cell`; in particular they do not emit an IPC
-            // request or close the overlay.
-            let _ = self.select_workspace_cell(cell);
+            // Invalid/stale cells are intentionally ignored by either helper;
+            // in particular they do not emit an IPC request or close the
+            // overlay.
+            if move_active_window {
+                let _ = self.move_active_window_to_workspace_cell(cell);
+            } else {
+                let _ = self.select_workspace_cell(cell);
+            }
         }
 
         // Keep recognized overview keys modal even when the grid is empty or
@@ -5891,6 +5942,193 @@ mod tests {
             std::env::remove_var("SLOPOS_SESSION_RUNTIME_DIR");
         }
         drop(listener);
+        fs::remove_dir_all(runtime).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_workspace_overview_shift_enter_moves_active_window_by_stable_space_id() {
+        use slopos_bus::{SessionControlListener, SessionControlRequest, SpaceTargetWire};
+
+        let _environment_guard = SESSION_RUNTIME_ENV_LOCK.lock().unwrap();
+        let runtime = std::env::temp_dir().join(format!(
+            "slo-wsm-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&runtime).unwrap();
+        let listener = SessionControlListener::bind(&runtime).unwrap();
+        let previous_runtime = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR");
+        std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", &runtime);
+
+        let mut desktop = test_desktop().0;
+        desktop
+            .workspace_manager
+            .write()
+            .apply_snapshot(&slopos_bus::SpacesSnapshot {
+                session_epoch: 1,
+                revision: 11,
+                active_space: 11,
+                multi_monitor_policy: slopos_bus::SpacesDisplayPolicy::SharedSpan,
+                application_policies: Vec::new(),
+                spaces: vec![
+                    slopos_bus::SpaceSnapshot {
+                        id: 11,
+                        order: 0,
+                        name: "Personal".to_string(),
+                        active: true,
+                        window_count: 1,
+                        wallpaper: None,
+                        appearance: None,
+                        classification: slopos_bus::SpaceClassification::Normal,
+                        output_id: None,
+                    },
+                    slopos_bus::SpaceSnapshot {
+                        id: 22,
+                        order: 1,
+                        name: "Projects".to_string(),
+                        active: false,
+                        window_count: 2,
+                        wallpaper: None,
+                        appearance: None,
+                        classification: slopos_bus::SpaceClassification::Normal,
+                        output_id: None,
+                    },
+                ],
+            });
+        desktop.set_layer_shell_bound(true);
+        desktop.set_input_filter(Some(ShellPaintFilter::SpacesOverview));
+        desktop.open_workspace_status_window();
+
+        let arrow_right = Event::KeyDown {
+            key: slopos_kit::event::KeyCode::ArrowRight,
+            modifiers: Modifiers::NONE,
+        };
+        assert!(matches!(
+            desktop.handle_event(&arrow_right),
+            EventResult::Handled
+        ));
+        assert!(
+            listener.drain().is_empty(),
+            "overview focus navigation must precede the move request without IPC"
+        );
+        let shift_enter = Event::KeyDown {
+            key: slopos_kit::event::KeyCode::Enter,
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::NONE
+            },
+        };
+        assert!(matches!(
+            desktop.handle_event(&shift_enter),
+            EventResult::Handled
+        ));
+        assert_eq!(
+            listener.drain(),
+            vec![SessionControlRequest::Spaces {
+                command: SpacesControlCommand::MoveActiveWindow {
+                    target: SpaceTargetWire::Id { id: 22 },
+                },
+            }]
+        );
+        assert!(
+            desktop.workspace_overview.is_none(),
+            "a successfully queued move closes the modal overview"
+        );
+        assert!(desktop.input_filter.is_none());
+
+        if let Some(previous_runtime) = previous_runtime {
+            std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", previous_runtime);
+        } else {
+            std::env::remove_var("SLOPOS_SESSION_RUNTIME_DIR");
+        }
+        drop(listener);
+        fs::remove_dir_all(runtime).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_workspace_overview_shift_enter_keeps_modal_state_when_session_send_fails() {
+        let _environment_guard = SESSION_RUNTIME_ENV_LOCK.lock().unwrap();
+        let runtime = std::env::temp_dir().join(format!(
+            "slo-wsm-fail-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&runtime).unwrap();
+        let previous_runtime = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR");
+        std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", &runtime);
+
+        let mut desktop = test_desktop().0;
+        desktop
+            .workspace_manager
+            .write()
+            .apply_snapshot(&slopos_bus::SpacesSnapshot {
+                session_epoch: 1,
+                revision: 12,
+                active_space: 11,
+                multi_monitor_policy: slopos_bus::SpacesDisplayPolicy::SharedSpan,
+                application_policies: Vec::new(),
+                spaces: vec![
+                    slopos_bus::SpaceSnapshot {
+                        id: 11,
+                        order: 0,
+                        name: "Personal".to_string(),
+                        active: true,
+                        window_count: 1,
+                        wallpaper: None,
+                        appearance: None,
+                        classification: slopos_bus::SpaceClassification::Normal,
+                        output_id: None,
+                    },
+                    slopos_bus::SpaceSnapshot {
+                        id: 22,
+                        order: 1,
+                        name: "Projects".to_string(),
+                        active: false,
+                        window_count: 2,
+                        wallpaper: None,
+                        appearance: None,
+                        classification: slopos_bus::SpaceClassification::Normal,
+                        output_id: None,
+                    },
+                ],
+            });
+        desktop.set_layer_shell_bound(true);
+        desktop.set_input_filter(Some(ShellPaintFilter::SpacesOverview));
+        desktop.open_workspace_status_window();
+
+        let shift_enter = Event::KeyDown {
+            key: slopos_kit::event::KeyCode::Enter,
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::NONE
+            },
+        };
+        assert!(matches!(
+            desktop.handle_event(&shift_enter),
+            EventResult::Handled
+        ));
+        assert!(
+            desktop.workspace_overview.is_some(),
+            "failed session sends must not dismiss the modal overview"
+        );
+        assert_eq!(desktop.input_filter, Some(ShellPaintFilter::SpacesOverview));
+        let manager = desktop.workspace_manager.read();
+        assert_eq!(manager.active_id, 11);
+        assert_eq!(manager.revision, 12);
+
+        if let Some(previous_runtime) = previous_runtime {
+            std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", previous_runtime);
+        } else {
+            std::env::remove_var("SLOPOS_SESSION_RUNTIME_DIR");
+        }
         fs::remove_dir_all(runtime).unwrap();
     }
 
