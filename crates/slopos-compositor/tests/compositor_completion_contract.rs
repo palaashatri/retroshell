@@ -30,6 +30,7 @@ fn headless_runtime_gate_builds_the_binary_it_executes() {
 #[test]
 fn headless_runtime_gate_exercises_native_clipboard_transfer() {
     let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
+    let client = include_str!("../examples/headless_clipboard_client.rs");
     assert!(
         script.contains("headless_clipboard_client"),
         "headless runtime gate must run the native clipboard source/sink client"
@@ -46,6 +47,18 @@ fn headless_runtime_gate_exercises_native_clipboard_transfer() {
             "headless runtime gate must require clipboard marker {marker}"
         );
     }
+    assert!(
+        client.contains("wl_data_device::Event::Selection { id: Some(id) }"),
+        "clipboard client must treat only a Some(data_offer) event as a live selection"
+    );
+    assert!(
+        client.contains("wl_data_device::Event::Selection { id: None }"),
+        "clipboard client must observe the protocol's explicit selection-clear event"
+    );
+    assert!(
+        client.contains("clipboard source disconnect did not emit selection clear"),
+        "source-death gate must require an explicit selection-clear event"
+    );
 }
 
 #[test]

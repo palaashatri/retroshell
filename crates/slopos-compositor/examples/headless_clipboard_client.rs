@@ -51,6 +51,7 @@ struct State {
     data_offer: Option<wl_data_offer::WlDataOffer>,
     offered_mimes: Vec<String>,
     selection_received: bool,
+    selection_cleared: bool,
     source_send_count: u32,
 }
 
@@ -97,9 +98,13 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for State {
     ) {
         match event {
             wl_data_device::Event::DataOffer { id } => state.data_offer = Some(id),
-            wl_data_device::Event::Selection { id } => {
-                state.data_offer = id;
+            wl_data_device::Event::Selection { id: Some(id) } => {
+                state.data_offer = Some(id);
                 state.selection_received = true;
+            }
+            wl_data_device::Event::Selection { id: None } => {
+                state.data_offer = None;
+                state.selection_cleared = true;
             }
             _ => {}
         }
@@ -329,11 +334,14 @@ fn run_sink(connection: &Connection, expect_selection: bool) -> Result<(), Box<d
             if state.selection_received {
                 return Err("clipboard selection survived source disconnect".into());
             }
+            if state.selection_cleared {
+                println!("SLOPOS_CLIPBOARD_SOURCE_DEATH_CLEARED");
+                std::io::stdout().flush()?;
+                return Ok(());
+            }
             thread::sleep(Duration::from_millis(100));
         }
-        println!("SLOPOS_CLIPBOARD_SOURCE_DEATH_CLEARED");
-        std::io::stdout().flush()?;
-        return Ok(());
+        return Err("clipboard source disconnect did not emit selection clear".into());
     }
 
     while !state.selection_received {
