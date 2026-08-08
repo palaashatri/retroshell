@@ -5,8 +5,8 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`23e09fe708a4ddb3ac21309f0a408faac2d1ead2`
-**Audit date:** 2026-08-07
+`a688ba527495da2fd2172ab8ccc1effd9d631eed`
+**Audit date:** 2026-08-08
 **Audit basis:** current-source review, commit-delta review, exact-commit GitHub
 Actions evidence and retained VM/UTM runtime evidence.
 **Public target:** a 100/100 production Linux desktop environment that genuinely
@@ -220,6 +220,35 @@ fabricate a host-pointer warp on the nested backend.
 The overall product score remains **63/100**. The strict compositor score
 advances from 71 to **72/100**, with Input correctness advancing from 8 to
 **9/10**. Physical multi-device input, touch, gestures and hotplug remain open.
+
+### Current implementation wave — exact-current-head VM gate provenance
+
+Implementation commit `a688ba527495da2fd2172ab8ccc1effd9d631eed` is **BUILD
+VERIFIED** and **TEST VERIFIED** in the Ubuntu UTM guest. The complete guest
+regression run passed formatting, workspace check, workspace tests, Clippy with
+`-D warnings` and the locked release build. The retained logs and binary SHA-256
+provenance are under
+`artifacts/qa/2026-08-08-compositor-runtime-a688ba5/build-tests/`.
+
+This wave fixes a QA-gate provenance defect rather than a desktop capability:
+`verify-compositor-headless-runtime.sh` now builds the named
+`slopos-compositor` binary explicitly alongside its examples before executing
+`target/debug/slopos-compositor`. A source-contract test fails if that target is
+omitted again.
+
+Fresh UTM runtime evidence at the same commit is retained under
+`artifacts/qa/2026-08-08-compositor-runtime-a688ba5/headless/` and
+`artifacts/qa/2026-08-08-compositor-runtime-a688ba5/topology/`. The headless
+gate passed private-socket readiness, registry access, persistent pointer lock
+and confinement request lifecycles, 64 abrupt disconnect cycles, XDG toplevel
+configure/maximize/fullscreen/restore, and popup configure/reposition. The
+logical-output gate passed add, reorder and remove of `LEFT`/`RIGHT` outputs.
+
+The artifacts explicitly leave `hardware_verified`, DRM/KMS, rendering and
+physical multi-monitor verification false. These gates therefore do not raise
+the product score or claim XWayland, physical input, rendering, application
+compatibility, HDR/VRR or long-soak completion. The overall product score
+remains **63/100** and the strict compositor score remains **72/100**.
 
 ---
 
