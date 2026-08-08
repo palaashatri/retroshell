@@ -16,6 +16,18 @@ use slopos_compositor::{
 use std::time::{Duration, Instant};
 
 #[test]
+fn headless_runtime_gate_builds_the_binary_it_executes() {
+    let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
+    let build_command =
+        "cargo build -p slopos-compositor --bin slopos-compositor --examples --locked";
+
+    assert!(
+        script.contains(build_command),
+        "headless runtime gate must build the compositor binary before executing target/debug/slopos-compositor"
+    );
+}
+
+#[test]
 fn presentation_round_trip_preserves_the_original_normal_frame() {
     let normal = WindowGeometry::new(137, 91, 731, 509);
     let work_area = WindowGeometry::new(0, 24, 1600, 876);

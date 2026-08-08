@@ -131,7 +131,7 @@ if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
 fi
 
 printf 'Building exact-commit compositor %s\n' "$commit_sha"
-cargo build -p slopos-compositor --examples --locked
+cargo build -p slopos-compositor --bin slopos-compositor --examples --locked
 
 export XDG_RUNTIME_DIR="$runtime_dir"
 export SLOPOS_SESSION_RUNTIME_DIR="$runtime_dir"
