@@ -40,7 +40,10 @@ use slopos_kit::{Color, LayoutConstraint, MonospaceView, Point, Rect, Size, Widg
 use slopos_render::font::{
     ellipsize_text as render_ellipsize_text, shape_text, ShapedGlyph, TextLayout, TextLayoutOptions,
 };
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1125,6 +1128,191 @@ impl Vertex {
     }
 }
 
+/// Fixed-size, single-channel coverage atlas used by the textured glyph
+/// pipeline. The atlas deliberately has no unbounded growth or eviction
+/// churn: once it is full, the caller uses the existing software fallback for
+/// that glyph until a new presenter is created.
+const GLYPH_ATLAS_WIDTH: u32 = 1024;
+const GLYPH_ATLAS_HEIGHT: u32 = 1024;
+const GLYPH_ATLAS_PADDING: u32 = 1;
+const GLYPH_ATLAS_MAX_ENTRIES: usize = 2048;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct GlyphAtlasKey {
+    raster_hash: u64,
+    width: u32,
+    height: u32,
+    bearing_x_bits: u32,
+    bearing_y_bits: u32,
+    scale_bits: u32,
+}
+
+impl GlyphAtlasKey {
+    fn from_raster(glyph: &slopos_render::font::RasterGlyph, scale: f32) -> Option<Self> {
+        if glyph.width == 0 || glyph.height == 0 || glyph.data.is_empty() {
+            return None;
+        }
+        let mut hasher = DefaultHasher::new();
+        glyph.data.hash(&mut hasher);
+        Some(Self {
+            raster_hash: hasher.finish(),
+            width: glyph.width,
+            height: glyph.height,
+            bearing_x_bits: glyph.bearing_x.to_bits(),
+            bearing_y_bits: glyph.bearing_y.to_bits(),
+            scale_bits: scale.to_bits(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GlyphAtlasRegion {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    u0: f32,
+    v0: f32,
+    u1: f32,
+    v1: f32,
+}
+
+#[derive(Debug)]
+struct GlyphAtlas {
+    pixels: Vec<u8>,
+    entries: HashMap<GlyphAtlasKey, GlyphAtlasRegion>,
+    next_x: u32,
+    next_y: u32,
+    row_height: u32,
+    dirty: bool,
+}
+
+impl GlyphAtlas {
+    fn new() -> Self {
+        Self {
+            pixels: vec![0; (GLYPH_ATLAS_WIDTH * GLYPH_ATLAS_HEIGHT) as usize],
+            entries: HashMap::with_capacity(GLYPH_ATLAS_MAX_ENTRIES),
+            next_x: 0,
+            next_y: 0,
+            row_height: 0,
+            dirty: true,
+        }
+    }
+
+    fn insert(
+        &mut self,
+        glyph: &slopos_render::font::RasterGlyph,
+        scale: f32,
+    ) -> Option<GlyphAtlasRegion> {
+        let key = GlyphAtlasKey::from_raster(glyph, scale)?;
+        if let Some(region) = self.entries.get(&key).copied() {
+            return Some(region);
+        }
+        if self.entries.len() >= GLYPH_ATLAS_MAX_ENTRIES {
+            return None;
+        }
+
+        let padded_width = glyph.width.saturating_add(GLYPH_ATLAS_PADDING * 2);
+        let padded_height = glyph.height.saturating_add(GLYPH_ATLAS_PADDING * 2);
+        if padded_width > GLYPH_ATLAS_WIDTH || padded_height > GLYPH_ATLAS_HEIGHT {
+            return None;
+        }
+        if self.next_x.saturating_add(padded_width) > GLYPH_ATLAS_WIDTH {
+            self.next_x = 0;
+            self.next_y = self.next_y.saturating_add(self.row_height);
+            self.row_height = 0;
+        }
+        if self.next_y.saturating_add(padded_height) > GLYPH_ATLAS_HEIGHT {
+            return None;
+        }
+
+        let x = self.next_x + GLYPH_ATLAS_PADDING;
+        let y = self.next_y + GLYPH_ATLAS_PADDING;
+        for row in 0..glyph.height {
+            let source_start = (row * glyph.width) as usize;
+            let source_end = source_start.saturating_add(glyph.width as usize);
+            let destination_start = ((y + row) * GLYPH_ATLAS_WIDTH + x) as usize;
+            let destination_end = destination_start.saturating_add(glyph.width as usize);
+            if source_end > glyph.data.len() || destination_end > self.pixels.len() {
+                return None;
+            }
+            self.pixels[destination_start..destination_end]
+                .copy_from_slice(&glyph.data[source_start..source_end]);
+        }
+
+        self.next_x = self.next_x.saturating_add(padded_width);
+        self.row_height = self.row_height.max(padded_height);
+        let region = GlyphAtlasRegion {
+            x,
+            y,
+            width: glyph.width,
+            height: glyph.height,
+            u0: x as f32 / GLYPH_ATLAS_WIDTH as f32,
+            v0: y as f32 / GLYPH_ATLAS_HEIGHT as f32,
+            u1: (x + glyph.width) as f32 / GLYPH_ATLAS_WIDTH as f32,
+            v1: (y + glyph.height) as f32 / GLYPH_ATLAS_HEIGHT as f32,
+        };
+        self.entries.insert(key, region);
+        self.dirty = true;
+        Some(region)
+    }
+
+    fn take_dirty(&mut self) -> bool {
+        let dirty = self.dirty;
+        self.dirty = false;
+        dirty
+    }
+
+    fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DrawCommand {
+    Color { start: u32, count: u32 },
+    Glyph { start: u32, count: u32 },
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct GlyphVertex {
+    position: [f32; 2],
+    uv: [f32; 2],
+    color: [f32; 4],
+}
+
+impl GlyphVertex {
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<GlyphVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: (std::mem::size_of::<[f32; 2]>() * 2) as wgpu::BufferAddress,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
+
 /// Build a [`slopos_render::DisplayRenderPolicy`] from env and optional settings.conf.
 fn display_render_policy_from_env() -> slopos_render::DisplayRenderPolicy {
     let mut hdr_enabled = env_flag_true("SLOPOS_HDR");
@@ -1186,6 +1374,12 @@ pub struct WgpuPresenter {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+    glyph_pipeline: wgpu::RenderPipeline,
+    glyph_atlas: GlyphAtlas,
+    glyph_atlas_texture: wgpu::Texture,
+    glyph_atlas_view: wgpu::TextureView,
+    glyph_atlas_sampler: wgpu::Sampler,
+    glyph_bind_group: wgpu::BindGroup,
 }
 
 /// Renders immediate-mode UI onto a Wayland surface created outside winit
@@ -1623,12 +1817,147 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             cache: None,
         });
 
+        let glyph_atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("RetroSDK R8 Glyph Atlas"),
+            size: wgpu::Extent3d {
+                width: GLYPH_ATLAS_WIDTH,
+                height: GLYPH_ATLAS_HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let glyph_atlas_view =
+            glyph_atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let glyph_atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("RetroSDK Glyph Atlas Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let glyph_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("RetroSDK Glyph Atlas Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let glyph_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("RetroSDK Glyph Atlas Bind Group"),
+            layout: &glyph_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&glyph_atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&glyph_atlas_sampler),
+                },
+            ],
+        });
+        let glyph_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("RetroSDK Textured Glyph Shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                r#"
+struct VsOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+@vertex
+fn vs_main(
+    @location(0) position: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) color: vec4<f32>,
+) -> VsOut {
+    var out: VsOut;
+    out.position = vec4<f32>(position, 0.0, 1.0);
+    out.uv = uv;
+    out.color = color;
+    return out;
+}
+
+@group(0) @binding(0) var glyph_atlas: texture_2d<f32>;
+@group(0) @binding(1) var glyph_sampler: sampler;
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    let coverage = textureSample(glyph_atlas, glyph_sampler, in.uv).r;
+    return vec4<f32>(in.color.rgb, in.color.a * coverage);
+}
+"#
+                .into(),
+            ),
+        });
+        let glyph_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("RetroSDK Glyph Pipeline Layout"),
+                bind_group_layouts: &[&glyph_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+        let glyph_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("RetroSDK Textured Glyph Pipeline"),
+            layout: Some(&glyph_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &glyph_shader,
+                entry_point: "vs_main",
+                compilation_options: Default::default(),
+                buffers: &[GlyphVertex::layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &glyph_shader,
+                entry_point: "fs_main",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         Ok(Self {
             surface,
             device,
             queue,
             config,
             pipeline,
+            glyph_pipeline,
+            glyph_atlas: GlyphAtlas::new(),
+            glyph_atlas_texture,
+            glyph_atlas_view,
+            glyph_atlas_sampler,
+            glyph_bind_group,
         })
     }
 
@@ -1636,6 +1965,31 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         self.surface.configure(&self.device, &self.config);
+    }
+
+    fn upload_glyph_atlas(&mut self) {
+        if !self.glyph_atlas.take_dirty() {
+            return;
+        }
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.glyph_atlas_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            self.glyph_atlas.pixels(),
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(GLYPH_ATLAS_WIDTH),
+                rows_per_image: Some(GLYPH_ATLAS_HEIGHT),
+            },
+            wgpu::Extent3d {
+                width: GLYPH_ATLAS_WIDTH,
+                height: GLYPH_ATLAS_HEIGHT,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 
     fn render(&mut self, draw: impl FnOnce(&mut Canvas<'_>)) -> Result<(), String> {
@@ -1652,16 +2006,31 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut canvas = Canvas::new(self.config.width as f32, self.config.height as f32);
+        let mut canvas = Canvas::with_glyph_atlas(
+            self.config.width as f32,
+            self.config.height as f32,
+            &mut self.glyph_atlas,
+        );
         draw(&mut canvas);
+        let draw_data = canvas.finish();
+        self.upload_glyph_atlas();
 
-        let vertex_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("RetroSDK Immediate UI Vertex Buffer"),
-                contents: bytemuck::cast_slice(&canvas.vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+        let vertex_buffer = (!draw_data.vertices.is_empty()).then(|| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("RetroSDK Immediate UI Vertex Buffer"),
+                    contents: bytemuck::cast_slice(&draw_data.vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+        });
+        let glyph_vertex_buffer = (!draw_data.glyph_vertices.is_empty()).then(|| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("RetroSDK Textured Glyph Vertex Buffer"),
+                    contents: bytemuck::cast_slice(&draw_data.glyph_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+        });
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1682,10 +2051,26 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            if !canvas.vertices.is_empty() {
-                pass.set_pipeline(&self.pipeline);
-                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                pass.draw(0..canvas.vertices.len() as u32, 0..1);
+            for command in &draw_data.commands {
+                match command {
+                    DrawCommand::Color { start, count } => {
+                        let Some(vertex_buffer) = vertex_buffer.as_ref() else {
+                            continue;
+                        };
+                        pass.set_pipeline(&self.pipeline);
+                        pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                        pass.draw(*start..start.saturating_add(*count), 0..1);
+                    }
+                    DrawCommand::Glyph { start, count } => {
+                        let Some(glyph_vertex_buffer) = glyph_vertex_buffer.as_ref() else {
+                            continue;
+                        };
+                        pass.set_pipeline(&self.glyph_pipeline);
+                        pass.set_bind_group(0, &self.glyph_bind_group, &[]);
+                        pass.set_vertex_buffer(0, glyph_vertex_buffer.slice(..));
+                        pass.draw(*start..start.saturating_add(*count), 0..1);
+                    }
+                }
             }
         }
         self.queue.submit(Some(encoder.finish()));
@@ -1694,14 +2079,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 }
 
+enum CanvasAtlas<'a> {
+    Borrowed(&'a mut GlyphAtlas),
+    Owned(GlyphAtlas),
+}
+
+struct CanvasDrawData {
+    vertices: Vec<Vertex>,
+    glyph_vertices: Vec<GlyphVertex>,
+    commands: Vec<DrawCommand>,
+}
+
 pub struct Canvas<'a> {
     width: f32,
     height: f32,
     /// Number of physical framebuffer pixels per logical UI unit.
     pixel_scale: f32,
     vertices: Vec<Vertex>,
+    glyph_vertices: Vec<GlyphVertex>,
+    commands: Vec<DrawCommand>,
     clip: Option<Rect>,
-    _marker: std::marker::PhantomData<&'a ()>,
+    atlas: CanvasAtlas<'a>,
 }
 
 impl<'a> Canvas<'a> {
@@ -1711,9 +2109,84 @@ impl<'a> Canvas<'a> {
             height,
             pixel_scale: 1.0,
             vertices: Vec::with_capacity(8192),
+            glyph_vertices: Vec::with_capacity(1024),
+            commands: Vec::with_capacity(1024),
             clip: None,
-            _marker: std::marker::PhantomData,
+            atlas: CanvasAtlas::Owned(GlyphAtlas::new()),
         }
+    }
+
+    fn with_glyph_atlas(width: f32, height: f32, atlas: &'a mut GlyphAtlas) -> Self {
+        Self {
+            width,
+            height,
+            pixel_scale: 1.0,
+            vertices: Vec::with_capacity(8192),
+            glyph_vertices: Vec::with_capacity(1024),
+            commands: Vec::with_capacity(1024),
+            clip: None,
+            atlas: CanvasAtlas::Borrowed(atlas),
+        }
+    }
+
+    fn finish(self) -> CanvasDrawData {
+        CanvasDrawData {
+            vertices: self.vertices,
+            glyph_vertices: self.glyph_vertices,
+            commands: self.commands,
+        }
+    }
+
+    fn atlas_mut(&mut self) -> &mut GlyphAtlas {
+        match &mut self.atlas {
+            CanvasAtlas::Borrowed(atlas) => atlas,
+            CanvasAtlas::Owned(atlas) => atlas,
+        }
+    }
+
+    fn push_command(&mut self, command: DrawCommand) {
+        let merged = match (self.commands.last_mut(), command) {
+            (
+                Some(DrawCommand::Color {
+                    start: previous_start,
+                    count: previous_count,
+                }),
+                DrawCommand::Color { start, count },
+            ) if previous_start.saturating_add(*previous_count) == start => {
+                *previous_count = previous_count.saturating_add(count);
+                true
+            }
+            (
+                Some(DrawCommand::Glyph {
+                    start: previous_start,
+                    count: previous_count,
+                }),
+                DrawCommand::Glyph { start, count },
+            ) if previous_start.saturating_add(*previous_count) == start => {
+                *previous_count = previous_count.saturating_add(count);
+                true
+            }
+            _ => false,
+        };
+        if !merged {
+            self.commands.push(command);
+        }
+    }
+
+    #[cfg(test)]
+    fn glyph_atlas_entry_count(&self) -> usize {
+        match &self.atlas {
+            CanvasAtlas::Borrowed(atlas) => atlas.len(),
+            CanvasAtlas::Owned(atlas) => atlas.len(),
+        }
+    }
+
+    #[cfg(test)]
+    fn glyph_batch_count(&self) -> usize {
+        self.commands
+            .iter()
+            .filter(|command| matches!(command, DrawCommand::Glyph { .. }))
+            .count()
     }
 
     /// Configure logical layout coordinates while preserving the physical
@@ -1777,6 +2250,10 @@ impl<'a> Canvas<'a> {
                 color,
             },
         ]);
+        self.push_command(DrawCommand::Color {
+            start: self.vertices.len().saturating_sub(6) as u32,
+            count: 6,
+        });
     }
 
     pub fn stroke(&mut self, rect: Rect, color: [f32; 4]) {
@@ -1838,13 +2315,98 @@ impl<'a> Canvas<'a> {
         let origin_x_px = (x + glyph.x) * scale;
         let baseline_y_px = (y + glyph.baseline_y) * scale;
         if let Some(raster) = glyph.raster() {
-            self.draw_raster_glyph(raster, origin_x_px, baseline_y_px, scale, color);
+            if !self.draw_raster_glyph(raster, origin_x_px, baseline_y_px, scale, color) {
+                self.draw_raster_glyph_pixels(raster, origin_x_px, baseline_y_px, scale, color);
+            }
         } else if let Some(ch) = glyph.fallback_char() {
             self.draw_bitmap_glyph(ch, origin_x_px, baseline_y_px - 9.0 * scale, scale, color);
         }
     }
 
     fn draw_raster_glyph(
+        &mut self,
+        glyph: &slopos_render::font::RasterGlyph,
+        origin_x_px: f32,
+        baseline_y_px: f32,
+        scale: f32,
+        color: [f32; 4],
+    ) -> bool {
+        let region = {
+            let atlas = self.atlas_mut();
+            atlas.insert(glyph, scale)
+        };
+        let Some(region) = region else {
+            return false;
+        };
+        let scale = scale.max(0.0001);
+        let logical_x = (origin_x_px + glyph.bearing_x).round() / scale;
+        let logical_y = (baseline_y_px + glyph.bearing_y).round() / scale;
+        let logical_width = glyph.width as f32 / scale;
+        let logical_height = glyph.height as f32 / scale;
+        let mut x0 = logical_x.max(0.0);
+        let mut y0 = logical_y.max(0.0);
+        let mut x1 = (logical_x + logical_width).min(self.width);
+        let mut y1 = (logical_y + logical_height).min(self.height);
+        if let Some(clip) = self.clip {
+            x0 = x0.max(clip.x);
+            y0 = y0.max(clip.y);
+            x1 = x1.min(clip.x + clip.width);
+            y1 = y1.min(clip.y + clip.height);
+        }
+        if x0 >= x1 || y0 >= y1 {
+            return true;
+        }
+
+        let tx0 = ((x0 - logical_x) / logical_width).clamp(0.0, 1.0);
+        let ty0 = ((y0 - logical_y) / logical_height).clamp(0.0, 1.0);
+        let tx1 = ((x1 - logical_x) / logical_width).clamp(0.0, 1.0);
+        let ty1 = ((y1 - logical_y) / logical_height).clamp(0.0, 1.0);
+        let u0 = region.u0 + (region.u1 - region.u0) * tx0;
+        let v0 = region.v0 + (region.v1 - region.v0) * ty0;
+        let u1 = region.u0 + (region.u1 - region.u0) * tx1;
+        let v1 = region.v0 + (region.v1 - region.v0) * ty1;
+        let p0 = self.ndc(x0, y0);
+        let p1 = self.ndc(x1, y0);
+        let p2 = self.ndc(x1, y1);
+        let p3 = self.ndc(x0, y1);
+        let start = self.glyph_vertices.len() as u32;
+        self.glyph_vertices.extend_from_slice(&[
+            GlyphVertex {
+                position: p0,
+                uv: [u0, v0],
+                color,
+            },
+            GlyphVertex {
+                position: p1,
+                uv: [u1, v0],
+                color,
+            },
+            GlyphVertex {
+                position: p2,
+                uv: [u1, v1],
+                color,
+            },
+            GlyphVertex {
+                position: p0,
+                uv: [u0, v0],
+                color,
+            },
+            GlyphVertex {
+                position: p2,
+                uv: [u1, v1],
+                color,
+            },
+            GlyphVertex {
+                position: p3,
+                uv: [u0, v1],
+                color,
+            },
+        ]);
+        self.push_command(DrawCommand::Glyph { start, count: 6 });
+        true
+    }
+
+    fn draw_raster_glyph_pixels(
         &mut self,
         glyph: &slopos_render::font::RasterGlyph,
         origin_x_px: f32,
@@ -4571,7 +5133,7 @@ mod tests {
     }
 
     #[test]
-    fn canvas_text_draws_the_cached_shaped_raster_glyphs() {
+    fn canvas_text_does_not_expand_raster_coverage_into_colored_primitives() {
         let text = "fi";
         let layout = shape_text(text, TextLayoutOptions::new(13.0, 1.0));
         let expected_pixels = layout
@@ -4585,6 +5147,43 @@ mod tests {
 
         canvas.text(text, 10.0, 10.0, [0.0, 0.0, 0.0, 1.0]);
 
-        assert_eq!(canvas.vertices.len(), expected_pixels * 6);
+        assert_eq!(
+            canvas.vertices.len(),
+            0,
+            "rasterized text should use the glyph stream, not one colored quad per covered pixel ({} old-path pixels)",
+            expected_pixels
+        );
+    }
+
+    #[test]
+    fn canvas_reuses_atlas_entries_and_batches_adjacent_glyphs() {
+        let mut canvas = Canvas::new(320.0, 100.0);
+        let _ = canvas.glyph('A', 10.0, 10.0, [0.0, 0.0, 0.0, 1.0]);
+        let _ = canvas.glyph('A', 10.0, 10.0, [0.0, 0.0, 0.0, 1.0]);
+
+        assert_eq!(canvas.glyph_atlas_entry_count(), 1);
+        assert_eq!(canvas.glyph_batch_count(), 1);
+        assert_eq!(canvas.glyph_vertices.len(), 12);
+    }
+
+    #[test]
+    fn canvas_keeps_glyphs_in_order_with_colored_primitives() {
+        let mut canvas = Canvas::new(320.0, 100.0);
+        canvas.rect(super::Rect::new(0.0, 0.0, 8.0, 8.0), [1.0, 0.0, 0.0, 1.0]);
+        let _ = canvas.glyph('A', 10.0, 10.0, [0.0, 0.0, 0.0, 1.0]);
+        canvas.rect(super::Rect::new(24.0, 0.0, 8.0, 8.0), [0.0, 1.0, 0.0, 1.0]);
+
+        assert!(matches!(
+            canvas.commands[0],
+            super::DrawCommand::Color { .. }
+        ));
+        assert!(matches!(
+            canvas.commands[1],
+            super::DrawCommand::Glyph { .. }
+        ));
+        assert!(matches!(
+            canvas.commands[2],
+            super::DrawCommand::Color { .. }
+        ));
     }
 }
