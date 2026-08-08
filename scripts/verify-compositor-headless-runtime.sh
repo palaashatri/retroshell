@@ -182,9 +182,9 @@ combine_clipboard_logs() {
 }
 
 combine_dnd_logs() {
-  : >"$dnd_log"
-  [[ -f "$dnd_source_log" ]] && cat "$dnd_source_log" >>"$dnd_log"
-  [[ -f "$dnd_target_log" ]] && cat "$dnd_target_log" >>"$dnd_log"
+  # The invalid-serial probe and the successful source/target logs are already
+  # appended to dnd_log in sequence. Preserve those markers and append only the
+  # target-disconnect failure-path logs here.
   [[ -f "$dnd_abort_source_log" ]] && cat "$dnd_abort_source_log" >>"$dnd_log"
   [[ -f "$dnd_abort_target_log" ]] && cat "$dnd_abort_target_log" >>"$dnd_log"
 }
@@ -328,7 +328,6 @@ cleanup() {
   fi
   combine_clipboard_logs
   combine_primary_selection_logs
-  combine_dnd_logs
   combine_text_input_logs
   if [[ -n "$compositor_pid" ]] && kill -0 "$compositor_pid" 2>/dev/null; then
     kill -TERM "$compositor_pid" 2>/dev/null || true

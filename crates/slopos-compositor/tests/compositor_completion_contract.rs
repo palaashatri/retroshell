@@ -282,6 +282,11 @@ fn headless_runtime_gate_exercises_dnd_target_disconnect_cancellation() {
         "runtime evidence must retain target-disconnect cancellation fields"
     );
     assert!(
+        script.contains("Preserve those markers")
+            && !script.contains("combine_dnd_logs() {\n  : >\"$dnd_log\""),
+        "target-disconnect evidence must preserve the earlier invalid-serial marker"
+    );
+    assert!(
         client.contains("Role::TargetAbort") && client.contains("target-abort"),
         "client must expose an explicit target-abort mode"
     );
