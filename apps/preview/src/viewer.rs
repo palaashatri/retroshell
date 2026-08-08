@@ -1,4 +1,4 @@
-use image::{DynamicImage, ImageFormat, ImageReader};
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
 use slopos_kit::event::{Event, KeyCode};
 use slopos_kit::panel::Panel;
 use slopos_kit::scroll_view::ScrollView;
@@ -132,9 +132,17 @@ fn decode_encoded_image_limited(
         ));
     }
 
-    let image = reader
-        .decode()
+    let mut decoder = ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .map_err(|error| format!("cannot identify image format: {error}"))?
+        .into_decoder()
+        .map_err(|error| format!("cannot create image decoder: {error}"))?;
+    let orientation = decoder
+        .orientation()
+        .map_err(|error| format!("cannot read image orientation: {error}"))?;
+    let mut image = DynamicImage::from_decoder(decoder)
         .map_err(|error| format!("cannot decode image: {error}"))?;
+    image.apply_orientation(orientation);
     Ok((image, media_type_for_format(format)))
 }
 
@@ -1599,14 +1607,13 @@ mod tests {
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {
         let image = image::RgbaImage::from_pixel(width, height, image::Rgba([10, 20, 30, 255]));
+        png_bytes_from_rgba(width, height, image.as_raw())
+    }
+
+    fn png_bytes_from_rgba(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::new();
         PngEncoder::new(&mut bytes)
-            .write_image(
-                image.as_raw(),
-                width,
-                height,
-                image::ExtendedColorType::Rgba8,
-            )
+            .write_image(pixels, width, height, image::ExtendedColorType::Rgba8)
             .unwrap();
         bytes
     }
@@ -1727,6 +1734,18 @@ mod tests {
             (image.width * image.height * 4) as usize
         );
         assert_eq!(image.path, path);
+    }
+
+    #[test]
+    fn decoded_rgba_pixels_preserve_alpha_for_gpu_compositing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("alpha.png");
+        let source = [0, 0, 0, 0, 255, 0, 0, 128];
+        fs::write(&path, png_bytes_from_rgba(2, 1, &source)).unwrap();
+
+        let image = load_image(&path).unwrap();
+
+        assert_eq!(image.pixels, source);
     }
 
     #[test]
