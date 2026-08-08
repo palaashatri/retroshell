@@ -5,7 +5,7 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`78fa7de93aa0456efb467d0486c3936c1b0359b2`
+`4296882e1344e52dad082d4a377c9e9579928798`
 **Audit date:** 2026-08-09
 **Audit basis:** current-source review through the audited SHA, commit-delta
 review, exact-commit Ubuntu UTM build/test/lint/release evidence, retained
@@ -17,12 +17,52 @@ commit display-topology source/contract and headless runtime evidence, and the
 exact-commit keyboard-overview focused suites, display-policy failure-path
 runtime QA, active-window Spaces move runtime QA with a real Preview client,
 and exact-commit compositor contract/headless protocol reruns recorded below.
+The current audit also includes the exact-commit App Store authenticity tests,
+Ubuntu UTM Clippy/release validation and host regression gates recorded below.
 **Public target:** a 100/100 production Linux desktop environment that genuinely
 competes with KDE Plasma and GNOME as a daily driver.
 **Current verdict:** **63/100 — functional custom desktop alpha.**
 
 Documentation commits after the audited implementation do not change the
 product score unless they are accompanied by implementation and evidence.
+
+### Current implementation wave — authenticated App Store catalogs and packages
+
+Implementation commit `4296882e1344e52dad082d4a377c9e9579928798` adds an
+Ed25519 authenticity boundary to the local App Store installer. Catalogs and
+archives now carry canonical signed metadata, trusted publisher/key identity,
+revocation state and optional authenticated archive size. Verification occurs
+before checksum validation or extraction; publisher identity is retained for
+package details, and the production install path rejects unsigned, unknown,
+revoked, tampered or metadata-mismatched inputs. The trust-store loader rejects
+symlinked entries and requires restrictive Unix file permissions. The same
+commit adds a compositor-authoritative `MoveActiveWindow` caller for the live
+Spaces overview using stable Space IDs, with success/failure tests preserving
+modal state and authoritative mirrors.
+
+The exact Ubuntu UTM checkout at this SHA is `/home/ubuntu/rust-slopos-qa-d1ea823`
+on `ubuntu@192.168.64.17` (detached at the SHA). Its locked workspace Clippy
+run with `-D warnings` and locked release workspace build both exited `0`;
+their combined output and exit marker are retained under
+`artifacts/qa/2026-08-09-appstore-signing-utm-4296882/clippy-release.log` and
+`clippy-release.exit`. The focused signed-catalog/archive suite passed 6/6
+tests with 24 filtered out under the same directory's
+`focused-signing.log` and `focused-signing.exit`. The preceding exact-commit
+UTM locked workspace test run passed all suites, including 30/30 App Store
+tests, and is retained in `test.log` and `test.exit` there.
+
+The host exact-commit gates also exited `0` for formatting, locked workspace
+check, locked workspace tests, Clippy with `-D warnings` and the locked release
+workspace build under
+`artifacts/qa/2026-08-09-appstore-signing-host-4296882/`. These results prove
+authenticated local package handling and headless/VM behaviour only. They do
+not prove a network catalogue/update service, publisher operations, sandbox or
+permission enforcement, clean install/upgrade/rollback/uninstall lifecycle,
+third-party application compatibility, physical hardware, accessibility
+workflows or long-running reliability. The package-trust subscore can no
+longer describe publisher authenticity as wholly absent, but the weighted
+SLOPOS-I verdict remains **63/100** and strict compositor completion remains
+**76/100**.
 
 ### Current implementation wave — typed display policy, live accessibility, output recovery and active-window Spaces moves
 
@@ -1175,7 +1215,7 @@ claims are prohibited until assistive-technology workflows are demonstrated.
 | Settings | 58 | 55 | **58** | Spaces and bounded display topology now read compositor state, send typed mutations, assign outputs and configure application policies; most service domains, Fonts and zoom policy remain disconnected |
 | TextEdit | 67 | 61 | **64** | Selection-aware clipboard, caret insertion, find, save/recovery and undo/redo; no production multiline shaping, IME, rich text or scalable transactions |
 | Terminal | 72 | 65 | **69** | Real PTY, parser, tabs, alternate screen, selection, resize and child shutdown; cell model lacks complete CJK/combining/grapheme correctness |
-| Software manager | 46 | 48 | **47** | Hardened local archive installation; catalogue, signing, publisher trust, network delivery, updates and removal are incomplete |
+| Software manager | 46 | 48 | **47** | Hardened local archive installation now authenticates signed catalogues and packages with publisher identity; network delivery, updates, removal and transaction recovery remain incomplete |
 | Preview | 64 | 44 | **54** | Real retained GPU image tiles, orientation/alpha, zoom/pan, Fit/Fill, rotation and Vision client paths; metadata/document workflows, colour management and pixel acceptance remain incomplete |
 | **Application suite** | **59** | **54** | **58** | Useful native alpha applications, not daily-driver replacements |
 
@@ -1217,7 +1257,7 @@ review before release.
 | Filesystem safety | 78 | Atomic writes, path bounds, symlink checks, hashes and rollback are common |
 | Session isolation | 85 | Private runtime/socket/token/process-group design is strong; the control socket now enforces mode 0600 and Linux peer credentials |
 | Application sandbox/permissions | 27 | No mature general sandbox or capability permission product |
-| Package trust/signing | 24 | Integrity exists; publisher authenticity and trust chain do not |
+| Package trust/signing | 61 | Ed25519 catalog/archive signatures, trusted publisher/key identity, revocation, authenticated size and restrictive trust-store validation are implemented; network trust updates, signed release distribution and lifecycle recovery remain open |
 | Automated testing | 82 | Broad tests and exact compositor contract |
 | CI quality | 87 | Strong Linux build/test/release/fmt/lockfile/runtime gates at audited product head |
 | Runtime QA breadth | 61 | Useful VM/UTM evidence; current-head hardware/app matrix incomplete |
