@@ -119,12 +119,10 @@ fn headless_runtime_gate_exercises_clipboard_cancellation_and_target_death() {
             "headless runtime gate must require clipboard failure-path marker {marker}"
         );
     }
-    for mode in ["sink-abort"] {
-        assert!(
-            client.contains(mode),
-            "clipboard client must expose failure-path mode {mode}"
-        );
-    }
+    assert!(
+        client.contains("sink-abort"),
+        "clipboard client must expose failure-path mode sink-abort"
+    );
     assert!(
         client.contains("SLOPOS_CLIPBOARD_SOURCE_CANCELLED"),
         "clipboard source must expose the protocol cancellation event"
