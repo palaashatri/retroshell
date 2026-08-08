@@ -335,7 +335,7 @@ fn run_sink(connection: &Connection, expect_selection: bool) -> Result<(), Box<d
                 return Err("clipboard selection survived source disconnect".into());
             }
             if state.selection_cleared {
-                println!("SLOPOS_CLIPBOARD_SOURCE_DEATH_CLEARED");
+                println!("SLOPOS_CLIPBOARD_SOURCE_DEATH_CLEARED observed=true");
                 std::io::stdout().flush()?;
                 return Ok(());
             }
