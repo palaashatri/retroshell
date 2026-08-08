@@ -239,23 +239,6 @@ fn request_shell_rescan() {
 // ── Domain types ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StoreAction {
-    Install,
-    Remove,
-    Update,
-}
-
-impl StoreAction {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Install => "INSTALL",
-            Self::Remove => "REMOVE",
-            Self::Update => "UPDATE",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppInstallState {
     Installed,
     Available,
@@ -342,9 +325,6 @@ struct AppStoreView {
     detail_description: Label,
     detail_state: Label,
     install_button: Button,
-    remove_button: Button,
-    update_button: Button,
-    confirm_button: Button,
     // Progress bar for async install
     progress_bar: ProgressBar,
     progress_label: Label,
@@ -387,9 +367,6 @@ impl AppStoreView {
             detail_description: Label::new(""),
             detail_state: Label::new(""),
             install_button: Button::new("INSTALL"),
-            remove_button: Button::new("REMOVE"),
-            update_button: Button::new("UPDATE"),
-            confirm_button: Button::new("CONFIRM"),
             progress_bar: ProgressBar::new(),
             progress_label: Label::new(""),
             status: Label::new("READY"),
@@ -500,22 +477,6 @@ impl AppStoreView {
         self.detail_state.text = String::new();
     }
 
-    fn plan_transaction(&mut self, action: StoreAction) -> bool {
-        let Some(package) = self.selected_package() else {
-            self.status.text = "SELECT OR SEARCH FOR AN APP".to_string();
-            return false;
-        };
-        // rewired in Task 3.8
-        self.status.text = format!("{} REWIRE PENDING - {}", action.label(), package);
-        false
-    }
-
-    fn confirm_transaction(&mut self) -> bool {
-        // rewired in Task 3.8
-        self.status.text = "CONFIRM REWIRE PENDING".to_string();
-        false
-    }
-
     fn start_install_async(&mut self) {
         let Some(package) = self.selected_package() else {
             self.status.text = "SELECT AN APP FIRST".to_string();
@@ -563,18 +524,6 @@ impl AppStoreView {
         }
         if self.install_button.take_clicked() {
             self.start_install_async();
-            return true;
-        }
-        if self.remove_button.take_clicked() {
-            self.plan_transaction(StoreAction::Remove);
-            return true;
-        }
-        if self.update_button.take_clicked() {
-            self.plan_transaction(StoreAction::Update);
-            return true;
-        }
-        if self.confirm_button.take_clicked() {
-            self.confirm_transaction();
             return true;
         }
         false
@@ -670,21 +619,6 @@ impl Widget for AppStoreView {
         let _ = self
             .install_button
             .layout(LayoutConstraint::tight(Size::new(action_w, 28.0)));
-        self.remove_button
-            .set_rect(Rect::new(content_x + 102.0, y, action_w, 28.0));
-        let _ = self
-            .remove_button
-            .layout(LayoutConstraint::tight(Size::new(action_w, 28.0)));
-        self.update_button
-            .set_rect(Rect::new(content_x + 204.0, y, action_w, 28.0));
-        let _ = self
-            .update_button
-            .layout(LayoutConstraint::tight(Size::new(action_w, 28.0)));
-        self.confirm_button
-            .set_rect(Rect::new(content_x + 306.0, y, 104.0, 28.0));
-        let _ = self
-            .confirm_button
-            .layout(LayoutConstraint::tight(Size::new(104.0, 28.0)));
         y += 42.0;
 
         // Progress bar row (always laid out; visible when active)
@@ -786,9 +720,6 @@ impl Widget for AppStoreView {
         self.search_button.draw(theme);
         self.refresh_button.draw(theme);
         self.install_button.draw(theme);
-        self.remove_button.draw(theme);
-        self.update_button.draw(theme);
-        self.confirm_button.draw(theme);
         self.progress_bar.draw(theme);
         self.progress_label.draw(theme);
         self.category_list.draw(theme);
@@ -886,9 +817,6 @@ impl Widget for AppStoreView {
         self.search_button.update();
         self.refresh_button.update();
         self.install_button.update();
-        self.remove_button.update();
-        self.update_button.update();
-        self.confirm_button.update();
         self.progress_bar.update();
         self.progress_label.update();
         self.category_list.update();
@@ -912,9 +840,6 @@ impl Widget for AppStoreView {
             &self.search_button,
             &self.refresh_button,
             &self.install_button,
-            &self.remove_button,
-            &self.update_button,
-            &self.confirm_button,
             &self.progress_bar,
             &self.progress_label,
             &self.category_list,
@@ -935,9 +860,6 @@ impl Widget for AppStoreView {
             &mut self.search_button,
             &mut self.refresh_button,
             &mut self.install_button,
-            &mut self.remove_button,
-            &mut self.update_button,
-            &mut self.confirm_button,
             &mut self.progress_bar,
             &mut self.progress_label,
             &mut self.category_list,
@@ -1108,14 +1030,18 @@ mod tests {
     }
 
     #[test]
-    fn appstore_remove_and_confirm_remain_stubbed() {
-        let mut view = AppStoreView::new();
-        view.results.items = vec!["[AVAILABLE] TextEdit".to_string()];
-        view.results.selected_index = Some(0);
-        assert!(!view.plan_transaction(StoreAction::Remove));
-        assert!(view.status.text.contains("REMOVE REWIRE PENDING"));
-        assert!(!view.confirm_transaction());
-        assert!(view.status.text.contains("CONFIRM REWIRE PENDING"));
+    fn appstore_does_not_advertise_unimplemented_transaction_controls() {
+        let view = AppStoreView::new();
+        let button_labels: Vec<&str> = view
+            .children()
+            .into_iter()
+            .filter_map(|child| child.as_any().downcast_ref::<Button>())
+            .map(Button::label)
+            .collect();
+
+        assert!(!button_labels
+            .iter()
+            .any(|label| { matches!(*label, "REMOVE" | "UPDATE" | "CONFIRM") }));
     }
 
     #[test]

@@ -9,7 +9,6 @@ use slopos_sdk::{build_menu, Application};
 use viewer::{parse_cli_args, PreviewView};
 
 const BUNDLE_ID: &str = "com.slopos.preview";
-const ACTION_OPEN: &str = "com.slopos.preview.file.open";
 const ACTION_ZOOM_IN: &str = "com.slopos.preview.zoom.in";
 const ACTION_ZOOM_OUT: &str = "com.slopos.preview.zoom.out";
 const ACTION_ZOOM_FIT: &str = "com.slopos.preview.zoom.fit";
@@ -52,11 +51,6 @@ fn main() {
 }
 
 fn preview_menus() -> Vec<slopos_kit::Menu> {
-    let mut file = build_menu("File");
-    file.add_action("Open...")
-        .with_shortcut(KeyCode::O, meta_shortcut())
-        .with_action(ACTION_OPEN);
-
     let mut zoom = build_menu("Zoom");
     zoom.add_action("Zoom In")
         .with_shortcut(KeyCode::Equals, meta_shortcut())
@@ -78,7 +72,7 @@ fn preview_menus() -> Vec<slopos_kit::Menu> {
         .add_action("Lift Subject")
         .with_action(ACTION_LIFT_SUBJECT);
 
-    vec![file, zoom, vision]
+    vec![zoom, vision]
 }
 
 const fn meta_shortcut() -> Modifiers {
@@ -115,5 +109,14 @@ mod tests {
         ])
         .unwrap_err();
         assert!(error.contains("one image path"));
+    }
+
+    #[test]
+    fn preview_menus_do_not_advertise_unavailable_open_action() {
+        let menus = preview_menus();
+        assert!(menus
+            .iter()
+            .flat_map(|menu| menu.items.iter())
+            .all(|item| item.label != "Open..."));
     }
 }

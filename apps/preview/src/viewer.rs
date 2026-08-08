@@ -372,7 +372,6 @@ pub struct PreviewView {
     dimensions_label: Label,
     zoom_label: Label,
     empty_hint: Label,
-    open_button: Button,
     zoom_out_button: Button,
     zoom_in_button: Button,
     fit_button: Button,
@@ -392,7 +391,6 @@ pub struct PreviewView {
 
 #[derive(Debug, Clone, Copy)]
 enum ViewAction {
-    Open,
     ZoomIn,
     ZoomOut,
     Fit,
@@ -663,8 +661,7 @@ impl PreviewView {
             },
             None => (
                 None,
-                "No image selected — launch Preview with an image path or use File > Open..."
-                    .to_string(),
+                "No image selected — launch Preview with an image path.".to_string(),
             ),
         };
         let source_dimensions = loaded.as_ref().map(|image| (image.width, image.height));
@@ -690,7 +687,6 @@ impl PreviewView {
             dimensions_label: Label::new("No image loaded"),
             zoom_label: Label::new("No image"),
             empty_hint: Label::new("No image selected"),
-            open_button: Button::new("Open..."),
             zoom_out_button: Button::new("-"),
             zoom_in_button: Button::new("+"),
             fit_button: Button::new("Fit"),
@@ -732,7 +728,6 @@ impl PreviewView {
 
     pub fn handle_action(&mut self, action: &str) {
         let action = match action {
-            "com.slopos.preview.file.open" => Some(ViewAction::Open),
             "com.slopos.preview.zoom.in" => Some(ViewAction::ZoomIn),
             "com.slopos.preview.zoom.out" => Some(ViewAction::ZoomOut),
             "com.slopos.preview.zoom.fit" => Some(ViewAction::Fit),
@@ -740,7 +735,6 @@ impl PreviewView {
             "com.slopos.preview.vision.extract_text" => Some(ViewAction::ExtractText),
             "com.slopos.preview.vision.lift_subject" => Some(ViewAction::LiftSubject),
             other => match other.rsplit_once('.') {
-                Some((_, "open")) => Some(ViewAction::Open),
                 Some((_, "zoom_in")) => Some(ViewAction::ZoomIn),
                 Some((_, "zoom_out")) => Some(ViewAction::ZoomOut),
                 Some((_, "fit_to_window")) => Some(ViewAction::Fit),
@@ -757,7 +751,6 @@ impl PreviewView {
 
     fn apply_action(&mut self, action: ViewAction) {
         match action {
-            ViewAction::Open => self.open_action(),
             ViewAction::ZoomIn => self.change_zoom(1.25),
             ViewAction::ZoomOut => self.change_zoom(0.8),
             ViewAction::Fit => self.set_zoom_mode(ZoomMode::Fit),
@@ -847,12 +840,6 @@ impl PreviewView {
             .wrapping_add(1);
         self.active_vision_submission = Some(submission_id);
         submission_id
-    }
-
-    fn invalidate_vision_submission(&mut self) {
-        self.vision_submission_generation
-            .fetch_add(1, Ordering::AcqRel);
-        self.active_vision_submission = None;
     }
 
     fn handle_vision_event(&mut self, event: VisionJobEvent) {
@@ -1072,53 +1059,6 @@ impl PreviewView {
         (!canvas.encoded.is_empty()).then_some(canvas)
     }
 
-    fn open_action(&mut self) {
-        let Some(path) = self.source_path.clone() else {
-            self.set_status(
-                "Open unavailable: this SDK has no file-picker API; launch Preview with an image path.",
-            );
-            return;
-        };
-        self.load_path(path);
-    }
-
-    fn load_path(&mut self, path: PathBuf) {
-        self.invalidate_vision_submission();
-        let filename = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string());
-        self.source_path = Some(path.clone());
-        match load_image(&path) {
-            Ok(image) => {
-                self.source_dimensions = Some((image.width, image.height));
-                self.image_scroll
-                    .set_content(Box::new(ImageCanvas::from_loaded(image)));
-                self.empty_hint.text.clear();
-                self.zoom_mode = ZoomMode::Fit;
-                self.zoom = 1.0;
-                self.image_scroll.scroll_x = 0.0;
-                self.image_scroll.scroll_y = 0.0;
-                self.set_status(format!(
-                    "Loaded {filename} — Vision uses the local daemon when available."
-                ));
-            }
-            Err(error) => {
-                self.source_dimensions = None;
-                self.image_scroll
-                    .set_content(Box::new(ImageCanvas::empty()));
-                self.empty_hint.text = "No image loaded".to_string();
-                self.zoom_mode = ZoomMode::Fit;
-                self.zoom = 1.0;
-                self.image_scroll.scroll_x = 0.0;
-                self.image_scroll.scroll_y = 0.0;
-                self.set_status(format!("Cannot open {filename}: {error}"));
-            }
-        }
-        self.update_labels();
-        self.reflow_image();
-    }
-
     fn change_zoom(&mut self, factor: f32) {
         if self.source_dimensions.is_none() {
             self.set_status("Zoom unavailable: no image is loaded.");
@@ -1260,7 +1200,6 @@ impl Widget for PreviewView {
         let button_y = rect.y + 39.0;
         let button_gap = 5.0;
         for (button, width) in [
-            (&mut self.open_button, 74.0),
             (&mut self.zoom_out_button, 32.0),
             (&mut self.zoom_in_button, 32.0),
             (&mut self.fit_button, 48.0),
@@ -1315,7 +1254,6 @@ impl Widget for PreviewView {
     fn handle_event(&mut self, event: &Event) -> EventResult {
         if let Event::KeyDown { key, modifiers } = event {
             let action = match (key, modifiers.meta) {
-                (KeyCode::O, true) => Some(ViewAction::Open),
                 (KeyCode::Equals, true) | (KeyCode::Equals, false) => Some(ViewAction::ZoomIn),
                 (KeyCode::Minus, true) | (KeyCode::Minus, false) => Some(ViewAction::ZoomOut),
                 (KeyCode::Key0, true) | (KeyCode::Key0, false) => Some(ViewAction::ActualSize),
@@ -1338,7 +1276,6 @@ impl Widget for PreviewView {
                 (&mut self.fit_button, ViewAction::Fit),
                 (&mut self.zoom_in_button, ViewAction::ZoomIn),
                 (&mut self.zoom_out_button, ViewAction::ZoomOut),
-                (&mut self.open_button, ViewAction::Open),
             ] {
                 if let Some((button_result, button_action)) =
                     Self::dispatch_button(button, action, event)
@@ -1379,7 +1316,6 @@ impl Widget for PreviewView {
             &self.filename_label,
             &self.dimensions_label,
             &self.zoom_label,
-            &self.open_button,
             &self.zoom_out_button,
             &self.zoom_in_button,
             &self.fit_button,
@@ -1401,7 +1337,6 @@ impl Widget for PreviewView {
             &mut self.filename_label,
             &mut self.dimensions_label,
             &mut self.zoom_label,
-            &mut self.open_button,
             &mut self.zoom_out_button,
             &mut self.zoom_in_button,
             &mut self.fit_button,
@@ -1769,6 +1704,19 @@ mod tests {
         assert_eq!(fit_zoom(1, 1, 10_000.0, 10_000.0), MAX_ZOOM);
         assert_eq!(fit_zoom(40_000_000, 1, 1.0, 1.0), MIN_ZOOM);
         assert_eq!(fit_zoom(0, 100, 100.0, 100.0), 1.0);
+    }
+
+    #[test]
+    fn preview_children_do_not_include_unavailable_open_button() {
+        let view = PreviewView::new(None);
+        let button_labels: Vec<&str> = view
+            .children()
+            .into_iter()
+            .filter_map(|child| child.as_any().downcast_ref::<Button>())
+            .map(Button::label)
+            .collect();
+
+        assert!(!button_labels.contains(&"Open..."));
     }
 
     #[test]
