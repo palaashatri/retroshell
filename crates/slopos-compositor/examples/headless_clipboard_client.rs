@@ -304,12 +304,10 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for State {
                 // Unsupported MIME requests intentionally receive EOF by closing
                 // the compositor-provided fd without writing any bytes.
             }
-            wl_data_source::Event::Cancelled => {
-                if !state.source_cancelled_reported {
-                    state.source_cancelled_reported = true;
-                    println!("SLOPOS_CLIPBOARD_SOURCE_CANCELLED");
-                    let _ = std::io::stdout().flush();
-                }
+            wl_data_source::Event::Cancelled if !state.source_cancelled_reported => {
+                state.source_cancelled_reported = true;
+                println!("SLOPOS_CLIPBOARD_SOURCE_CANCELLED");
+                let _ = std::io::stdout().flush();
             }
             _ => {}
         }
