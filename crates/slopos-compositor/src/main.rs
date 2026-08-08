@@ -76,8 +76,9 @@ mod linux {
             },
             egl::{EGLContext, EGLDisplay},
             input::{
-                ButtonState, InputEvent as BackendInputEvent, KeyboardKeyEvent, PointerButtonEvent,
-                PointerMotionAbsoluteEvent,
+                Axis, AxisRelativeDirection, AxisSource, ButtonState,
+                InputEvent as BackendInputEvent, KeyboardKeyEvent, PointerAxisEvent,
+                PointerButtonEvent, PointerMotionAbsoluteEvent,
             },
             renderer::{
                 element::{
@@ -3475,6 +3476,67 @@ mod linux {
         });
     }
 
+    fn build_axis_frame(
+        time: u32,
+        source: AxisSource,
+        horizontal_direction: AxisRelativeDirection,
+        vertical_direction: AxisRelativeDirection,
+        horizontal_amount: Option<f64>,
+        vertical_amount: Option<f64>,
+        horizontal_v120: Option<f64>,
+        vertical_v120: Option<f64>,
+    ) -> AxisFrame {
+        let mut frame = AxisFrame::new(time)
+            .source(source)
+            .relative_direction(Axis::Horizontal, horizontal_direction)
+            .relative_direction(Axis::Vertical, vertical_direction);
+
+        if let Some(amount) = horizontal_amount {
+            frame = frame.value(Axis::Horizontal, amount);
+        }
+        if let Some(amount) = vertical_amount {
+            frame = frame.value(Axis::Vertical, amount);
+        }
+        if let Some(steps) = horizontal_v120 {
+            frame = frame.v120(Axis::Horizontal, steps.round() as i32);
+        }
+        if let Some(steps) = vertical_v120 {
+            frame = frame.v120(Axis::Vertical, steps.round() as i32);
+        }
+
+        frame
+    }
+
+    fn axis_frame_from_event<E>(ev: &E) -> AxisFrame
+    where
+        E: PointerAxisEvent<X11Input>,
+    {
+        build_axis_frame(
+            ev.time_msec(),
+            ev.source(),
+            ev.relative_direction(Axis::Horizontal),
+            ev.relative_direction(Axis::Vertical),
+            ev.amount(Axis::Horizontal),
+            ev.amount(Axis::Vertical),
+            ev.amount_v120(Axis::Horizontal),
+            ev.amount_v120(Axis::Vertical),
+        )
+    }
+
+    fn handle_pointer_axis<E>(state: &mut SloposCompositor, ev: &E)
+    where
+        E: PointerAxisEvent<X11Input>,
+    {
+        let frame = axis_frame_from_event(ev);
+        if let Some(ptr) = state.seat.get_pointer() {
+            // Axis events follow the pointer's current focus/grab. Do not
+            // retarget it here: motion and button paths own focus updates.
+            ptr.axis(state, frame);
+            ptr.frame(state);
+        }
+        state.request_redraw();
+    }
+
     fn constrain_pointer_destination(
         state: &SloposCompositor,
         pointer: &PointerHandle<SloposCompositor>,
@@ -4172,6 +4234,9 @@ mod linux {
                         BackendInputEvent::PointerButton { event: ev } => {
                             handle_pointer_button(state, &ev);
                         }
+                        BackendInputEvent::PointerAxis { event: ev } => {
+                            handle_pointer_axis(state, &ev);
+                        }
                         _ => {}
                     },
                     X11Event::Focus { .. } => {}
@@ -4299,6 +4364,37 @@ mod linux {
 
         tracing::info!("slopos-compositor exiting");
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod axis_frame_tests {
+        use super::*;
+
+        #[test]
+        fn axis_frame_keeps_timestamp_directions_and_both_value_forms() {
+            let frame = build_axis_frame(
+                1234,
+                AxisSource::Continuous,
+                AxisRelativeDirection::Inverted,
+                AxisRelativeDirection::Identical,
+                Some(1.5),
+                Some(-2.25),
+                Some(60.0),
+                Some(-120.0),
+            );
+
+            assert_eq!(frame.time, 1234);
+            assert_eq!(frame.source, Some(AxisSource::Continuous));
+            assert_eq!(
+                frame.relative_direction,
+                (
+                    AxisRelativeDirection::Inverted,
+                    AxisRelativeDirection::Identical,
+                )
+            );
+            assert_eq!(frame.axis, (1.5, -2.25));
+            assert_eq!(frame.v120, Some((60, -120)));
+        }
     }
 }
 
