@@ -5,17 +5,101 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`d42d09eb002502d70dad26b039299534e0ebf2cc`
+`5553161ed9ac378602cbef5c510d32c0cab799b8`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review through the audited SHA, commit-delta
 review, exact-commit Ubuntu UTM build/test/lint/release evidence, retained
-native Wayland protocol logs and a fresh headless Preview WGPU smoke.
+native Wayland protocol logs, exact-commit headless Spaces runtime evidence with
+a real Preview client, and exact-commit Settings/IPC QA in Ubuntu UTM.
 **Public target:** a 100/100 production Linux desktop environment that genuinely
 competes with KDE Plasma and GNOME as a daily driver.
 **Current verdict:** **63/100 — functional custom desktop alpha.**
 
 Documentation commits after the audited implementation do not change the
 product score unless they are accompanied by implementation and evidence.
+
+### Current implementation wave — compositor-authoritative dynamic SLOPOS Spaces
+
+Implementation commit `cbd583e430762b4e902d213309dd628345421750` connects the
+dynamic `SpacesModel` to both compositor backends and the live shell. The
+compositor now owns stable Space IDs, creation/removal, naming, reorder,
+selection, per-Space wallpaper/appearance/classification, display policy,
+output assignment, live window membership and atomic persistence. It publishes
+an atomic `spaces-state.json` snapshot with a session epoch and monotonic
+revision; the shell validates and reconciles that projection, renders a
+dynamic overview grid, and sends stable-ID selection requests without
+optimistically changing its mirror. A dedicated layer-shell Overlay surface
+keeps the live overview above ordinary application surfaces.
+
+Window membership is deliberately cleared when persisted metadata is loaded:
+compositor window IDs are session-scoped and must not become stale windows after
+a restart. Shell reconciliation now accepts a lower revision when the
+compositor session epoch changes, with a regression test through
+`ShellDesktop::update()`.
+
+The exact Ubuntu UTM clone at this SHA passed `cargo fmt --all -- --check`,
+locked workspace check, locked workspace tests, Clippy with `-D warnings`, and
+the locked release workspace build. Exit markers and logs are retained under
+`artifacts/qa/2026-08-08-spaces-cbd583e/`; `commit.txt` records the exact SHA.
+
+The same exact release binaries passed a fresh headless UTM runtime harness:
+create, rename, reorder and select a Space; map a real Preview client; move
+that client to another Space through the compositor control socket; reject an
+unknown-window move without a revision change; remove a Space with safe active
+fallback; persist state; restart the compositor; restore the active Space and
+clear stale session-window membership. The machine-readable status is
+`artifacts/qa/2026-08-08-spaces-cbd583e/runtime/status.txt` with `qa_exit=0`.
+
+This is compositor-authority and headless software-renderer evidence. It does
+not prove physical DRM/KMS presentation or output migration, application-ID
+assignment/all-Spaces policy, live thumbnails, drag between Spaces/displays,
+touchpad gestures, keyboard-only or assistive-technology operation, Settings
+integration, reduced-motion behaviour, third-party compatibility, packaging,
+performance budgets or long-running soaks. The DRM attempt reached libseat but
+could not open the VM's `/dev/dri/card0` because the root kernel was holding the
+device; its failure is retained under
+`artifacts/qa/2026-08-08-spaces-drm-capability-current/`. The overall score
+therefore remains **63/100** and strict compositor completion remains
+**76/100**.
+
+### Current implementation wave — authoritative Spaces Settings and session IPC security
+
+Implementation commit `5553161ed9ac378602cbef5c510d32c0cab799b8` adds a real
+Settings→compositor Spaces panel. Settings reads and validates the atomic
+`spaces-state.json` projection, reconciles external revisions/session epochs,
+and sends typed stable-ID requests for Space selection, creation, rename,
+reorder, removal, wallpaper/appearance metadata, fullscreen classification and
+multi-display policy. It does not optimistically edit its mirror; request
+success is reported as pending until a new compositor snapshot arrives, and a
+missing or invalid session is shown as unavailable. Focused tests cover all
+request shapes and snapshot reconciliation.
+
+The same commit hardens the session control datagram endpoint: the socket is
+explicitly mode `0600`, Linux enables `SO_PASSCRED`, and the listener rejects
+missing or mismatched sender UIDs before decoding a request. The exact Ubuntu
+UTM guest passed the socket-mode, peer-credential and valid same-UID runtime
+checks. An unprivileged mismatched-UID injection was not available in the
+`ubuntu` guest, so that boundary remains covered by deterministic policy tests.
+
+The exact guest at this SHA passed all five locked workspace gates; exit markers
+and logs are retained under
+`artifacts/qa/2026-08-08-settings-spaces-5553161/utm/gates-r1/`. Focused UTM
+Settings and bus tests passed 16/16 and 12+3+6 respectively under
+`.../utm/focused-r1/`. The exact release Spaces runtime harness passed with
+`qa_exit=0` under `.../utm/runtime-r1/`; the exact release IPC runtime check
+recorded `socket_mode=600`, a valid same-UID datagram and `active_space=2` under
+`.../utm/ipc-r1/`.
+
+This closes the Settings Spaces integration and local session-socket permission
+gaps, but does not complete shell-side create/rename/reorder/remove callers,
+Assign Output UI, live thumbnails, drag/gesture/accessibility workflows,
+third-party compatibility, physical DRM/input/multi-monitor evidence,
+packaging, performance budgets or long-running reliability. Settings remains a
+partial service surface rather than an authoritative implementation of every
+system domain. The overall score remains **63/100**; the evidence-backed
+Settings functional slice advances from 48 to **52/100**, Spaces UX from 25 to
+**35/100**, and security/release readiness from 52 to **55/100**. The strict
+compositor score remains **76/100**.
 
 ### Current implementation wave — compositor-authoritative workspace switching
 
@@ -690,8 +774,10 @@ The most important blockers are:
 2. incomplete retained rendering acceptance: complete text authority, image colour/mipmap/animation paths and measured scale/performance proof;
 3. incomplete third-party DnD compatibility and application-level IME integration;
 4. partial XWayland and third-party application compatibility;
-5. SLOPOS Spaces model not yet connected to a complete user experience;
-6. Settings not yet authoritative for all system services;
+5. SLOPOS Spaces now has compositor and Settings mutation paths, but not a
+   complete user experience;
+6. Settings is authoritative for the new Spaces slice, but not for all system
+   services;
 7. first-party applications remain incomplete for normal daily use;
 8. accessibility is not yet live and Orca-complete;
 9. sandbox, permissions, publisher trust and package signing are incomplete;
@@ -797,7 +883,7 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | Clipboard | 65 | Real selection paths; large/cancelled/format-diverse transfers need QA |
 | Cross-app drag-and-drop | 51 | Native first-party text/URI DnD is runtime-observed; third-party and shell workflows remain |
 | SLOPOS Spaces model | 71 | Dynamic model, persistence and output policy are substantive |
-| SLOPOS Spaces UX | 25 | No complete overview, gestures, drag-between-Spaces or Settings product |
+| SLOPOS Spaces UX | 35 | Live overview and snapshot-backed Settings mutations exist; gestures, drag-between-Spaces, thumbnails and accessibility remain |
 | Multi-monitor desktop UX | 43 | Policy/types exist; complete live topology behaviour is not established |
 | **Shell/desktop overall** | **57** | Real custom shell alpha, not finished product |
 
@@ -829,7 +915,7 @@ claims are prohibited until assistive-technology workflows are demonstrated.
 | Application | Functional | UI/UX | Overall | Current truth |
 |---|---:|---:|---:|---|
 | File manager | 63 | 59 | **61** | Real navigation, file operations, trash and drag-to-folder; missing mature views, search, mounts, thumbnails, associations, conflicts and undo |
-| Settings | 48 | 53 | **50** | Broad categories and persistence; many controls are not authoritative live services; no complete Fonts, Spaces or zoom-policy panels |
+| Settings | 52 | 53 | **52** | Spaces now reads compositor state and sends typed mutations; most service domains, Fonts and zoom policy remain disconnected |
 | TextEdit | 67 | 61 | **64** | Selection-aware clipboard, caret insertion, find, save/recovery and undo/redo; no production multiline shaping, IME, rich text or scalable transactions |
 | Terminal | 72 | 65 | **69** | Real PTY, parser, tabs, alternate screen, selection, resize and child shutdown; cell model lacks complete CJK/combining/grapheme correctness |
 | Software manager | 46 | 48 | **47** | Hardened local archive installation; catalogue, signing, publisher trust, network delivery, updates and removal are incomplete |
@@ -872,7 +958,7 @@ review before release.
 | Rust architecture | 72 | Clear crate intent; several central files remain large |
 | Error handling | 72 | Session, filesystem, installer, Vision and compositor handling improved |
 | Filesystem safety | 78 | Atomic writes, path bounds, symlink checks, hashes and rollback are common |
-| Session isolation | 82 | Private runtime/socket/token/process-group design is strong |
+| Session isolation | 85 | Private runtime/socket/token/process-group design is strong; the control socket now enforces mode 0600 and Linux peer credentials |
 | Application sandbox/permissions | 27 | No mature general sandbox or capability permission product |
 | Package trust/signing | 24 | Integrity exists; publisher authenticity and trust chain do not |
 | Automated testing | 82 | Broad tests and exact compositor contract |
@@ -881,7 +967,7 @@ review before release.
 | Performance engineering | 54 | Frame scheduling improved; renderer remains expensive |
 | Packaging/install/upgrade | 45 | Artefacts exist; clean lifecycle and recovery need current evidence |
 | Documentation discipline | 84 | Three-file structure and production target are now explicit |
-| **Quality/release overall** | **65** | Engineering discipline is ahead of product maturity |
+| **Quality/release overall** | **66** | Engineering discipline is ahead of product maturity; IPC hardening is verified, while packaging and recovery remain open |
 
 ---
 
