@@ -887,6 +887,53 @@ fn optional_metadata(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
 
+/// Normalize and validate the application ID entered in Settings before a
+/// request reaches the compositor. The compositor remains the final
+/// authority, but rejecting malformed input here avoids sending requests that
+/// cannot possibly succeed and keeps the UI state non-optimistic.
+fn parse_application_id_input(value: &str) -> Result<String, &'static str> {
+    if value.chars().any(char::is_control) {
+        return Err("INVALID APPLICATION ID");
+    }
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("ENTER AN APPLICATION ID FIRST");
+    }
+    Ok(value.to_string())
+}
+
+/// Parse a Settings target against the latest compositor snapshot. Numeric
+/// targets are stable Space IDs, while `all` and `current` map directly to the
+/// wire protocol. Unknown or zero IDs are rejected before any IPC request is
+/// sent.
+fn parse_application_target_input(
+    value: &str,
+    snapshot: &SpacesSnapshot,
+) -> Result<SpaceTargetWire, &'static str> {
+    if value.chars().any(char::is_control) {
+        return Err("INVALID SPACE TARGET");
+    }
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("ENTER A SPACE ID, ALL, OR CURRENT");
+    }
+    if value.eq_ignore_ascii_case("all") {
+        return Ok(SpaceTargetWire::All);
+    }
+    if value.eq_ignore_ascii_case("current") {
+        return Ok(SpaceTargetWire::Current);
+    }
+
+    let id = value.parse::<u64>().map_err(|_| "INVALID SPACE ID")?;
+    if id == 0 {
+        return Err("INVALID SPACE ID");
+    }
+    if !snapshot.spaces.iter().any(|space| space.id == id) {
+        return Err("UNKNOWN SPACE ID");
+    }
+    Ok(SpaceTargetWire::Id { id })
+}
+
 fn valid_spaces_snapshot(snapshot: &SpacesSnapshot) -> bool {
     if snapshot.spaces.is_empty() || snapshot.active_space == 0 {
         return false;
@@ -982,6 +1029,12 @@ struct SettingsView {
     spaces_wallpaper_field: TextField,
     spaces_appearance_field: TextField,
     spaces_output_field: TextField,
+    /// Application-ID policy editor. The compositor remains authoritative;
+    /// these controls only send typed requests and render snapshot readback.
+    spaces_application_id_field: TextField,
+    spaces_application_target_field: TextField,
+    spaces_application_apply_button: Button,
+    spaces_application_policy_rows: Vec<Button>,
     spaces_feedback: Option<String>,
     selected_category: Category,
     settings: SettingsState,
@@ -1029,6 +1082,12 @@ impl SettingsView {
             spaces_wallpaper_field: TextField::new().with_placeholder("Wallpaper path (optional)"),
             spaces_appearance_field: TextField::new().with_placeholder("Appearance (optional)"),
             spaces_output_field: TextField::new().with_placeholder("Output ID (e.g. DP-1)"),
+            spaces_application_id_field: TextField::new()
+                .with_placeholder("Application ID (e.g. org.example.Editor)"),
+            spaces_application_target_field: TextField::new()
+                .with_placeholder("Space ID, all, or current"),
+            spaces_application_apply_button: Button::new("Apply"),
+            spaces_application_policy_rows: Vec::new(),
             spaces_feedback: None,
             selected_category: Category::Appearance,
             settings,
@@ -1147,6 +1206,7 @@ impl SettingsView {
     fn refresh_spaces_controls(&mut self) {
         let Some(snapshot) = self.spaces_snapshot.as_ref() else {
             self.spaces_rows.clear();
+            self.spaces_application_policy_rows.clear();
             self.spaces_classification_button.set_enabled(false);
             for button in &mut self.spaces_action_buttons {
                 button.set_enabled(false);
@@ -1154,6 +1214,7 @@ impl SettingsView {
             for button in &mut self.spaces_policy_buttons {
                 button.set_enabled(false);
             }
+            self.spaces_application_apply_button.set_enabled(false);
             return;
         };
 
@@ -1221,6 +1282,28 @@ impl SettingsView {
                 }
             });
         }
+
+        // Application policies are authoritative readback. Keep the editor
+        // enabled only when a valid active Space exists; all input is parsed
+        // against this snapshot before a typed request is sent.
+        self.spaces_application_apply_button.set_enabled(has_active);
+        self.spaces_application_policy_rows = snapshot
+            .application_policies
+            .iter()
+            .map(|policy| {
+                let target = match policy.target {
+                    SpaceTargetWire::Id { id } => format!("Space {id}"),
+                    SpaceTargetWire::All => "All Spaces".to_string(),
+                    // valid_spaces_snapshot rejects Current in readback, but
+                    // retain a safe label if an older producer sends it.
+                    SpaceTargetWire::Current => "Active Space (clear)".to_string(),
+                };
+                let mut button = Button::new(format!("{}  →  {}", policy.app_id, target));
+                // Readback rows are informational, not mutation controls.
+                button.set_enabled(false);
+                button
+            })
+            .collect();
     }
 
     fn send_spaces_command(&mut self, command: SpacesControlCommand) -> bool {
@@ -1350,6 +1433,35 @@ impl SettingsView {
             id: active.id,
             classification,
         });
+    }
+
+    fn process_spaces_application_policy(&mut self) {
+        let Some(snapshot) = self.spaces_snapshot.clone() else {
+            self.spaces_feedback = Some("NO LIVE COMPOSITOR SESSION".to_string());
+            self.refresh_labels();
+            return;
+        };
+        let app_id = match parse_application_id_input(self.spaces_application_id_field.text()) {
+            Ok(app_id) => app_id,
+            Err(feedback) => {
+                self.spaces_feedback = Some(feedback.to_string());
+                self.refresh_labels();
+                return;
+            }
+        };
+        let target = match parse_application_target_input(
+            self.spaces_application_target_field.text(),
+            &snapshot,
+        ) {
+            Ok(target) => target,
+            Err(feedback) => {
+                self.spaces_feedback = Some(feedback.to_string());
+                self.refresh_labels();
+                return;
+            }
+        };
+        let _ =
+            self.send_spaces_command(SpacesControlCommand::SetApplicationPolicy { app_id, target });
     }
 
     fn process_spaces_policy(&mut self, index: usize) {
@@ -1510,6 +1622,10 @@ impl SettingsView {
                 self.process_spaces_classification();
                 return;
             }
+            if self.spaces_application_apply_button.take_clicked() {
+                self.process_spaces_application_policy();
+                return;
+            }
             return;
         }
         if let Some(index) = self
@@ -1546,6 +1662,8 @@ impl SettingsView {
             &mut self.spaces_wallpaper_field,
             &mut self.spaces_appearance_field,
             &mut self.spaces_output_field,
+            &mut self.spaces_application_id_field,
+            &mut self.spaces_application_target_field,
         ] {
             field.set_expands_horizontally(true);
             field.set_rect(Rect::new(content_x, y, field_w, 28.0));
@@ -1578,6 +1696,13 @@ impl SettingsView {
             .layout(LayoutConstraint::tight(Size::new(button_w, 28.0)));
         y += 34.0;
 
+        self.spaces_application_apply_button
+            .set_rect(Rect::new(content_x, y, button_w, 28.0));
+        let _ = self
+            .spaces_application_apply_button
+            .layout(LayoutConstraint::tight(Size::new(button_w, 28.0)));
+        y += 34.0;
+
         for (_, button) in &mut self.spaces_rows {
             button.set_rect(Rect::new(content_x, y, content_w.min(520.0), 28.0));
             let _ = button.layout(LayoutConstraint::tight(Size::new(
@@ -1588,6 +1713,20 @@ impl SettingsView {
             if y > bottom - 48.0 {
                 button.set_enabled(false);
             }
+        }
+
+        // These rows are a read-only projection of the compositor's stored
+        // application policies. Give them real geometry so the authoritative
+        // readback is visible instead of merely being present in the widget
+        // tree with the default zero-sized rectangle.
+        for button in &mut self.spaces_application_policy_rows {
+            button.set_enabled(false);
+            button.set_rect(Rect::new(content_x, y, content_w.min(520.0), 28.0));
+            let _ = button.layout(LayoutConstraint::tight(Size::new(
+                content_w.min(520.0),
+                28.0,
+            )));
+            y += 32.0;
         }
     }
 }
@@ -1713,6 +1852,8 @@ impl Widget for SettingsView {
             self.spaces_wallpaper_field.draw(theme);
             self.spaces_appearance_field.draw(theme);
             self.spaces_output_field.draw(theme);
+            self.spaces_application_id_field.draw(theme);
+            self.spaces_application_target_field.draw(theme);
             for button in &self.spaces_action_buttons {
                 button.draw(theme);
             }
@@ -1720,7 +1861,11 @@ impl Widget for SettingsView {
                 button.draw(theme);
             }
             self.spaces_classification_button.draw(theme);
+            self.spaces_application_apply_button.draw(theme);
             for (_, button) in &self.spaces_rows {
+                button.draw(theme);
+            }
+            for button in &self.spaces_application_policy_rows {
                 button.draw(theme);
             }
             self.status.draw(theme);
@@ -1809,6 +1954,8 @@ impl Widget for SettingsView {
         self.spaces_wallpaper_field.update();
         self.spaces_appearance_field.update();
         self.spaces_output_field.update();
+        self.spaces_application_id_field.update();
+        self.spaces_application_target_field.update();
         for (_, button) in &mut self.spaces_rows {
             button.update();
         }
@@ -1819,6 +1966,7 @@ impl Widget for SettingsView {
             button.update();
         }
         self.spaces_classification_button.update();
+        self.spaces_application_apply_button.update();
         self.status.update();
     }
 
@@ -1850,6 +1998,8 @@ impl Widget for SettingsView {
                 children.push(&self.spaces_wallpaper_field);
                 children.push(&self.spaces_appearance_field);
                 children.push(&self.spaces_output_field);
+                children.push(&self.spaces_application_id_field);
+                children.push(&self.spaces_application_target_field);
                 for button in &self.spaces_action_buttons {
                     children.push(button);
                 }
@@ -1857,7 +2007,11 @@ impl Widget for SettingsView {
                     children.push(button);
                 }
                 children.push(&self.spaces_classification_button);
+                children.push(&self.spaces_application_apply_button);
                 for (_, button) in &self.spaces_rows {
+                    children.push(button);
+                }
+                for button in &self.spaces_application_policy_rows {
                     children.push(button);
                 }
             }
@@ -1891,6 +2045,8 @@ impl Widget for SettingsView {
                 children.push(&mut self.spaces_wallpaper_field);
                 children.push(&mut self.spaces_appearance_field);
                 children.push(&mut self.spaces_output_field);
+                children.push(&mut self.spaces_application_id_field);
+                children.push(&mut self.spaces_application_target_field);
                 for button in &mut self.spaces_action_buttons {
                     children.push(button);
                 }
@@ -1898,7 +2054,11 @@ impl Widget for SettingsView {
                     children.push(button);
                 }
                 children.push(&mut self.spaces_classification_button);
+                children.push(&mut self.spaces_application_apply_button);
                 for (_, button) in &mut self.spaces_rows {
+                    children.push(button);
+                }
+                for button in &mut self.spaces_application_policy_rows {
                     children.push(button);
                 }
             }
@@ -2554,11 +2714,20 @@ mod tests {
             next.spaces[0].active = false;
             next.spaces[1].active = true;
             next.spaces[1].name = "Renamed Projects".to_string();
+            next.application_policies = vec![slopos_bus::ApplicationSpacePolicySnapshot {
+                app_id: "org.example.Editor".to_string(),
+                target: SpaceTargetWire::Id { id: 22 },
+            }];
             slopos_bus::write_spaces_snapshot(&next).unwrap();
             view.update();
 
             assert!(view.spaces_rows[1].1.label.contains("Renamed Projects"));
             assert!(view.spaces_rows[1].1.label.contains(" *"));
+            assert_eq!(view.spaces_application_policy_rows.len(), 1);
+            assert!(view.spaces_application_policy_rows[0]
+                .label
+                .contains("org.example.Editor  →  Space 22"));
+            assert!(view.spaces_application_policy_rows[0].rect().width > 0.0);
             assert!(view.status.text.contains("SPACES"));
             assert!(runtime.join(slopos_bus::SPACES_STATE_FILE).exists());
         });
@@ -2580,5 +2749,138 @@ mod tests {
         assert!(!valid_spaces_snapshot(&snapshot));
         snapshot.application_policies[0].app_id = "org.example.\nEditor".to_string();
         assert!(!valid_spaces_snapshot(&snapshot));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_spaces_renders_application_policy_readback_rows() {
+        with_spaces_runtime(|_runtime, _listener| {
+            let mut snapshot = spaces_snapshot_for_settings();
+            snapshot.application_policies = vec![
+                slopos_bus::ApplicationSpacePolicySnapshot {
+                    app_id: "org.example.Editor".to_string(),
+                    target: SpaceTargetWire::Id { id: 22 },
+                },
+                slopos_bus::ApplicationSpacePolicySnapshot {
+                    app_id: "org.example.Terminal".to_string(),
+                    target: SpaceTargetWire::All,
+                },
+            ];
+            slopos_bus::write_spaces_snapshot(&snapshot).unwrap();
+
+            let mut view = SettingsView::load(SettingsStore::new(temp_settings_path()));
+            view.select_category(Category::Spaces);
+            view.set_rect(Rect::new(0.0, 0.0, 720.0, 720.0));
+            view.layout(LayoutConstraint::tight(Size::new(720.0, 720.0)));
+
+            assert_eq!(view.spaces_application_policy_rows.len(), 2);
+            assert!(view.spaces_application_policy_rows[0]
+                .label
+                .contains("org.example.Editor"));
+            assert!(view.spaces_application_policy_rows[0].rect().width > 0.0);
+            assert!(view.spaces_application_policy_rows[1]
+                .label
+                .contains("All Spaces"));
+            assert!(
+                view.spaces_application_policy_rows[1].rect().y
+                    > view.spaces_application_policy_rows[0].rect().y
+            );
+            assert!(
+                !view.spaces_application_policy_rows[0]
+                    .widget_state()
+                    .enabled
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_spaces_application_policy_targets_id_all_and_current() {
+        with_spaces_runtime(|_runtime, listener| {
+            let mut view = SettingsView::load(SettingsStore::new(temp_settings_path()));
+            view.select_category(Category::Spaces);
+            view.set_rect(Rect::new(0.0, 0.0, 720.0, 720.0));
+            view.layout(LayoutConstraint::tight(Size::new(720.0, 720.0)));
+            view.spaces_application_id_field
+                .set_text("org.example.Editor");
+
+            view.spaces_application_target_field.set_text("22");
+            let apply_rect = view.spaces_application_apply_button.rect();
+            click(&mut view, apply_rect);
+            assert_eq!(
+                listener.drain(),
+                vec![SessionControlRequest::Spaces {
+                    command: SpacesControlCommand::SetApplicationPolicy {
+                        app_id: "org.example.Editor".to_string(),
+                        target: SpaceTargetWire::Id { id: 22 },
+                    }
+                }]
+            );
+
+            view.spaces_application_target_field.set_text("all");
+            let apply_rect = view.spaces_application_apply_button.rect();
+            click(&mut view, apply_rect);
+            assert_eq!(
+                listener.drain(),
+                vec![SessionControlRequest::Spaces {
+                    command: SpacesControlCommand::SetApplicationPolicy {
+                        app_id: "org.example.Editor".to_string(),
+                        target: SpaceTargetWire::All,
+                    }
+                }]
+            );
+
+            view.spaces_application_target_field.set_text(" current ");
+            let apply_rect = view.spaces_application_apply_button.rect();
+            click(&mut view, apply_rect);
+            assert_eq!(
+                listener.drain(),
+                vec![SessionControlRequest::Spaces {
+                    command: SpacesControlCommand::SetApplicationPolicy {
+                        app_id: "org.example.Editor".to_string(),
+                        target: SpaceTargetWire::Current,
+                    }
+                }]
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_spaces_application_policy_rejects_invalid_input_without_request() {
+        with_spaces_runtime(|_runtime, listener| {
+            let mut view = SettingsView::load(SettingsStore::new(temp_settings_path()));
+            view.select_category(Category::Spaces);
+            view.set_rect(Rect::new(0.0, 0.0, 720.0, 720.0));
+            view.layout(LayoutConstraint::tight(Size::new(720.0, 720.0)));
+
+            view.spaces_application_id_field
+                .set_text("org.example.\nEditor");
+            view.spaces_application_target_field.set_text("all");
+            let apply_rect = view.spaces_application_apply_button.rect();
+            click(&mut view, apply_rect);
+            assert!(listener.drain().is_empty());
+            assert!(view.status.text.contains("INVALID APPLICATION ID"));
+
+            view.spaces_application_id_field.set_text("");
+            let apply_rect = view.spaces_application_apply_button.rect();
+            click(&mut view, apply_rect);
+            assert!(listener.drain().is_empty());
+            assert!(view.status.text.contains("ENTER AN APPLICATION ID"));
+
+            view.spaces_application_id_field
+                .set_text("org.example.Editor");
+            view.spaces_application_target_field.set_text("999");
+            let apply_rect = view.spaces_application_apply_button.rect();
+            click(&mut view, apply_rect);
+            assert!(listener.drain().is_empty());
+            assert!(view.status.text.contains("UNKNOWN SPACE ID"));
+
+            view.spaces_application_target_field.set_text(" ");
+            let apply_rect = view.spaces_application_apply_button.rect();
+            click(&mut view, apply_rect);
+            assert!(listener.drain().is_empty());
+            assert!(view.status.text.contains("ENTER A SPACE ID"));
+        });
     }
 }

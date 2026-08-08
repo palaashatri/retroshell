@@ -1,4 +1,7 @@
-use slopos_bus::{SpaceClassification, SpaceSnapshot, SpacesDisplayPolicy, SpacesSnapshot};
+use slopos_bus::{
+    ApplicationSpacePolicySnapshot, SpaceClassification, SpaceSnapshot, SpaceTargetWire,
+    SpacesDisplayPolicy, SpacesSnapshot,
+};
 use slopos_shell::workspace_manager::WorkspaceManager;
 
 #[test]
@@ -216,7 +219,10 @@ fn shell_accepts_lower_revision_after_compositor_session_epoch_changes() {
         revision: 1,
         active_space: 22,
         multi_monitor_policy: SpacesDisplayPolicy::IndependentPerDisplay,
-        application_policies: Vec::new(),
+        application_policies: vec![ApplicationSpacePolicySnapshot {
+            app_id: "org.example.Editor".into(),
+            target: SpaceTargetWire::Id { id: 22 },
+        }],
         spaces: vec![SpaceSnapshot {
             id: 22,
             order: 0,
@@ -245,4 +251,96 @@ fn shell_accepts_lower_revision_after_compositor_session_epoch_changes() {
         manager.workspaces[0].classification,
         SpaceClassification::Fullscreen
     );
+    assert_eq!(
+        manager.application_policies,
+        vec![ApplicationSpacePolicySnapshot {
+            app_id: "org.example.Editor".into(),
+            target: SpaceTargetWire::Id { id: 22 },
+        }]
+    );
+}
+
+#[test]
+fn shell_retains_valid_application_policies_and_rejects_malformed_projection_transactionally() {
+    let mut manager = WorkspaceManager::new();
+    let baseline = SpacesSnapshot {
+        session_epoch: 20,
+        revision: 7,
+        active_space: 22,
+        multi_monitor_policy: SpacesDisplayPolicy::SharedSpan,
+        application_policies: vec![
+            ApplicationSpacePolicySnapshot {
+                app_id: "org.example.Editor".into(),
+                target: SpaceTargetWire::Id { id: 22 },
+            },
+            ApplicationSpacePolicySnapshot {
+                app_id: "org.example.Terminal".into(),
+                target: SpaceTargetWire::All,
+            },
+        ],
+        spaces: vec![
+            SpaceSnapshot {
+                id: 11,
+                order: 0,
+                name: "Personal".into(),
+                active: false,
+                window_count: 0,
+                wallpaper: None,
+                appearance: None,
+                classification: SpaceClassification::Normal,
+                output_id: None,
+            },
+            SpaceSnapshot {
+                id: 22,
+                order: 1,
+                name: "Projects".into(),
+                active: true,
+                window_count: 0,
+                wallpaper: None,
+                appearance: None,
+                classification: SpaceClassification::Normal,
+                output_id: None,
+            },
+        ],
+    };
+    assert!(manager.apply_snapshot(&baseline));
+    assert_eq!(manager.application_policies, baseline.application_policies);
+    let expected_policies = manager.application_policies.clone();
+
+    let mut stale_unknown_space = baseline.clone();
+    stale_unknown_space.revision = 6;
+    stale_unknown_space.application_policies[0].target = SpaceTargetWire::Id { id: 99 };
+    assert!(!manager.apply_snapshot(&stale_unknown_space));
+    assert_eq!(manager.revision, baseline.revision);
+    assert_eq!(manager.application_policies, expected_policies);
+
+    let mut duplicate = baseline.clone();
+    duplicate.revision = 8;
+    duplicate
+        .application_policies
+        .push(ApplicationSpacePolicySnapshot {
+            app_id: "org.example.Editor".into(),
+            target: SpaceTargetWire::All,
+        });
+    assert!(!manager.apply_snapshot(&duplicate));
+    assert_eq!(manager.revision, baseline.revision);
+    assert_eq!(manager.application_policies, expected_policies);
+
+    let mut invalid_id = baseline.clone();
+    invalid_id.revision = 8;
+    invalid_id.application_policies[0].app_id = "org.example.\nEditor".into();
+    assert!(!manager.apply_snapshot(&invalid_id));
+    assert_eq!(manager.application_policies, expected_policies);
+
+    let mut unknown_space = baseline.clone();
+    unknown_space.revision = 8;
+    unknown_space.application_policies[0].target = SpaceTargetWire::Id { id: 99 };
+    assert!(!manager.apply_snapshot(&unknown_space));
+    assert_eq!(manager.application_policies, expected_policies);
+
+    let mut current_target = baseline;
+    current_target.revision = 8;
+    current_target.application_policies[0].target = SpaceTargetWire::Current;
+    assert!(!manager.apply_snapshot(&current_target));
+    assert_eq!(manager.application_policies, expected_policies);
 }

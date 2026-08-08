@@ -4,7 +4,9 @@
 //! from [`slopos_bus::SpacesSnapshot`] and sends mutations back to the
 //! compositor; it must not invent ordinary-window membership or geometry.
 
-use slopos_bus::{SpaceClassification, SpacesDisplayPolicy};
+use slopos_bus::{
+    ApplicationSpacePolicySnapshot, SpaceClassification, SpaceTargetWire, SpacesDisplayPolicy,
+};
 
 /// Default number of Spaces used before the compositor publishes a snapshot.
 /// This is a startup compatibility value, not a production upper bound.
@@ -39,6 +41,10 @@ pub struct WorkspaceManager {
     pub session_epoch: u64,
     /// Current compositor-owned multi-display policy.
     pub multi_monitor_policy: SpacesDisplayPolicy,
+    /// Validated compositor-owned application-to-Space policies. This is a
+    /// render/readback mirror only; mutations still travel through the typed
+    /// Spaces control bus.
+    pub application_policies: Vec<ApplicationSpacePolicySnapshot>,
 }
 
 pub struct Workspace {
@@ -80,6 +86,7 @@ impl WorkspaceManager {
             revision: 0,
             session_epoch: 0,
             multi_monitor_policy: SpacesDisplayPolicy::SharedSpan,
+            application_policies: Vec::new(),
         }
     }
 
@@ -140,11 +147,30 @@ impl WorkspaceManager {
         });
         let policy_valid = snapshot.multi_monitor_policy != SpacesDisplayPolicy::SharedSpan
             || rows.iter().all(|row| row.output_id.is_none());
+        let space_ids = rows
+            .iter()
+            .map(|row| row.id)
+            .collect::<std::collections::HashSet<_>>();
+        let mut application_ids = std::collections::HashSet::new();
+        let application_policies_valid = snapshot.application_policies.iter().all(|policy| {
+            !policy.app_id.is_empty()
+                && policy.app_id.trim() == policy.app_id
+                && !policy.app_id.chars().any(char::is_control)
+                && application_ids.insert(policy.app_id.as_str())
+                && match policy.target {
+                    SpaceTargetWire::Id { id } => space_ids.contains(&id),
+                    SpaceTargetWire::All => true,
+                    // `Current` clears a policy in the compositor model and
+                    // is therefore never a persisted/readback policy row.
+                    SpaceTargetWire::Current => false,
+                }
+        });
         if !valid_order
             || !unique_ids
             || active_rows != 1
             || !valid_names_and_metadata
             || !policy_valid
+            || !application_policies_valid
         {
             return false;
         }
@@ -168,6 +194,7 @@ impl WorkspaceManager {
         self.active_id = snapshot.active_space;
         self.revision = snapshot.revision;
         self.multi_monitor_policy = snapshot.multi_monitor_policy;
+        self.application_policies = snapshot.application_policies.clone();
         if snapshot.session_epoch != 0 {
             self.session_epoch = snapshot.session_epoch;
         }
