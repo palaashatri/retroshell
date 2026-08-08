@@ -1,14 +1,16 @@
-//! Shell-side named desktops (menu bar / status chrome).
+//! Shell-side projection of compositor-authoritative SLOPOS Spaces.
 //!
-//! Aligned with the compositor pure model (`WorkspaceId` / `WorkspaceState`):
-//! fixed **8** virtual workspaces. Window menu exposes Desktop 1..8; cycling
-//! and switch APIs mirror compositor (`next`/`previous` ≈ `cycle_next`/
-//! `cycle_prev`, `switch_to` ≈ `activate`).
+//! The local value is only a render/input mirror.  A live shell reconciles it
+//! from [`slopos_bus::SpacesSnapshot`] and sends mutations back to the
+//! compositor; it must not invent ordinary-window membership or geometry.
 
-/// Number of shell UI desktops (Window menu `workspace.switch.0..7`).
+use slopos_bus::{SpaceClassification, SpacesDisplayPolicy};
+
+/// Default number of Spaces used before the compositor publishes a snapshot.
+/// This is a startup compatibility value, not a production upper bound.
 pub const SHELL_DESKTOP_COUNT: usize = 8;
 
-/// Compositor-backed workspace count (pure model in `slopos-compositor`).
+/// Legacy indexed control compatibility count.  Dynamic Spaces use stable IDs.
 pub const COMPOSITOR_WORKSPACE_COUNT: usize = 8;
 
 /// Pure bridge: shell active index ↔ compositor workspace id (0..7).
@@ -29,12 +31,25 @@ pub struct WorkspaceManager {
     pub workspaces: Vec<Workspace>,
     pub active: usize,
     pub total: usize,
+    /// Stable compositor Space ID corresponding to `active`.
+    pub active_id: u64,
+    /// Last compositor snapshot revision accepted by this mirror.
+    pub revision: u64,
+    /// Compositor session epoch for restart-safe revision reconciliation.
+    pub session_epoch: u64,
+    /// Current compositor-owned multi-display policy.
+    pub multi_monitor_policy: SpacesDisplayPolicy,
 }
 
 pub struct Workspace {
-    pub id: usize,
+    pub id: u64,
     pub name: String,
     pub background: Option<String>,
+    pub wallpaper: Option<String>,
+    pub appearance: Option<String>,
+    pub classification: SpaceClassification,
+    pub output_id: Option<String>,
+    pub window_count: usize,
 }
 
 impl Default for WorkspaceManager {
@@ -47,22 +62,123 @@ impl WorkspaceManager {
     pub fn new() -> Self {
         let workspaces = (0..SHELL_DESKTOP_COUNT)
             .map(|i| Workspace {
-                id: i,
+                id: (i + 1) as u64,
                 name: format!("Desktop {}", i + 1),
                 background: None,
+                wallpaper: None,
+                appearance: None,
+                classification: SpaceClassification::Normal,
+                output_id: None,
+                window_count: 0,
             })
             .collect();
         Self {
             workspaces,
             active: 0,
             total: SHELL_DESKTOP_COUNT,
+            active_id: 1,
+            revision: 0,
+            session_epoch: 0,
+            multi_monitor_policy: SpacesDisplayPolicy::SharedSpan,
         }
+    }
+
+    /// Reconcile the local shell mirror with one compositor snapshot.
+    ///
+    /// Rows are sorted by their authoritative order, metadata is copied by
+    /// stable Space ID, and stale revisions are ignored. Invalid snapshots
+    /// are rejected without partially changing the mirror.
+    pub fn apply_snapshot(&mut self, snapshot: &slopos_bus::SpacesSnapshot) -> bool {
+        if snapshot.spaces.is_empty() {
+            return false;
+        }
+
+        let epoch_changed = snapshot.session_epoch != 0
+            && self.session_epoch != 0
+            && snapshot.session_epoch != self.session_epoch;
+        if !epoch_changed && snapshot.revision < self.revision {
+            return false;
+        }
+
+        let mut rows = snapshot.spaces.clone();
+        rows.sort_by_key(|row| row.order);
+        let valid_order = rows
+            .iter()
+            .enumerate()
+            .all(|(index, row)| row.order == index);
+        let unique_ids = rows
+            .iter()
+            .map(|row| row.id)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            == rows.len();
+        let active_rows = rows.iter().filter(|row| row.active).count();
+        let active_index = rows
+            .iter()
+            .position(|row| row.id == snapshot.active_space && row.active);
+        let Some(active_index) = active_index else {
+            return false;
+        };
+        let mut names = std::collections::HashSet::new();
+        let valid_names_and_metadata = rows.iter().all(|row| {
+            let name_valid = !row.name.is_empty()
+                && row.name.trim() == row.name
+                && !row.name.chars().any(char::is_control)
+                && names.insert(row.name.to_lowercase());
+            let metadata_valid = [row.wallpaper.as_deref(), row.appearance.as_deref()]
+                .into_iter()
+                .flatten()
+                .all(|value| {
+                    !value.is_empty()
+                        && !value.chars().any(char::is_control)
+                        && value.trim() == value
+                });
+            let output_valid = row.output_id.as_deref().is_none_or(|value| {
+                !value.is_empty() && !value.chars().any(char::is_control) && value.trim() == value
+            });
+            name_valid && metadata_valid && output_valid
+        });
+        let policy_valid = snapshot.multi_monitor_policy != SpacesDisplayPolicy::SharedSpan
+            || rows.iter().all(|row| row.output_id.is_none());
+        if !valid_order
+            || !unique_ids
+            || active_rows != 1
+            || !valid_names_and_metadata
+            || !policy_valid
+        {
+            return false;
+        }
+
+        let workspaces = rows
+            .into_iter()
+            .map(|row| Workspace {
+                id: row.id,
+                name: row.name,
+                background: row.wallpaper.clone(),
+                wallpaper: row.wallpaper,
+                appearance: row.appearance,
+                classification: row.classification,
+                output_id: row.output_id,
+                window_count: row.window_count,
+            })
+            .collect::<Vec<_>>();
+        self.workspaces = workspaces;
+        self.active = active_index;
+        self.total = self.workspaces.len();
+        self.active_id = snapshot.active_space;
+        self.revision = snapshot.revision;
+        self.multi_monitor_policy = snapshot.multi_monitor_policy;
+        if snapshot.session_epoch != 0 {
+            self.session_epoch = snapshot.session_epoch;
+        }
+        true
     }
 
     /// Activate desktop by index (shell `0..total`). Mirrors compositor `activate`.
     pub fn switch_to(&mut self, index: usize) -> bool {
         if index < self.total {
             self.active = index;
+            self.active_id = self.workspaces[index].id;
             true
         } else {
             false
@@ -80,6 +196,7 @@ impl WorkspaceManager {
             return;
         }
         self.active = (self.active + 1) % self.total;
+        self.active_id = self.workspaces[self.active].id;
     }
 
     /// Alias for [`Self::next`].
@@ -97,6 +214,7 @@ impl WorkspaceManager {
         } else {
             self.active - 1
         };
+        self.active_id = self.workspaces[self.active].id;
     }
 
     /// Alias for [`Self::previous`].
@@ -109,13 +227,25 @@ impl WorkspaceManager {
     }
 
     pub fn add_workspace(&mut self, name: &str) {
-        let id = self.total;
+        let id = self
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
         self.workspaces.push(Workspace {
             id,
             name: name.to_string(),
             background: None,
+            wallpaper: None,
+            appearance: None,
+            classification: SpaceClassification::Normal,
+            output_id: None,
+            window_count: 0,
         });
         self.total += 1;
+        self.active_id = self.workspaces[self.active].id;
     }
 
     /// Compositor-aligned summary line for session logs.

@@ -206,8 +206,8 @@ pub use workspace_manager::{WorkspaceManager, COMPOSITOR_WORKSPACE_COUNT, SHELL_
 
 use parking_lot::RwLock;
 use slopos_bus::{
-    send_application_menu_action, send_session_control, SessionControlRequest,
-    WindowPresentationAction,
+    read_spaces_snapshot, send_application_menu_action, send_session_control,
+    SessionControlRequest, SpacesControlCommand, WindowPresentationAction,
 };
 use slopos_kit::button::Button;
 use slopos_kit::design_tokens::{MENU_BAR_HEIGHT, MENU_BAR_HEIGHT_PX, WINDOW_TITLE_BAR_HEIGHT};
@@ -482,6 +482,17 @@ struct ShellDesktop {
     input_filter: Option<ShellPaintFilter>,
     /// Spotlight search overlay (Super+Space) — interior-mutable for layout during draw.
     spotlight_ui: spotlight_ui::SpotlightUI,
+    /// Whether at least one compositor snapshot has been accepted.  This
+    /// distinguishes an initial revision `0` snapshot from a duplicate/stale
+    /// revision after a local compatibility switch.
+    spaces_snapshot_initialized: bool,
+    /// Shell-owned Spaces overview shown on the live Background layer.
+    ///
+    /// Ordinary application windows remain compositor-owned and are never
+    /// placed here.  The legacy non-layer path keeps its overview in
+    /// `windows` so existing in-process tests and indexed controls continue
+    /// to exercise the old shell window policy.
+    workspace_overview: Option<Window>,
 }
 
 /// Paint subset for multi-surface layer-shell chrome (Phase 3).
@@ -496,6 +507,8 @@ pub(crate) enum ShellPaintFilter {
     MenuBar,
     /// Open menu dropdown only (Overlay surface, origin-local).
     MenuPopup,
+    /// Live SLOPOS Spaces overview (Overlay surface, origin-local).
+    SpacesOverview,
     /// Dock only (Bottom exclusive surface).
     Dock,
 }
@@ -571,6 +584,26 @@ impl ShellDesktop {
 
     pub(crate) fn set_suppress_dropdown_paint(&mut self, enabled: bool) {
         self.menu_bar.suppress_dropdown_paint = enabled;
+    }
+
+    /// Return the live overview geometry in output coordinates.
+    pub(crate) fn workspace_overview_geo(&self) -> Option<(i32, i32, u32, u32)> {
+        let rect = self.workspace_overview.as_ref()?.rect();
+        Some((
+            rect.x.floor() as i32,
+            rect.y.floor() as i32,
+            rect.width.ceil().max(1.0) as u32,
+            rect.height.ceil().max(1.0) as u32,
+        ))
+    }
+
+    /// Lay out the live overview at the local origin of its overlay surface.
+    pub(crate) fn prepare_workspace_overview_layout(&mut self, width: f32, height: f32) {
+        let Some(window) = self.workspace_overview.as_mut() else {
+            return;
+        };
+        window.set_rect(Rect::new(0.0, 0.0, width, height));
+        let _ = window.layout(LayoutConstraint::tight(Size::new(width, height)));
     }
 }
 
@@ -736,6 +769,8 @@ impl ShellDesktop {
             paint_filter: ShellPaintFilter::All,
             input_filter: None,
             spotlight_ui: spotlight_ui::SpotlightUI::new(),
+            spaces_snapshot_initialized: false,
+            workspace_overview: None,
         };
         // Map layer-shell chrome + sync foreign-toplevel list when a compositor is live.
         SloposI::attach_wayland_session_protocols(&mut shell);
@@ -1003,8 +1038,164 @@ impl ShellDesktop {
         self.open_folder_window("SLOPOS-I", PathBuf::from("/"))
     }
 
+    /// Reconcile the shell's render/input mirror with the latest compositor
+    /// projection.  A missing or malformed state file is expected during
+    /// startup and leaves the compatibility mirror untouched; revision
+    /// ordering and validation are enforced by `WorkspaceManager::apply_snapshot`.
+    fn reconcile_spaces_snapshot(&mut self) {
+        let snapshot = match read_spaces_snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                return
+            }
+            Err(error) => {
+                tracing::debug!(%error, "could not read compositor Spaces snapshot");
+                return;
+            }
+        };
+
+        let (current_revision, current_epoch) = {
+            let manager = self.workspace_manager.read();
+            (manager.revision, manager.session_epoch)
+        };
+        let compositor_restarted = snapshot.session_epoch != 0
+            && current_epoch != 0
+            && snapshot.session_epoch != current_epoch;
+        if self.spaces_snapshot_initialized
+            && !compositor_restarted
+            && snapshot.revision <= current_revision
+        {
+            return;
+        }
+        let applied = self.workspace_manager.write().apply_snapshot(&snapshot);
+        if applied {
+            self.spaces_snapshot_initialized = true;
+            self.refresh_workspace_overview();
+        }
+    }
+
     fn active_workspace(&self) -> usize {
         self.workspace_manager.read().active
+    }
+
+    /// Return the current ordered Space labels/counts for the overview.
+    fn workspace_overview_data(&self) -> (usize, String, Vec<String>, Vec<usize>) {
+        let manager = self.workspace_manager.read();
+        let active = manager.active;
+        let name = manager
+            .active_workspace()
+            .map(|workspace| workspace.name.clone())
+            .unwrap_or_else(|| format!("Desktop {}", active + 1));
+        let labels = manager
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.name.clone())
+            .collect::<Vec<_>>();
+        let counts = manager
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.window_count)
+            .collect::<Vec<_>>();
+        (active, name, labels, counts)
+    }
+
+    fn update_workspace_grid(
+        widget: &mut dyn Widget,
+        active: usize,
+        labels: &[String],
+        counts: &[usize],
+    ) {
+        if let Some(grid) = widget.as_any_mut().downcast_mut::<WorkspaceGridView>() {
+            grid.active_index = active;
+            grid.items.clear();
+            grid.items.extend(labels.iter().cloned());
+            grid.window_counts.clear();
+            grid.window_counts.extend(counts.iter().copied());
+        }
+    }
+
+    /// Keep an already-open overview in sync with a newly reconciled snapshot.
+    fn refresh_workspace_overview(&mut self) {
+        let (active, _, labels, counts) = self.workspace_overview_data();
+        for shell_window in &mut self.windows {
+            if shell_window.window.title() == "Workspace" {
+                let mut update = |widget: &mut dyn Widget| {
+                    Self::update_workspace_grid(widget, active, &labels, &counts)
+                };
+                for_each_widget_mut(&mut shell_window.window, &mut update);
+            }
+        }
+        if let Some(window) = self.workspace_overview.as_mut() {
+            let mut update = |widget: &mut dyn Widget| {
+                Self::update_workspace_grid(widget, active, &labels, &counts)
+            };
+            for_each_widget_mut(window, &mut update);
+        }
+        self.layout_workspace_overview_overlay();
+    }
+
+    fn workspace_overview_rect(&self) -> Rect {
+        let rows = self
+            .workspace_manager
+            .read()
+            .workspaces
+            .len()
+            .div_ceil(slopos_kit::workspace_grid_view::GRID_COLS);
+        let height = 260.0 + rows.saturating_sub(4) as f32 * 44.0;
+        clamp_window_rect(
+            Rect::new(
+                self.content_bounds().x + 180.0,
+                self.content_bounds().y + 120.0,
+                300.0,
+                height,
+            ),
+            self.content_bounds(),
+        )
+    }
+
+    fn layout_workspace_overview_overlay(&mut self) {
+        let rect = self.workspace_overview_rect();
+        if let Some(window) = self.workspace_overview.as_mut() {
+            window.set_rect(rect);
+            let _ = window.layout(LayoutConstraint::tight(Size::new(rect.width, rect.height)));
+        }
+    }
+
+    /// Select a grid cell.  Indexed switching remains the compatibility path;
+    /// a live overview always addresses the compositor by stable Space ID.
+    fn select_workspace_cell(&mut self, cell: usize) -> bool {
+        let id = self
+            .workspace_manager
+            .read()
+            .workspaces
+            .get(cell)
+            .map(|workspace| workspace.id);
+        let Some(id) = id else {
+            return false;
+        };
+
+        if self.compositor_owns_ordinary_windows() {
+            let request = SessionControlRequest::Spaces {
+                command: SpacesControlCommand::Select { id },
+            };
+            if let Err(error) = send_session_control(&request) {
+                tracing::warn!(space_id = id, %error, "could not send Spaces selection to compositor");
+                return false;
+            }
+            tracing::info!(
+                space_id = id,
+                "sent stable-ID Spaces selection to compositor"
+            );
+            self.workspace_overview = None;
+            true
+        } else {
+            self.switch_workspace(cell)
+        }
     }
 
     fn open_folder_window<S: Into<String>>(&mut self, title: S, path: PathBuf) -> Uuid {
@@ -1408,16 +1599,29 @@ impl ShellDesktop {
         if workspace >= workspace_manager.total {
             return false;
         }
-        let Ok(index) = u8::try_from(workspace) else {
-            return false;
-        };
         if self.compositor_owns_ordinary_windows() {
-            let request = SessionControlRequest::SwitchWorkspace { index };
+            let Some(id) = workspace_manager
+                .workspaces
+                .get(workspace)
+                .map(|space| space.id)
+            else {
+                return false;
+            };
+            let request = SessionControlRequest::Spaces {
+                command: SpacesControlCommand::Select { id },
+            };
             if let Err(error) = send_session_control(&request) {
                 tracing::warn!(workspace, %error, "could not send workspace switch to compositor");
                 return false;
             }
-            tracing::info!(workspace, "sent workspace switch to compositor");
+            // The compositor publishes the new active Space.  Do not mutate
+            // the shell mirror until that authoritative snapshot is observed.
+            tracing::info!(
+                workspace,
+                space_id = id,
+                "sent stable-ID Spaces selection to compositor"
+            );
+            return true;
         }
         if !workspace_manager.switch_to(workspace) {
             return false;
@@ -1472,6 +1676,35 @@ impl ShellDesktop {
     }
 
     fn open_workspace_status_window(&mut self) {
+        if self.compositor_owns_ordinary_windows() {
+            if self.workspace_overview.is_some() {
+                self.refresh_workspace_overview();
+                return;
+            }
+
+            let (active, name, labels, counts) = self.workspace_overview_data();
+            let visible_count = counts.get(active).copied().unwrap_or(0);
+            let mut layout = Layout::vertical(12.0);
+            layout.add(Box::new(Label::new("Select/Switch Workspace:")));
+
+            let mut grid = WorkspaceGridView::new();
+            grid.active_index = active;
+            grid.items = labels;
+            grid.window_counts = counts;
+            layout.add(Box::new(grid));
+
+            let desc = format!("Active: {} ({} windows)", name, visible_count);
+            layout.add(Box::new(Label::new(desc)));
+
+            let rect = self.workspace_overview_rect();
+            let mut window = Window::new("Workspace");
+            window.set_content(Box::new(LayoutView::new(layout)));
+            window.set_rect(rect);
+            let _ = window.layout(LayoutConstraint::tight(Size::new(rect.width, rect.height)));
+            self.workspace_overview = Some(window);
+            return;
+        }
+
         for window in &self.windows {
             if window.window.title() == "Workspace" {
                 self.focus_window(window.id);
@@ -1479,13 +1712,7 @@ impl ShellDesktop {
             }
         }
 
-        let manager = self.workspace_manager.read();
-        let active = manager.active;
-        let name = manager
-            .active_workspace()
-            .map(|workspace| workspace.name.clone())
-            .unwrap_or_else(|| format!("Desktop {}", active + 1));
-        drop(manager);
+        let (active, name, labels, counts) = self.workspace_overview_data();
 
         let visible_count = self
             .windows
@@ -1493,24 +1720,15 @@ impl ShellDesktop {
             .filter(|window| window.workspace == active)
             .count();
 
-        let rect = clamp_window_rect(
-            Rect::new(
-                self.content_bounds().x + 180.0,
-                self.content_bounds().y + 120.0,
-                300.0,
-                260.0,
-            ),
-            self.content_bounds(),
-        );
+        let rect = self.workspace_overview_rect();
 
         let mut layout = Layout::vertical(12.0);
         layout.add(Box::new(Label::new("Select/Switch Workspace:")));
 
         let mut grid = WorkspaceGridView::new();
         grid.active_index = active;
-        grid.items = (1..=SHELL_DESKTOP_COUNT)
-            .map(|n| format!("Desktop {n}"))
-            .collect();
+        grid.items = labels;
+        grid.window_counts = counts;
         layout.add(Box::new(grid));
 
         let desc = format!("Active: {} ({} windows)", name, visible_count);
@@ -1717,9 +1935,20 @@ impl ShellDesktop {
         // views record activations inside the tree; collect the resulting
         // actions first, then apply them (no borrows held across mutations).
         if self.compositor_owns_ordinary_windows() {
-            // A live layer-shell session has no shell-owned ordinary windows
-            // to inspect. App content and its actions belong to the focused
-            // compositor-managed client.
+            // The live path has no shell-owned ordinary app windows to inspect,
+            // but the Spaces overview is shell chrome and must remain
+            // interactive on the Background layer.
+            let mut grid_cell = None;
+            if let Some(overview) = self.workspace_overview.as_mut() {
+                for_each_widget_mut(overview, &mut |widget| {
+                    if let Some(grid) = widget.as_any_mut().downcast_mut::<WorkspaceGridView>() {
+                        grid_cell = grid.take_activated();
+                    }
+                });
+            }
+            if let Some(cell) = grid_cell {
+                let _ = self.select_workspace_cell(cell);
+            }
             return;
         }
         enum WindowAction {
@@ -3502,6 +3731,7 @@ impl Widget for ShellDesktop {
             .layout(LayoutConstraint::tight(Size::new(size.width, 64.0)));
 
         self.layout_windows();
+        self.layout_workspace_overview_overlay();
 
         if self.spotlight_ui.is_visible() {
             self.spotlight_ui.layout_for_screen(size.width, size.height);
@@ -3518,6 +3748,12 @@ impl Widget for ShellDesktop {
             }
             ShellPaintFilter::MenuPopup => {
                 self.menu_bar.draw(theme);
+                return;
+            }
+            ShellPaintFilter::SpacesOverview => {
+                if let Some(overview) = &self.workspace_overview {
+                    overview.draw(theme);
+                }
                 return;
             }
             ShellPaintFilter::Dock => {
@@ -3561,23 +3797,17 @@ impl Widget for ShellDesktop {
         {
             active.window.draw(theme);
         }
+        if let Some(overview) = &self.workspace_overview {
+            overview.draw(theme);
+        }
         // When layer-shell chrome is bound, menu bar / dock are protocol surfaces —
         // skip kit dual-paint so chrome is not overdrawn in the shell canvas.
         if should_paint_kit_chrome(self.layer_shell_bound)
             && matches!(self.paint_filter, ShellPaintFilter::All)
         {
+            self.menu_bar.draw(theme);
             self.dock_view.draw(theme);
         }
-        // Draw notification banners on top of windows and dock, below menu bar
-        for popup in &self.notification_popup_windows {
-            popup.draw(theme);
-        }
-        if should_paint_kit_chrome(self.layer_shell_bound)
-            && matches!(self.paint_filter, ShellPaintFilter::All)
-        {
-            self.menu_bar.draw(theme);
-        }
-        // Spotlight pixels come from children() → SDK draw_widget, not Widget::draw.
     }
 
     fn handle_event(&mut self, event: &Event) -> EventResult {
@@ -3934,6 +4164,23 @@ impl Widget for ShellDesktop {
     }
 
     fn update(&mut self) {
+        // The compositor is the sole Spaces authority.  Read its atomic
+        // projection before rebuilding menu/overview chrome so a reorder,
+        // rename, active selection, or window-count update is reflected in
+        // the same shell tick.  WorkspaceManager rejects stale revisions.
+        self.reconcile_spaces_snapshot();
+        let workspace_items = self
+            .workspace_manager
+            .read()
+            .workspaces
+            .iter()
+            .enumerate()
+            .map(|(index, workspace)| (index, workspace.name.clone()))
+            .collect::<Vec<_>>();
+        self.menu_server
+            .write()
+            .set_workspace_items(&workspace_items);
+
         // App Store install marker → rescan ~/Applications/*.app (Stage 3).
         self.maybe_rescan_applications();
 
@@ -4102,6 +4349,13 @@ impl Widget for ShellDesktop {
             ShellPaintFilter::MenuBar | ShellPaintFilter::MenuPopup => {
                 return vec![&self.menu_bar as &dyn Widget];
             }
+            ShellPaintFilter::SpacesOverview => {
+                return self
+                    .workspace_overview
+                    .as_ref()
+                    .map(|overview| vec![overview as &dyn Widget])
+                    .unwrap_or_default();
+            }
             ShellPaintFilter::Dock => return vec![&self.dock_view as &dyn Widget],
             ShellPaintFilter::Background | ShellPaintFilter::All => {}
         }
@@ -4119,6 +4373,11 @@ impl Widget for ShellDesktop {
                 if shell_window.workspace == active_workspace {
                     children.push(&shell_window.window);
                 }
+            }
+        }
+        if !self.compositor_owns_ordinary_windows() {
+            if let Some(overview) = self.workspace_overview.as_ref() {
+                children.push(overview as &dyn Widget);
             }
         }
         if matches!(active_filter, ShellPaintFilter::All)
@@ -4157,6 +4416,13 @@ impl Widget for ShellDesktop {
             ShellPaintFilter::MenuBar | ShellPaintFilter::MenuPopup => {
                 return vec![&mut self.menu_bar as &mut dyn Widget];
             }
+            ShellPaintFilter::SpacesOverview => {
+                return self
+                    .workspace_overview
+                    .as_mut()
+                    .map(|overview| vec![overview as &mut dyn Widget])
+                    .unwrap_or_default();
+            }
             ShellPaintFilter::Dock => return vec![&mut self.dock_view as &mut dyn Widget],
             ShellPaintFilter::Background | ShellPaintFilter::All => {}
         }
@@ -4177,6 +4443,11 @@ impl Widget for ShellDesktop {
                 if shell_window.workspace == active_workspace {
                     children.push(&mut shell_window.window);
                 }
+            }
+        }
+        if !compositor_owns_windows {
+            if let Some(overview) = self.workspace_overview.as_mut() {
+                children.push(overview as &mut dyn Widget);
             }
         }
         if paint_chrome {
@@ -4778,7 +5049,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn live_workspace_switch_sends_control_before_committing_local_mirror() {
+    fn live_workspace_switch_sends_stable_id_without_optimistic_mirror_mutation() {
         use slopos_bus::{SessionControlListener, SessionControlRequest};
 
         let _environment_guard = SESSION_RUNTIME_ENV_LOCK.lock().unwrap();
@@ -4798,10 +5069,12 @@ mod tests {
         let (mut desktop, _) = test_desktop();
         desktop.set_layer_shell_bound(true);
         assert!(desktop.switch_workspace(2));
-        assert_eq!(desktop.active_workspace(), 2);
+        assert_eq!(desktop.active_workspace(), 0);
         assert_eq!(
             listener.drain(),
-            vec![SessionControlRequest::SwitchWorkspace { index: 2 }]
+            vec![SessionControlRequest::Spaces {
+                command: slopos_bus::SpacesControlCommand::Select { id: 3 },
+            }]
         );
 
         if let Some(previous_runtime) = previous_runtime {
@@ -5246,6 +5519,235 @@ mod tests {
             !desktop.windows.iter().any(|w| w.id == overview_id),
             "overview closes after switching"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_workspace_overview_selects_by_stable_space_id() {
+        use slopos_bus::{SessionControlListener, SessionControlRequest, SpacesControlCommand};
+
+        let _environment_guard = SESSION_RUNTIME_ENV_LOCK.lock().unwrap();
+        let runtime = std::env::temp_dir().join(format!(
+            "slo-wso-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&runtime).unwrap();
+        let listener = SessionControlListener::bind(&runtime).unwrap();
+        let previous_runtime = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR");
+        std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", &runtime);
+
+        let (mut desktop, _) = test_desktop();
+        desktop
+            .workspace_manager
+            .write()
+            .apply_snapshot(&slopos_bus::SpacesSnapshot {
+                session_epoch: 1,
+                revision: 9,
+                active_space: 11,
+                multi_monitor_policy: slopos_bus::SpacesDisplayPolicy::SharedSpan,
+                spaces: vec![
+                    slopos_bus::SpaceSnapshot {
+                        id: 11,
+                        order: 0,
+                        name: "Personal".to_string(),
+                        active: true,
+                        window_count: 1,
+                        wallpaper: None,
+                        appearance: None,
+                        classification: slopos_bus::SpaceClassification::Normal,
+                        output_id: None,
+                    },
+                    slopos_bus::SpaceSnapshot {
+                        id: 22,
+                        order: 1,
+                        name: "Projects".to_string(),
+                        active: false,
+                        window_count: 2,
+                        wallpaper: None,
+                        appearance: None,
+                        classification: slopos_bus::SpaceClassification::Normal,
+                        output_id: None,
+                    },
+                ],
+            });
+        desktop.set_layer_shell_bound(true);
+        desktop.open_workspace_status_window();
+        desktop.set_input_filter(Some(ShellPaintFilter::SpacesOverview));
+
+        fn grid_cell_center(window: &Window, cell: usize) -> Point {
+            fn find(widget: &dyn Widget, cell: usize) -> Option<Point> {
+                if let Some(grid) = widget.as_any().downcast_ref::<WorkspaceGridView>() {
+                    return Some(center(grid.cell_rect(cell)));
+                }
+                widget
+                    .children()
+                    .into_iter()
+                    .find_map(|child| find(child, cell))
+            }
+            find(window, cell).expect("live workspace overview grid exists")
+        }
+
+        let cell = grid_cell_center(desktop.workspace_overview.as_ref().unwrap(), 1);
+        assert!(matches!(
+            desktop.handle_event(&left_down(cell)),
+            EventResult::Handled
+        ));
+        assert_eq!(
+            listener.drain(),
+            vec![SessionControlRequest::Spaces {
+                command: SpacesControlCommand::Select { id: 22 },
+            }]
+        );
+        assert!(desktop.workspace_overview.is_none());
+
+        if let Some(previous_runtime) = previous_runtime {
+            std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", previous_runtime);
+        } else {
+            std::env::remove_var("SLOPOS_SESSION_RUNTIME_DIR");
+        }
+        drop(listener);
+        fs::remove_dir_all(runtime).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn update_reconciles_stale_revision_and_compositor_restart() {
+        let _environment_guard = SESSION_RUNTIME_ENV_LOCK.lock().unwrap();
+        let runtime = std::env::temp_dir().join(format!(
+            "slo-wsu-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&runtime).unwrap();
+        let previous_runtime = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR");
+        std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", &runtime);
+
+        slopos_bus::write_spaces_snapshot(&slopos_bus::SpacesSnapshot {
+            session_epoch: 1,
+            revision: 12,
+            active_space: 22,
+            multi_monitor_policy: slopos_bus::SpacesDisplayPolicy::SharedSpan,
+            spaces: vec![
+                slopos_bus::SpaceSnapshot {
+                    id: 11,
+                    order: 0,
+                    name: "Personal".to_string(),
+                    active: false,
+                    window_count: 1,
+                    wallpaper: None,
+                    appearance: None,
+                    classification: slopos_bus::SpaceClassification::Normal,
+                    output_id: None,
+                },
+                slopos_bus::SpaceSnapshot {
+                    id: 22,
+                    order: 1,
+                    name: "Projects".to_string(),
+                    active: true,
+                    window_count: 4,
+                    wallpaper: None,
+                    appearance: None,
+                    classification: slopos_bus::SpaceClassification::Normal,
+                    output_id: None,
+                },
+            ],
+        })
+        .unwrap();
+
+        let (mut desktop, _) = test_desktop();
+        desktop.update();
+        assert_eq!(desktop.workspace_manager.read().revision, 12);
+        assert_eq!(desktop.workspace_manager.read().active_id, 22);
+        assert_eq!(desktop.workspace_manager.read().total, 2);
+        assert_eq!(
+            desktop.workspace_manager.read().workspaces[1].window_count,
+            4
+        );
+
+        slopos_bus::write_spaces_snapshot(&slopos_bus::SpacesSnapshot {
+            session_epoch: 1,
+            revision: 12,
+            active_space: 11,
+            multi_monitor_policy: slopos_bus::SpacesDisplayPolicy::SharedSpan,
+            spaces: vec![slopos_bus::SpaceSnapshot {
+                id: 11,
+                order: 0,
+                name: "Duplicate revision".to_string(),
+                active: true,
+                window_count: 0,
+                wallpaper: None,
+                appearance: None,
+                classification: slopos_bus::SpaceClassification::Normal,
+                output_id: None,
+            }],
+        })
+        .unwrap();
+        desktop.update();
+        assert_eq!(desktop.workspace_manager.read().active_id, 22);
+
+        slopos_bus::write_spaces_snapshot(&slopos_bus::SpacesSnapshot {
+            session_epoch: 1,
+            revision: 11,
+            active_space: 11,
+            multi_monitor_policy: slopos_bus::SpacesDisplayPolicy::SharedSpan,
+            spaces: vec![slopos_bus::SpaceSnapshot {
+                id: 11,
+                order: 0,
+                name: "Stale".to_string(),
+                active: true,
+                window_count: 0,
+                wallpaper: None,
+                appearance: None,
+                classification: slopos_bus::SpaceClassification::Normal,
+                output_id: None,
+            }],
+        })
+        .unwrap();
+        desktop.update();
+        assert_eq!(desktop.workspace_manager.read().revision, 12);
+        assert_eq!(desktop.workspace_manager.read().active_id, 22);
+
+        // A restarted compositor starts its revision counter over, but the
+        // new session epoch makes that lower revision authoritative again.
+        slopos_bus::write_spaces_snapshot(&slopos_bus::SpacesSnapshot {
+            session_epoch: 2,
+            revision: 1,
+            active_space: 11,
+            multi_monitor_policy: slopos_bus::SpacesDisplayPolicy::SharedSpan,
+            spaces: vec![slopos_bus::SpaceSnapshot {
+                id: 11,
+                order: 0,
+                name: "Restarted Desktop".to_string(),
+                active: true,
+                window_count: 2,
+                wallpaper: None,
+                appearance: None,
+                classification: slopos_bus::SpaceClassification::Normal,
+                output_id: None,
+            }],
+        })
+        .unwrap();
+        desktop.update();
+        let manager = desktop.workspace_manager.read();
+        assert_eq!(manager.session_epoch, 2);
+        assert_eq!(manager.revision, 1);
+        assert_eq!(manager.active_id, 11);
+        assert_eq!(manager.workspaces[0].name, "Restarted Desktop");
+        assert_eq!(manager.workspaces[0].window_count, 2);
+
+        if let Some(previous_runtime) = previous_runtime {
+            std::env::set_var("SLOPOS_SESSION_RUNTIME_DIR", previous_runtime);
+        } else {
+            std::env::remove_var("SLOPOS_SESSION_RUNTIME_DIR");
+        }
+        fs::remove_dir_all(runtime).unwrap();
     }
 
     #[test]

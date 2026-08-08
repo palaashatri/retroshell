@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::spaces::SpacesControlCommand;
+
 pub const SESSION_CONTROL_SOCKET: &str = "control.sock";
 const APPLICATION_CONTROL_DIR: &str = "app-control";
 
@@ -53,11 +55,16 @@ pub enum SessionControlRequest {
     ActivateApplication {
         bundle_id: String,
     },
-    /// Activate one of the current compositor's indexed virtual workspaces.
-    /// The live Space model is still fixed to indices 0..7; invalid values
-    /// are rejected by the compositor without changing state.
+    /// Activate one of the current compositor's legacy indexed Spaces.
+    /// Dynamic shell controls use the stable-ID [`Self::Spaces`] request.
     SwitchWorkspace {
         index: u8,
+    },
+    /// Apply a dynamic compositor-owned Spaces mutation.  The compositor
+    /// publishes the resulting [`crate::SpacesSnapshot`] in the session
+    /// runtime directory after a successful command.
+    Spaces {
+        command: SpacesControlCommand,
     },
     /// Atomically replace the compositor's logical output topology.
     /// The value uses `name:WIDTHxHEIGHT@x,y:sSCALE` entries separated by `;`.
@@ -74,6 +81,78 @@ pub enum SessionControlRequest {
         bundle_id: String,
         action_id: String,
     },
+}
+
+/// Name of the atomic compositor-to-shell Spaces projection in the session
+/// runtime directory.
+pub const SPACES_STATE_FILE: &str = "spaces-state.json";
+
+/// Return the exact Spaces snapshot path for the current session.
+pub fn session_spaces_state_path() -> Option<PathBuf> {
+    std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .map(|runtime| runtime.join(SPACES_STATE_FILE))
+}
+
+/// Publish one complete Spaces snapshot atomically.  The runtime directory is
+/// session-scoped and owned by the session supervisor; readers never observe a
+/// partially-written JSON document.
+#[cfg(unix)]
+pub fn write_spaces_snapshot(snapshot: &crate::SpacesSnapshot) -> io::Result<()> {
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let path = session_spaces_state_path().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "SLOPOS_SESSION_RUNTIME_DIR is not set",
+        )
+    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Spaces path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let bytes = serde_json::to_vec_pretty(snapshot).map_err(io::Error::other)?;
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp = parent.join(format!(".{}.{}.tmp", SPACES_STATE_FILE, counter));
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temp)?;
+    let result = (|| {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp, &path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
+}
+
+#[cfg(not(unix))]
+pub fn write_spaces_snapshot(_snapshot: &crate::SpacesSnapshot) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Spaces snapshots require the Unix session runtime",
+    ))
+}
+
+/// Read the latest compositor snapshot, if the session has published one.
+pub fn read_spaces_snapshot() -> io::Result<crate::SpacesSnapshot> {
+    let path = session_spaces_state_path().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "SLOPOS_SESSION_RUNTIME_DIR is not set",
+        )
+    })?;
+    let bytes = std::fs::read(path)?;
+    serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

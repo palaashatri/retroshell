@@ -53,11 +53,69 @@ pub enum MultiMonitorPolicy {
     IndependentPerDisplay,
 }
 
+/// Convert the compositor's model enum to its typed session-bus form.
+pub fn fullscreen_classification_to_wire(
+    classification: FullscreenClassification,
+) -> slopos_bus::SpaceClassification {
+    match classification {
+        FullscreenClassification::Normal => slopos_bus::SpaceClassification::Normal,
+        FullscreenClassification::Fullscreen => slopos_bus::SpaceClassification::Fullscreen,
+    }
+}
+
+/// Convert a session-bus fullscreen classification into the model enum.
+pub fn fullscreen_classification_from_wire(
+    classification: slopos_bus::SpaceClassification,
+) -> FullscreenClassification {
+    match classification {
+        slopos_bus::SpaceClassification::Normal => FullscreenClassification::Normal,
+        slopos_bus::SpaceClassification::Fullscreen => FullscreenClassification::Fullscreen,
+    }
+}
+
+/// Convert the compositor's multi-display policy to its wire representation.
+pub fn multi_monitor_policy_to_wire(policy: MultiMonitorPolicy) -> slopos_bus::SpacesDisplayPolicy {
+    match policy {
+        MultiMonitorPolicy::SharedSpan => slopos_bus::SpacesDisplayPolicy::SharedSpan,
+        MultiMonitorPolicy::IndependentPerDisplay => {
+            slopos_bus::SpacesDisplayPolicy::IndependentPerDisplay
+        }
+    }
+}
+
+/// Convert a session-bus display policy into the model enum.
+pub fn multi_monitor_policy_from_wire(
+    policy: slopos_bus::SpacesDisplayPolicy,
+) -> MultiMonitorPolicy {
+    match policy {
+        slopos_bus::SpacesDisplayPolicy::SharedSpan => MultiMonitorPolicy::SharedSpan,
+        slopos_bus::SpacesDisplayPolicy::IndependentPerDisplay => {
+            MultiMonitorPolicy::IndependentPerDisplay
+        }
+    }
+}
+
+/// Generate an epoch that is unique for the lifetime of a compositor process.
+///
+/// The epoch is deliberately independent of the monotonic mutation revision:
+/// a shell that outlives the compositor must be able to distinguish a fresh
+/// session whose first snapshot has a lower revision than the prior session.
+pub fn new_session_epoch() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or_default();
+    nanos ^ u64::from(std::process::id()).rotate_left(17)
+}
+
 /// The membership scope used when assigning a window.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpaceTarget {
     Current,
+    Id(SpaceId),
     Named(String),
     All,
 }
@@ -294,6 +352,8 @@ pub struct SpaceOverview {
     active: bool,
     classification: FullscreenClassification,
     output_id: Option<String>,
+    wallpaper: Option<String>,
+    appearance: Option<String>,
     window_count: usize,
 }
 
@@ -306,6 +366,8 @@ impl SpaceOverview {
             active,
             classification: space.classification(),
             output_id: space.output_id().map(str::to_owned),
+            wallpaper: space.wallpaper().map(str::to_owned),
+            appearance: space.appearance().map(str::to_owned),
             window_count: space.windows().len(),
         }
     }
@@ -340,6 +402,14 @@ impl SpaceOverview {
 
     pub fn display_id(&self) -> Option<&str> {
         self.output_id()
+    }
+
+    pub fn wallpaper(&self) -> Option<&str> {
+        self.wallpaper.as_deref()
+    }
+
+    pub fn appearance(&self) -> Option<&str> {
+        self.appearance.as_deref()
     }
 
     pub const fn window_count(&self) -> usize {
@@ -395,6 +465,21 @@ impl SpacesModel {
         }
     }
 
+    /// Build the default ordered desktop set used when no persisted Spaces
+    /// state exists.  IDs remain stable for the lifetime of the model and the
+    /// model is still fully dynamic after construction.
+    pub fn with_default_count(count: usize) -> Result<Self, SpacesError> {
+        if count == 0 {
+            return Err(SpacesError::EmptySpaces);
+        }
+        let mut model = Self::new();
+        model.spaces[0] = Space::new(model.spaces[0].id(), "Desktop 1")?;
+        for index in 1..count {
+            model.create_space(format!("Desktop {}", index + 1))?;
+        }
+        Ok(model)
+    }
+
     pub fn with_initial_name(name: impl Into<String>) -> Result<Self, SpacesError> {
         let mut model = Self::new();
         let first = model.active_space;
@@ -448,6 +533,33 @@ impl SpacesModel {
 
     pub fn position_of(&self, id: SpaceId) -> Option<usize> {
         self.spaces.iter().position(|space| space.id == id)
+    }
+
+    /// Return the active Space's current ordered index.
+    pub fn active_index(&self) -> usize {
+        self.position_of(self.active_space)
+            .expect("validated model always contains active Space")
+    }
+
+    /// Activate the next ordered Space, wrapping at the end.
+    pub fn cycle_next(&mut self) -> SpaceId {
+        let next = (self.active_index() + 1) % self.spaces.len();
+        let id = self.spaces[next].id();
+        self.active_space = id;
+        id
+    }
+
+    /// Activate the previous ordered Space, wrapping at the beginning.
+    pub fn cycle_previous(&mut self) -> SpaceId {
+        let index = self.active_index();
+        let previous = if index == 0 {
+            self.spaces.len() - 1
+        } else {
+            index - 1
+        };
+        let id = self.spaces[previous].id();
+        self.active_space = id;
+        id
     }
 
     pub const fn multi_monitor_policy(&self) -> MultiMonitorPolicy {
@@ -891,6 +1003,15 @@ impl SpacesModel {
         removed
     }
 
+    /// Clear session-scoped window membership after loading persisted Space
+    /// metadata. Window identifiers belong to one compositor session and must
+    /// never be resurrected as live windows after a restart.
+    pub fn clear_window_memberships(&mut self) {
+        for space in &mut self.spaces {
+            space.windows.clear();
+        }
+    }
+
     /// Validate invariants before persistence or after a caller deserializes a
     /// value through another serde format.
     pub fn validate(&self) -> Result<(), SpacesError> {
@@ -964,6 +1085,10 @@ impl SpacesModel {
     fn target_ids(&self, target: &SpaceTarget) -> Result<Vec<SpaceId>, SpacesError> {
         match target {
             SpaceTarget::Current => Ok(vec![self.active_space]),
+            SpaceTarget::Id(id) => self
+                .space(*id)
+                .map(|space| vec![space.id])
+                .ok_or(SpacesError::SpaceNotFound(*id)),
             SpaceTarget::All => Ok(self.space_ids()),
             SpaceTarget::Named(name) => self
                 .space_by_name(name)
@@ -1209,6 +1334,19 @@ mod tests {
         model.remove_space(second).expect("remove projects");
         let recreated = model.create_space("Recreated").expect("recreate space");
         assert!(recreated.get() > second.get());
+    }
+
+    #[test]
+    fn default_desktop_set_is_dynamic_after_startup() {
+        let mut model = SpacesModel::with_default_count(8).expect("default desktops");
+        assert_eq!(model.spaces().len(), 8);
+        assert_eq!(model.active().name(), "Desktop 1");
+
+        let created = model.create_space("Projects").expect("create Projects");
+        model.activate_space(created).expect("activate Projects");
+        assert_eq!(model.active_index(), 8);
+        assert_eq!(model.active().name(), "Projects");
+        assert_eq!(model.cycle_previous(), SpaceId::new(8).unwrap());
     }
 
     #[test]
@@ -1471,6 +1609,12 @@ mod tests {
         model
             .set_classification(fullscreen, FullscreenClassification::Fullscreen)
             .expect("classify fullscreen");
+        model
+            .set_wallpaper(fullscreen, Some("wallpapers/video.png".into()))
+            .expect("wallpaper");
+        model
+            .set_appearance(fullscreen, Some("graphite".into()))
+            .expect("appearance");
 
         let overview = model.overview();
         assert_eq!(
@@ -1492,6 +1636,8 @@ mod tests {
             overview[2].classification(),
             FullscreenClassification::Fullscreen
         );
+        assert_eq!(overview[2].wallpaper(), Some("wallpapers/video.png"));
+        assert_eq!(overview[2].appearance(), Some("graphite"));
 
         let encoded = serde_json::to_value(&overview).expect("serialize overview");
         assert_eq!(encoded[0]["active"], true);
@@ -1698,5 +1844,25 @@ mod tests {
         fs::remove_file(path).expect("remove test state");
         fs::remove_file(sentinel).expect("remove sentinel");
         fs::remove_dir(target_directory).expect("remove directory target");
+    }
+
+    #[test]
+    fn persisted_space_metadata_drops_session_window_membership_on_reload() {
+        let mut model = SpacesModel::new();
+        let work = model.create_space("Work").expect("work");
+        model
+            .assign_window("session-window", SpaceTarget::Id(work))
+            .expect("assign session window");
+        let path = temp_path("restart-membership");
+        let _ = fs::remove_file(&path);
+        model.save_atomic(&path).expect("save Spaces metadata");
+
+        let mut reloaded = SpacesModel::load(&path).expect("load Spaces metadata");
+        reloaded.clear_window_memberships();
+        assert!(reloaded.window_spaces("session-window").is_empty());
+        assert!(reloaded.space(work).expect("work").windows().is_empty());
+        assert_eq!(reloaded.space(work).expect("work").name(), "Work");
+
+        fs::remove_file(path).expect("remove restart fixture");
     }
 }

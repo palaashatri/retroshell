@@ -33,29 +33,31 @@ mod linux {
     use std::time::Duration;
 
     use slopos_bus::{
-        HeadlessInputEvent, SessionControlListener, SessionControlRequest, WindowPresentationAction,
+        write_spaces_snapshot, HeadlessInputEvent, SessionControlListener, SessionControlRequest,
+        SpaceTargetWire, SpacesControlCommand, SpacesSnapshot, WindowPresentationAction,
     };
     use slopos_compositor::frame_timing::{FrameScheduler, RefreshRate};
     use slopos_compositor::hdr::HdrCapabilities;
     use slopos_compositor::work_area::{compute_exclusive_work_area, ExclusiveZoneReservation};
     use slopos_compositor::{
-        accumulate_damage_for_window_move, accumulate_damage_rect,
-        activate_workspace_index as activate_workspace_state, apply_scale_to_output_config,
-        assign_new_window_to_active, calculate_presentation_geometry, cascade_position,
-        clamp_window_to_work_area, clear_interactive_grab_state, detect_output_scale_from_env,
-        focus_window_after_workspace_switch, geometry_for_interactive_grab,
-        intersecting_output_indices, move_to_top, next_cascade_offset, output_geometry,
-        output_index_for_geometry, output_index_for_point, output_scale_summary,
-        pointer_grab_request_is_valid_for_window, prefer_full_redraw,
+        accumulate_damage_for_window_move, accumulate_damage_rect, apply_scale_to_output_config,
+        calculate_presentation_geometry, cascade_position, clamp_window_to_work_area,
+        clear_interactive_grab_state, detect_output_scale_from_env,
+        fullscreen_classification_from_wire, fullscreen_classification_to_wire,
+        geometry_for_interactive_grab, intersecting_output_indices, move_to_top,
+        multi_monitor_policy_from_wire, multi_monitor_policy_to_wire, new_session_epoch,
+        next_cascade_offset, output_geometry, output_index_for_geometry, output_index_for_point,
+        output_scale_summary, pointer_grab_request_is_valid_for_window, prefer_full_redraw,
         register_wayland_display_source, remap_geometry_between_outputs,
         resolve_laid_out_outputs_from_env, selection_bytes_for_mime_with_text_fallback,
         session_mode_note, surface_tree_root, text_input_capability_from_env,
         text_input_capability_summary, total_output_size, transition_presentation_state,
         validated_runtime_output_layout, window_paint_source, CompositorBackendKind, DamageRect,
         DisplayPolicy, InteractiveGrab, InteractiveGrabKind, LaidOutOutput, OutputScale,
-        PlaceholderPresentStats, PointerConstraintMotion, ResizeEdges, TextInputCapability,
-        WindowGeometry, WindowPaintSource, WindowPresentationState, WindowRestoreState,
-        WorkspaceId, WorkspaceState, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+        PlaceholderPresentStats, PointerConstraintMotion, ResizeEdges, SpaceId, SpaceTarget,
+        SpacesError, SpacesModel, TextInputCapability, WindowGeometry, WindowPaintSource,
+        WindowPresentationState, WindowRestoreState, WorkspaceId, WorkspaceState, DEFAULT_WINDOW_H,
+        DEFAULT_WINDOW_W,
     };
     use smithay::desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, utils::under_from_surface_tree,
@@ -165,6 +167,33 @@ mod linux {
     // Retro gray: rgb(152, 152, 148) — the classic Mac OS desktop fill
     const RETRO_GRAY: (u8, u8, u8) = (152, 152, 148);
     const MAX_DISABLED_OUTPUT_GLOBALS: usize = 64;
+
+    fn spaces_persistence_path() -> Option<PathBuf> {
+        let data_home = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .map(|home| home.join(".local/share"))
+            })?;
+        Some(data_home.join("slopos-i").join("spaces.json"))
+    }
+
+    fn load_initial_spaces_model() -> SpacesModel {
+        if let Some(path) = spaces_persistence_path() {
+            match SpacesModel::load(&path) {
+                Ok(mut model) => {
+                    model.clear_window_memberships();
+                    return model;
+                }
+                Err(error) if path.exists() => {
+                    tracing::warn!(%error, path = %path.display(), "ignoring invalid persisted Spaces model")
+                }
+                Err(_) => {}
+            }
+        }
+        SpacesModel::with_default_count(8).expect("default Spaces model is valid")
+    }
 
     // Window placeholder colors (cycling palette for distinguishing windows)
     const WIN_COLORS: &[(f32, f32, f32)] = &[
@@ -573,6 +602,11 @@ mod linux {
         windows: Vec<MappedWindow>,
         /// Virtual workspaces: only active-workspace windows are painted.
         workspace_state: WorkspaceState,
+        /// Dynamic compositor-authoritative Spaces metadata and membership.
+        spaces: SpacesModel,
+        /// Session epoch used to make shell revision reconciliation restart-safe.
+        spaces_session_epoch: u64,
+        spaces_revision: u64,
         // Layer-shell chrome (menu bar, dock, notifications, …)
         layer_surfaces: Vec<MappedLayer>,
         /// Tracks xdg popup trees independently of ordinary toplevel windows.
@@ -670,6 +704,157 @@ mod linux {
             Serial::from(self.serial)
         }
 
+        fn spaces_snapshot(&self) -> SpacesSnapshot {
+            SpacesSnapshot {
+                session_epoch: self.spaces_session_epoch,
+                revision: self.spaces_revision,
+                active_space: self.spaces.active_space().get(),
+                multi_monitor_policy: multi_monitor_policy_to_wire(
+                    self.spaces.multi_monitor_policy(),
+                ),
+                spaces: self
+                    .spaces
+                    .overview()
+                    .into_iter()
+                    .map(|space| slopos_bus::SpaceSnapshot {
+                        id: space.id().get(),
+                        order: space.order(),
+                        name: space.name().to_owned(),
+                        active: space.active(),
+                        window_count: space.window_count(),
+                        wallpaper: space.wallpaper().map(str::to_owned),
+                        appearance: space.appearance().map(str::to_owned),
+                        classification: fullscreen_classification_to_wire(space.classification()),
+                        output_id: space.output_id().map(str::to_owned),
+                    })
+                    .collect(),
+            }
+        }
+
+        /// Keep legacy indexed helpers available for older in-process paths.
+        /// Dynamic visibility and membership always consult `self.spaces`.
+        fn sync_legacy_workspace_state(&mut self) {
+            let mut mirror = WorkspaceState::new();
+            if let Ok(active) = u8::try_from(self.spaces.active_index()) {
+                if let Some(active) = WorkspaceId::new(active) {
+                    let _ = mirror.activate(active);
+                }
+            }
+            for (order, space) in self.spaces.spaces().iter().enumerate().take(8) {
+                let Ok(index) = u8::try_from(order) else {
+                    break;
+                };
+                let Some(workspace) = WorkspaceId::new(index) else {
+                    break;
+                };
+                for window_id in space.windows() {
+                    let _ = mirror.assign_window(window_id.clone(), workspace);
+                }
+            }
+            self.workspace_state = mirror;
+        }
+
+        fn window_visible_on_active(&self, window_id: &str) -> bool {
+            self.spaces
+                .window_spaces(window_id)
+                .into_iter()
+                .any(|space| space == self.spaces.active_space())
+        }
+
+        fn publish_spaces_state(&mut self, persist: bool) {
+            self.spaces_revision = self.spaces_revision.saturating_add(1);
+            let snapshot = self.spaces_snapshot();
+            if let Err(error) = write_spaces_snapshot(&snapshot) {
+                tracing::debug!(%error, "could not publish Spaces snapshot");
+            }
+            if persist {
+                if let Some(path) = spaces_persistence_path() {
+                    if let Some(parent) = path.parent() {
+                        if let Err(error) = std::fs::create_dir_all(parent) {
+                            tracing::warn!(%error, path = %parent.display(), "could not create Spaces data directory");
+                        } else if let Err(error) = self.spaces.save_atomic(&path) {
+                            tracing::warn!(%error, path = %path.display(), "could not persist Spaces model");
+                        }
+                    }
+                }
+            }
+        }
+
+        fn apply_spaces_command(&mut self, command: SpacesControlCommand) {
+            let result = match command {
+                SpacesControlCommand::Select { id } => SpaceId::new(id)
+                    .ok_or(SpacesError::InvalidSpaceId(id))
+                    .and_then(|id| self.spaces.select_space(id)),
+                SpacesControlCommand::Create { name } => self.spaces.create_space(name),
+                SpacesControlCommand::Rename { id, name } => SpaceId::new(id)
+                    .ok_or(SpacesError::InvalidSpaceId(id))
+                    .and_then(|id| self.spaces.rename_space(id, name).map(|()| id)),
+                SpacesControlCommand::Reorder { id, order } => SpaceId::new(id)
+                    .ok_or(SpacesError::InvalidSpaceId(id))
+                    .and_then(|id| self.spaces.reorder_space(id, order).map(|()| id)),
+                SpacesControlCommand::Remove { id } => SpaceId::new(id)
+                    .ok_or(SpacesError::InvalidSpaceId(id))
+                    .and_then(|id| self.spaces.remove_space(id)),
+                SpacesControlCommand::MoveWindow { window_id, target } => {
+                    if !self
+                        .windows
+                        .iter()
+                        .any(|window| window.window_id == window_id)
+                    {
+                        return tracing::warn!(%window_id, "rejecting Spaces move for unknown window");
+                    }
+                    let target = match target {
+                        SpaceTargetWire::Current => SpaceTarget::Current,
+                        SpaceTargetWire::Id { id } => match SpaceId::new(id) {
+                            Some(id) => SpaceTarget::Id(id),
+                            None => {
+                                tracing::warn!(id, "rejecting Spaces move with invalid Space ID");
+                                return;
+                            }
+                        },
+                        SpaceTargetWire::All => SpaceTarget::All,
+                    };
+                    self.spaces
+                        .move_window(window_id, target)
+                        .map(|()| self.spaces.active_space())
+                }
+                SpacesControlCommand::SetWallpaper { id, wallpaper } => SpaceId::new(id)
+                    .ok_or(SpacesError::InvalidSpaceId(id))
+                    .and_then(|id| self.spaces.set_wallpaper(id, wallpaper).map(|()| id)),
+                SpacesControlCommand::SetAppearance { id, appearance } => SpaceId::new(id)
+                    .ok_or(SpacesError::InvalidSpaceId(id))
+                    .and_then(|id| self.spaces.set_appearance(id, appearance).map(|()| id)),
+                SpacesControlCommand::SetClassification { id, classification } => SpaceId::new(id)
+                    .ok_or(SpacesError::InvalidSpaceId(id))
+                    .and_then(|id| {
+                        self.spaces
+                            .set_classification(
+                                id,
+                                fullscreen_classification_from_wire(classification),
+                            )
+                            .map(|()| id)
+                    }),
+                SpacesControlCommand::SetMultiMonitorPolicy { policy } => {
+                    self.spaces
+                        .set_multi_monitor_policy(multi_monitor_policy_from_wire(policy));
+                    Ok(self.spaces.active_space())
+                }
+                SpacesControlCommand::AssignOutput { id, output_id } => SpaceId::new(id)
+                    .ok_or(SpacesError::InvalidSpaceId(id))
+                    .and_then(|id| self.spaces.set_space_output(id, output_id).map(|()| id)),
+            };
+
+            match result {
+                Ok(_) => {
+                    self.sync_legacy_workspace_state();
+                    self.publish_spaces_state(true);
+                    self.request_full_redraw();
+                    self.apply_focus_after_workspace_switch();
+                }
+                Err(error) => tracing::warn!(%error, "rejecting Spaces command"),
+            }
+        }
+
         fn popup_origin(
             root_origin: Point<i32, Logical>,
             popup: &PopupKind,
@@ -728,7 +913,7 @@ mod linux {
                 .windows
                 .iter()
                 .rev()
-                .filter(|w| !w.minimized && self.workspace_state.is_visible(&w.window_id))
+                .filter(|w| !w.minimized && self.window_visible_on_active(&w.window_id))
             {
                 for (popup, popup_offset) in
                     PopupManager::popups_for_surface(window.toplevel.wl_surface())
@@ -779,7 +964,7 @@ mod linux {
                 .iter()
                 .rev()
                 .filter(|window| {
-                    !window.minimized && self.workspace_state.is_visible(&window.window_id)
+                    !window.minimized && self.window_visible_on_active(&window.window_id)
                 })
                 .find(|window| window.geometry().contains_f64(pt.x, pt.y))
                 .map(|window| {
@@ -1034,7 +1219,7 @@ mod linux {
                 Vec::with_capacity(self.windows.len().saturating_sub(dead_ids.len()));
             for window in self.windows.drain(..) {
                 if dead_ids.contains(&window.window_id) {
-                    self.workspace_state.remove_window(&window.window_id);
+                    self.spaces.remove_window(&window.window_id);
                     window.foreign.send_closed();
                 } else {
                     retained.push(window);
@@ -1051,6 +1236,8 @@ mod linux {
             }
 
             self.request_full_redraw();
+            self.sync_legacy_workspace_state();
+            self.publish_spaces_state(true);
             self.apply_focus_after_workspace_switch();
         }
 
@@ -1063,8 +1250,11 @@ mod linux {
                 .filter(|w| !w.minimized)
                 .map(|w| w.window_id.as_str())
                 .collect();
-            let target = focus_window_after_workspace_switch(&self.workspace_state, &order)
-                .map(str::to_owned);
+            let target = order
+                .iter()
+                .rev()
+                .find(|window_id| self.window_visible_on_active(window_id))
+                .map(|window_id| (*window_id).to_owned());
             if let Some(id) = target {
                 if let Some(idx) = self.windows.iter().position(|w| w.window_id == id) {
                     self.focus_window(idx);
@@ -1767,6 +1957,9 @@ mod linux {
                 SessionControlRequest::SwitchWorkspace { index } => {
                     self.activate_workspace_index(index);
                 }
+                SessionControlRequest::Spaces { command } => {
+                    self.apply_spaces_command(command);
+                }
                 SessionControlRequest::ReconfigureOutputs { layout } => {
                     if let Err(error) = self.reconfigure_outputs(&layout) {
                         tracing::warn!(%error, "runtime output topology rejected");
@@ -2064,7 +2257,7 @@ mod linux {
                 output_area,
                 None,
                 output_id,
-                self.workspace_state.active.as_usize(),
+                self.spaces.active_index(),
             );
             self.windows[idx].presentation_state = transition.state;
             self.windows[idx].restore_state = transition.restore_state;
@@ -2094,35 +2287,43 @@ mod linux {
         }
 
         fn cycle_workspace_next(&mut self) {
-            self.workspace_state.cycle_next();
+            self.spaces.cycle_next();
+            self.sync_legacy_workspace_state();
+            self.publish_spaces_state(true);
             self.request_full_redraw();
             eprintln!(
                 "[slopos-compositor] {}",
-                self.workspace_state.summary_line()
+                self.spaces_snapshot().active_space
             );
             self.apply_focus_after_workspace_switch();
         }
 
         fn cycle_workspace_prev(&mut self) {
-            self.workspace_state.cycle_prev();
+            self.spaces.cycle_previous();
+            self.sync_legacy_workspace_state();
+            self.publish_spaces_state(true);
             self.request_full_redraw();
             eprintln!(
                 "[slopos-compositor] {}",
-                self.workspace_state.summary_line()
+                self.spaces_snapshot().active_space
             );
             self.apply_focus_after_workspace_switch();
         }
 
         fn activate_workspace_index(&mut self, index: u8) {
-            if activate_workspace_state(&mut self.workspace_state, index) {
+            let Some(space) = self.spaces.spaces().get(usize::from(index)) else {
+                tracing::warn!(index, "rejecting invalid workspace activation request");
+                return;
+            };
+            if self.spaces.activate_space(space.id()).is_ok() {
+                self.sync_legacy_workspace_state();
+                self.publish_spaces_state(true);
                 self.request_full_redraw();
                 eprintln!(
                     "[slopos-compositor] {}",
-                    self.workspace_state.summary_line()
+                    self.spaces_snapshot().active_space
                 );
                 self.apply_focus_after_workspace_switch();
-            } else {
-                tracing::warn!(index, "rejecting invalid workspace activation request");
             }
         }
 
@@ -2162,38 +2363,55 @@ mod linux {
 
             let cursor_status = self.cursor_status.clone();
             let cursor_position = self.pointer_pos;
-            let (renderer, x11_surface) =
-                match (self.renderer.as_mut(), self.x11_surface.as_mut()) {
-                    (Some(r), Some(s)) => (r, s),
-                    _ => {
-                        let now = self.clock.now();
-                        if let Some(output) = self.outputs.first().cloned() {
-                            let workspace_state = &self.workspace_state;
-                            for w in self.windows.iter().filter(|w| {
-                                !w.minimized && workspace_state.is_visible(&w.window_id)
-                            }) {
-                                send_frames_surface_tree(
-                                    w.toplevel.wl_surface(),
-                                    &output,
-                                    now,
-                                    Some(Duration::ZERO),
-                                    |_, _| None,
-                                );
-                            }
-                            for layer in &self.layer_surfaces {
-                                send_frames_surface_tree(
-                                    layer.surface.wl_surface(),
-                                    &output,
-                                    now,
-                                    Some(Duration::ZERO),
-                                    |_, _| None,
-                                );
-                            }
+            let active_space = self.spaces.active_space();
+            let visible_window_ids: HashSet<String> = self
+                .windows
+                .iter()
+                .filter(|window| {
+                    !window.minimized
+                        && self
+                            .spaces
+                            .window_spaces(&window.window_id)
+                            .into_iter()
+                            .any(|space| space == active_space)
+                })
+                .map(|window| window.window_id.clone())
+                .collect();
+            let visible_window_surfaces: Vec<_> = self
+                .windows
+                .iter()
+                .filter(|window| visible_window_ids.contains(&window.window_id))
+                .map(|window| window.toplevel.wl_surface().clone())
+                .collect();
+            let (renderer, x11_surface) = match (self.renderer.as_mut(), self.x11_surface.as_mut())
+            {
+                (Some(r), Some(s)) => (r, s),
+                _ => {
+                    let now = self.clock.now();
+                    if let Some(output) = self.outputs.first().cloned() {
+                        for surface in &visible_window_surfaces {
+                            send_frames_surface_tree(
+                                surface,
+                                &output,
+                                now,
+                                Some(Duration::ZERO),
+                                |_, _| None,
+                            );
                         }
-                        self.frame_dirty = false;
-                        return;
+                        for layer in &self.layer_surfaces {
+                            send_frames_surface_tree(
+                                layer.surface.wl_surface(),
+                                &output,
+                                now,
+                                Some(Duration::ZERO),
+                                |_, _| None,
+                            );
+                        }
                     }
-                };
+                    self.frame_dirty = false;
+                    return;
+                }
+            };
 
             // Paint order: bottom layers → xdg windows → top/overlay layers.
             use slopos_compositor::{plan_compose_order, ChromeLayer};
@@ -2253,11 +2471,10 @@ mod linux {
                 ));
             }
             // Workspace filter: hide surfaces not on the active virtual desktop.
-            let workspace_state = &self.workspace_state;
             let visible_windows: Vec<&MappedWindow> = self
                 .windows
                 .iter()
-                .filter(|w| !w.minimized && workspace_state.is_visible(&w.window_id))
+                .filter(|w| visible_window_ids.contains(&w.window_id))
                 .collect();
             for (i, w) in visible_windows.iter().enumerate() {
                 let loc = Point::<i32, Physical>::from((w.position.x, w.position.y));
@@ -2499,7 +2716,7 @@ mod linux {
             // wait forever without this.
             let now = self.clock.now();
             for window in self.windows.iter().filter(|window| {
-                !window.minimized && self.workspace_state.is_visible(&window.window_id)
+                !window.minimized && self.window_visible_on_active(&window.window_id)
             }) {
                 let output_index =
                     output_index_for_geometry(&self.laid_out_outputs, window.geometry())
@@ -2982,22 +3199,10 @@ mod linux {
             );
 
             let window_id = foreign.identifier();
-            // New maps land on the active virtual workspace (not an untracked id).
-            if !assign_new_window_to_active(&mut self.workspace_state, window_id.clone()) {
-                // Active id is always valid after WorkspaceState::new / activate.
-                let _ = self
-                    .workspace_state
-                    .assign_window(window_id.clone(), WorkspaceId::FIRST);
-            }
-            eprintln!(
-                "[slopos-compositor] assign window_id={window_id} {}",
-                self.workspace_state.summary_line()
-            );
-
             self.windows.push(MappedWindow {
                 toplevel: surface,
                 foreign,
-                window_id,
+                window_id: window_id.clone(),
                 app_id,
                 position,
                 size: Size::from((geometry.width, geometry.height)),
@@ -3005,6 +3210,16 @@ mod linux {
                 restore_state: None,
                 minimized: false,
             });
+            // New maps land on the active compositor-owned Space.
+            if let Err(error) = self.spaces.assign_window_to_current(window_id.clone()) {
+                tracing::warn!(%error, %window_id, "could not assign mapped window to active Space");
+            }
+            self.sync_legacy_workspace_state();
+            self.publish_spaces_state(true);
+            eprintln!(
+                "[slopos-compositor] assign window_id={window_id} active_space={}",
+                self.spaces.active_space()
+            );
             self.request_full_redraw();
 
             // Focus the new window and publish accurate wl_surface output membership.
@@ -3109,7 +3324,9 @@ mod linux {
                 .position(|w| w.toplevel.wl_surface() == destroyed_surface)
             {
                 let win = self.windows.remove(idx);
-                self.workspace_state.remove_window(&win.window_id);
+                self.spaces.remove_window(&win.window_id);
+                self.sync_legacy_workspace_state();
+                self.publish_spaces_state(true);
                 if self.last_minimized_window_id.as_deref() == Some(win.window_id.as_str()) {
                     self.last_minimized_window_id = None;
                 }
@@ -4467,6 +4684,7 @@ mod linux {
                 .map_err(|error| anyhow::anyhow!("insert session control socket: {error}"))?;
         }
 
+        let initial_spaces = load_initial_spaces_model();
         let clock = Clock::<Monotonic>::new();
         let mut state = SloposCompositor {
             display_handle,
@@ -4500,6 +4718,9 @@ mod linux {
             running: true,
             windows: Vec::new(),
             workspace_state: WorkspaceState::new(),
+            spaces: initial_spaces,
+            spaces_session_epoch: new_session_epoch(),
+            spaces_revision: 0,
             layer_surfaces: Vec::new(),
             popup_manager: PopupManager::default(),
             popup_grab: None,
@@ -4537,6 +4758,9 @@ mod linux {
             x11_surface_associations: HashMap::new(),
             wayland_socket_name: socket_name.clone(),
         };
+
+        state.sync_legacy_workspace_state();
+        state.publish_spaces_state(false);
 
         // P1.3: best-effort XWayland after state exists (needs loop_handle).
         try_start_xwayland(&mut state);

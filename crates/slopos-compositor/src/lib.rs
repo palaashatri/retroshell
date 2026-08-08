@@ -61,8 +61,10 @@ pub use output_assignment::{
     remap_geometry_between_outputs, validated_runtime_output_layout, MAX_RUNTIME_OUTPUTS,
 };
 pub use spaces::{
-    FullscreenClassification, MultiMonitorPolicy, Space, SpaceId, SpaceTarget, SpacesError,
-    SpacesModel,
+    fullscreen_classification_from_wire, fullscreen_classification_to_wire,
+    multi_monitor_policy_from_wire, multi_monitor_policy_to_wire, new_session_epoch,
+    FullscreenClassification, MultiMonitorPolicy, Space, SpaceId, SpaceOverview, SpaceTarget,
+    SpacesCommand, SpacesError, SpacesModel,
 };
 pub use window_state::{
     calculate_presentation_geometry, transition_presentation_state, PresentationTransition,

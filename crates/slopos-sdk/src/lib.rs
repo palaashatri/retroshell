@@ -3863,7 +3863,7 @@ fn draw_progress_bar(canvas: &mut Canvas<'_>, rect: Rect, pb: &ProgressBar) {
 fn draw_workspace_grid_view(canvas: &mut Canvas<'_>, _rect: Rect, grid: &WorkspaceGridView) {
     // Cell geometry comes from the widget — the same rects its
     // `handle_event` hit-tests, so paint and input cannot drift.
-    for i in 0..4 {
+    for i in 0..grid.items.len() {
         let cell_r = grid.cell_rect(i);
         let cell_w = cell_r.width;
         let cell_h = cell_r.height;
@@ -3906,11 +3906,15 @@ fn draw_workspace_grid_view(canvas: &mut Canvas<'_>, _rect: Rect, grid: &Workspa
             );
         }
 
-        let label = grid
-            .items
-            .get(i)
-            .cloned()
-            .unwrap_or_else(|| format!("Desktop {}", i + 1));
+        let base_label = grid.items.get(i).map(String::as_str).unwrap_or("");
+        let label = match grid.window_counts.get(i).copied() {
+            Some(count) => {
+                let noun = if count == 1 { "window" } else { "windows" };
+                format!("{base_label} ({count} {noun})")
+            }
+            None => base_label.to_string(),
+        };
+        let label = canvas.ellipsize_text(&label, (cell_w - 12.0).max(0.0));
         let text_color = if i == grid.active_index {
             if render_dark_mode() {
                 [0.90, 0.94, 1.0, 1.0]
@@ -3920,9 +3924,10 @@ fn draw_workspace_grid_view(canvas: &mut Canvas<'_>, _rect: Rect, grid: &Workspa
         } else {
             theme_color("text")
         };
+        let text_width = canvas.measure_text(&label);
         canvas.text(
             &label,
-            cell_x + (cell_w - label.len() as f32 * 7.0) * 0.5,
+            cell_x + (cell_w - text_width) * 0.5,
             cell_y + (cell_h - 12.0) * 0.5 + 2.0,
             text_color,
         );

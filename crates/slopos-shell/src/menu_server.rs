@@ -120,6 +120,34 @@ impl MenuServer {
         });
     }
 
+    /// Replace the generated Window-menu Space rows with the latest ordered
+    /// compositor projection. App-provided Window items before the generated
+    /// rows are preserved; dynamic rows keep index actions so keyboard/menu
+    /// dispatch remains compatible with the shell's local mirror.
+    pub fn set_workspace_items(&mut self, workspaces: &[(usize, String)]) {
+        let Some(window_menu) = self.menus.iter_mut().find(|menu| menu.title == "Window") else {
+            return;
+        };
+        let prefix_end = window_menu
+            .items
+            .iter()
+            .position(|item| item.action_id == "workspace.previous")
+            .unwrap_or(window_menu.items.len());
+        let mut prefix = window_menu.items[..prefix_end].to_vec();
+        if !prefix.is_empty()
+            && !matches!(
+                prefix.last().map(|item| &item.kind),
+                Some(MenuItemKind::Separator)
+            )
+        {
+            prefix.push(MenuItem::separator());
+        }
+        let mut rebuilt = Menu::new("Window");
+        rebuilt.items = prefix;
+        append_workspace_items_for(&mut rebuilt, workspaces);
+        *window_menu = rebuilt;
+    }
+
     fn setup_default_menus(&mut self) {
         // Locale from LANG (or defaults); settings.conf locale applied at shell startup
         // via `apply_locale_to_system_menu` when conf is loaded.
@@ -715,6 +743,13 @@ fn workspace_window_menu() -> Menu {
 }
 
 fn append_workspace_items(window_menu: &mut Menu) {
+    let defaults = (0..8)
+        .map(|index| (index, format!("Desktop {}", index + 1)))
+        .collect::<Vec<_>>();
+    append_workspace_items_for(window_menu, &defaults);
+}
+
+fn append_workspace_items_for(window_menu: &mut Menu, workspaces: &[(usize, String)]) {
     window_menu
         .add_action("Previous Workspace")
         .with_action("workspace.previous")
@@ -740,23 +775,22 @@ fn append_workspace_items(window_menu: &mut Menu) {
             },
         );
     window_menu.add_separator();
-    // Eight desktops aligned with compositor WORKSPACE_COUNT.
-    for index in 0..8 {
-        let key = match index {
-            0 => KeyCode::Key1,
-            1 => KeyCode::Key2,
-            2 => KeyCode::Key3,
-            3 => KeyCode::Key4,
-            4 => KeyCode::Key5,
-            5 => KeyCode::Key6,
-            6 => KeyCode::Key7,
-            _ => KeyCode::Key8,
+    for (index, name) in workspaces {
+        let key = match *index {
+            0 => Some(KeyCode::Key1),
+            1 => Some(KeyCode::Key2),
+            2 => Some(KeyCode::Key3),
+            3 => Some(KeyCode::Key4),
+            4 => Some(KeyCode::Key5),
+            5 => Some(KeyCode::Key6),
+            6 => Some(KeyCode::Key7),
+            7 => Some(KeyCode::Key8),
+            _ => None,
         };
         let action = format!("workspace.switch.{}", index);
-        window_menu
-            .add_action(format!("Desktop {}", index + 1))
-            .with_action(&action)
-            .with_shortcut(
+        let item = window_menu.add_action(name.clone()).with_action(&action);
+        if let Some(key) = key {
+            item.with_shortcut(
                 key,
                 Modifiers {
                     shift: false,
@@ -765,6 +799,7 @@ fn append_workspace_items(window_menu: &mut Menu) {
                     meta: false,
                 },
             );
+        }
     }
 }
 

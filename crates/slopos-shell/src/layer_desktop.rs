@@ -39,6 +39,7 @@ enum ChromeSurfaceKind {
     Background,
     Menu,
     MenuPopup,
+    SpacesOverview,
     Dock,
 }
 
@@ -253,7 +254,9 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         pointer_kind: ChromeSurfaceKind::Background,
         modifiers: slopos_kit::event::Modifiers::NONE,
         popup_origin: (0.0, 0.0),
+        spaces_origin: (0.0, 0.0),
         active_toplevel_mtime: None,
+        spaces_state_mtime: None,
     };
 
     event_queue
@@ -338,6 +341,25 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
     popup_wl.set_buffer_scale(buffer_scale as i32);
     popup_wl.commit();
 
+    // Spaces overview — compositor-above-apps overlay, sized/moved only while
+    // the shell's live overview is open (1×1 placeholder when closed).
+    let spaces_wl = compositor.create_surface(&qh, ChromeSurfaceKind::SpacesOverview);
+    let spaces_layer = layer_shell.get_layer_surface(
+        &spaces_wl,
+        None,
+        Layer::Overlay,
+        "slopos-i-spaces-overview".into(),
+        &qh,
+        ChromeSurfaceKind::SpacesOverview,
+    );
+    spaces_layer.set_anchor(Anchor::Top | Anchor::Left);
+    spaces_layer.set_exclusive_zone(0);
+    spaces_layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+    spaces_layer.set_margin(0, 0, 0, 0);
+    spaces_layer.set_size(1, 1);
+    spaces_wl.set_buffer_scale(buffer_scale as i32);
+    spaces_wl.commit();
+
     state.surfaces = vec![
         LayerSurf {
             kind: ChromeSurfaceKind::Background,
@@ -367,6 +389,13 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
             configured: None,
             renderer: None,
         },
+        LayerSurf {
+            kind: ChromeSurfaceKind::SpacesOverview,
+            wl: spaces_wl,
+            layer: spaces_layer,
+            configured: None,
+            renderer: None,
+        },
     ];
 
     // Wait until all chrome surfaces have a configure.
@@ -390,6 +419,7 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
             ChromeSurfaceKind::Menu => (width, MENU_H),
             ChromeSurfaceKind::Dock => (width, DOCK_H),
             ChromeSurfaceKind::MenuPopup => (1, 1),
+            ChromeSurfaceKind::SpacesOverview => (1, 1),
         });
         let (rw, rh) = (
             scale_surface_dimension(cw, buffer_scale),
@@ -436,10 +466,11 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         dispatch_with_timeout(&conn, &mut event_queue, &mut state, 1_000)?;
         let active_toplevel_changed =
             active_toplevel_mtime_changed(&mut state.active_toplevel_mtime);
+        let spaces_state_changed = spaces_state_mtime_changed(&mut state.spaces_state_mtime);
 
         if let Some(mut runtime) = state.runtime.take() {
             runtime.tick();
-            if active_toplevel_changed {
+            if active_toplevel_changed || spaces_state_changed {
                 // The compositor publishes focus independently of shell input;
                 // make the next menu-strip paint reflect that authoritative
                 // client activation without repainting continuously at idle.
@@ -463,6 +494,20 @@ fn active_toplevel_mtime_changed(previous: &mut Option<SystemTime>) -> bool {
                 .map(PathBuf::from)
                 .map(|dir| dir.join("active-toplevel"))
         });
+    let current = path
+        .and_then(|path| fs::metadata(path).ok())
+        .and_then(|metadata| metadata.modified().ok());
+    if *previous == current {
+        return false;
+    }
+    *previous = current;
+    true
+}
+
+fn spaces_state_mtime_changed(previous: &mut Option<SystemTime>) -> bool {
+    let path = std::env::var_os("SLOPOS_SESSION_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .map(|dir| dir.join(slopos_bus::SPACES_STATE_FILE));
     let current = path
         .and_then(|path| fs::metadata(path).ok())
         .and_then(|metadata| metadata.modified().ok());
@@ -553,6 +598,35 @@ fn paint_all(state: &mut LayerDesktopState, runtime: &mut UiRuntime) -> anyhow::
         }
     }
 
+    // Spaces overview Overlay — keep it a separate layer above ordinary XDG
+    // clients so an overview click cannot be intercepted by an app surface.
+    let spaces_geo = runtime
+        .with_root_content_mut(|w| {
+            w.as_any_mut()
+                .downcast_mut::<ShellDesktop>()
+                .and_then(|d| d.workspace_overview_geo())
+        })
+        .flatten();
+    if let Some(surf) = state
+        .surfaces
+        .iter_mut()
+        .find(|s| s.kind == ChromeSurfaceKind::SpacesOverview)
+    {
+        let (x, y, w, h) = spaces_geo.unwrap_or((0, 0, 1, 1));
+        state.spaces_origin = (x as f32, y as f32);
+        let (cw, ch) = surf.configured.unwrap_or((1, 1));
+        if cw != w || ch != h {
+            surf.layer.set_margin(y, 0, 0, x);
+            surf.layer.set_size(w, h);
+            surf.wl.commit();
+        } else if let Some(renderer) = surf.renderer.as_mut() {
+            renderer.resize(
+                scale_surface_dimension(w, state.buffer_scale),
+                scale_surface_dimension(h, state.buffer_scale),
+            );
+        }
+    }
+
     // Background
     runtime.with_root_content_mut(|w| {
         if let Some(desktop) = w.as_any_mut().downcast_mut::<ShellDesktop>() {
@@ -629,6 +703,37 @@ fn paint_all(state: &mut LayerDesktopState, runtime: &mut UiRuntime) -> anyhow::
         }
     }
 
+    // Spaces overview Overlay (only while open and configured).
+    if let Some((_, _, w, h)) = spaces_geo {
+        let ready = state
+            .surfaces
+            .iter()
+            .find(|s| s.kind == ChromeSurfaceKind::SpacesOverview)
+            .and_then(|s| s.configured)
+            .map(|(cw, ch)| cw > 1 || ch > 1)
+            .unwrap_or(false);
+        if ready {
+            runtime.with_root_content_mut(|root| {
+                if let Some(desktop) = root.as_any_mut().downcast_mut::<ShellDesktop>() {
+                    desktop.prepare_workspace_overview_layout(w as f32, h as f32);
+                    desktop.set_paint_filter(ShellPaintFilter::SpacesOverview);
+                }
+            });
+            if let Some(surf) = state
+                .surfaces
+                .iter_mut()
+                .find(|s| s.kind == ChromeSurfaceKind::SpacesOverview)
+            {
+                if let Some(renderer) = surf.renderer.as_mut() {
+                    runtime
+                        .paint_ex(renderer, false, false)
+                        .map_err(|e| anyhow!("Spaces overview paint: {}", e))?;
+                    surf.wl.commit();
+                }
+            }
+        }
+    }
+
     // Dock strip
     runtime.with_root_content_mut(|w| {
         if let Some(desktop) = w.as_any_mut().downcast_mut::<ShellDesktop>() {
@@ -687,6 +792,10 @@ fn map_pointer_to_desktop(
             popup_origin.0 + surface_x as f32,
             popup_origin.1 + surface_y as f32,
         ),
+        ChromeSurfaceKind::SpacesOverview => (
+            popup_origin.0 + surface_x as f32,
+            popup_origin.1 + surface_y as f32,
+        ),
         ChromeSurfaceKind::Dock => {
             let y = (output_h.saturating_sub(DOCK_H) as f64) + surface_y;
             (surface_x as f32, y as f32)
@@ -707,6 +816,7 @@ fn set_runtime_input_filter(runtime: &mut UiRuntime, kind: Option<ChromeSurfaceK
         ChromeSurfaceKind::Background => ShellPaintFilter::Background,
         ChromeSurfaceKind::Menu => ShellPaintFilter::MenuBar,
         ChromeSurfaceKind::MenuPopup => ShellPaintFilter::MenuPopup,
+        ChromeSurfaceKind::SpacesOverview => ShellPaintFilter::SpacesOverview,
         ChromeSurfaceKind::Dock => ShellPaintFilter::Dock,
     });
     set_runtime_filter(runtime, filter);
@@ -731,9 +841,13 @@ struct LayerDesktopState {
     modifiers: slopos_kit::event::Modifiers,
     /// Output-local origin of the menu Overlay popup surface.
     popup_origin: (f32, f32),
+    /// Output-local origin of the Spaces overview Overlay surface.
+    spaces_origin: (f32, f32),
     /// Last observed compositor focus-record mtime; used to repaint the
     /// global menu only when focus changes.
     active_toplevel_mtime: Option<SystemTime>,
+    /// Last observed compositor Spaces projection mtime.
+    spaces_state_mtime: Option<SystemTime>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for LayerDesktopState {
@@ -859,7 +973,11 @@ impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for LayerDesk
                     surface_x,
                     surface_y,
                     state.output_h,
-                    state.popup_origin,
+                    if state.pointer_kind == ChromeSurfaceKind::SpacesOverview {
+                        state.spaces_origin
+                    } else {
+                        state.popup_origin
+                    },
                 );
                 if let Some(runtime) = state.runtime.as_mut() {
                     set_runtime_input_filter(runtime, Some(state.pointer_kind));
@@ -882,7 +1000,11 @@ impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for LayerDesk
                     px,
                     py,
                     state.output_h,
-                    state.popup_origin,
+                    if state.pointer_kind == ChromeSurfaceKind::SpacesOverview {
+                        state.spaces_origin
+                    } else {
+                        state.popup_origin
+                    },
                 );
                 if let Some(runtime) = state.runtime.as_mut() {
                     set_runtime_input_filter(runtime, Some(state.pointer_kind));
@@ -909,7 +1031,11 @@ impl Dispatch<wayland_client::protocol::wl_pointer::WlPointer, ()> for LayerDesk
                     surface_x,
                     surface_y,
                     state.output_h,
-                    state.popup_origin,
+                    if state.pointer_kind == ChromeSurfaceKind::SpacesOverview {
+                        state.spaces_origin
+                    } else {
+                        state.popup_origin
+                    },
                 );
                 if let Some(runtime) = state.runtime.as_mut() {
                     set_runtime_input_filter(runtime, Some(state.pointer_kind));
@@ -1028,6 +1154,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, ChromeSurfaceKind> for LayerDesktopState {
             let w = if width == 0 {
                 match kind {
                     ChromeSurfaceKind::MenuPopup => 1,
+                    ChromeSurfaceKind::SpacesOverview => 1,
                     _ => state.output_w,
                 }
             } else {
@@ -1039,6 +1166,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, ChromeSurfaceKind> for LayerDesktopState {
                     ChromeSurfaceKind::Dock => DOCK_H,
                     ChromeSurfaceKind::Background => state.output_h,
                     ChromeSurfaceKind::MenuPopup => 1,
+                    ChromeSurfaceKind::SpacesOverview => 1,
                 }
             } else {
                 height

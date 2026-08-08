@@ -119,18 +119,22 @@ use crate::frame_timing::{FrameScheduler, RefreshRate};
 use crate::hdr::HdrCapabilities;
 use crate::work_area::{compute_exclusive_work_area, ExclusiveZoneReservation};
 use crate::{
-    activate_workspace_index as activate_workspace_state, assign_new_window_to_active,
     clamp_window_to_work_area, clear_interactive_grab_state, detect_output_scale_from_env,
-    discover_drm_nodes, drm_presentation_pipeline, focus_window_after_workspace_switch,
-    geometry_for_interactive_grab, output_scale_summary, plan_drm_modeset,
-    pointer_grab_request_is_valid_for_window, preferred_primary_drm_node,
-    register_wayland_display_source, session_mode_summary, surface_tree_root,
-    transition_presentation_state, visible_paint_order, CompositorBackendKind, DisplayPolicy,
+    discover_drm_nodes, drm_presentation_pipeline, fullscreen_classification_from_wire,
+    fullscreen_classification_to_wire, geometry_for_interactive_grab,
+    multi_monitor_policy_from_wire, multi_monitor_policy_to_wire, new_session_epoch,
+    output_scale_summary, plan_drm_modeset, pointer_grab_request_is_valid_for_window,
+    preferred_primary_drm_node, register_wayland_display_source, session_mode_summary,
+    surface_tree_root, transition_presentation_state, CompositorBackendKind, DisplayPolicy,
     DrmPresentationStage, InteractiveGrab, InteractiveGrabKind, OutputScale,
-    PointerConstraintMotion, ResizeEdges, WindowGeometry, WindowPresentationState, WorkspaceId,
-    WorkspaceState, DEFAULT_OUTPUT_H, DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
+    PointerConstraintMotion, ResizeEdges, SpaceId, SpaceTarget, SpacesError, SpacesModel,
+    WindowGeometry, WindowPresentationState, WorkspaceId, WorkspaceState, DEFAULT_OUTPUT_H,
+    DEFAULT_OUTPUT_W, DEFAULT_WINDOW_H, DEFAULT_WINDOW_W,
 };
-use slopos_bus::{SessionControlListener, SessionControlRequest, WindowPresentationAction};
+use slopos_bus::{
+    write_spaces_snapshot, SessionControlListener, SessionControlRequest, SpaceTargetWire,
+    SpacesControlCommand, SpacesSnapshot, WindowPresentationAction,
+};
 // Workspace cycle helpers (`cycle_workspace_*` / `activate_workspace_index`) request a
 // full redraw and re-focus the topmost visible window. Super+key bindings can call them
 // when seat keyboard filtering is wired (mirrors nested X11 main path).
@@ -141,6 +145,37 @@ type MimePayload = Arc<HashMap<String, Vec<u8>>>;
 /// Convert Smithay relative-motion microseconds to a nonzero Wayland timestamp.
 fn relative_motion_time_millis(utime: u64) -> u32 {
     u32::try_from(utime / 1_000).unwrap_or(u32::MAX).max(1)
+}
+
+fn spaces_persistence_path() -> Option<PathBuf> {
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join(".local/share"))
+        })?;
+    Some(data_home.join("slopos-i").join("spaces.json"))
+}
+
+fn load_initial_spaces_model() -> SpacesModel {
+    if let Some(path) = spaces_persistence_path() {
+        match SpacesModel::load(&path) {
+            Ok(mut model) => {
+                model.clear_window_memberships();
+                return model;
+            }
+            Err(error) if path.exists() => {
+                tracing::warn!(
+                    %error,
+                    path = %path.display(),
+                    "ignoring invalid persisted Spaces model"
+                );
+            }
+            Err(_) => {}
+        }
+    }
+    SpacesModel::with_default_count(8).expect("default Spaces model is valid")
 }
 
 #[derive(Clone, Copy)]
@@ -568,7 +603,7 @@ fn collect_render_elements(
         .windows
         .iter()
         .rev()
-        .filter(|w| !w.minimized && state.workspace_state.is_visible(&w.window_id))
+        .filter(|w| !w.minimized && state.window_visible_on_active(&w.window_id))
     {
         let popup_elements = PopupManager::popups_for_surface(w.toplevel.wl_surface()).flat_map(
             |(popup, popup_offset)| {
@@ -711,7 +746,7 @@ fn release_frame_callbacks(state: &DrmSessionState, clock: &Clock<Monotonic>) {
     let visible: Vec<WlSurface> = state
         .windows
         .iter()
-        .filter(|w| !w.minimized && state.workspace_state.is_visible(&w.window_id))
+        .filter(|w| !w.minimized && state.window_visible_on_active(&w.window_id))
         .map(|w| w.toplevel.wl_surface().clone())
         .collect();
     for surface in visible {
@@ -1288,6 +1323,7 @@ pub fn run_drm_session() -> Result<()> {
         "DRM session entering protocol + seat event loop"
     );
 
+    let initial_spaces = load_initial_spaces_model();
     let mut state = DrmSessionState {
         display_handle: dh,
         compositor_state,
@@ -1312,6 +1348,9 @@ pub fn run_drm_session() -> Result<()> {
         outputs: vec![output],
         windows: Vec::new(),
         workspace_state: WorkspaceState::new(),
+        spaces: initial_spaces,
+        spaces_session_epoch: new_session_epoch(),
+        spaces_revision: 0,
         layer_surfaces: Vec::new(),
         popup_manager: PopupManager::default(),
         popup_grab: None,
@@ -1355,6 +1394,9 @@ pub fn run_drm_session() -> Result<()> {
             )
             .map_err(|error| anyhow!("insert session control socket: {error}"))?;
     }
+
+    state.sync_legacy_workspace_state();
+    state.publish_spaces_state(false);
 
     eprintln!(
         "[slopos-compositor] DRM session loop running (Wayland + seat + udev + libinput + layer-shell + foreign-toplevel; scanout_armed={scanout_armed})"
@@ -1647,7 +1689,14 @@ struct DrmSessionState {
     #[allow(dead_code)]
     outputs: Vec<Output>,
     windows: Vec<MappedWindow>,
+    /// Legacy indexed workspace mirror retained for compatibility with shared
+    /// helpers; dynamic visibility and membership are authoritative in `spaces`.
     workspace_state: WorkspaceState,
+    /// Compositor-owned dynamic Spaces model and shell-facing revision.
+    spaces: SpacesModel,
+    /// Session epoch used to make shell revision reconciliation restart-safe.
+    spaces_session_epoch: u64,
+    spaces_revision: u64,
     layer_surfaces: Vec<MappedLayer>,
     popup_manager: PopupManager,
     popup_grab: Option<PopupGrab<DrmSessionState>>,
@@ -1793,7 +1842,163 @@ impl DrmSessionState {
         }
     }
 
-    /// Drop dead xdg windows and keep `workspace_state` in sync.
+    fn spaces_snapshot(&self) -> SpacesSnapshot {
+        SpacesSnapshot {
+            session_epoch: self.spaces_session_epoch,
+            revision: self.spaces_revision,
+            active_space: self.spaces.active_space().get(),
+            multi_monitor_policy: multi_monitor_policy_to_wire(self.spaces.multi_monitor_policy()),
+            spaces: self
+                .spaces
+                .overview()
+                .into_iter()
+                .map(|space| slopos_bus::SpaceSnapshot {
+                    id: space.id().get(),
+                    order: space.order(),
+                    name: space.name().to_owned(),
+                    active: space.active(),
+                    window_count: space.window_count(),
+                    wallpaper: space.wallpaper().map(str::to_owned),
+                    appearance: space.appearance().map(str::to_owned),
+                    classification: fullscreen_classification_to_wire(space.classification()),
+                    output_id: space.output_id().map(str::to_owned),
+                })
+                .collect(),
+        }
+    }
+
+    /// Keep legacy indexed helpers available for older in-process paths.
+    /// Dynamic visibility and membership always consult `self.spaces`.
+    fn sync_legacy_workspace_state(&mut self) {
+        let mut mirror = WorkspaceState::new();
+        if let Ok(active) = u8::try_from(self.spaces.active_index()) {
+            if let Some(active) = WorkspaceId::new(active) {
+                let _ = mirror.activate(active);
+            }
+        }
+        for (order, space) in self.spaces.spaces().iter().enumerate().take(8) {
+            let Ok(index) = u8::try_from(order) else {
+                break;
+            };
+            let Some(workspace) = WorkspaceId::new(index) else {
+                break;
+            };
+            for window_id in space.windows() {
+                let _ = mirror.assign_window(window_id.clone(), workspace);
+            }
+        }
+        self.workspace_state = mirror;
+    }
+
+    fn window_visible_on_active(&self, window_id: &str) -> bool {
+        self.spaces
+            .window_spaces(window_id)
+            .into_iter()
+            .any(|space| space == self.spaces.active_space())
+    }
+
+    fn publish_spaces_state(&mut self, persist: bool) {
+        self.spaces_revision = self.spaces_revision.saturating_add(1);
+        let snapshot = self.spaces_snapshot();
+        if let Err(error) = write_spaces_snapshot(&snapshot) {
+            tracing::debug!(%error, "could not publish Spaces snapshot");
+        }
+        if persist {
+            if let Some(path) = spaces_persistence_path() {
+                if let Some(parent) = path.parent() {
+                    if let Err(error) = std::fs::create_dir_all(parent) {
+                        tracing::warn!(
+                            %error,
+                            path = %parent.display(),
+                            "could not create Spaces data directory"
+                        );
+                    } else if let Err(error) = self.spaces.save_atomic(&path) {
+                        tracing::warn!(
+                            %error,
+                            path = %path.display(),
+                            "could not persist Spaces model"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_spaces_command(&mut self, command: SpacesControlCommand) {
+        let result = match command {
+            SpacesControlCommand::Select { id } => SpaceId::new(id)
+                .ok_or(SpacesError::InvalidSpaceId(id))
+                .and_then(|id| self.spaces.select_space(id)),
+            SpacesControlCommand::Create { name } => self.spaces.create_space(name),
+            SpacesControlCommand::Rename { id, name } => SpaceId::new(id)
+                .ok_or(SpacesError::InvalidSpaceId(id))
+                .and_then(|id| self.spaces.rename_space(id, name).map(|()| id)),
+            SpacesControlCommand::Reorder { id, order } => SpaceId::new(id)
+                .ok_or(SpacesError::InvalidSpaceId(id))
+                .and_then(|id| self.spaces.reorder_space(id, order).map(|()| id)),
+            SpacesControlCommand::Remove { id } => SpaceId::new(id)
+                .ok_or(SpacesError::InvalidSpaceId(id))
+                .and_then(|id| self.spaces.remove_space(id)),
+            SpacesControlCommand::MoveWindow { window_id, target } => {
+                if !self
+                    .windows
+                    .iter()
+                    .any(|window| window.window_id == window_id)
+                {
+                    tracing::warn!(%window_id, "rejecting Spaces move for unknown window");
+                    return;
+                }
+                let target = match target {
+                    SpaceTargetWire::Current => SpaceTarget::Current,
+                    SpaceTargetWire::Id { id } => match SpaceId::new(id) {
+                        Some(id) => SpaceTarget::Id(id),
+                        None => {
+                            tracing::warn!(id, "rejecting Spaces move with invalid Space ID");
+                            return;
+                        }
+                    },
+                    SpaceTargetWire::All => SpaceTarget::All,
+                };
+                let active_space = self.spaces.active_space();
+                self.spaces
+                    .move_window(window_id, target)
+                    .map(|()| active_space)
+            }
+            SpacesControlCommand::SetWallpaper { id, wallpaper } => SpaceId::new(id)
+                .ok_or(SpacesError::InvalidSpaceId(id))
+                .and_then(|id| self.spaces.set_wallpaper(id, wallpaper).map(|()| id)),
+            SpacesControlCommand::SetAppearance { id, appearance } => SpaceId::new(id)
+                .ok_or(SpacesError::InvalidSpaceId(id))
+                .and_then(|id| self.spaces.set_appearance(id, appearance).map(|()| id)),
+            SpacesControlCommand::SetClassification { id, classification } => SpaceId::new(id)
+                .ok_or(SpacesError::InvalidSpaceId(id))
+                .and_then(|id| {
+                    self.spaces
+                        .set_classification(id, fullscreen_classification_from_wire(classification))
+                        .map(|()| id)
+                }),
+            SpacesControlCommand::SetMultiMonitorPolicy { policy } => {
+                self.spaces
+                    .set_multi_monitor_policy(multi_monitor_policy_from_wire(policy));
+                Ok(self.spaces.active_space())
+            }
+            SpacesControlCommand::AssignOutput { id, output_id } => SpaceId::new(id)
+                .ok_or(SpacesError::InvalidSpaceId(id))
+                .and_then(|id| self.spaces.set_space_output(id, output_id).map(|()| id)),
+        };
+
+        match result {
+            Ok(_) => {
+                self.sync_legacy_workspace_state();
+                self.publish_spaces_state(true);
+                self.request_full_redraw();
+                self.apply_focus_after_workspace_switch();
+            }
+            Err(error) => tracing::warn!(%error, "rejecting Spaces command"),
+        }
+    }
+
+    /// Drop dead xdg windows and keep dynamic Spaces membership in sync.
     fn prune_dead_windows(&mut self) {
         let dead_ids: std::collections::HashSet<String> = self
             .windows
@@ -1824,13 +2029,17 @@ impl DrmSessionState {
         let mut retained = Vec::with_capacity(self.windows.len().saturating_sub(dead_ids.len()));
         for window in self.windows.drain(..) {
             if dead_ids.contains(&window.window_id) {
-                self.workspace_state.remove_window(&window.window_id);
                 window.foreign.send_closed();
             } else {
                 retained.push(window);
             }
         }
         self.windows = retained;
+        for window_id in &dead_ids {
+            self.spaces.remove_window(window_id);
+        }
+        self.sync_legacy_workspace_state();
+        self.publish_spaces_state(true);
 
         if self
             .last_minimized_window_id
@@ -1849,13 +2058,11 @@ impl DrmSessionState {
     /// The GL composition path consumes this ordering; the dumb-buffer pageflip
     /// remains only the explicit fallback when DrmCompositor initialization fails.
     fn window_ids_for_present(&self) -> Vec<&str> {
-        let order: Vec<&str> = self
-            .windows
+        self.windows
             .iter()
-            .filter(|w| !w.minimized)
+            .filter(|w| !w.minimized && self.window_visible_on_active(&w.window_id))
             .map(|w| w.window_id.as_str())
-            .collect();
-        visible_paint_order(&self.workspace_state, &order)
+            .collect()
     }
 
     /// Focus topmost visible window after map/destroy/workspace change; clear if none.
@@ -1866,8 +2073,12 @@ impl DrmSessionState {
             .filter(|w| !w.minimized)
             .map(|w| w.window_id.as_str())
             .collect();
-        let target =
-            focus_window_after_workspace_switch(&self.workspace_state, &order).map(str::to_owned);
+        let target = order
+            .iter()
+            .rev()
+            .copied()
+            .find(|id| self.window_visible_on_active(id))
+            .map(str::to_owned);
         if let Some(id) = target {
             if let Some(w) = self.windows.iter().find(|w| w.window_id == id) {
                 let surf = w.toplevel.wl_surface().clone();
@@ -1897,6 +2108,9 @@ impl DrmSessionState {
             }
             SessionControlRequest::SwitchWorkspace { index } => {
                 self.activate_workspace_index(index);
+            }
+            SessionControlRequest::Spaces { command } => {
+                self.apply_spaces_command(command);
             }
             SessionControlRequest::ReconfigureOutputs { layout } => {
                 tracing::warn!(
@@ -1935,6 +2149,20 @@ impl DrmSessionState {
         };
 
         let window_id = self.windows[idx].window_id.clone();
+        if !self.window_visible_on_active(&window_id) {
+            let Some(space) = self.spaces.window_spaces(&window_id).first().copied() else {
+                tracing::debug!(%bundle_id, %window_id, "application activation found no Space membership");
+                return;
+            };
+            if let Err(error) = self.spaces.activate_space(space) {
+                tracing::warn!(%error, %window_id, "could not activate application Space");
+                return;
+            }
+            self.sync_legacy_workspace_state();
+            self.publish_spaces_state(true);
+            self.request_full_redraw();
+            self.apply_focus_after_workspace_switch();
+        }
         if self.windows[idx].minimized {
             let surface = self.windows[idx].toplevel.clone();
             self.set_window_presentation_state(&surface, WindowPresentationState::Normal);
@@ -2044,37 +2272,50 @@ impl DrmSessionState {
     /// Super+workspace (or other key) entry points — full redraw + focus rebind.
     #[allow(dead_code)] // seat Super+key filter will call these when wired
     fn cycle_workspace_next(&mut self) {
-        self.workspace_state.cycle_next();
+        self.spaces.cycle_next();
+        self.sync_legacy_workspace_state();
+        self.publish_spaces_state(true);
         self.request_full_redraw();
         eprintln!(
             "[slopos-compositor/drm] {}",
-            self.workspace_state.summary_line()
+            self.spaces_snapshot().active_space
         );
         self.apply_focus_after_workspace_switch();
     }
 
     #[allow(dead_code)]
     fn cycle_workspace_prev(&mut self) {
-        self.workspace_state.cycle_prev();
+        self.spaces.cycle_previous();
+        self.sync_legacy_workspace_state();
+        self.publish_spaces_state(true);
         self.request_full_redraw();
         eprintln!(
             "[slopos-compositor/drm] {}",
-            self.workspace_state.summary_line()
+            self.spaces_snapshot().active_space
         );
         self.apply_focus_after_workspace_switch();
     }
 
     #[allow(dead_code)]
     fn activate_workspace_index(&mut self, index: u8) {
-        if activate_workspace_state(&mut self.workspace_state, index) {
+        let Some(space_id) = self
+            .spaces
+            .spaces()
+            .get(usize::from(index))
+            .map(|space| space.id())
+        else {
+            tracing::warn!(index, "rejecting invalid workspace activation request");
+            return;
+        };
+        if self.spaces.activate_space(space_id).is_ok() {
+            self.sync_legacy_workspace_state();
+            self.publish_spaces_state(true);
             self.request_full_redraw();
             eprintln!(
                 "[slopos-compositor/drm] {}",
-                self.workspace_state.summary_line()
+                self.spaces_snapshot().active_space
             );
             self.apply_focus_after_workspace_switch();
-        } else {
-            tracing::warn!(index, "rejecting invalid workspace activation request");
         }
     }
 
@@ -2323,7 +2564,7 @@ impl DrmSessionState {
             self.output_area(),
             None,
             "drm-0",
-            self.workspace_state.active.as_usize(),
+            self.spaces.active_index(),
         );
         self.windows[idx].presentation_state = transition.state;
         self.windows[idx].restore_state = transition.restore_state;
@@ -2599,7 +2840,7 @@ impl DrmSessionState {
             .windows
             .iter()
             .rev()
-            .filter(|w| !w.minimized && self.workspace_state.is_visible(&w.window_id))
+            .filter(|w| !w.minimized && self.window_visible_on_active(&w.window_id))
         {
             for (popup, popup_offset) in PopupManager::popups_for_surface(w.toplevel.wl_surface()) {
                 let origin: Point<i32, Logical> = Point::from((
@@ -3143,11 +3384,9 @@ impl XdgShellHandler for DrmSessionState {
         );
 
         let window_id = foreign.identifier();
-        // Map → active workspace; remove is paired in destroy/prune.
-        if !assign_new_window_to_active(&mut self.workspace_state, window_id.clone()) {
-            let _ = self
-                .workspace_state
-                .assign_window(window_id.clone(), WorkspaceId::FIRST);
+        // Map → active Space; removal is paired in destroy/prune.
+        if let Err(error) = self.spaces.assign_window_to_current(window_id.clone()) {
+            tracing::warn!(%error, %window_id, "could not assign mapped window to active Space");
         }
         self.windows.push(MappedWindow {
             toplevel: surface.clone(),
@@ -3160,10 +3399,12 @@ impl XdgShellHandler for DrmSessionState {
             restore_state: None,
             minimized: false,
         });
-        // Listing/present filter: only active-workspace ids (client SHM composite TBD).
+        self.sync_legacy_workspace_state();
+        self.publish_spaces_state(true);
+        // Listing/present filter: only active-Space ids (client SHM composite TBD).
         eprintln!(
-            "[slopos-compositor/drm] {} window_id={window_id} present={:?}",
-            self.workspace_state.summary_line(),
+            "[slopos-compositor/drm] active_space={} window_id={window_id} present={:?}",
+            self.spaces.active_space(),
             self.window_ids_for_present()
         );
         self.focus_surface(Some(surface.wl_surface().clone()));
@@ -3259,7 +3500,9 @@ impl XdgShellHandler for DrmSessionState {
             .position(|w| w.toplevel.wl_surface() == destroyed_surface)
         {
             let win = self.windows.remove(idx);
-            self.workspace_state.remove_window(&win.window_id);
+            self.spaces.remove_window(&win.window_id);
+            self.sync_legacy_workspace_state();
+            self.publish_spaces_state(true);
             if self.last_minimized_window_id.as_deref() == Some(win.window_id.as_str()) {
                 self.last_minimized_window_id = None;
             }
