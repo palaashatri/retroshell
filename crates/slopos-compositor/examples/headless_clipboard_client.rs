@@ -52,6 +52,7 @@ enum Mode {
     SourceOnce,
     Sink,
     SinkAfterSourceDeath,
+    SinkAbort,
     PrimarySource,
     PrimarySink,
 }
@@ -60,6 +61,7 @@ enum Mode {
 struct State {
     toplevel_configured: bool,
     close_requested: bool,
+    source_cancelled_reported: bool,
     data_offer: Option<wl_data_offer::WlDataOffer>,
     offered_mimes: Vec<String>,
     selection_received: bool,
@@ -270,7 +272,11 @@ impl Dispatch<wl_data_source::WlDataSource, ()> for State {
                 // the compositor-provided fd without writing any bytes.
             }
             wl_data_source::Event::Cancelled => {
-                println!("SLOPOS_CLIPBOARD_SOURCE_CANCELLED");
+                if !state.source_cancelled_reported {
+                    state.source_cancelled_reported = true;
+                    println!("SLOPOS_CLIPBOARD_SOURCE_CANCELLED");
+                    let _ = std::io::stdout().flush();
+                }
             }
             _ => {}
         }
@@ -567,6 +573,73 @@ fn run_sink(connection: &Connection, expect_selection: bool) -> Result<(), Box<d
     Ok(())
 }
 
+fn run_sink_abort(connection: &Connection) -> Result<(), Box<dyn Error>> {
+    let (globals, mut event_queue) = registry_queue_init::<State>(connection)?;
+    let queue_handle = event_queue.handle();
+    let compositor = globals.bind::<wl_compositor::WlCompositor, _, _>(&queue_handle, 1..=6, ())?;
+    let wm_base = globals.bind::<xdg_wm_base::XdgWmBase, _, _>(&queue_handle, 1..=6, ())?;
+    let manager = globals.bind::<wl_data_device_manager::WlDataDeviceManager, _, _>(
+        &queue_handle,
+        1..=3,
+        (),
+    )?;
+    let seat = globals.bind::<wl_seat::WlSeat, _, _>(&queue_handle, 1..=9, ())?;
+    let _data_device = manager.get_data_device(&seat, &queue_handle, ());
+    let (surface, _xdg_surface, _toplevel) = create_toplevel(
+        &compositor,
+        &wm_base,
+        &queue_handle,
+        "SLOPOS clipboard sink abort",
+    );
+    connection.flush()?;
+    let mut state = State::default();
+    wait_for_toplevel(&mut event_queue, &mut state)?;
+    surface.commit();
+    connection.flush()?;
+
+    while !state.selection_received {
+        if state.close_requested {
+            return Err("compositor closed clipboard abort sink before selection".into());
+        }
+        event_queue.blocking_dispatch(&mut state)?;
+    }
+    let offer = state
+        .data_offer
+        .clone()
+        .ok_or("selection event did not include a data offer")?;
+    if !state.offered_mimes.iter().any(|mime| mime == MIME_LARGE) {
+        return Err(format!(
+            "clipboard abort offer missing large MIME type: {:?}",
+            state.offered_mimes
+        )
+        .into());
+    }
+
+    // Read one bounded chunk, then close the receiving side. This is honest
+    // target-death evidence: the large transfer was observed partially, not
+    // reported as a successful full payload after the target disappeared.
+    let (mut reader, writer) = UnixStream::pair()?;
+    reader.set_read_timeout(Some(Duration::from_secs(10)))?;
+    offer.receive(MIME_LARGE.to_owned(), writer.as_fd());
+    connection.flush()?;
+    drop(writer);
+    let mut partial = [0u8; 4096];
+    let bytes_read = reader.read(&mut partial)?;
+    if bytes_read == 0 || bytes_read >= LARGE_PAYLOAD_SIZE {
+        return Err(format!(
+            "clipboard abort did not observe a partial large transfer: {bytes_read} bytes"
+        )
+        .into());
+    }
+    drop(reader);
+    // Let the compositor's detached writer observe the closed reader and emit
+    // its EPIPE/ECONNRESET marker before this client exits.
+    thread::sleep(Duration::from_millis(100));
+    println!("SLOPOS_CLIPBOARD_TARGET_DEATH_RECOVERED bytes={bytes_read} closed_reader=true");
+    std::io::stdout().flush()?;
+    Ok(())
+}
+
 fn run_primary_sink(connection: &Connection) -> Result<(), Box<dyn Error>> {
     let (globals, mut event_queue) = registry_queue_init::<State>(connection)?;
     let queue_handle = event_queue.handle();
@@ -654,10 +727,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some("source-once") => Mode::SourceOnce,
         Some("sink") => Mode::Sink,
         Some("sink-after-source-death") => Mode::SinkAfterSourceDeath,
+        Some("sink-abort") => Mode::SinkAbort,
         Some("primary-source") => Mode::PrimarySource,
         Some("primary-sink") => Mode::PrimarySink,
         _ => return Err(
-            "usage: headless_clipboard_client <source|source-once|sink|sink-after-source-death|primary-source|primary-sink>"
+            "usage: headless_clipboard_client <source|source-once|sink|sink-after-source-death|sink-abort|primary-source|primary-sink>"
                 .into(),
         ),
     };
@@ -667,6 +741,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Mode::SourceOnce => run_source(&connection, false),
         Mode::Sink => run_sink(&connection, true),
         Mode::SinkAfterSourceDeath => run_sink(&connection, false),
+        Mode::SinkAbort => run_sink_abort(&connection),
         Mode::PrimarySource => run_primary_source(&connection),
         Mode::PrimarySink => run_primary_sink(&connection),
     }

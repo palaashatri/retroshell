@@ -2566,11 +2566,22 @@ mod linux {
                 let mut file = std::fs::File::from(fd);
                 if let Some(bytes) = data {
                     if let Err(err) = file.write_all(&bytes) {
-                        tracing::debug!(
-                            mime_type = %mime_type,
-                            error = %err,
-                            "selection send write failed"
-                        );
+                        if matches!(
+                            err.kind(),
+                            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                        ) {
+                            tracing::warn!(
+                                mime_type = %mime_type,
+                                error = %err,
+                                "SLOPOS_SELECTION_TARGET_DISCONNECTED"
+                            );
+                        } else {
+                            tracing::debug!(
+                                mime_type = %mime_type,
+                                error = %err,
+                                "selection send write failed"
+                            );
+                        }
                     }
                 }
                 // Dropping `file` closes the fd → EOF for the receiving client.

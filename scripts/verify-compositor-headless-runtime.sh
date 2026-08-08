@@ -39,7 +39,9 @@ protocol_log="$artifact_dir/${commit_sha}-xdg-protocol.log"
 pointer_constraints_log="$artifact_dir/${commit_sha}-pointer-constraints.log"
 clipboard_log="$artifact_dir/${commit_sha}-clipboard.log"
 clipboard_source_log="$artifact_dir/${commit_sha}-clipboard-source.log"
+clipboard_replacement_source_log="$artifact_dir/${commit_sha}-clipboard-replacement-source.log"
 clipboard_sink_log="$artifact_dir/${commit_sha}-clipboard-sink.log"
+clipboard_sink_abort_log="$artifact_dir/${commit_sha}-clipboard-sink-abort.log"
 primary_selection_log="$artifact_dir/${commit_sha}-primary-selection.log"
 primary_selection_source_log="$artifact_dir/${commit_sha}-primary-selection-source.log"
 primary_selection_sink_log="$artifact_dir/${commit_sha}-primary-selection-sink.log"
@@ -64,7 +66,22 @@ stress_passed() {
 
 has_clipboard_marker() {
   local marker="$1"
-  [[ -s "$clipboard_sink_log" ]] && grep -q "^${marker} " "$clipboard_sink_log"
+  for log in "$clipboard_sink_log" "$clipboard_sink_abort_log"; do
+    if [[ -s "$log" ]] && grep -q "^${marker} " "$log"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+has_compositor_marker() {
+  local marker="$1"
+  [[ -s "$compositor_log" ]] && grep -q "$marker" "$compositor_log"
+}
+
+clipboard_source_cancelled_exactly_once() {
+  [[ -s "$clipboard_source_log" ]] &&
+    [[ "$(grep -c '^SLOPOS_CLIPBOARD_SOURCE_CANCELLED$' "$clipboard_source_log" || true)" == 1 ]]
 }
 
 has_primary_selection_marker() {
@@ -75,7 +92,9 @@ has_primary_selection_marker() {
 combine_clipboard_logs() {
   : >"$clipboard_log"
   [[ -f "$clipboard_source_log" ]] && cat "$clipboard_source_log" >>"$clipboard_log"
+  [[ -f "$clipboard_replacement_source_log" ]] && cat "$clipboard_replacement_source_log" >>"$clipboard_log"
   [[ -f "$clipboard_sink_log" ]] && cat "$clipboard_sink_log" >>"$clipboard_log"
+  [[ -f "$clipboard_sink_abort_log" ]] && cat "$clipboard_sink_abort_log" >>"$clipboard_log"
 }
 
 combine_primary_selection_logs() {
@@ -89,7 +108,7 @@ write_artifact() {
   local failure="${2:-}"
   cat >"$artifact.tmp" <<JSON
 {
-  "schema": 9,
+  "schema": 10,
   "component": "slopos-compositor",
   "commit": "$commit_sha",
   "branch": "$branch",
@@ -115,6 +134,9 @@ write_artifact() {
   "clipboard_large_transfer_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_LARGE_TRANSFER_VERIFIED && printf true || printf false),
   "clipboard_missing_mime_eof_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_MISSING_MIME_EOF_VERIFIED && printf true || printf false),
   "clipboard_source_death_cleared": $(has_clipboard_marker SLOPOS_CLIPBOARD_SOURCE_DEATH_CLEARED && printf true || printf false),
+  "clipboard_source_cancelled_verified": $(clipboard_source_cancelled_exactly_once && printf true || printf false),
+  "clipboard_target_death_recovered_verified": $(has_clipboard_marker SLOPOS_CLIPBOARD_TARGET_DEATH_RECOVERED && printf true || printf false),
+  "selection_target_disconnected_verified": $(has_compositor_marker SLOPOS_SELECTION_TARGET_DISCONNECTED && printf true || printf false),
   "primary_selection_offer_verified": $(has_primary_selection_marker SLOPOS_PRIMARY_SELECTION_OFFER_VERIFIED && printf true || printf false),
   "primary_selection_transfer_verified": $(has_primary_selection_marker SLOPOS_PRIMARY_SELECTION_TRANSFER_VERIFIED && printf true || printf false),
   "primary_selection_missing_mime_eof_verified": $(has_primary_selection_marker SLOPOS_PRIMARY_SELECTION_MISSING_MIME_EOF_VERIFIED && printf true || printf false),
@@ -135,7 +157,9 @@ write_artifact() {
   "pointer_constraints_log": "$(basename "$pointer_constraints_log")",
   "clipboard_log": "$(basename "$clipboard_log")",
   "clipboard_source_log": "$(basename "$clipboard_source_log")",
+  "clipboard_replacement_source_log": "$(basename "$clipboard_replacement_source_log")",
   "clipboard_sink_log": "$(basename "$clipboard_sink_log")",
+  "clipboard_sink_abort_log": "$(basename "$clipboard_sink_abort_log")",
   "primary_selection_log": "$(basename "$primary_selection_log")",
   "primary_selection_source_log": "$(basename "$primary_selection_source_log")",
   "primary_selection_sink_log": "$(basename "$primary_selection_sink_log")"
@@ -313,6 +337,79 @@ for marker in \
     exit 1
   fi
 done
+
+printf 'Exercising clipboard target death during a large transfer\n'
+if ! WAYLAND_DISPLAY="$socket_name" timeout 30s \
+  target/debug/examples/headless_clipboard_client sink-abort >"$clipboard_sink_abort_log" 2>&1; then
+  write_artifact failed "clipboard_target_death_sink_failed"
+  cat "$clipboard_source_log" >&2
+  cat "$clipboard_sink_abort_log" >&2
+  exit 1
+fi
+if ! has_clipboard_marker SLOPOS_CLIPBOARD_TARGET_DEATH_RECOVERED; then
+  write_artifact failed "missing_SLOPOS_CLIPBOARD_TARGET_DEATH_RECOVERED"
+  cat "$clipboard_sink_abort_log" >&2
+  exit 1
+fi
+selection_target_disconnected=false
+for _ in $(seq 1 100); do
+  if has_compositor_marker SLOPOS_SELECTION_TARGET_DISCONNECTED; then
+    selection_target_disconnected=true
+    break
+  fi
+  if ! kill -0 "$compositor_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+if [[ "$selection_target_disconnected" != true ]]; then
+  write_artifact failed "missing_SLOPOS_SELECTION_TARGET_DISCONNECTED"
+  cat "$clipboard_sink_abort_log" >&2
+  cat "$compositor_log" >&2
+  exit 1
+fi
+if ! kill -0 "$compositor_pid" 2>/dev/null; then
+  write_artifact failed "compositor_died_after_clipboard_target_death"
+  cat "$compositor_log" >&2
+  exit 1
+fi
+
+printf 'Exercising clipboard source cancellation on selection replacement\n'
+if ! WAYLAND_DISPLAY="$socket_name" timeout 10s \
+  target/debug/examples/headless_clipboard_client source-once >"$clipboard_replacement_source_log" 2>&1; then
+  write_artifact failed "clipboard_source_replacement_failed"
+  cat "$clipboard_source_log" >&2
+  cat "$clipboard_replacement_source_log" >&2
+  exit 1
+fi
+if ! grep -q '^SLOPOS_CLIPBOARD_SOURCE_READY ' "$clipboard_replacement_source_log"; then
+  write_artifact failed "clipboard_source_replacement_not_ready"
+  cat "$clipboard_replacement_source_log" >&2
+  exit 1
+fi
+source_cancelled=false
+for _ in $(seq 1 100); do
+  if clipboard_source_cancelled_exactly_once; then
+    source_cancelled=true
+    break
+  fi
+  if ! kill -0 "$clipboard_source_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+if [[ "$source_cancelled" != true ]]; then
+  write_artifact failed "missing_or_duplicate_SLOPOS_CLIPBOARD_SOURCE_CANCELLED"
+  cat "$clipboard_source_log" >&2
+  cat "$clipboard_replacement_source_log" >&2
+  exit 1
+fi
+if ! kill -0 "$compositor_pid" 2>/dev/null; then
+  write_artifact failed "compositor_died_after_clipboard_source_cancellation"
+  cat "$compositor_log" >&2
+  exit 1
+fi
+
 kill -TERM "$clipboard_source_pid" 2>/dev/null || true
 wait "$clipboard_source_pid" 2>/dev/null || true
 clipboard_source_pid=""

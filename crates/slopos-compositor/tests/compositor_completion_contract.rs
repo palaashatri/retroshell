@@ -96,6 +96,42 @@ fn headless_runtime_gate_exercises_native_primary_selection_transfer() {
 }
 
 #[test]
+fn headless_runtime_gate_exercises_clipboard_cancellation_and_target_death() {
+    let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
+    let client = include_str!("../examples/headless_clipboard_client.rs");
+    for command in [
+        "headless_clipboard_client source",
+        "headless_clipboard_client source-once",
+        "headless_clipboard_client sink-abort",
+    ] {
+        assert!(
+            script.contains(command),
+            "headless runtime gate must run clipboard failure-path command {command}"
+        );
+    }
+    for marker in [
+        "SLOPOS_CLIPBOARD_SOURCE_CANCELLED",
+        "SLOPOS_CLIPBOARD_TARGET_DEATH_RECOVERED",
+        "SLOPOS_SELECTION_TARGET_DISCONNECTED",
+    ] {
+        assert!(
+            script.contains(marker),
+            "headless runtime gate must require clipboard failure-path marker {marker}"
+        );
+    }
+    for mode in ["sink-abort"] {
+        assert!(
+            client.contains(mode),
+            "clipboard client must expose failure-path mode {mode}"
+        );
+    }
+    assert!(
+        client.contains("SLOPOS_CLIPBOARD_SOURCE_CANCELLED"),
+        "clipboard source must expose the protocol cancellation event"
+    );
+}
+
+#[test]
 fn presentation_round_trip_preserves_the_original_normal_frame() {
     let normal = WindowGeometry::new(137, 91, 731, 509);
     let work_area = WindowGeometry::new(0, 24, 1600, 876);

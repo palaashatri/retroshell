@@ -2901,14 +2901,31 @@ impl PointerConstraintsHandler for DrmSessionState {
     }
 }
 
-fn write_selection_fd(_mime_type: String, fd: OwnedFd, data: Option<Vec<u8>>) {
+fn write_selection_fd(mime_type: String, fd: OwnedFd, data: Option<Vec<u8>>) {
     use std::io::Write;
     if let Err(err) = std::thread::Builder::new()
         .name("drm-selection-send".into())
         .spawn(move || {
             let mut file = std::fs::File::from(fd);
             if let Some(bytes) = data {
-                let _ = file.write_all(&bytes);
+                if let Err(err) = file.write_all(&bytes) {
+                    if matches!(
+                        err.kind(),
+                        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                    ) {
+                        tracing::warn!(
+                            mime_type = %mime_type,
+                            error = %err,
+                            "SLOPOS_SELECTION_TARGET_DISCONNECTED"
+                        );
+                    } else {
+                        tracing::debug!(
+                            mime_type = %mime_type,
+                            error = %err,
+                            "selection send write failed"
+                        );
+                    }
+                }
             }
             let _ = file.flush();
         })
