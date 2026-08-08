@@ -5,18 +5,56 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`5553161ed9ac378602cbef5c510d32c0cab799b8`
+`fb194e4e6abf78854cb7b74e7380f4606d498a14`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review through the audited SHA, commit-delta
 review, exact-commit Ubuntu UTM build/test/lint/release evidence, retained
 native Wayland protocol logs, exact-commit headless Spaces runtime evidence with
-a real Preview client, and exact-commit Settings/IPC QA in Ubuntu UTM.
+a real Preview client, and exact-commit Settings/IPC/Spaces output-assignment QA
+in Ubuntu UTM.
 **Public target:** a 100/100 production Linux desktop environment that genuinely
 competes with KDE Plasma and GNOME as a daily driver.
 **Current verdict:** **63/100 — functional custom desktop alpha.**
 
 Documentation commits after the audited implementation do not change the
 product score unless they are accompanied by implementation and evidence.
+
+### Current implementation wave — Settings-controlled Spaces output assignment
+
+Implementation commit `fb194e4e6abf78854cb7b74e7380f4606d498a14` adds the
+missing Settings controls for compositor-owned Space output assignment. The
+Spaces panel now exposes an output-ID field, `Assign Output` and `Clear Output`
+actions, renders the assigned output in each Space row, and enables assignment
+only under the compositor's `independent_per_display` policy. The actions send
+typed `SpacesControlCommand::AssignOutput` requests; Settings continues to
+reconcile only the compositor's atomic snapshot rather than editing a local
+window/Space model.
+
+Host Settings tests and Clippy passed after the change. The exact Ubuntu UTM
+clone at this SHA passed `cargo fmt --all -- --check`, locked workspace check,
+locked workspace tests, Clippy with `-D warnings`, and the locked release
+workspace build; all five exit markers are retained under
+`artifacts/qa/2026-08-08-build-tests-fb194e4/utm/`. Focused UTM tests passed
+Settings 16/16 and the bus unit/integration/Spaces protocol suites 12+3+6.
+
+The exact release compositor then passed a fresh headless runtime harness under
+`artifacts/qa/2026-08-08-spaces-output-fb194e4/utm/` (`harness.exit=0`). It
+rejected assignment in shared-span mode without a revision change, accepted
+the independent-per-display policy, applied `DP-1`, rejected invalid `" DP-2"`
+without changing the assigned output, cleared the assignment, persisted `DP-2`,
+and restored the independent policy plus `DP-2` after compositor restart. The
+compositor log records both rejection errors; JSON snapshots retain every
+state transition and the exact SHA is recorded in `provenance.txt`.
+
+This closes the Settings output-assignment UI and its software-rendered
+compositor/persistence path. It does not prove that a physical output named
+`DP-1` or `DP-2` exists, migrate a live window across real outputs, or complete
+live thumbnails, drag/gesture/accessibility workflows, third-party
+compatibility, physical DRM/input/multi-monitor evidence, packaging,
+performance budgets or long-running reliability. The overall score remains
+**63/100**; the evidence-backed Settings functional slice advances from 52 to
+**54/100** and Spaces UX from 35 to **38/100**. Strict compositor completion
+remains **76/100**.
 
 ### Current implementation wave — compositor-authoritative dynamic SLOPOS Spaces
 
@@ -883,7 +921,7 @@ Passing CI proves engineering health. It does not erase these product gaps.
 | Clipboard | 65 | Real selection paths; large/cancelled/format-diverse transfers need QA |
 | Cross-app drag-and-drop | 51 | Native first-party text/URI DnD is runtime-observed; third-party and shell workflows remain |
 | SLOPOS Spaces model | 71 | Dynamic model, persistence and output policy are substantive |
-| SLOPOS Spaces UX | 35 | Live overview and snapshot-backed Settings mutations exist; gestures, drag-between-Spaces, thumbnails and accessibility remain |
+| SLOPOS Spaces UX | 38 | Live overview, snapshot-backed Settings mutations and output assignment exist; gestures, drag-between-Spaces, thumbnails and accessibility remain |
 | Multi-monitor desktop UX | 43 | Policy/types exist; complete live topology behaviour is not established |
 | **Shell/desktop overall** | **57** | Real custom shell alpha, not finished product |
 
@@ -915,7 +953,7 @@ claims are prohibited until assistive-technology workflows are demonstrated.
 | Application | Functional | UI/UX | Overall | Current truth |
 |---|---:|---:|---:|---|
 | File manager | 63 | 59 | **61** | Real navigation, file operations, trash and drag-to-folder; missing mature views, search, mounts, thumbnails, associations, conflicts and undo |
-| Settings | 52 | 53 | **52** | Spaces now reads compositor state and sends typed mutations; most service domains, Fonts and zoom policy remain disconnected |
+| Settings | 54 | 53 | **54** | Spaces now reads compositor state, sends typed mutations and assigns outputs through the compositor; most service domains, Fonts and zoom policy remain disconnected |
 | TextEdit | 67 | 61 | **64** | Selection-aware clipboard, caret insertion, find, save/recovery and undo/redo; no production multiline shaping, IME, rich text or scalable transactions |
 | Terminal | 72 | 65 | **69** | Real PTY, parser, tabs, alternate screen, selection, resize and child shutdown; cell model lacks complete CJK/combining/grapheme correctness |
 | Software manager | 46 | 48 | **47** | Hardened local archive installation; catalogue, signing, publisher trust, network delivery, updates and removal are incomplete |
