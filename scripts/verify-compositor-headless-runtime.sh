@@ -7,9 +7,10 @@
 # readiness, serves registry clients, survives abrupt role disconnects, applies
 # live xdg-toplevel presentation transitions, completes xdg-popup configure and
 # reposition lifecycles, rejects client DnD without an implicit-grab serial,
-# accepts a healthy client after stress, and terminates. The positive DnD check
-# uses an explicit, env-gated synthetic input control path and is protocol
-# evidence only; it does not claim physical input, GTK/Qt/Electron or hardware.
+# accepts a healthy client after stress, exercises text-input-v3/input-method-v2
+# with two native clients, and terminates. The positive DnD check uses an
+# explicit, env-gated synthetic input control path and is protocol evidence
+# only; it does not claim physical input, GTK/Qt/Electron or hardware.
 # It does not claim DRM/KMS, rendering, popup grabs, HDR, VRR or XWayland.
 
 set -euo pipefail
@@ -51,6 +52,9 @@ primary_selection_sink_log="$artifact_dir/${commit_sha}-primary-selection-sink.l
 dnd_log="$artifact_dir/${commit_sha}-dnd.log"
 dnd_source_log="$artifact_dir/${commit_sha}-dnd-source.log"
 dnd_target_log="$artifact_dir/${commit_sha}-dnd-target.log"
+text_input_log="$artifact_dir/${commit_sha}-text-input.log"
+text_input_app_log="$artifact_dir/${commit_sha}-text-input-app.log"
+text_input_ime_log="$artifact_dir/${commit_sha}-text-input-ime.log"
 runtime_dir="$(mktemp -d "${TMPDIR:-/tmp}/slopos-headless-runtime.XXXXXX")"
 chmod 700 "$runtime_dir"
 
@@ -59,6 +63,7 @@ clipboard_source_pid=""
 primary_selection_source_pid=""
 dnd_source_pid=""
 dnd_target_pid=""
+text_input_ime_pid=""
 socket_name=""
 shutdown_status="not_started"
 socket_cleanup="not_observed"
@@ -110,6 +115,27 @@ has_dnd_marker() {
   [[ -s "$dnd_log" ]] && grep -Eq "^$1([[:space:]]|$)" "$dnd_log"
 }
 
+has_text_input_marker() {
+  local marker="$1"
+  for log in "$text_input_app_log" "$text_input_ime_log"; do
+    if [[ -s "$log" ]] && grep -q "^${marker} " "$log"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+text_input_marker_exactly_once() {
+  local marker="$1"
+  local count=0
+  for log in "$text_input_app_log" "$text_input_ime_log"; do
+    if [[ -s "$log" ]]; then
+      count=$((count + $(grep -c "^${marker} " "$log" || true)))
+    fi
+  done
+  [[ "$count" == 1 ]]
+}
+
 send_headless_input() {
   local event_json="$1"
   python3 - "$runtime_dir/control.sock" "$event_json" <<'PY'
@@ -143,12 +169,18 @@ combine_primary_selection_logs() {
   [[ -f "$primary_selection_sink_log" ]] && cat "$primary_selection_sink_log" >>"$primary_selection_log"
 }
 
+combine_text_input_logs() {
+  : >"$text_input_log"
+  [[ -f "$text_input_app_log" ]] && cat "$text_input_app_log" >>"$text_input_log"
+  [[ -f "$text_input_ime_log" ]] && cat "$text_input_ime_log" >>"$text_input_log"
+}
+
 write_artifact() {
   local status="$1"
   local failure="${2:-}"
   cat >"$artifact.tmp" <<JSON
 {
-  "schema": 11,
+  "schema": 12,
   "component": "slopos-compositor",
   "commit": "$commit_sha",
   "branch": "$branch",
@@ -188,6 +220,20 @@ write_artifact() {
   "dnd_cross_client_drag_icon_verified": $(has_compositor_marker SLOPOS_DND_ICON_ATTACHED && printf true || printf false),
   "dnd_cross_client_client_dropped": $(has_compositor_marker SLOPOS_DND_DROPPED && printf true || printf false),
   "dnd_cross_client_drop_verified": $(has_dnd_marker SLOPOS_DND_SOURCE_DROP_PERFORMED && printf true || printf false),
+  "text_input_registry_verified": $([[ -s "$globals_log" ]] && grep -q "interface: 'zwp_text_input_manager_v3'" "$globals_log" && grep -q "interface: 'zwp_input_method_manager_v2'" "$globals_log" && printf true || printf false),
+  "text_input_app_enter_verified": $(has_text_input_marker SLOPOS_TEXT_INPUT_APP_ENTER && printf true || printf false),
+  "text_input_app_done_verified": $(has_text_input_marker SLOPOS_TEXT_INPUT_APP_DONE && printf true || printf false),
+  "text_input_preedit_verified": $(has_text_input_marker SLOPOS_TEXT_INPUT_PREEDIT_VERIFIED && printf true || printf false),
+  "text_input_commit_verified": $(has_text_input_marker SLOPOS_TEXT_INPUT_COMMIT_VERIFIED && printf true || printf false),
+  "text_input_delete_verified": $(has_text_input_marker SLOPOS_TEXT_INPUT_DELETE_VERIFIED && printf true || printf false),
+  "input_method_activate_verified": $(text_input_marker_exactly_once SLOPOS_IME_ACTIVATE && printf true || printf false),
+  "input_method_surrounding_verified": $(has_text_input_marker SLOPOS_TEXT_INPUT_SURROUNDING_VERIFIED && printf true || printf false),
+  "input_method_content_type_verified": $(has_text_input_marker SLOPOS_TEXT_INPUT_CONTENT_TYPE_VERIFIED && printf true || printf false),
+  "input_method_commit_sent_verified": $(has_text_input_marker SLOPOS_IME_COMMIT_SENT && printf true || printf false),
+  "input_method_deactivate_verified": $(text_input_marker_exactly_once SLOPOS_IME_DEACTIVATE && printf true || printf false),
+  "text_input_log": "$(basename "$text_input_log")",
+  "text_input_app_log": "$(basename "$text_input_app_log")",
+  "text_input_ime_log": "$(basename "$text_input_ime_log")",
   "hardware_verified": false,
   "drm_verified": false,
   "rendering_verified": false,
@@ -238,8 +284,13 @@ cleanup() {
     kill -TERM "$dnd_target_pid" 2>/dev/null || true
     wait "$dnd_target_pid" 2>/dev/null || true
   fi
+  if [[ -n "$text_input_ime_pid" ]] && kill -0 "$text_input_ime_pid" 2>/dev/null; then
+    kill -TERM "$text_input_ime_pid" 2>/dev/null || true
+    wait "$text_input_ime_pid" 2>/dev/null || true
+  fi
   combine_clipboard_logs
   combine_primary_selection_logs
+  combine_text_input_logs
   if [[ -n "$compositor_pid" ]] && kill -0 "$compositor_pid" 2>/dev/null; then
     kill -TERM "$compositor_pid" 2>/dev/null || true
     for _ in $(seq 1 50); do
@@ -486,6 +537,75 @@ if ! has_compositor_marker SLOPOS_DND_DROPPED; then
 fi
 if ! kill -0 "$compositor_pid" 2>/dev/null; then
   write_artifact failed "compositor_died_after_cross_client_dnd"
+  cat "$compositor_log" >&2
+  exit 1
+fi
+
+printf 'Exercising native text-input-v3/input-method-v2 lifecycle\n'
+WAYLAND_DISPLAY="$socket_name" timeout 30s \
+  target/debug/examples/headless_text_input_client ime >"$text_input_ime_log" 2>&1 &
+text_input_ime_pid=$!
+ime_ready=false
+for _ in $(seq 1 100); do
+  if grep -q '^SLOPOS_IME_READY observed=true$' "$text_input_ime_log" 2>/dev/null; then
+    ime_ready=true
+    break
+  fi
+  if ! kill -0 "$text_input_ime_pid" 2>/dev/null; then
+    wait "$text_input_ime_pid" || true
+    write_artifact failed "text_input_ime_exited_before_ready"
+    cat "$text_input_ime_log" >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+if [[ "$ime_ready" != true ]]; then
+  write_artifact failed "text_input_ime_readiness_timeout"
+  cat "$text_input_ime_log" >&2
+  exit 1
+fi
+
+if ! WAYLAND_DISPLAY="$socket_name" timeout 30s \
+  target/debug/examples/headless_text_input_client app >"$text_input_app_log" 2>&1; then
+  write_artifact failed "text_input_app_runtime_failed"
+  cat "$text_input_app_log" >&2
+  cat "$text_input_ime_log" >&2
+  exit 1
+fi
+if ! wait "$text_input_ime_pid"; then
+  write_artifact failed "text_input_ime_runtime_failed"
+  cat "$text_input_app_log" >&2
+  cat "$text_input_ime_log" >&2
+  exit 1
+fi
+text_input_ime_pid=""
+combine_text_input_logs
+for marker in \
+  SLOPOS_TEXT_INPUT_APP_ENTER \
+  SLOPOS_TEXT_INPUT_APP_DONE \
+  SLOPOS_TEXT_INPUT_PREEDIT_VERIFIED \
+  SLOPOS_TEXT_INPUT_COMMIT_VERIFIED \
+  SLOPOS_TEXT_INPUT_DELETE_VERIFIED \
+  SLOPOS_IME_ACTIVATE \
+  SLOPOS_IME_COMMIT_SENT \
+  SLOPOS_TEXT_INPUT_SURROUNDING_VERIFIED \
+  SLOPOS_TEXT_INPUT_CONTENT_TYPE_VERIFIED \
+  SLOPOS_IME_DEACTIVATE; do
+  if ! has_text_input_marker "$marker"; then
+    write_artifact failed "missing_${marker}"
+    cat "$text_input_app_log" >&2
+    cat "$text_input_ime_log" >&2
+    exit 1
+  fi
+done
+if ! text_input_marker_exactly_once SLOPOS_IME_ACTIVATE \
+  || ! text_input_marker_exactly_once SLOPOS_IME_DEACTIVATE; then
+  write_artifact failed "duplicate_text_input_activation_marker"
+  cat "$text_input_log" >&2
+  exit 1
+fi
+if ! kill -0 "$compositor_pid" 2>/dev/null; then
+  write_artifact failed "compositor_died_after_text_input"
   cat "$compositor_log" >&2
   exit 1
 fi

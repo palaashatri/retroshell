@@ -96,6 +96,45 @@ fn headless_runtime_gate_exercises_native_primary_selection_transfer() {
 }
 
 #[test]
+fn headless_runtime_gate_exercises_native_text_input_and_ime() {
+    let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
+    let client = include_str!("../examples/headless_text_input_client.rs");
+    assert!(
+        script.contains("headless_text_input_client ime")
+            && script.contains("headless_text_input_client app"),
+        "headless runtime gate must run separate native input-method and app clients"
+    );
+    for marker in [
+        "SLOPOS_TEXT_INPUT_APP_ENTER",
+        "SLOPOS_TEXT_INPUT_PREEDIT_VERIFIED",
+        "SLOPOS_TEXT_INPUT_COMMIT_VERIFIED",
+        "SLOPOS_TEXT_INPUT_DELETE_VERIFIED",
+        "SLOPOS_IME_ACTIVATE",
+        "SLOPOS_TEXT_INPUT_SURROUNDING_VERIFIED",
+        "SLOPOS_TEXT_INPUT_CONTENT_TYPE_VERIFIED",
+        "SLOPOS_IME_COMMIT_SENT",
+        "SLOPOS_IME_DEACTIVATE",
+    ] {
+        assert!(
+            script.contains(marker),
+            "headless runtime gate must require text-input marker {marker}"
+        );
+        assert!(
+            client.contains(marker),
+            "text-input client must emit text-input marker {marker}"
+        );
+    }
+    assert!(
+        client.contains("input_method.commit(state.done_count)"),
+        "IME probe must use the server-provided done serial instead of a guessed value"
+    );
+    assert!(
+        script.contains("\"schema\": 12"),
+        "adding text-input evidence must bump the runtime evidence schema"
+    );
+}
+
+#[test]
 fn headless_runtime_gate_exercises_clipboard_cancellation_and_target_death() {
     let script = include_str!("../../../scripts/verify-compositor-headless-runtime.sh");
     let client = include_str!("../examples/headless_clipboard_client.rs");
@@ -210,8 +249,8 @@ fn headless_runtime_gate_requires_cross_client_dnd_lifecycle_evidence() {
         );
     }
     assert!(
-        script.contains("\"schema\": 11"),
-        "adding DnD lifecycle evidence must bump the runtime evidence schema"
+        script.contains("\"schema\": 12"),
+        "adding DnD lifecycle evidence must retain the current runtime evidence schema"
     );
 }
 
