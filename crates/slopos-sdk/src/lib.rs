@@ -36,7 +36,9 @@ use slopos_kit::toolbar::Toolbar;
 use slopos_kit::tree_view::{TreeNode, TreeView};
 use slopos_kit::window::{hit_test_window_chrome, Window, WindowChromeHit};
 use slopos_kit::workspace_grid_view::WorkspaceGridView;
-use slopos_kit::{Color, LayoutConstraint, MonospaceView, Point, Rect, Size, Widget};
+use slopos_kit::{
+    Color, ImageView, LayoutConstraint, MonospaceView, Point, Rect, Size, Widget, WidgetId,
+};
 use slopos_render::font::{
     ellipsize_text as render_ellipsize_text, shape_text, ShapedGlyph, TextLayout, TextLayoutOptions,
 };
@@ -1107,6 +1109,45 @@ struct Vertex {
     color: [f32; 4],
 }
 
+/// Maximum source tile edge uploaded to the GPU. Tiling keeps a large source
+/// from requiring one texture allocation larger than common mobile/VM limits.
+const IMAGE_TILE_SIZE: u32 = 2048;
+/// Retained image textures are bounded across frames and source images. The
+/// Preview decoder itself also enforces a 40 MP source limit.
+const IMAGE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
+
+fn align_image_row_bytes(row_bytes: usize) -> usize {
+    row_bytes.saturating_add(255) & !255
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct ImageVertex {
+    position: [f32; 2],
+    uv: [f32; 2],
+}
+
+impl ImageVertex {
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<ImageVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+            ],
+        }
+    }
+}
+
 impl Vertex {
     fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -1273,10 +1314,45 @@ impl GlyphAtlas {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ImageTileKey {
+    widget_id: WidgetId,
+    tile_x: u32,
+    tile_y: u32,
+    tile_width: u32,
+    tile_height: u32,
+}
+
+#[derive(Clone)]
+struct ImageUpload {
+    key: ImageTileKey,
+    source_width: u32,
+    source_height: u32,
+    pixels: Arc<[u8]>,
+}
+
+struct CachedImageTexture {
+    texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+    bytes: usize,
+    last_used: u64,
+}
+
+#[derive(Clone)]
 enum DrawCommand {
-    Color { start: u32, count: u32 },
-    Glyph { start: u32, count: u32 },
+    Color {
+        start: u32,
+        count: u32,
+    },
+    Glyph {
+        start: u32,
+        count: u32,
+    },
+    Image {
+        start: u32,
+        count: u32,
+        upload: ImageUpload,
+    },
 }
 
 #[repr(C)]
@@ -1380,6 +1456,12 @@ pub struct WgpuPresenter {
     glyph_atlas_view: wgpu::TextureView,
     glyph_atlas_sampler: wgpu::Sampler,
     glyph_bind_group: wgpu::BindGroup,
+    image_pipeline: wgpu::RenderPipeline,
+    image_bind_group_layout: wgpu::BindGroupLayout,
+    image_sampler: wgpu::Sampler,
+    image_cache: HashMap<ImageTileKey, CachedImageTexture>,
+    image_cache_bytes: usize,
+    image_frame: u64,
 }
 
 /// Renders immediate-mode UI onto a Wayland surface created outside winit
@@ -1946,6 +2028,98 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             cache: None,
         });
 
+        let image_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("RetroSDK Image Texture Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let image_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("RetroSDK Image Texture Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let image_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("RetroSDK Image Texture Shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                r#"
+struct VsOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@location(0) position: vec2<f32>, @location(1) uv: vec2<f32>) -> VsOut {
+    var out: VsOut;
+    out.position = vec4<f32>(position, 0.0, 1.0);
+    out.uv = uv;
+    return out;
+}
+
+@group(0) @binding(0) var image_texture: texture_2d<f32>;
+@group(0) @binding(1) var image_sampler: sampler;
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return textureSample(image_texture, image_sampler, in.uv);
+}
+"#
+                .into(),
+            ),
+        });
+        let image_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("RetroSDK Image Texture Pipeline Layout"),
+                bind_group_layouts: &[&image_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+        let image_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("RetroSDK Image Texture Pipeline"),
+            layout: Some(&image_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &image_shader,
+                entry_point: "vs_main",
+                compilation_options: Default::default(),
+                buffers: &[ImageVertex::layout()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &image_shader,
+                entry_point: "fs_main",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         Ok(Self {
             surface,
             device,
@@ -1958,6 +2132,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             glyph_atlas_view,
             glyph_atlas_sampler,
             glyph_bind_group,
+            image_pipeline,
+            image_bind_group_layout,
+            image_sampler,
+            image_cache: HashMap::new(),
+            image_cache_bytes: 0,
+            image_frame: 0,
         })
     }
 
@@ -1992,6 +2172,133 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         );
     }
 
+    fn ensure_image_texture(&mut self, upload: &ImageUpload) -> Result<(), String> {
+        if let Some(cached) = self.image_cache.get_mut(&upload.key) {
+            cached.last_used = self.image_frame;
+            return Ok(());
+        }
+
+        let tile_width = upload.key.tile_width as usize;
+        let tile_height = upload.key.tile_height as usize;
+        let source_width = upload.source_width as usize;
+        let source_height = upload.source_height as usize;
+        let tile_x = upload.key.tile_x as usize;
+        let tile_y = upload.key.tile_y as usize;
+        if tile_width == 0
+            || tile_height == 0
+            || tile_x.saturating_add(tile_width) > source_width
+            || tile_y.saturating_add(tile_height) > source_height
+        {
+            return Err("invalid image tile bounds".to_string());
+        }
+        let source_row_bytes = source_width
+            .checked_mul(4)
+            .ok_or_else(|| "image row size overflow".to_string())?;
+        let source_required = source_row_bytes
+            .checked_mul(source_height)
+            .ok_or_else(|| "image storage size overflow".to_string())?;
+        if upload.pixels.len() != source_required {
+            return Err("image source storage does not match its dimensions".to_string());
+        }
+        let row_bytes = tile_width
+            .checked_mul(4)
+            .ok_or_else(|| "image tile row size overflow".to_string())?;
+        let padded_row_bytes = align_image_row_bytes(row_bytes);
+        let staging_len = padded_row_bytes
+            .checked_mul(tile_height)
+            .ok_or_else(|| "image tile storage size overflow".to_string())?;
+        let mut staging = vec![0u8; staging_len];
+        for row in 0..tile_height {
+            let source_start = (tile_y + row)
+                .checked_mul(source_row_bytes)
+                .and_then(|offset| offset.checked_add(tile_x * 4))
+                .ok_or_else(|| "image tile source offset overflow".to_string())?;
+            let source_end = source_start + row_bytes;
+            let destination_start = row * padded_row_bytes;
+            staging[destination_start..destination_start + row_bytes]
+                .copy_from_slice(&upload.pixels[source_start..source_end]);
+        }
+
+        let bytes = staging_len;
+        while self.image_cache_bytes.saturating_add(bytes) > IMAGE_CACHE_MAX_BYTES {
+            let Some(oldest_key) = self
+                .image_cache
+                .iter()
+                .min_by_key(|(_, cached)| cached.last_used)
+                .map(|(key, _)| *key)
+            else {
+                break;
+            };
+            let Some(evicted) = self.image_cache.remove(&oldest_key) else {
+                break;
+            };
+            self.image_cache_bytes = self.image_cache_bytes.saturating_sub(evicted.bytes);
+        }
+        if bytes > IMAGE_CACHE_MAX_BYTES {
+            return Err("image tile exceeds the retained GPU cache budget".to_string());
+        }
+
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("RetroSDK Image Tile"),
+            size: wgpu::Extent3d {
+                width: upload.key.tile_width,
+                height: upload.key.tile_height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &staging,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(padded_row_bytes as u32),
+                rows_per_image: Some(upload.key.tile_height),
+            },
+            wgpu::Extent3d {
+                width: upload.key.tile_width,
+                height: upload.key.tile_height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("RetroSDK Image Tile Bind Group"),
+            layout: &self.image_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.image_sampler),
+                },
+            ],
+        });
+        self.image_cache.insert(
+            upload.key,
+            CachedImageTexture {
+                texture,
+                bind_group,
+                bytes,
+                last_used: self.image_frame,
+            },
+        );
+        self.image_cache_bytes = self.image_cache_bytes.saturating_add(bytes);
+        Ok(())
+    }
+
     fn render(&mut self, draw: impl FnOnce(&mut Canvas<'_>)) -> Result<(), String> {
         let frame = match self.surface.get_current_texture() {
             Ok(frame) => frame,
@@ -2013,7 +2320,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         );
         draw(&mut canvas);
         let draw_data = canvas.finish();
+        self.image_frame = self.image_frame.wrapping_add(1);
         self.upload_glyph_atlas();
+        for command in &draw_data.commands {
+            if let DrawCommand::Image { upload, .. } = command {
+                self.ensure_image_texture(upload)?;
+            }
+        }
 
         let vertex_buffer = (!draw_data.vertices.is_empty()).then(|| {
             self.device
@@ -2028,6 +2341,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("RetroSDK Textured Glyph Vertex Buffer"),
                     contents: bytemuck::cast_slice(&draw_data.glyph_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+        });
+        let image_vertex_buffer = (!draw_data.image_vertices.is_empty()).then(|| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("RetroSDK Image Tile Vertex Buffer"),
+                    contents: bytemuck::cast_slice(&draw_data.image_vertices),
                     usage: wgpu::BufferUsages::VERTEX,
                 })
         });
@@ -2070,6 +2391,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
                         pass.set_vertex_buffer(0, glyph_vertex_buffer.slice(..));
                         pass.draw(*start..start.saturating_add(*count), 0..1);
                     }
+                    DrawCommand::Image {
+                        start,
+                        count,
+                        upload,
+                    } => {
+                        let Some(image_vertex_buffer) = image_vertex_buffer.as_ref() else {
+                            continue;
+                        };
+                        let Some(cached) = self.image_cache.get(&upload.key) else {
+                            continue;
+                        };
+                        pass.set_pipeline(&self.image_pipeline);
+                        pass.set_bind_group(0, &cached.bind_group, &[]);
+                        pass.set_vertex_buffer(0, image_vertex_buffer.slice(..));
+                        pass.draw(*start..start.saturating_add(*count), 0..1);
+                    }
                 }
             }
         }
@@ -2087,6 +2424,7 @@ enum CanvasAtlas<'a> {
 struct CanvasDrawData {
     vertices: Vec<Vertex>,
     glyph_vertices: Vec<GlyphVertex>,
+    image_vertices: Vec<ImageVertex>,
     commands: Vec<DrawCommand>,
 }
 
@@ -2097,6 +2435,7 @@ pub struct Canvas<'a> {
     pixel_scale: f32,
     vertices: Vec<Vertex>,
     glyph_vertices: Vec<GlyphVertex>,
+    image_vertices: Vec<ImageVertex>,
     commands: Vec<DrawCommand>,
     clip: Option<Rect>,
     atlas: CanvasAtlas<'a>,
@@ -2110,6 +2449,7 @@ impl<'a> Canvas<'a> {
             pixel_scale: 1.0,
             vertices: Vec::with_capacity(8192),
             glyph_vertices: Vec::with_capacity(1024),
+            image_vertices: Vec::with_capacity(1024),
             commands: Vec::with_capacity(1024),
             clip: None,
             atlas: CanvasAtlas::Owned(GlyphAtlas::new()),
@@ -2123,6 +2463,7 @@ impl<'a> Canvas<'a> {
             pixel_scale: 1.0,
             vertices: Vec::with_capacity(8192),
             glyph_vertices: Vec::with_capacity(1024),
+            image_vertices: Vec::with_capacity(1024),
             commands: Vec::with_capacity(1024),
             clip: None,
             atlas: CanvasAtlas::Borrowed(atlas),
@@ -2133,6 +2474,7 @@ impl<'a> Canvas<'a> {
         CanvasDrawData {
             vertices: self.vertices,
             glyph_vertices: self.glyph_vertices,
+            image_vertices: self.image_vertices,
             commands: self.commands,
         }
     }
@@ -2145,15 +2487,15 @@ impl<'a> Canvas<'a> {
     }
 
     fn push_command(&mut self, command: DrawCommand) {
-        let merged = match (self.commands.last_mut(), command) {
+        let merged = match (self.commands.last_mut(), &command) {
             (
                 Some(DrawCommand::Color {
                     start: previous_start,
                     count: previous_count,
                 }),
                 DrawCommand::Color { start, count },
-            ) if previous_start.saturating_add(*previous_count) == start => {
-                *previous_count = previous_count.saturating_add(count);
+            ) if previous_start.saturating_add(*previous_count) == *start => {
+                *previous_count = previous_count.saturating_add(*count);
                 true
             }
             (
@@ -2162,8 +2504,8 @@ impl<'a> Canvas<'a> {
                     count: previous_count,
                 }),
                 DrawCommand::Glyph { start, count },
-            ) if previous_start.saturating_add(*previous_count) == start => {
-                *previous_count = previous_count.saturating_add(count);
+            ) if previous_start.saturating_add(*previous_count) == *start => {
+                *previous_count = previous_count.saturating_add(*count);
                 true
             }
             _ => false,
@@ -2254,6 +2596,123 @@ impl<'a> Canvas<'a> {
             start: self.vertices.len().saturating_sub(6) as u32,
             count: 6,
         });
+    }
+
+    /// Draw a decoded RGBA8 image through retained, bounded GPU tile textures.
+    /// Only tiles intersecting the current clip are emitted, so a zoomed or
+    /// scrolled image does not upload invisible pixels for the current frame.
+    pub fn image(&mut self, image: &ImageView, rect: Rect) {
+        if image.width() == 0 || image.height() == 0 || rect.width <= 0.0 || rect.height <= 0.0 {
+            return;
+        }
+        let canvas_rect = Rect::new(0.0, 0.0, self.width, self.height);
+        let clip = self.clip.unwrap_or(canvas_rect);
+        let visible = intersect_rect(canvas_rect, clip).and_then(|clip| intersect_rect(clip, rect));
+        let Some(visible) = visible else {
+            return;
+        };
+
+        let source_width = image.width();
+        let source_height = image.height();
+        let scale_x = rect.width / source_width as f32;
+        let scale_y = rect.height / source_height as f32;
+        if !scale_x.is_finite() || !scale_y.is_finite() || scale_x <= 0.0 || scale_y <= 0.0 {
+            return;
+        }
+        let source_x_start =
+            (((visible.x - rect.x) / scale_x).floor().max(0.0)).min(source_width as f32) as u32;
+        let source_y_start =
+            (((visible.y - rect.y) / scale_y).floor().max(0.0)).min(source_height as f32) as u32;
+        let source_x_end = (((visible.x + visible.width - rect.x) / scale_x)
+            .ceil()
+            .max(0.0))
+        .min(source_width as f32) as u32;
+        let source_y_end = (((visible.y + visible.height - rect.y) / scale_y)
+            .ceil()
+            .max(0.0))
+        .min(source_height as f32) as u32;
+        if source_x_start >= source_x_end || source_y_start >= source_y_end {
+            return;
+        }
+
+        let first_tile_x = source_x_start / IMAGE_TILE_SIZE;
+        let first_tile_y = source_y_start / IMAGE_TILE_SIZE;
+        let last_tile_x = source_x_end.saturating_sub(1) / IMAGE_TILE_SIZE;
+        let last_tile_y = source_y_end.saturating_sub(1) / IMAGE_TILE_SIZE;
+        let pixels = image.pixels_arc();
+        for tile_y in first_tile_y..=last_tile_y {
+            for tile_x in first_tile_x..=last_tile_x {
+                let tile_source_x = tile_x * IMAGE_TILE_SIZE;
+                let tile_source_y = tile_y * IMAGE_TILE_SIZE;
+                let tile_width = IMAGE_TILE_SIZE.min(source_width - tile_source_x);
+                let tile_height = IMAGE_TILE_SIZE.min(source_height - tile_source_y);
+                let tile_rect = Rect::new(
+                    rect.x + tile_source_x as f32 * scale_x,
+                    rect.y + tile_source_y as f32 * scale_y,
+                    tile_width as f32 * scale_x,
+                    tile_height as f32 * scale_y,
+                );
+                let Some(draw_rect) = intersect_rect(tile_rect, visible) else {
+                    continue;
+                };
+                let u0 = ((draw_rect.x - tile_rect.x) / tile_rect.width).clamp(0.0, 1.0);
+                let v0 = ((draw_rect.y - tile_rect.y) / tile_rect.height).clamp(0.0, 1.0);
+                let u1 = ((draw_rect.x + draw_rect.width - tile_rect.x) / tile_rect.width)
+                    .clamp(0.0, 1.0);
+                let v1 = ((draw_rect.y + draw_rect.height - tile_rect.y) / tile_rect.height)
+                    .clamp(0.0, 1.0);
+                let p0 = self.ndc(draw_rect.x, draw_rect.y);
+                let p1 = self.ndc(draw_rect.x + draw_rect.width, draw_rect.y);
+                let p2 = self.ndc(
+                    draw_rect.x + draw_rect.width,
+                    draw_rect.y + draw_rect.height,
+                );
+                let p3 = self.ndc(draw_rect.x, draw_rect.y + draw_rect.height);
+                let start = self.image_vertices.len() as u32;
+                self.image_vertices.extend_from_slice(&[
+                    ImageVertex {
+                        position: p0,
+                        uv: [u0, v0],
+                    },
+                    ImageVertex {
+                        position: p1,
+                        uv: [u1, v0],
+                    },
+                    ImageVertex {
+                        position: p2,
+                        uv: [u1, v1],
+                    },
+                    ImageVertex {
+                        position: p0,
+                        uv: [u0, v0],
+                    },
+                    ImageVertex {
+                        position: p2,
+                        uv: [u1, v1],
+                    },
+                    ImageVertex {
+                        position: p3,
+                        uv: [u0, v1],
+                    },
+                ]);
+                self.push_command(DrawCommand::Image {
+                    start,
+                    count: 6,
+                    upload: ImageUpload {
+                        key: ImageTileKey {
+                            widget_id: image.id(),
+                            tile_x: tile_source_x,
+                            tile_y: tile_source_y,
+                            tile_width,
+                            tile_height,
+                        },
+                        source_width,
+                        source_height,
+                        pixels: Arc::clone(&pixels),
+                    },
+                });
+            }
+        }
     }
 
     pub fn stroke(&mut self, rect: Rect, color: [f32; 4]) {
@@ -2938,6 +3397,9 @@ fn draw_widget(canvas: &mut Canvas<'_>, widget: &dyn Widget) {
         draw_icon_view(canvas, icon_view);
     } else if let Some(list) = widget.as_any().downcast_ref::<ListView>() {
         draw_list(canvas, rect, list);
+    } else if let Some(image) = widget.as_any().downcast_ref::<ImageView>() {
+        canvas.image(image, rect);
+        return;
     } else if let Some(menu_bar) = widget.as_any().downcast_ref::<MenuBar>() {
         draw_menu_bar_widget(canvas, rect, menu_bar);
         return;
@@ -4995,9 +5457,48 @@ mod tests {
         parse_theme_preference, publish_bytes_atomically, theme_accents, ApplicationMenuAction,
         Canvas, CLASSIC_DARK_GRAY_RGBA, COLOR_DARK_TITLE_INACTIVE, DESKTOP_ITEM_WIDTH,
     };
+    use slopos_kit::{ImageView, Rect};
     use slopos_render::font::{shape_text, TextLayoutOptions};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn image_commands_tile_the_full_source_without_panel_expansion() {
+        let image = ImageView::new(2049, 2049, vec![255; 2049 * 2049 * 4]).unwrap();
+        let mut canvas = Canvas::new(2049.0, 2049.0);
+        canvas.image(&image, Rect::new(0.0, 0.0, 2049.0, 2049.0));
+        let draw_data = canvas.finish();
+
+        assert_eq!(
+            draw_data
+                .commands
+                .iter()
+                .filter(|command| matches!(command, super::DrawCommand::Image { .. }))
+                .count(),
+            4
+        );
+        assert_eq!(draw_data.image_vertices.len(), 24);
+    }
+
+    #[test]
+    fn image_commands_only_emit_tiles_intersecting_the_clip() {
+        let image = ImageView::new(4097, 1, vec![255; 4097 * 4]).unwrap();
+        let mut canvas = Canvas::new(4097.0, 1.0);
+        canvas.with_clip(Rect::new(2040.0, 0.0, 20.0, 1.0), |canvas| {
+            canvas.image(&image, Rect::new(0.0, 0.0, 4097.0, 1.0));
+        });
+        let draw_data = canvas.finish();
+
+        assert_eq!(
+            draw_data
+                .commands
+                .iter()
+                .filter(|command| matches!(command, super::DrawCommand::Image { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(draw_data.image_vertices.len(), 12);
+    }
 
     #[test]
     fn parses_dark_appearance_preference() {

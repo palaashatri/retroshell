@@ -4,7 +4,7 @@ use slopos_kit::panel::Panel;
 use slopos_kit::scroll_view::ScrollView;
 use slopos_kit::theme::ThemeContext;
 use slopos_kit::widget::{Widget, WidgetState};
-use slopos_kit::{AccessibilityNode, AccessibilityRole, Button, EventResult, Label};
+use slopos_kit::{AccessibilityNode, AccessibilityRole, Button, EventResult, ImageView, Label};
 use slopos_kit::{LayoutConstraint, Rect, Size};
 use slopos_sdk::EventLoopWaker;
 use slopos_vision_client::{VisionClient, VisionClientConfig};
@@ -29,8 +29,6 @@ const MAX_EXTRACTED_TEXT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_OUTPUT_COLLISION_ATTEMPTS: usize = 32;
 const MAX_ARTIFACT_STEM_BYTES: usize = 96;
-const THUMBNAIL_MAX_WIDTH: u32 = 96;
-const THUMBNAIL_MAX_HEIGHT: u32 = 64;
 const MIN_ZOOM: f32 = 0.01;
 const MAX_ZOOM: f32 = 8.0;
 const SCROLLBAR_WIDTH: f32 = 12.0;
@@ -56,9 +54,7 @@ struct LoadedImage {
     height: u32,
     encoded: Vec<u8>,
     media_type: Option<ImageMediaType>,
-    pixels: Vec<[f32; 4]>,
-    pixel_width: u32,
-    pixel_height: u32,
+    pixels: Vec<u8>,
 }
 
 /// Parse the deliberately small Preview CLI: zero or one image path.
@@ -159,30 +155,7 @@ fn load_image(path: &Path) -> Result<LoadedImage, String> {
     let (image, encoded, media_type) = decode_image_limited(path)?;
     let width = image.width();
     let height = image.height();
-    let thumbnail = image.thumbnail(THUMBNAIL_MAX_WIDTH, THUMBNAIL_MAX_HEIGHT);
-    let rgba = thumbnail.to_rgba8();
-    let pixel_width = rgba.width();
-    let pixel_height = rgba.height();
-    let pixels = rgba
-        .pixels()
-        .enumerate()
-        .map(|(index, pixel)| {
-            let x = index as u32 % pixel_width;
-            let y = index as u32 / pixel_width;
-            let checker = if (x + y).is_multiple_of(2) {
-                0.91
-            } else {
-                0.78
-            };
-            let alpha = f32::from(pixel[3]) / 255.0;
-            [
-                f32::from(pixel[0]) / 255.0 * alpha + checker * (1.0 - alpha),
-                f32::from(pixel[1]) / 255.0 * alpha + checker * (1.0 - alpha),
-                f32::from(pixel[2]) / 255.0 * alpha + checker * (1.0 - alpha),
-                1.0,
-            ]
-        })
-        .collect();
+    let pixels = image.to_rgba8().into_raw();
 
     Ok(LoadedImage {
         path: path.to_path_buf(),
@@ -191,8 +164,6 @@ fn load_image(path: &Path) -> Result<LoadedImage, String> {
         encoded,
         media_type,
         pixels,
-        pixel_width,
-        pixel_height,
     })
 }
 
@@ -229,12 +200,10 @@ fn solid_panel(fill: [f32; 4]) -> Panel {
 
 struct ImageCanvas {
     state: WidgetState,
-    cells: Vec<Panel>,
+    image: Option<ImageView>,
     path: PathBuf,
     encoded: Vec<u8>,
     media_type: Option<ImageMediaType>,
-    pixel_width: u32,
-    pixel_height: u32,
     source_width: u32,
     source_height: u32,
     zoom: f32,
@@ -244,32 +213,28 @@ impl ImageCanvas {
     fn empty() -> Self {
         Self {
             state: WidgetState::new(),
-            cells: Vec::new(),
+            image: None,
             path: PathBuf::new(),
             encoded: Vec::new(),
             media_type: None,
-            pixel_width: 0,
-            pixel_height: 0,
             source_width: 0,
             source_height: 0,
             zoom: 1.0,
         }
     }
 
-    fn from_loaded(image: LoadedImage) -> Self {
-        let cells = image.pixels.into_iter().map(solid_panel).collect();
-        Self {
+    fn from_loaded(image: LoadedImage) -> Result<Self, String> {
+        let image_view = ImageView::new(image.width, image.height, image.pixels)?;
+        Ok(Self {
             state: WidgetState::new(),
-            cells,
+            image: Some(image_view),
             path: image.path,
             encoded: image.encoded,
             media_type: image.media_type,
-            pixel_width: image.pixel_width,
-            pixel_height: image.pixel_height,
             source_width: image.width,
             source_height: image.height,
             zoom: 1.0,
-        }
+        })
     }
 
     fn natural_size(&self) -> Size {
@@ -287,26 +252,8 @@ impl ImageCanvas {
         let size = self.natural_size();
         let rect = self.rect();
         self.state.rect = Rect::new(rect.x, rect.y, size.width, size.height);
-        self.position_cells();
-    }
-
-    fn position_cells(&mut self) {
-        if self.pixel_width == 0 || self.pixel_height == 0 {
-            return;
-        }
-        let rect = self.rect();
-        let cell_width = rect.width / self.pixel_width as f32;
-        let cell_height = rect.height / self.pixel_height as f32;
-        for (index, cell) in self.cells.iter_mut().enumerate() {
-            let x = index as u32 % self.pixel_width;
-            let y = index as u32 / self.pixel_width;
-            let cell_rect = Rect::new(
-                rect.x + x as f32 * cell_width,
-                rect.y + y as f32 * cell_height,
-                cell_width,
-                cell_height,
-            );
-            cell.set_rect(cell_rect);
+        if let Some(image) = &mut self.image {
+            image.set_rect(self.state.rect);
         }
     }
 }
@@ -322,14 +269,18 @@ impl Widget for ImageCanvas {
 
     fn set_rect(&mut self, rect: Rect) {
         self.state.rect = rect;
-        self.position_cells();
+        if let Some(image) = &mut self.image {
+            image.set_rect(rect);
+        }
     }
 
     fn layout(&mut self, _constraint: LayoutConstraint) -> Size {
         let size = self.natural_size();
         let rect = self.rect();
         self.state.rect = Rect::new(rect.x, rect.y, size.width, size.height);
-        self.position_cells();
+        if let Some(image) = &mut self.image {
+            image.set_rect(self.state.rect);
+        }
         size
     }
 
@@ -340,14 +291,17 @@ impl Widget for ImageCanvas {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.cells.iter().map(|cell| cell as &dyn Widget).collect()
+        self.image
+            .as_ref()
+            .map(|image| vec![image as &dyn Widget])
+            .unwrap_or_default()
     }
 
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        self.cells
-            .iter_mut()
-            .map(|cell| cell as &mut dyn Widget)
-            .collect()
+        self.image
+            .as_mut()
+            .map(|image| vec![image as &mut dyn Widget])
+            .unwrap_or_default()
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -664,10 +618,20 @@ impl PreviewView {
                 "No image selected — launch Preview with an image path.".to_string(),
             ),
         };
-        let source_dimensions = loaded.as_ref().map(|image| (image.width, image.height));
-        let canvas = loaded
-            .map(ImageCanvas::from_loaded)
-            .unwrap_or_else(ImageCanvas::empty);
+        let (source_dimensions, canvas, status) = match loaded {
+            Some(image) => {
+                let dimensions = (image.width, image.height);
+                match ImageCanvas::from_loaded(image) {
+                    Ok(canvas) => (Some(dimensions), canvas, status),
+                    Err(error) => (
+                        None,
+                        ImageCanvas::empty(),
+                        format!("Cannot render {filename}: {error}"),
+                    ),
+                }
+            }
+            None => (None, ImageCanvas::empty(), status),
+        };
         let mut image_scroll = ScrollView::new();
         image_scroll.scrollable_x = true;
         image_scroll.scrollable_y = true;
@@ -1734,20 +1698,35 @@ mod tests {
     }
 
     #[test]
-    fn valid_image_is_dimension_checked_and_downsampled() {
+    fn valid_image_keeps_full_rgba_pixels_for_gpu_upload() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("sample.png");
         fs::write(&path, png_bytes(128, 80)).unwrap();
 
         let image = load_image(&path).unwrap();
         assert_eq!((image.width, image.height), (128, 80));
-        assert!(image.pixel_width <= THUMBNAIL_MAX_WIDTH);
-        assert!(image.pixel_height <= THUMBNAIL_MAX_HEIGHT);
         assert_eq!(
             image.pixels.len(),
-            (image.pixel_width * image.pixel_height) as usize
+            (image.width * image.height * 4) as usize
         );
         assert_eq!(image.path, path);
+    }
+
+    #[test]
+    fn image_canvas_rejects_inconsistent_rgba_source() {
+        let result = ImageCanvas::from_loaded(LoadedImage {
+            path: PathBuf::from("broken.png"),
+            width: 2,
+            height: 2,
+            encoded: Vec::new(),
+            media_type: None,
+            pixels: vec![0; 15],
+        });
+
+        assert!(matches!(
+            result,
+            Err(error) if error.contains("expected 16")
+        ));
     }
 
     #[test]
