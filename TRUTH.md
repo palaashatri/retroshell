@@ -5,20 +5,64 @@ SLOPOS-I. Final requirements and execution rules live in `AGENTS.md`.
 `README.md` is the public introduction.
 
 **Audited product implementation:**
-`73cbd3f49269a5a4b7a3f10079e3064abef5c5b3`
+`802ca6b4a0067d086a6cbf062e6ff1d6fe923ac1`
 **Audit date:** 2026-08-08
 **Audit basis:** current-source review through the audited SHA, commit-delta
 review, exact-commit Ubuntu UTM build/test/lint/release evidence, retained
 native Wayland protocol logs, exact-commit headless Spaces runtime evidence with
 a real Preview client, exact-commit Settings/IPC/Spaces output-assignment QA,
 exact-commit application-ID Spaces-policy runtime QA, and exact-commit
-Settings application-policy control/reconciliation tests in Ubuntu UTM.
+Settings application-policy control/reconciliation tests in Ubuntu UTM, plus
+exact-commit display-topology source/contract and headless runtime evidence.
 **Public target:** a 100/100 production Linux desktop environment that genuinely
 competes with KDE Plasma and GNOME as a daily driver.
 **Current verdict:** **63/100 — functional custom desktop alpha.**
 
 Documentation commits after the audited implementation do not change the
 product score unless they are accompanied by implementation and evidence.
+
+### Current implementation wave — authoritative display topology through compositor control
+
+Implementation commit `802ca6b4a0067d086a6cbf062e6ff1d6fe923ac1` routes Settings
+display arrangement and scale requests through the typed `ReconfigureOutputs`
+session-control command. The compositor now publishes an atomic
+`outputs-state.json` projection containing backend, revision, connector names,
+geometry and scale. Nested/headless sessions accept complete uniform-scale
+logical layouts atomically; malformed layouts and mixed-scale requests are
+rejected without advancing the authoritative revision. DRM publishes its
+topology but rejects this runtime logical-reconfiguration path because physical
+KMS reconfiguration is not implemented. Settings reads the compositor
+projection instead of fabricating a fixed `eDP-1:1920x1080` state, sends the
+typed request before persistence, and rolls back UI/config state when the
+session is unavailable or persistence fails. Live scale changes remain
+unavailable until mixed-scale rendering is implemented.
+
+The exact Ubuntu UTM clone at this SHA passed all five locked gates: `cargo fmt
+--all -- --check`, locked workspace check, locked workspace tests, Clippy with
+`-D warnings`, and the locked release workspace build. Every exit marker is
+`0` under `artifacts/qa/2026-08-08-build-tests-802ca6b/utm/`; the same log
+contains 22/22 Settings tests, 331/331 shell tests, 13+3+6 bus tests,
+164/164 compositor unit tests, the 23-test completion contract and 17 compositor
+integration tests. The exact compositor source/contract gate also passed with
+`runtime.exit=0` under `artifacts/qa/2026-08-08-compositor-contract-802ca6b/utm/`.
+
+The extended exact-commit headless topology harness passed with
+`runtime.exit=0` and `status: "passed"` under
+`artifacts/qa/2026-08-08-compositor-output-topology-802ca6b/utm/`. It verified
+logical output add, reorder and removal, Wayland output registry changes,
+readiness dimensions, malformed-request rejection, uniform-scale mismatch
+rejection and revision-preserving failure handling. The compositor log records
+both rejection reasons and all three applied topology transactions.
+
+This is headless logical-output and Settings failure-path evidence only. The
+Settings tests and control datagram prove request ordering and delivery, while
+the independent compositor harness proves logical application; they do not
+prove a pixel-inspected Settings click through to a synchronous compositor
+acknowledgement. Physical DRM/KMS hotplug, real output migration, mixed-scale
+rendering, hardware input, broad third-party compatibility, accessibility,
+packaging, performance budgets and long-running soaks remain unverified. The
+overall score remains **63/100**; the bounded Settings functional slice advances
+from 56 to **58/100**, while strict compositor completion remains **76/100**.
 
 ### Current implementation wave — Settings application-ID Spaces policy controls
 
@@ -893,9 +937,9 @@ The most important blockers are:
 2. incomplete retained rendering acceptance: complete text authority, image colour/mipmap/animation paths and measured scale/performance proof;
 3. incomplete third-party DnD compatibility and application-level IME integration;
 4. partial XWayland and third-party application compatibility;
-5. SLOPOS Spaces now has compositor and partial Settings mutation paths, but
-   application-ID policies are not yet user-configurable and the complete
-   Spaces experience is unfinished;
+5. SLOPOS Spaces now has compositor and partial Settings mutation paths,
+   including user-configurable application-ID policies, but the complete Spaces
+   experience is unfinished;
 6. Settings is authoritative for the new Spaces slice, but not for all system
    services;
 7. first-party applications remain incomplete for normal daily use;
@@ -1035,7 +1079,7 @@ claims are prohibited until assistive-technology workflows are demonstrated.
 | Application | Functional | UI/UX | Overall | Current truth |
 |---|---:|---:|---:|---|
 | File manager | 63 | 59 | **61** | Real navigation, file operations, trash and drag-to-folder; missing mature views, search, mounts, thumbnails, associations, conflicts and undo |
-| Settings | 56 | 55 | **56** | Spaces now reads compositor state, sends typed mutations, assigns outputs and configures application policies through the compositor; most service domains, Fonts and zoom policy remain disconnected |
+| Settings | 58 | 55 | **58** | Spaces and bounded display topology now read compositor state, send typed mutations, assign outputs and configure application policies; most service domains, Fonts and zoom policy remain disconnected |
 | TextEdit | 67 | 61 | **64** | Selection-aware clipboard, caret insertion, find, save/recovery and undo/redo; no production multiline shaping, IME, rich text or scalable transactions |
 | Terminal | 72 | 65 | **69** | Real PTY, parser, tabs, alternate screen, selection, resize and child shutdown; cell model lacks complete CJK/combining/grapheme correctness |
 | Software manager | 46 | 48 | **47** | Hardened local archive installation; catalogue, signing, publisher trust, network delivery, updates and removal are incomplete |
