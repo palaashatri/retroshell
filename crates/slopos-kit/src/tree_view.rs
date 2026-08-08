@@ -224,7 +224,7 @@ mod tests {
     /// roots, "Favorites" (6 children) and "Locations" (2 children).
     fn finder_like_tree() -> Vec<TreeNode> {
         let mut favorites = TreeNode::new("Favorites");
-        favorites.children.push(TreeNode::new("AirDrop"));
+        favorites.children.push(TreeNode::new("SLOPOS Share"));
         favorites.children.push(TreeNode::new("Recents"));
         favorites.children.push(TreeNode::new("Applications"));
         favorites.children.push(TreeNode::new("Desktop"));
@@ -251,7 +251,7 @@ mod tests {
             labels,
             vec![
                 "Favorites",
-                "AirDrop",
+                "SLOPOS Share",
                 "Recents",
                 "Applications",
                 "Desktop",
@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn collapsed_node_hides_its_children_from_rows() {
         let mut root = TreeNode::new("Favorites");
-        root.children.push(TreeNode::new("AirDrop"));
+        root.children.push(TreeNode::new("SLOPOS Share"));
         root.children.push(TreeNode::new("Recents"));
         // expanded stays false (the default).
 
@@ -368,10 +368,10 @@ mod tests {
         tree.set_rect(Rect::new(0.0, 0.0, 200.0, 300.0));
         tree.layout(LayoutConstraint::tight(Size::new(200.0, 300.0)));
 
-        // "AirDrop" (row index 1) has no children, so its disclosure_rect is
+        // "SLOPOS Share" (row index 1) has no children, so its disclosure_rect is
         // zero-sized and must never intercept the click.
         let row = tree.rows[1].clone();
-        assert_eq!(row.label, "AirDrop");
+        assert_eq!(row.label, "SLOPOS Share");
         assert!(!row.has_children);
 
         let result = tree.handle_event(&Event::MouseDown {

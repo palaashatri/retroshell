@@ -223,7 +223,7 @@ impl FinderView {
 
         let mut sidebar = TreeView::new();
         let mut favorites = TreeNode::new("Favorites");
-        favorites.children.push(TreeNode::new("AirDrop"));
+        favorites.children.push(TreeNode::new("SLOPOS Share"));
         favorites.children.push(TreeNode::new("Recents"));
         favorites.children.push(TreeNode::new("Applications"));
         favorites.children.push(TreeNode::new("Desktop"));
