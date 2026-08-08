@@ -5549,6 +5549,7 @@ mod tests {
                 revision: 9,
                 active_space: 11,
                 multi_monitor_policy: slopos_bus::SpacesDisplayPolicy::SharedSpan,
+                application_policies: Vec::new(),
                 spaces: vec![
                     slopos_bus::SpaceSnapshot {
                         id: 11,
@@ -5634,6 +5635,7 @@ mod tests {
             revision: 12,
             active_space: 22,
             multi_monitor_policy: slopos_bus::SpacesDisplayPolicy::SharedSpan,
+            application_policies: Vec::new(),
             spaces: vec![
                 slopos_bus::SpaceSnapshot {
                     id: 11,
@@ -5676,6 +5678,7 @@ mod tests {
             revision: 12,
             active_space: 11,
             multi_monitor_policy: slopos_bus::SpacesDisplayPolicy::SharedSpan,
+            application_policies: Vec::new(),
             spaces: vec![slopos_bus::SpaceSnapshot {
                 id: 11,
                 order: 0,
@@ -5697,6 +5700,7 @@ mod tests {
             revision: 11,
             active_space: 11,
             multi_monitor_policy: slopos_bus::SpacesDisplayPolicy::SharedSpan,
+            application_policies: Vec::new(),
             spaces: vec![slopos_bus::SpaceSnapshot {
                 id: 11,
                 order: 0,
@@ -5721,6 +5725,7 @@ mod tests {
             revision: 1,
             active_space: 11,
             multi_monitor_policy: slopos_bus::SpacesDisplayPolicy::SharedSpan,
+            application_policies: Vec::new(),
             spaces: vec![slopos_bus::SpaceSnapshot {
                 id: 11,
                 order: 0,

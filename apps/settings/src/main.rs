@@ -7,7 +7,7 @@
 
 use slopos_bus::{
     read_spaces_snapshot, send_session_control, SessionControlRequest, SpaceClassification,
-    SpacesControlCommand, SpacesDisplayPolicy, SpacesSnapshot,
+    SpaceTargetWire, SpacesControlCommand, SpacesDisplayPolicy, SpacesSnapshot,
 };
 use slopos_kit::button::Button;
 use slopos_kit::event::{KeyCode, Modifiers};
@@ -942,11 +942,24 @@ fn valid_spaces_snapshot(snapshot: &SpacesSnapshot) -> bool {
             }
         }
     }
-    snapshot.multi_monitor_policy != SpacesDisplayPolicy::SharedSpan
+    let outputs_valid = snapshot.multi_monitor_policy != SpacesDisplayPolicy::SharedSpan
         || snapshot
             .spaces
             .iter()
-            .all(|space| space.output_id.is_none())
+            .all(|space| space.output_id.is_none());
+    let mut application_ids = std::collections::HashSet::new();
+    let policies_valid = snapshot.application_policies.iter().all(|policy| {
+        !policy.app_id.is_empty()
+            && policy.app_id.trim() == policy.app_id
+            && !policy.app_id.chars().any(char::is_control)
+            && application_ids.insert(policy.app_id.as_str())
+            && match policy.target {
+                SpaceTargetWire::Id { id } => ids.contains(&id),
+                SpaceTargetWire::All => true,
+                SpaceTargetWire::Current => false,
+            }
+    });
+    outputs_valid && policies_valid
 }
 
 struct SettingsView {
@@ -2334,6 +2347,7 @@ mod tests {
             revision: 3,
             active_space: 11,
             multi_monitor_policy: SpacesDisplayPolicy::SharedSpan,
+            application_policies: Vec::new(),
             spaces: vec![
                 slopos_bus::SpaceSnapshot {
                     id: 11,
@@ -2548,5 +2562,23 @@ mod tests {
             assert!(view.status.text.contains("SPACES"));
             assert!(runtime.join(slopos_bus::SPACES_STATE_FILE).exists());
         });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_spaces_rejects_invalid_application_policy_projection() {
+        let mut snapshot = spaces_snapshot_for_settings();
+        snapshot.application_policies = vec![slopos_bus::ApplicationSpacePolicySnapshot {
+            app_id: "org.example.Editor".to_string(),
+            target: SpaceTargetWire::Id { id: 22 },
+        }];
+        assert!(valid_spaces_snapshot(&snapshot));
+
+        snapshot.application_policies[0].target = SpaceTargetWire::Current;
+        assert!(!valid_spaces_snapshot(&snapshot));
+        snapshot.application_policies[0].target = SpaceTargetWire::Id { id: 99 };
+        assert!(!valid_spaces_snapshot(&snapshot));
+        snapshot.application_policies[0].app_id = "org.example.\nEditor".to_string();
+        assert!(!valid_spaces_snapshot(&snapshot));
     }
 }

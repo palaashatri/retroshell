@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::fs::{self, OpenOptions};
@@ -95,6 +95,32 @@ pub fn multi_monitor_policy_from_wire(
     }
 }
 
+/// Convert a validated persisted application policy to its session-bus form.
+/// `Current` and named targets are never stored in the application-policy map.
+pub fn application_target_to_wire(target: &SpaceTarget) -> slopos_bus::SpaceTargetWire {
+    match target {
+        SpaceTarget::Id(id) => slopos_bus::SpaceTargetWire::Id { id: id.get() },
+        SpaceTarget::All => slopos_bus::SpaceTargetWire::All,
+        SpaceTarget::Current | SpaceTarget::Named(_) => {
+            unreachable!("invalid application policy target was persisted")
+        }
+    }
+}
+
+/// Convert a session-bus application policy target into the validated model
+/// representation, rejecting the reserved zero Space ID.
+pub fn application_target_from_wire(
+    target: slopos_bus::SpaceTargetWire,
+) -> Result<SpaceTarget, SpacesError> {
+    match target {
+        slopos_bus::SpaceTargetWire::Current => Ok(SpaceTarget::Current),
+        slopos_bus::SpaceTargetWire::Id { id } => SpaceId::new(id)
+            .map(SpaceTarget::Id)
+            .ok_or(SpacesError::InvalidSpaceId(id)),
+        slopos_bus::SpaceTargetWire::All => Ok(SpaceTarget::All),
+    }
+}
+
 /// Generate an epoch that is unique for the lifetime of a compositor process.
 ///
 /// The epoch is deliberately independent of the monotonic mutation revision:
@@ -137,6 +163,8 @@ pub enum SpacesError {
     InvalidOrderIndex { index: usize, len: usize },
     InvalidWindowId(String),
     DuplicateWindowId(String),
+    InvalidApplicationId(String),
+    InvalidApplicationTarget(String),
     InvalidMetadata { field: &'static str, value: String },
     InvalidOutputId(String),
     OutputAssignmentNotAllowedInSharedSpan { space: SpaceId, output_id: String },
@@ -179,6 +207,10 @@ impl fmt::Display for SpacesError {
             }
             Self::InvalidWindowId(id) => write!(formatter, "invalid window ID {id:?}"),
             Self::DuplicateWindowId(id) => write!(formatter, "duplicate window ID {id:?}"),
+            Self::InvalidApplicationId(id) => write!(formatter, "invalid application ID {id:?}"),
+            Self::InvalidApplicationTarget(target) => {
+                write!(formatter, "invalid application Space target {target}")
+            }
             Self::InvalidMetadata { field, value } => {
                 write!(formatter, "invalid {field} value {value:?}")
             }
@@ -446,6 +478,8 @@ pub struct SpacesModel {
     active_space: SpaceId,
     next_space_id: NonZeroU64,
     multi_monitor_policy: MultiMonitorPolicy,
+    #[serde(default)]
+    application_policies: BTreeMap<String, SpaceTarget>,
 }
 
 impl Default for SpacesModel {
@@ -462,6 +496,7 @@ impl SpacesModel {
             active_space: first,
             next_space_id: NonZeroU64::new(2).expect("literal two is a valid Space ID"),
             multi_monitor_policy: MultiMonitorPolicy::SharedSpan,
+            application_policies: BTreeMap::new(),
         }
     }
 
@@ -641,6 +676,64 @@ impl SpacesModel {
     /// Display terminology alias for [`Self::clear_space_output`].
     pub fn clear_space_display(&mut self, id: SpaceId) -> Result<(), SpacesError> {
         self.clear_space_output(id)
+    }
+
+    /// Return the persisted application-ID policy map. The compositor owns
+    /// mutations; callers use this read-only view to build authoritative
+    /// session snapshots.
+    pub fn application_policies(&self) -> &BTreeMap<String, SpaceTarget> {
+        &self.application_policies
+    }
+
+    /// Resolve an application ID to its configured target. An absent policy
+    /// (and a policy cleared with `Current`) follows the active Space.
+    pub fn application_target_for(&self, app_id: &str) -> Result<SpaceTarget, SpacesError> {
+        validate_application_id(app_id)?;
+        Ok(self
+            .application_policies
+            .get(app_id)
+            .cloned()
+            .unwrap_or(SpaceTarget::Current))
+    }
+
+    /// Set or clear the target applied to newly mapped windows for `app_id`.
+    /// `Current` removes the persisted policy and restores active-Space
+    /// placement. Named targets are deliberately not persisted because the
+    /// session bus exposes stable IDs for policy authority.
+    pub fn set_application_policy(
+        &mut self,
+        app_id: impl Into<String>,
+        target: SpaceTarget,
+    ) -> Result<(), SpacesError> {
+        let app_id = app_id.into();
+        validate_application_id(&app_id)?;
+        match target {
+            SpaceTarget::Current => {
+                self.application_policies.remove(&app_id);
+            }
+            SpaceTarget::Id(id) => {
+                self.space(id).ok_or(SpacesError::SpaceNotFound(id))?;
+                self.application_policies
+                    .insert(app_id, SpaceTarget::Id(id));
+            }
+            SpaceTarget::All => {
+                self.application_policies.insert(app_id, SpaceTarget::All);
+            }
+            SpaceTarget::Named(name) => {
+                return Err(SpacesError::InvalidApplicationTarget(name));
+            }
+        }
+        Ok(())
+    }
+
+    /// Assign a live window according to its compositor-observed app ID.
+    pub fn assign_window_for_application(
+        &mut self,
+        window: impl Into<String>,
+        app_id: &str,
+    ) -> Result<(), SpacesError> {
+        let target = self.application_target_for(app_id)?;
+        self.assign_window(window, target)
     }
 
     /// Return Spaces visible on an output under the active policy.
@@ -902,6 +995,11 @@ impl SpacesModel {
                 self.space_mut(fallback)?.windows.push(window);
             }
         }
+        for target in self.application_policies.values_mut() {
+            if matches!(target, SpaceTarget::Id(target_id) if *target_id == id) {
+                *target = SpaceTarget::Id(fallback);
+            }
+        }
         Ok(fallback)
     }
 
@@ -1051,6 +1149,20 @@ impl SpacesModel {
                 maximum_existing,
             });
         }
+        for (app_id, target) in &self.application_policies {
+            validate_application_id(app_id)?;
+            match target {
+                SpaceTarget::Id(id) => {
+                    if !ids.contains(id) {
+                        return Err(SpacesError::SpaceNotFound(*id));
+                    }
+                }
+                SpaceTarget::All => {}
+                SpaceTarget::Current | SpaceTarget::Named(_) => {
+                    return Err(SpacesError::InvalidApplicationTarget(format!("{target:?}")));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1145,6 +1257,8 @@ struct RawSpacesModel {
     next_space_id: u64,
     #[serde(default)]
     multi_monitor_policy: MultiMonitorPolicy,
+    #[serde(default)]
+    application_policies: BTreeMap<String, SpaceTarget>,
 }
 
 impl TryFrom<RawSpacesModel> for SpacesModel {
@@ -1160,6 +1274,7 @@ impl TryFrom<RawSpacesModel> for SpacesModel {
             active_space,
             next_space_id,
             multi_monitor_policy: raw.multi_monitor_policy,
+            application_policies: raw.application_policies,
         };
         model.validate()?;
         Ok(model)
@@ -1180,6 +1295,13 @@ fn validate_space_name(name: &str) -> Result<(), SpacesError> {
 
 fn normalize_name(name: &str) -> String {
     name.to_lowercase()
+}
+
+fn validate_application_id(app_id: &str) -> Result<(), SpacesError> {
+    if app_id.is_empty() || app_id.trim() != app_id || app_id.chars().any(char::is_control) {
+        return Err(SpacesError::InvalidApplicationId(app_id.to_owned()));
+    }
+    Ok(())
 }
 
 fn validate_output_id(output_id: &str) -> Result<(), SpacesError> {
@@ -1864,5 +1986,97 @@ mod tests {
         assert_eq!(reloaded.space(work).expect("work").name(), "Work");
 
         fs::remove_file(path).expect("remove restart fixture");
+    }
+
+    #[test]
+    fn application_space_policy_resolves_current_all_and_specific_targets() {
+        let mut model = SpacesModel::with_initial_name("Personal").expect("model");
+        let work = model.create_space("Work").expect("work");
+
+        assert_eq!(
+            model
+                .application_target_for("org.example.Editor")
+                .expect("default target"),
+            SpaceTarget::Current
+        );
+        model
+            .set_application_policy("org.example.Editor", SpaceTarget::Id(work))
+            .expect("specific policy");
+        assert_eq!(
+            model
+                .application_target_for("org.example.Editor")
+                .expect("specific target"),
+            SpaceTarget::Id(work)
+        );
+        model
+            .assign_window_for_application("editor-window", "org.example.Editor")
+            .expect("specific assignment");
+        assert_eq!(model.window_spaces("editor-window"), vec![work]);
+
+        model
+            .set_application_policy("org.example.Editor", SpaceTarget::All)
+            .expect("all policy");
+        model
+            .assign_window_for_application("editor-window", "org.example.Editor")
+            .expect("all assignment");
+        assert_eq!(model.window_spaces("editor-window"), model.space_ids());
+
+        model
+            .set_application_policy("org.example.Editor", SpaceTarget::Current)
+            .expect("clear policy");
+        assert_eq!(
+            model
+                .application_target_for("org.example.Editor")
+                .expect("cleared target"),
+            SpaceTarget::Current
+        );
+    }
+
+    #[test]
+    fn application_space_policy_rejects_invalid_ids_and_unknown_spaces() {
+        let mut model = SpacesModel::new();
+        assert!(matches!(
+            model.set_application_policy("", SpaceTarget::All),
+            Err(SpacesError::InvalidApplicationId(_))
+        ));
+        assert!(matches!(
+            model.set_application_policy("org.example.\nEditor", SpaceTarget::All),
+            Err(SpacesError::InvalidApplicationId(_))
+        ));
+        assert!(matches!(
+            model.set_application_policy(
+                "org.example.Editor",
+                SpaceTarget::Id(SpaceId::new(99).unwrap())
+            ),
+            Err(SpacesError::SpaceNotFound(_))
+        ));
+        assert!(matches!(
+            model.set_application_policy("org.example.Editor", SpaceTarget::Named("Main".into())),
+            Err(SpacesError::InvalidApplicationTarget(_))
+        ));
+    }
+
+    #[test]
+    fn application_space_policy_persists_and_retargets_removed_spaces() {
+        let mut model = SpacesModel::new();
+        let work = model.create_space("Work").expect("work");
+        model
+            .set_application_policy("org.example.Editor", SpaceTarget::Id(work))
+            .expect("policy");
+        let path = temp_path("application-policy");
+        let _ = fs::remove_file(&path);
+        model.save_atomic(&path).expect("save policy");
+        let loaded = SpacesModel::load(&path).expect("load policy");
+        assert_eq!(loaded, model);
+
+        let fallback = model.remove_space(work).expect("remove work");
+        assert_eq!(
+            model
+                .application_target_for("org.example.Editor")
+                .expect("retargeted policy"),
+            SpaceTarget::Id(fallback)
+        );
+        model.validate().expect("retargeted policy remains valid");
+        fs::remove_file(path).expect("remove policy fixture");
     }
 }

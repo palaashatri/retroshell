@@ -618,6 +618,20 @@ fn dynamic_spaces_keep_window_membership_valid_during_removal() {
 }
 
 #[test]
+fn application_id_spaces_policy_is_wired_in_both_compositor_backends() {
+    let nested = include_str!("../src/main.rs");
+    let drm = include_str!("../src/session_drm.rs");
+    for source in [nested, drm] {
+        assert!(source.contains("SetApplicationPolicy"));
+        assert!(source.contains("application_target_from_wire"));
+        assert!(source.contains("assign_window_for_application"));
+        assert!(source.contains("reapply_application_policy"));
+    }
+    assert!(nested.contains("fn app_id_changed"));
+    assert!(drm.contains("fn app_id_changed"));
+}
+
+#[test]
 fn repeated_space_removal_never_strands_exclusive_or_all_space_windows() {
     let mut spaces = SpacesModel::with_initial_name("One").unwrap();
     let two = spaces.create_space("Two").unwrap();

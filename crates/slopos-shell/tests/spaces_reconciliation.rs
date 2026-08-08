@@ -8,6 +8,7 @@ fn shell_reconciles_authoritative_spaces_snapshot() {
         revision: 17,
         active_space: 22,
         multi_monitor_policy: SpacesDisplayPolicy::SharedSpan,
+        application_policies: Vec::new(),
         spaces: vec![
             SpaceSnapshot {
                 id: 11,
@@ -70,6 +71,7 @@ fn shell_reconciles_authoritative_spaces_snapshot() {
         revision: 16,
         active_space: 11,
         multi_monitor_policy: SpacesDisplayPolicy::SharedSpan,
+        application_policies: Vec::new(),
         spaces: vec![SpaceSnapshot {
             id: 11,
             order: 0,
@@ -102,6 +104,7 @@ fn shell_rejects_malformed_authoritative_spaces_snapshot() {
         revision: 1,
         active_space: 11,
         multi_monitor_policy: SpacesDisplayPolicy::SharedSpan,
+        application_policies: Vec::new(),
         spaces: vec![
             SpaceSnapshot {
                 id: 11,
@@ -153,6 +156,7 @@ fn shell_rejects_duplicate_names_and_control_metadata() {
         revision: 1,
         active_space: 11,
         multi_monitor_policy: SpacesDisplayPolicy::SharedSpan,
+        application_policies: Vec::new(),
         spaces: vec![
             SpaceSnapshot {
                 id: 11,
@@ -192,6 +196,7 @@ fn shell_accepts_lower_revision_after_compositor_session_epoch_changes() {
         revision: 42,
         active_space: 11,
         multi_monitor_policy: SpacesDisplayPolicy::SharedSpan,
+        application_policies: Vec::new(),
         spaces: vec![SpaceSnapshot {
             id: 11,
             order: 0,
@@ -211,6 +216,7 @@ fn shell_accepts_lower_revision_after_compositor_session_epoch_changes() {
         revision: 1,
         active_space: 22,
         multi_monitor_policy: SpacesDisplayPolicy::IndependentPerDisplay,
+        application_policies: Vec::new(),
         spaces: vec![SpaceSnapshot {
             id: 22,
             order: 0,

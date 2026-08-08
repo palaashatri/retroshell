@@ -40,14 +40,15 @@ mod linux {
     use slopos_compositor::hdr::HdrCapabilities;
     use slopos_compositor::work_area::{compute_exclusive_work_area, ExclusiveZoneReservation};
     use slopos_compositor::{
-        accumulate_damage_for_window_move, accumulate_damage_rect, apply_scale_to_output_config,
-        calculate_presentation_geometry, cascade_position, clamp_window_to_work_area,
-        clear_interactive_grab_state, detect_output_scale_from_env,
-        fullscreen_classification_from_wire, fullscreen_classification_to_wire,
-        geometry_for_interactive_grab, intersecting_output_indices, move_to_top,
-        multi_monitor_policy_from_wire, multi_monitor_policy_to_wire, new_session_epoch,
-        next_cascade_offset, output_geometry, output_index_for_geometry, output_index_for_point,
-        output_scale_summary, pointer_grab_request_is_valid_for_window, prefer_full_redraw,
+        accumulate_damage_for_window_move, accumulate_damage_rect, application_target_from_wire,
+        application_target_to_wire, apply_scale_to_output_config, calculate_presentation_geometry,
+        cascade_position, clamp_window_to_work_area, clear_interactive_grab_state,
+        detect_output_scale_from_env, fullscreen_classification_from_wire,
+        fullscreen_classification_to_wire, geometry_for_interactive_grab,
+        intersecting_output_indices, move_to_top, multi_monitor_policy_from_wire,
+        multi_monitor_policy_to_wire, new_session_epoch, next_cascade_offset, output_geometry,
+        output_index_for_geometry, output_index_for_point, output_scale_summary,
+        pointer_grab_request_is_valid_for_window, prefer_full_redraw,
         register_wayland_display_source, remap_geometry_between_outputs,
         resolve_laid_out_outputs_from_env, selection_bytes_for_mime_with_text_fallback,
         session_mode_note, surface_tree_root, text_input_capability_from_env,
@@ -712,6 +713,17 @@ mod linux {
                 multi_monitor_policy: multi_monitor_policy_to_wire(
                     self.spaces.multi_monitor_policy(),
                 ),
+                application_policies: self
+                    .spaces
+                    .application_policies()
+                    .iter()
+                    .map(
+                        |(app_id, target)| slopos_bus::ApplicationSpacePolicySnapshot {
+                            app_id: app_id.clone(),
+                            target: application_target_to_wire(target),
+                        },
+                    )
+                    .collect(),
                 spaces: self
                     .spaces
                     .overview()
@@ -780,7 +792,28 @@ mod linux {
             }
         }
 
+        fn reapply_application_policy(&mut self, app_id: &str) {
+            let window_ids: Vec<String> = self
+                .windows
+                .iter()
+                .filter(|window| window.app_id == app_id)
+                .map(|window| window.window_id.clone())
+                .collect();
+            for window_id in window_ids {
+                if let Err(error) = self
+                    .spaces
+                    .assign_window_for_application(window_id.clone(), app_id)
+                {
+                    tracing::warn!(%error, %app_id, %window_id, "could not apply Spaces application policy");
+                }
+            }
+        }
+
         fn apply_spaces_command(&mut self, command: SpacesControlCommand) {
+            let policy_app_id = match &command {
+                SpacesControlCommand::SetApplicationPolicy { app_id, .. } => Some(app_id.clone()),
+                _ => None,
+            };
             let result = match command {
                 SpacesControlCommand::Select { id } => SpaceId::new(id)
                     .ok_or(SpacesError::InvalidSpaceId(id))
@@ -842,10 +875,20 @@ mod linux {
                 SpacesControlCommand::AssignOutput { id, output_id } => SpaceId::new(id)
                     .ok_or(SpacesError::InvalidSpaceId(id))
                     .and_then(|id| self.spaces.set_space_output(id, output_id).map(|()| id)),
+                SpacesControlCommand::SetApplicationPolicy { app_id, target } => {
+                    application_target_from_wire(target).and_then(|target| {
+                        self.spaces
+                            .set_application_policy(app_id, target)
+                            .map(|()| self.spaces.active_space())
+                    })
+                }
             };
 
             match result {
                 Ok(_) => {
+                    if let Some(app_id) = policy_app_id {
+                        self.reapply_application_policy(&app_id);
+                    }
                     self.sync_legacy_workspace_state();
                     self.publish_spaces_state(true);
                     self.request_full_redraw();
@@ -3203,7 +3246,7 @@ mod linux {
                 toplevel: surface,
                 foreign,
                 window_id: window_id.clone(),
-                app_id,
+                app_id: app_id.clone(),
                 position,
                 size: Size::from((geometry.width, geometry.height)),
                 presentation_state: WindowPresentationState::Normal,
@@ -3211,7 +3254,10 @@ mod linux {
                 minimized: false,
             });
             // New maps land on the active compositor-owned Space.
-            if let Err(error) = self.spaces.assign_window_to_current(window_id.clone()) {
+            if let Err(error) = self
+                .spaces
+                .assign_window_for_application(window_id.clone(), &app_id)
+            {
                 tracing::warn!(%error, %window_id, "could not assign mapped window to active Space");
             }
             self.sync_legacy_workspace_state();
@@ -3363,23 +3409,43 @@ mod linux {
                     .unwrap_or_default()
             });
             let active_window_id = self.activated_window_id.clone();
-            if let Some(w) = self
+            let Some((window_id, is_active)) = self
                 .windows
-                .iter_mut()
+                .iter()
                 .find(|w| w.toplevel.wl_surface() == surface.wl_surface())
-            {
-                let is_active = active_window_id.as_ref() == Some(&w.window_id);
+                .map(|w| {
+                    (
+                        w.window_id.clone(),
+                        active_window_id.as_ref() == Some(&w.window_id),
+                    )
+                })
+            else {
+                return;
+            };
+            let before = self.spaces.window_spaces(&window_id);
+            if let Some(w) = self.windows.iter_mut().find(|w| w.window_id == window_id) {
                 w.app_id = app_id.clone();
                 w.foreign.send_app_id(&app_id);
                 w.foreign.send_done();
-                if is_active {
-                    if let Err(err) = slopos_compositor::publish_active_toplevel(Some(&app_id)) {
-                        tracing::debug!(
-                            error = %err,
-                            app_id = %app_id,
-                            "could not refresh active application"
-                        );
-                    }
+            }
+            if let Err(error) = self
+                .spaces
+                .assign_window_for_application(window_id.clone(), &app_id)
+            {
+                tracing::warn!(%error, %app_id, %window_id, "could not apply changed app ID Spaces policy");
+            } else if self.spaces.window_spaces(&window_id) != before {
+                self.sync_legacy_workspace_state();
+                self.publish_spaces_state(true);
+                self.request_full_redraw();
+                self.apply_focus_after_workspace_switch();
+            }
+            if is_active {
+                if let Err(err) = slopos_compositor::publish_active_toplevel(Some(&app_id)) {
+                    tracing::debug!(
+                        error = %err,
+                        app_id = %app_id,
+                        "could not refresh active application"
+                    );
                 }
             }
         }

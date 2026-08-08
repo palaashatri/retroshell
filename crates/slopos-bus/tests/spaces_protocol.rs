@@ -1,6 +1,7 @@
 use slopos_bus::{
-    SessionControlListener, SessionControlRequest, SpaceClassification, SpaceSnapshot,
-    SpaceTargetWire, SpacesControlCommand, SpacesDisplayPolicy, SpacesSnapshot,
+    ApplicationSpacePolicySnapshot, SessionControlListener, SessionControlRequest,
+    SpaceClassification, SpaceSnapshot, SpaceTargetWire, SpacesControlCommand, SpacesDisplayPolicy,
+    SpacesSnapshot,
 };
 use std::sync::Mutex;
 
@@ -41,6 +42,10 @@ fn spaces_control_commands_round_trip_through_session_control_json() {
         SpacesControlCommand::AssignOutput {
             id: 11,
             output_id: Some("DP-1".to_string()),
+        },
+        SpacesControlCommand::SetApplicationPolicy {
+            app_id: "org.example.Editor".to_string(),
+            target: SpaceTargetWire::Id { id: 22 },
         },
     ];
 
@@ -84,6 +89,10 @@ fn spaces_snapshot_round_trip_preserves_revision_order_active_and_counts() {
         revision: 9,
         active_space: 22,
         multi_monitor_policy: SpacesDisplayPolicy::IndependentPerDisplay,
+        application_policies: vec![ApplicationSpacePolicySnapshot {
+            app_id: "org.example.Editor".to_string(),
+            target: SpaceTargetWire::Id { id: 22 },
+        }],
         spaces: vec![
             SpaceSnapshot {
                 id: 11,
@@ -166,6 +175,7 @@ fn spaces_snapshot_writer_replaces_runtime_file_atomically() {
         revision: 3,
         active_space: 22,
         multi_monitor_policy: SpacesDisplayPolicy::SharedSpan,
+        application_policies: Vec::new(),
         spaces: vec![SpaceSnapshot {
             id: 22,
             order: 0,

@@ -72,6 +72,12 @@ pub enum SpacesControlCommand {
         id: u64,
         output_id: Option<String>,
     },
+    /// Assign an application ID to one Space, every Space, or the active
+    /// Space default (`Current` clears a previously stored policy).
+    SetApplicationPolicy {
+        app_id: String,
+        target: SpaceTargetWire,
+    },
 }
 
 /// The wire form of a window membership target.
@@ -81,6 +87,13 @@ pub enum SpaceTargetWire {
     Current,
     Id { id: u64 },
     All,
+}
+
+/// Authoritative readback of an application-to-Space policy.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ApplicationSpacePolicySnapshot {
+    pub app_id: String,
+    pub target: SpaceTargetWire,
 }
 
 /// One compositor-owned Space row exposed to shell chrome.
@@ -113,5 +126,7 @@ pub struct SpacesSnapshot {
     pub active_space: u64,
     #[serde(default)]
     pub multi_monitor_policy: SpacesDisplayPolicy,
+    #[serde(default)]
+    pub application_policies: Vec<ApplicationSpacePolicySnapshot>,
     pub spaces: Vec<SpaceSnapshot>,
 }
