@@ -1188,6 +1188,7 @@ impl ShellDesktop {
                 tracing::warn!(space_id = id, %error, "could not send Spaces selection to compositor");
                 return false;
             }
+            self.input_filter = None;
             tracing::info!(
                 space_id = id,
                 "sent stable-ID Spaces selection to compositor"
@@ -1195,7 +1196,11 @@ impl ShellDesktop {
             self.workspace_overview = None;
             true
         } else {
-            self.switch_workspace(cell)
+            let selected = self.switch_workspace(cell);
+            if selected {
+                self.input_filter = None;
+            }
+            selected
         }
     }
 
@@ -2065,6 +2070,7 @@ impl ShellDesktop {
         };
         if key == slopos_kit::event::KeyCode::Escape {
             self.workspace_overview = None;
+            self.input_filter = None;
             return Some(EventResult::Handled);
         }
         if !matches!(
@@ -5760,6 +5766,7 @@ mod tests {
             }]
         );
         assert!(desktop.workspace_overview.is_none());
+        assert!(desktop.input_filter.is_none());
 
         desktop.open_workspace_status_window();
         assert!(matches!(
@@ -5767,6 +5774,7 @@ mod tests {
             EventResult::Handled
         ));
         assert!(desktop.workspace_overview.is_none());
+        assert!(desktop.input_filter.is_none());
         assert!(listener.drain().is_empty(), "dismissal must not send IPC");
 
         desktop.open_workspace_status_window();

@@ -1352,6 +1352,52 @@ mod linux {
             set_primary_focus(&self.display_handle, &self.seat, None);
         }
 
+        /// Return the visible Spaces overlay surface when it has explicitly
+        /// requested keyboard focus.  The shell toggles the layer-shell
+        /// keyboard-interactivity state together with the overlay geometry;
+        /// keeping this decision in the compositor prevents the shell from
+        /// receiving keys merely because it painted a local overview model.
+        fn active_spaces_keyboard_surface(&self) -> Option<WlSurface> {
+            self.layer_surfaces
+                .iter()
+                .rev()
+                .find(|layer| {
+                    layer.layer == Layer::Overlay
+                        && layer.namespace == "slopos-i-spaces-overview"
+                        && layer.geo.size.w > 1
+                        && layer.geo.size.h > 1
+                        && layer.surface.can_receive_keyboard_focus()
+                })
+                .map(|layer| layer.surface.wl_surface().clone())
+        }
+
+        /// Reconcile keyboard focus after a layer-shell commit.  Opening the
+        /// live overview focuses the compositor-owned overlay; closing it
+        /// restores the topmost visible ordinary client (or clears focus when
+        /// no client remains).  This is intentionally keyed to the exact
+        /// namespace and geometry rather than any generic OnDemand chrome.
+        fn reconcile_spaces_keyboard_focus(&mut self) {
+            let current_focus = self
+                .seat
+                .get_keyboard()
+                .and_then(|keyboard| keyboard.current_focus());
+            let current_is_spaces = current_focus.as_ref().is_some_and(|surface| {
+                self.layer_surfaces.iter().any(|layer| {
+                    layer.layer == Layer::Overlay
+                        && layer.namespace == "slopos-i-spaces-overview"
+                        && layer.surface.wl_surface() == surface
+                })
+            });
+
+            if let Some(target) = self.active_spaces_keyboard_surface() {
+                if current_focus.as_ref() != Some(&target) {
+                    self.focus_surface(Some(target));
+                }
+            } else if current_is_spaces {
+                self.apply_focus_after_workspace_switch();
+            }
+        }
+
         fn request_full_redraw(&mut self) {
             self.need_full_redraw = true;
             self.pending_damage = None;
@@ -2954,6 +3000,7 @@ mod linux {
             if let Some((surface, output_index)) = layer_membership {
                 self.sync_surface_to_output(&surface, output_index);
             }
+            self.reconcile_spaces_keyboard_focus();
             self.clamp_normal_windows_to_work_area();
             self.request_redraw();
         }
@@ -3604,12 +3651,20 @@ mod linux {
         }
 
         fn layer_destroyed(&mut self, surface: LayerSurface) {
+            let was_spaces_focused = self
+                .seat
+                .get_keyboard()
+                .and_then(|keyboard| keyboard.current_focus())
+                .is_some_and(|focused| focused == surface.wl_surface().clone());
             for output in &self.outputs {
                 output.leave(surface.wl_surface());
             }
             self.layer_surfaces
                 .retain(|l| l.surface.wl_surface() != surface.wl_surface());
             self.clamp_normal_windows_to_work_area();
+            if was_spaces_focused {
+                self.apply_focus_after_workspace_switch();
+            }
             self.request_full_redraw();
         }
     }

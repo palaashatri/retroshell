@@ -253,6 +253,7 @@ pub fn run_layer_desktop(content: Box<dyn Widget>, width: u32, height: u32) -> a
         last_pointer: (0.0, 0.0),
         pointer_kind: ChromeSurfaceKind::Background,
         modifiers: slopos_kit::event::Modifiers::NONE,
+        spaces_keyboard_exclusive: false,
         popup_origin: (0.0, 0.0),
         spaces_origin: (0.0, 0.0),
         active_toplevel_mtime: None,
@@ -615,9 +616,24 @@ fn paint_all(state: &mut LayerDesktopState, runtime: &mut UiRuntime) -> anyhow::
         let (x, y, w, h) = spaces_geo.unwrap_or((0, 0, 1, 1));
         state.spaces_origin = (x as f32, y as f32);
         let (cw, ch) = surf.configured.unwrap_or((1, 1));
+        let wants_exclusive_keyboard = spaces_geo.is_some();
+        let mut commit = false;
+        if wants_exclusive_keyboard != state.spaces_keyboard_exclusive {
+            surf.layer
+                .set_keyboard_interactivity(if wants_exclusive_keyboard {
+                    KeyboardInteractivity::Exclusive
+                } else {
+                    KeyboardInteractivity::OnDemand
+                });
+            state.spaces_keyboard_exclusive = wants_exclusive_keyboard;
+            commit = true;
+        }
         if cw != w || ch != h {
             surf.layer.set_margin(y, 0, 0, x);
             surf.layer.set_size(w, h);
+            commit = true;
+        }
+        if commit {
             surf.wl.commit();
         } else if let Some(renderer) = surf.renderer.as_mut() {
             renderer.resize(
@@ -839,6 +855,10 @@ struct LayerDesktopState {
     pointer_kind: ChromeSurfaceKind,
     /// Current keyboard modifiers from wl_keyboard::Modifiers (xkb mask).
     modifiers: slopos_kit::event::Modifiers,
+    /// Whether the live Spaces overlay currently requests exclusive keyboard
+    /// focus from the compositor. Keep this client-side state so the layer
+    /// surface is not recommitted on every paint tick.
+    spaces_keyboard_exclusive: bool,
     /// Output-local origin of the menu Overlay popup surface.
     popup_origin: (f32, f32),
     /// Output-local origin of the Spaces overview Overlay surface.

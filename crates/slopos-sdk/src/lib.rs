@@ -3905,6 +3905,16 @@ fn draw_workspace_grid_view(canvas: &mut Canvas<'_>, _rect: Rect, grid: &Workspa
                 border_color,
             );
         }
+        if grid.widget_state().focused && i == grid.focused_index {
+            let inset = 3.0;
+            let focus_rect = Rect::new(
+                cell_r.x + inset,
+                cell_r.y + inset,
+                (cell_r.width - inset * 2.0).max(0.0),
+                (cell_r.height - inset * 2.0).max(0.0),
+            );
+            canvas.stroke(focus_rect, render_accent());
+        }
 
         let base_label = grid.items.get(i).map(String::as_str).unwrap_or("");
         let label = match grid.window_counts.get(i).copied() {
