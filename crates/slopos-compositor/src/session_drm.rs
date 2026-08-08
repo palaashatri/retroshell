@@ -97,8 +97,8 @@ use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
 use smithay::wayland::shell::wlr_layer::{
-    Anchor, Layer, LayerSurface, LayerSurfaceCachedState, Margins, WlrLayerShellHandler,
-    WlrLayerShellState,
+    Anchor, KeyboardInteractivity, Layer, LayerSurface, LayerSurfaceCachedState, Margins,
+    WlrLayerShellHandler, WlrLayerShellState,
 };
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, SurfaceCachedState, ToplevelSurface, XdgShellHandler,
@@ -2185,7 +2185,16 @@ impl DrmSessionState {
                     && layer.namespace == "slopos-i-spaces-overview"
                     && layer.geo.size.w > 1
                     && layer.geo.size.h > 1
-                    && layer.surface.can_receive_keyboard_focus()
+                    && !matches!(
+                        with_states(layer.surface.wl_surface(), |states| {
+                            states
+                                .cached_state
+                                .get::<LayerSurfaceCachedState>()
+                                .current()
+                                .keyboard_interactivity
+                        }),
+                        KeyboardInteractivity::None
+                    )
             })
             .map(|layer| layer.surface.wl_surface().clone())
     }
