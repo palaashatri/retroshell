@@ -968,6 +968,7 @@ struct SettingsView {
     spaces_name_field: TextField,
     spaces_wallpaper_field: TextField,
     spaces_appearance_field: TextField,
+    spaces_output_field: TextField,
     spaces_feedback: Option<String>,
     selected_category: Category,
     settings: SettingsState,
@@ -1003,6 +1004,8 @@ impl SettingsView {
                 Button::new("Move Down"),
                 Button::new("Remove Active"),
                 Button::new("Apply Metadata"),
+                Button::new("Assign Output"),
+                Button::new("Clear Output"),
             ],
             spaces_policy_buttons: vec![
                 Button::new("Shared Across Displays"),
@@ -1012,6 +1015,7 @@ impl SettingsView {
             spaces_name_field: TextField::new().with_placeholder("Space name"),
             spaces_wallpaper_field: TextField::new().with_placeholder("Wallpaper path (optional)"),
             spaces_appearance_field: TextField::new().with_placeholder("Appearance (optional)"),
+            spaces_output_field: TextField::new().with_placeholder("Output ID (e.g. DP-1)"),
             spaces_feedback: None,
             selected_category: Category::Appearance,
             settings,
@@ -1145,13 +1149,19 @@ impl SettingsView {
             .iter()
             .map(|space| {
                 let active = if space.active { " *" } else { "" };
+                let output = space
+                    .output_id
+                    .as_deref()
+                    .map(|output| format!(" @ {output}"))
+                    .unwrap_or_default();
                 (
                     space.id,
                     Button::new(format!(
-                        "{}  {}{}  ({} windows)",
+                        "{}  {}{}{}  ({} windows)",
                         space.order + 1,
                         space.name,
                         active,
+                        output,
                         space.window_count
                     )),
                 )
@@ -1164,6 +1174,11 @@ impl SettingsView {
             button.set_enabled(has_active);
         }
         self.spaces_action_buttons[4].set_enabled(snapshot.spaces.len() > 1 && has_active);
+        self.spaces_action_buttons[6].set_enabled(
+            has_active
+                && snapshot.multi_monitor_policy == SpacesDisplayPolicy::IndependentPerDisplay,
+        );
+        self.spaces_action_buttons[7].set_enabled(has_active);
         self.spaces_classification_button.set_enabled(has_active);
         self.spaces_classification_button
             .set_label(match active.map(|s| s.classification) {
@@ -1247,6 +1262,26 @@ impl SettingsView {
                 self.spaces_feedback = Some("METADATA REQUESTED".to_string());
                 self.refresh_labels();
             }
+            return;
+        }
+        if index == 6 {
+            let output_id = self.spaces_output_field.text().trim();
+            if output_id.is_empty() {
+                self.spaces_feedback = Some("ENTER AN OUTPUT ID FIRST".to_string());
+                self.refresh_labels();
+                return;
+            }
+            let _ = self.send_spaces_command(SpacesControlCommand::AssignOutput {
+                id: active.id,
+                output_id: Some(output_id.to_string()),
+            });
+            return;
+        }
+        if index == 7 {
+            let _ = self.send_spaces_command(SpacesControlCommand::AssignOutput {
+                id: active.id,
+                output_id: None,
+            });
             return;
         }
         let command = match index {
@@ -1497,6 +1532,7 @@ impl SettingsView {
             &mut self.spaces_name_field,
             &mut self.spaces_wallpaper_field,
             &mut self.spaces_appearance_field,
+            &mut self.spaces_output_field,
         ] {
             field.set_expands_horizontally(true);
             field.set_rect(Rect::new(content_x, y, field_w, 28.0));
@@ -1663,6 +1699,7 @@ impl Widget for SettingsView {
             self.spaces_name_field.draw(theme);
             self.spaces_wallpaper_field.draw(theme);
             self.spaces_appearance_field.draw(theme);
+            self.spaces_output_field.draw(theme);
             for button in &self.spaces_action_buttons {
                 button.draw(theme);
             }
@@ -1758,6 +1795,7 @@ impl Widget for SettingsView {
         self.spaces_name_field.update();
         self.spaces_wallpaper_field.update();
         self.spaces_appearance_field.update();
+        self.spaces_output_field.update();
         for (_, button) in &mut self.spaces_rows {
             button.update();
         }
@@ -1798,6 +1836,7 @@ impl Widget for SettingsView {
                 children.push(&self.spaces_name_field);
                 children.push(&self.spaces_wallpaper_field);
                 children.push(&self.spaces_appearance_field);
+                children.push(&self.spaces_output_field);
                 for button in &self.spaces_action_buttons {
                     children.push(button);
                 }
@@ -1838,6 +1877,7 @@ impl Widget for SettingsView {
                 children.push(&mut self.spaces_name_field);
                 children.push(&mut self.spaces_wallpaper_field);
                 children.push(&mut self.spaces_appearance_field);
+                children.push(&mut self.spaces_output_field);
                 for button in &mut self.spaces_action_buttons {
                     children.push(button);
                 }
@@ -2427,6 +2467,36 @@ mod tests {
                 vec![SessionControlRequest::Spaces {
                     command: SpacesControlCommand::SetMultiMonitorPolicy {
                         policy: SpacesDisplayPolicy::IndependentPerDisplay
+                    }
+                }]
+            );
+
+            let mut independent = spaces_snapshot_for_settings();
+            independent.multi_monitor_policy = SpacesDisplayPolicy::IndependentPerDisplay;
+            independent.revision = 4;
+            slopos_bus::write_spaces_snapshot(&independent).unwrap();
+            view.update();
+            view.spaces_output_field.set_text("DP-1");
+            let rect = view.spaces_action_buttons[6].rect();
+            click(&mut view, rect);
+            assert_eq!(
+                listener.drain(),
+                vec![SessionControlRequest::Spaces {
+                    command: SpacesControlCommand::AssignOutput {
+                        id: 11,
+                        output_id: Some("DP-1".to_string())
+                    }
+                }]
+            );
+
+            let rect = view.spaces_action_buttons[7].rect();
+            click(&mut view, rect);
+            assert_eq!(
+                listener.drain(),
+                vec![SessionControlRequest::Spaces {
+                    command: SpacesControlCommand::AssignOutput {
+                        id: 11,
+                        output_id: None
                     }
                 }]
             );
